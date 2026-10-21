@@ -65,11 +65,24 @@ pub(crate) fn not_started() -> PyErr {
     PyRuntimeError::new_err("scheduler not started; call `await scheduler.start()` first")
 }
 
+/// The scheduler stopped on its own (e.g. its event loop was closed).
+pub(crate) fn stopped(reason: &str) -> PyErr {
+    Python::attach(|py| {
+        py_error(
+            py,
+            "SchedulerError",
+            (format!("scheduler stopped: {reason}"),),
+        )
+    })
+}
+
 /// Classify an exception raised by a Python executor.
 ///
-/// `cronoq.Retryable` / `cronoq.Permanent` carry an explicit kind; `asyncio.CancelledError`
-/// means the attempt observed cancellation; anything else is retryable.
-pub(crate) fn classify(e: PyErr) -> TaskError {
+/// `cronoq.Retryable` / `cronoq.Permanent` carry an explicit kind. `asyncio.CancelledError` is
+/// a cancellation only if the engine asked for it (`engine_cancelled`); one raised by the
+/// executor's own code (e.g. awaiting a future that something else cancelled) is retryable.
+/// Anything else is retryable.
+pub(crate) fn classify(e: PyErr, engine_cancelled: bool) -> TaskError {
     Python::attach(|py| {
         let cancelled = py
             .import("asyncio")
@@ -77,7 +90,11 @@ pub(crate) fn classify(e: PyErr) -> TaskError {
             .map(|c| e.matches(py, c).unwrap_or(false))
             .unwrap_or(false);
         if cancelled {
-            return TaskError::Cancelled;
+            return if engine_cancelled {
+                TaskError::Cancelled
+            } else {
+                TaskError::retryable("CancelledError: raised by the executor, not by cronoq")
+            };
         }
         let value = e.value(py);
         let message = value
@@ -93,10 +110,8 @@ pub(crate) fn classify(e: PyErr) -> TaskError {
                     .and_then(|v| v.extract())
                     .ok()
                     .flatten();
-                match after {
-                    Some(s) if s > 0.0 => {
-                        TaskError::retry_after(message, Duration::from_secs_f64(s))
-                    }
+                match after.and_then(|s| Duration::try_from_secs_f64(s).ok()) {
+                    Some(d) if !d.is_zero() => TaskError::retry_after(message, d),
                     _ => TaskError::retryable(message),
                 }
             }

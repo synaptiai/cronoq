@@ -1,20 +1,30 @@
-//! The asyncio-facing `Scheduler` and `TaskHandle`.
+//! The asyncio-facing `Scheduler`, `TaskHandle` and event stream.
 
+use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
-use cronoq::{Recurring, ResourceConfig, TaskFailure, TaskId, TaskRef};
-use pyo3::exceptions::PyValueError;
+use cronoq::{Recurring, ResourceConfig, StatusEvent as CoreEvent, TaskFailure, TaskId, TaskRef};
+use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
+use tokio::sync::{Notify, broadcast, watch};
 
-use crate::errors::{failure_to_pyerr, not_started, to_pyerr};
-use crate::executor::PyExecutor;
+use crate::errors::{failure_to_pyerr, not_started, py_error, stopped, to_pyerr};
+use crate::executor::{LoopClosed, PyExecutor};
 use crate::types::{
     Dep, Opts, Pool, PyObj, Resource, RetryPolicy, Task, extract_ref, parse_miss, parse_overlap,
+    secs,
 };
 
 type Sched = cronoq::Scheduler<PyObj, PyObj>;
+
+/// Python `None` as a return value of an awaitable (instead of `()`, which becomes `()`).
+const NONE: Option<bool> = None;
+
+/// Shutdown grace used for `float("inf")` ("wait for running work as long as it takes").
+const FOREVER: Duration = Duration::from_secs(100 * 365 * 86_400);
 
 fn spawn_py<'py, F, T>(py: Python<'py>, fut: F) -> PyResult<Bound<'py, PyAny>>
 where
@@ -24,35 +34,172 @@ where
     pyo3_async_runtimes::tokio::future_into_py(py, fut)
 }
 
-/// Elastic priority scheduler. Create, `await start()`, submit work, `await shutdown()`.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    pyo3_async_runtimes::tokio::get_runtime()
+}
+
+fn grace_duration(grace: f64) -> PyResult<Duration> {
+    if grace == f64::INFINITY {
+        return Ok(FOREVER);
+    }
+    Ok(secs(grace, "grace")?.min(FOREVER))
+}
+
+/// Lifecycle of the engine behind a `Scheduler`.
+enum Life {
+    Idle,
+    /// `start()` is building the engine (the id tells a stale start from the current one).
+    Starting(u64),
+    Running(Sched),
+    /// `shutdown()` is in progress; the API keeps working until it completes.
+    Stopping(Sched),
+}
+
+struct Shared {
+    life: Mutex<Life>,
+    /// Signalled on every lifecycle change.
+    changed: Notify,
+    starts: AtomicU64,
+    /// The event loop captured by `start()` (checked for being closed).
+    event_loop: Mutex<Option<PyObj>>,
+    /// Why the engine stopped on its own, reported by later calls.
+    stopped_reason: Mutex<Option<String>>,
+}
+
+impl Shared {
+    /// Stop the engine because it can no longer run executors (e.g. its loop was closed).
+    fn stop_unexpectedly(self: &Arc<Self>, reason: &str) {
+        let s = {
+            let mut life = self.life.lock().unwrap();
+            match &*life {
+                Life::Running(s) => {
+                    let s = s.clone();
+                    *life = Life::Stopping(s.clone());
+                    s
+                }
+                _ => return,
+            }
+        };
+        *self.stopped_reason.lock().unwrap() = Some(reason.to_string());
+        let shared = self.clone();
+        runtime().spawn(async move {
+            let _ = s.shutdown(Duration::ZERO).await;
+            let mut life = shared.life.lock().unwrap();
+            if matches!(&*life, Life::Stopping(_)) {
+                *life = Life::Idle;
+            }
+            drop(life);
+            shared.changed.notify_waiters();
+        });
+    }
+}
+
+/// Elastic priority scheduler. Create, `await start()`, submit work, `await shutdown()` (or use
+/// `async with`).
 ///
-/// Executors run on the asyncio event loop that called `start()`.
+/// Executors run on the asyncio event loop that called `start()`; that loop must outlive the
+/// scheduler. If it is closed first, the scheduler stops and later calls raise `SchedulerError`.
 #[pyclass(module = "cronoq._cronoq")]
 pub struct Scheduler {
     pools: Vec<Py<Pool>>,
     resources: Vec<ResourceConfig>,
     emit_transitions: bool,
-    inner: Arc<Mutex<Option<Sched>>>,
+    shutdown_grace: f64,
+    event_capacity: usize,
+    default_pool: Arc<str>,
+    pool_names: Arc<[Arc<str>]>,
+    shared: Arc<Shared>,
 }
 
 impl Scheduler {
-    fn sched(&self) -> PyResult<Sched> {
-        self.inner.lock().unwrap().clone().ok_or_else(not_started)
+    /// The running engine (also while shutting down).
+    fn sched(&self, py: Python<'_>) -> PyResult<Sched> {
+        let s = match &*self.shared.life.lock().unwrap() {
+            Life::Running(s) | Life::Stopping(s) => Some(s.clone()),
+            _ => None,
+        };
+        let Some(s) = s else {
+            return Err(match &*self.shared.stopped_reason.lock().unwrap() {
+                Some(reason) => stopped(reason),
+                None => not_started(),
+            });
+        };
+        let closed = self
+            .shared
+            .event_loop
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|lp| {
+                lp.bind(py)
+                    .call_method0("is_closed")
+                    .and_then(|v| v.extract::<bool>())
+                    .unwrap_or(true)
+            })
+            .unwrap_or(false);
+        if closed {
+            let reason = "its asyncio event loop was closed (call start() again on a running loop)";
+            self.shared.stop_unexpectedly(reason);
+            return Err(stopped(reason));
+        }
+        Ok(s)
+    }
+
+    fn task(&self, opts: &Opts, payload: PyObj) -> cronoq::Task<PyObj> {
+        opts.to_task(payload, &self.default_pool)
+    }
+}
+
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        // Garbage-collected without `shutdown()`: stop the engine rather than leaking it.
+        let s = match &*self.shared.life.lock().unwrap() {
+            Life::Running(s) => Some(s.clone()),
+            _ => None,
+        };
+        if let Some(s) = s {
+            runtime().spawn(async move {
+                let _ = s.shutdown(Duration::ZERO).await;
+            });
+        }
     }
 }
 
 #[pymethods]
 impl Scheduler {
+    /// `pools` must have unique names. Tasks submitted without `pool=` go to the pool named
+    /// `"default"`, or to the first pool if none has that name.
+    ///
+    /// `shutdown_grace` is the grace period used by `async with`; `event_capacity` bounds the
+    /// buffer of each `events()` stream.
     #[new]
-    #[pyo3(signature = (pools, resources=None, emit_transitions=false))]
+    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024))]
     fn new(
         pools: Vec<Py<Pool>>,
         resources: Option<Vec<Resource>>,
         emit_transitions: bool,
+        shutdown_grace: f64,
+        event_capacity: usize,
     ) -> PyResult<Self> {
         if pools.is_empty() {
             return Err(PyValueError::new_err("at least one pool is required"));
         }
+        let names: Vec<Arc<str>> = pools.iter().map(|p| p.get().cfg.name.clone()).collect();
+        let mut seen = HashSet::new();
+        for n in &names {
+            if !seen.insert(n.clone()) {
+                return Err(PyValueError::new_err(format!("duplicate pool name '{n}'")));
+            }
+        }
+        grace_duration(shutdown_grace)?;
+        if event_capacity == 0 {
+            return Err(PyValueError::new_err("event_capacity must be >= 1"));
+        }
+        let default_pool = names
+            .iter()
+            .find(|n| &***n == "default")
+            .unwrap_or(&names[0])
+            .clone();
         Ok(Scheduler {
             pools,
             resources: resources
@@ -61,19 +208,47 @@ impl Scheduler {
                 .map(|r| r.inner)
                 .collect(),
             emit_transitions,
-            inner: Arc::new(Mutex::new(None)),
+            shutdown_grace,
+            event_capacity,
+            default_pool,
+            pool_names: names.into(),
+            shared: Arc::new(Shared {
+                life: Mutex::new(Life::Idle),
+                changed: Notify::new(),
+                starts: AtomicU64::new(0),
+                event_loop: Mutex::new(None),
+                stopped_reason: Mutex::new(None),
+            }),
         })
     }
 
     /// Start the engine. Executors will run on the current event loop.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        if self.inner.lock().unwrap().is_some() {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "scheduler already started",
-            ));
-        }
         let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+        let id = {
+            let mut life = self.shared.life.lock().unwrap();
+            match &*life {
+                Life::Idle => {}
+                Life::Starting(_) => {
+                    return Err(PyRuntimeError::new_err("scheduler is already starting"));
+                }
+                Life::Running(_) | Life::Stopping(_) => {
+                    return Err(PyRuntimeError::new_err("scheduler already started"));
+                }
+            }
+            let id = self.shared.starts.fetch_add(1, Ordering::SeqCst) + 1;
+            *life = Life::Starting(id);
+            id
+        };
+        *self.shared.stopped_reason.lock().unwrap() = None;
+        *self.shared.event_loop.lock().unwrap() = Some(locals.event_loop(py).unbind());
         let invoke = py.import("cronoq._runtime")?.getattr("_invoke")?.unbind();
+        let weak = Arc::downgrade(&self.shared);
+        let loop_closed: LoopClosed = Arc::new(move || {
+            if let Some(shared) = weak.upgrade() {
+                shared.stop_unexpectedly("its asyncio event loop was closed");
+            }
+        });
         let mut b = Sched::builder().emit_transitions(self.emit_transitions);
         for p in &self.pools {
             let p = p.get();
@@ -81,6 +256,7 @@ impl Scheduler {
                 p.executor.clone_ref(py),
                 invoke.clone_ref(py),
                 locals.clone(),
+                loop_closed.clone(),
             );
             let cfg = p.cfg.clone();
             b = b.pool(
@@ -92,11 +268,34 @@ impl Scheduler {
         for r in &self.resources {
             b = b.resource(r.clone());
         }
-        let inner = self.inner.clone();
+        let shared = self.shared.clone();
         spawn_py(py, async move {
-            let s = b.build().await.map_err(to_pyerr)?;
-            *inner.lock().unwrap() = Some(s);
-            Ok(())
+            let built = b.build().await;
+            let current = {
+                let mut life = shared.life.lock().unwrap();
+                let current = matches!(&*life, Life::Starting(i) if *i == id);
+                if current {
+                    *life = match &built {
+                        Ok(s) => Life::Running(s.clone()),
+                        Err(_) => Life::Idle,
+                    };
+                }
+                current
+            };
+            shared.changed.notify_waiters();
+            let s = built.map_err(to_pyerr)?;
+            if !current {
+                // `shutdown()` was called while starting: discard the engine we just built.
+                let _ = s.shutdown(Duration::ZERO).await;
+                return Err(Python::attach(|py| {
+                    py_error(
+                        py,
+                        "SchedulerError",
+                        ("scheduler was shut down while starting",),
+                    )
+                }));
+            }
+            Ok(NONE)
         })
     }
 
@@ -149,8 +348,8 @@ impl Scheduler {
             resources,
             tags,
         )?;
-        let s = self.sched()?;
-        let task = opts.to_task(payload);
+        let s = self.sched(py)?;
+        let task = self.task(&opts, payload);
         spawn_py(py, async move {
             let h = s.submit(task).await.map_err(to_pyerr)?;
             Ok(TaskHandle::new(h, s))
@@ -206,8 +405,8 @@ impl Scheduler {
             resources,
             tags,
         )?;
-        let s = self.sched()?;
-        let task = opts.to_task(payload);
+        let s = self.sched(py)?;
+        let task = self.task(&opts, payload);
         spawn_py(py, async move {
             let sub = s.enqueue(task).await.map_err(to_pyerr)?;
             Ok(sub.id.0)
@@ -220,12 +419,12 @@ impl Scheduler {
         py: Python<'py>,
         tasks: Vec<Py<Task>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let s = self.sched()?;
+        let s = self.sched(py)?;
         let tasks: Vec<_> = tasks
             .iter()
             .map(|t| {
                 let t = t.get();
-                t.opts.to_task(t.payload.clone_ref(py))
+                self.task(&t.opts, t.payload.clone_ref(py))
             })
             .collect();
         spawn_py(py, async move {
@@ -243,7 +442,7 @@ impl Scheduler {
         py: Python<'py>,
         target: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let (s, target) = (self.sched()?, extract_ref(target)?);
+        let (s, target) = (self.sched(py)?, extract_ref(target)?);
         spawn_py(py, async move { s.cancel(target).await.map_err(to_pyerr) })
     }
 
@@ -253,7 +452,7 @@ impl Scheduler {
         py: Python<'py>,
         target: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let (s, target) = (self.sched()?, extract_ref(target)?);
+        let (s, target) = (self.sched(py)?, extract_ref(target)?);
         spawn_py(py, async move {
             Ok(s.status(target)
                 .await
@@ -268,7 +467,7 @@ impl Scheduler {
         py: Python<'py>,
         target: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let (s, target) = (self.sched()?, extract_ref(target)?);
+        let (s, target) = (self.sched(py)?, extract_ref(target)?);
         spawn_py(py, async move {
             let h = s.handle(target).await.map_err(to_pyerr)?;
             Ok(h.map(|h| TaskHandle::new(h, s)))
@@ -277,7 +476,7 @@ impl Scheduler {
 
     /// Quality metrics per pool over the metrics window.
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let s = self.sched()?;
+        let s = self.sched(py)?;
         spawn_py(py, async move {
             Ok(Snapshot::from(s.snapshot().await.map_err(to_pyerr)?))
         })
@@ -290,9 +489,10 @@ impl Scheduler {
         pool: String,
         capacity: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let s = self.sched()?;
+        let s = self.sched(py)?;
         spawn_py(py, async move {
-            s.set_capacity(&pool, capacity).await.map_err(to_pyerr)
+            s.set_capacity(&pool, capacity).await.map_err(to_pyerr)?;
+            Ok(NONE)
         })
     }
 
@@ -341,52 +541,121 @@ impl Scheduler {
             resources,
             tags,
         )?;
-        let mut r = Recurring::new(name, cron, opts.to_task(payload))
+        let mut r = Recurring::new(name, cron, self.task(&opts, payload))
             .overlap(parse_overlap(overlap)?)
             .on_miss(parse_miss(on_miss)?)
-            .tolerance(Duration::from_secs_f64(tolerance.max(0.0)));
+            .tolerance(secs(tolerance, "tolerance")?);
         if let Some(tz) = tz {
             r = r.tz(tz);
         }
-        let s = self.sched()?;
-        spawn_py(
-            py,
-            async move { s.add_recurring(r).await.map_err(to_pyerr) },
-        )
+        let s = self.sched(py)?;
+        spawn_py(py, async move {
+            s.add_recurring(r).await.map_err(to_pyerr)?;
+            Ok(NONE)
+        })
     }
 
+    /// Remove a cron schedule; resolves to whether it existed.
     fn remove_recurring<'py>(&self, py: Python<'py>, name: String) -> PyResult<Bound<'py, PyAny>> {
-        let s = self.sched()?;
+        let s = self.sched(py)?;
         spawn_py(py, async move {
             s.remove_recurring(&name).await.map_err(to_pyerr)
         })
     }
 
-    /// Stop accepting work, let running attempts finish for up to `grace` seconds, then abort.
+    /// Stream of task status events (`async for event in scheduler.events(): ...`).
+    ///
+    /// Terminal events are always delivered; every transition is delivered when the scheduler was
+    /// created with `emit_transitions=True`. Events are buffered per stream (up to
+    /// `event_capacity`); when a slow consumer falls behind, the oldest events are dropped and
+    /// counted in `stream.lagged`, or, with `on_lag="raise"`, the next `__anext__` raises
+    /// `EventsLagged` (iteration can continue afterwards). The stream ends when the scheduler
+    /// stops or `close()` is called.
+    #[pyo3(signature = (on_lag="skip"))]
+    fn events(&self, py: Python<'_>, on_lag: &str) -> PyResult<EventStream> {
+        let raise = match on_lag {
+            "skip" => false,
+            "raise" => true,
+            _ => return Err(PyValueError::new_err("on_lag must be 'skip' or 'raise'")),
+        };
+        let s = self.sched(py)?;
+        Ok(EventStream::spawn(
+            s,
+            self.pool_names.clone(),
+            self.event_capacity,
+            raise,
+        ))
+    }
+
+    /// Stop accepting work, let running attempts finish for up to `grace` seconds
+    /// (`float("inf")` waits as long as they take), then abort them. The API keeps working
+    /// (for example from running executors) until shutdown completes.
     #[pyo3(signature = (grace=5.0))]
     fn shutdown<'py>(&self, py: Python<'py>, grace: f64) -> PyResult<Bound<'py, PyAny>> {
-        let s = self.inner.lock().unwrap().take();
+        let grace = grace_duration(grace)?;
+        let shared = self.shared.clone();
         spawn_py(py, async move {
-            if let Some(s) = s {
-                s.shutdown(Duration::from_secs_f64(grace.max(0.0)))
-                    .await
-                    .map_err(to_pyerr)?;
+            loop {
+                let changed = shared.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let s = {
+                    let mut life = shared.life.lock().unwrap();
+                    match &*life {
+                        Life::Idle => return Ok(NONE),
+                        Life::Starting(_) => {
+                            // The pending `start()` sees this and discards its engine.
+                            *life = Life::Idle;
+                            drop(life);
+                            shared.changed.notify_waiters();
+                            return Ok(NONE);
+                        }
+                        Life::Running(s) => {
+                            let s = s.clone();
+                            *life = Life::Stopping(s.clone());
+                            Some(s)
+                        }
+                        // Another shutdown is in progress: wait for it.
+                        Life::Stopping(_) => None,
+                    }
+                };
+                match s {
+                    Some(s) => {
+                        let r = s.shutdown(grace).await;
+                        {
+                            let mut life = shared.life.lock().unwrap();
+                            if matches!(&*life, Life::Stopping(_)) {
+                                *life = Life::Idle;
+                            }
+                        }
+                        shared.changed.notify_waiters();
+                        r.map_err(to_pyerr)?;
+                        return Ok(NONE);
+                    }
+                    None => changed.await,
+                }
             }
-            Ok(())
         })
     }
 
+    /// True from a successful `start()` until `shutdown()` completes.
     #[getter]
     fn started(&self) -> bool {
-        self.inner.lock().unwrap().is_some()
+        matches!(
+            &*self.shared.life.lock().unwrap(),
+            Life::Running(_) | Life::Stopping(_)
+        )
     }
 
     #[getter]
-    fn pools(&self, py: Python<'_>) -> Vec<String> {
-        self.pools
-            .iter()
-            .map(|p| p.bind(py).get().cfg.name.to_string())
-            .collect()
+    fn pools(&self) -> Vec<String> {
+        self.pool_names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// The pool used when `submit` is called without `pool=`.
+    #[getter]
+    fn default_pool(&self) -> &str {
+        &self.default_pool
     }
 
     fn __aenter__<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
@@ -404,14 +673,11 @@ impl Scheduler {
         py: Python<'py>,
         _args: &Bound<'py, PyTuple>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        self.shutdown(py, 5.0)
+        self.shutdown(py, self.shutdown_grace)
     }
 }
 
-enum HState {
-    Pending(cronoq::TaskHandle<PyObj>),
-    Done(Result<Arc<PyObj>, TaskFailure>),
-}
+type Outcome = Result<Arc<PyObj>, TaskFailure>;
 
 /// Awaitable handle to a submitted task. `await handle` returns the executor's result or
 /// raises `TaskFailed`. May be awaited any number of times.
@@ -419,16 +685,23 @@ enum HState {
 pub struct TaskHandle {
     id: u64,
     duplicate: bool,
-    state: Arc<tokio::sync::Mutex<HState>>,
+    result: watch::Receiver<Option<Outcome>>,
     sched: Sched,
 }
 
 impl TaskHandle {
     fn new(h: cronoq::TaskHandle<PyObj>, sched: Sched) -> Self {
+        let (tx, rx) = watch::channel(None);
+        let (id, duplicate) = (h.id().0, h.is_duplicate());
+        // Resolve in the background so `done()` reflects completion without being awaited.
+        runtime().spawn(async move {
+            let r = h.await;
+            let _ = tx.send(Some(r));
+        });
         TaskHandle {
-            id: h.id().0,
-            duplicate: h.is_duplicate(),
-            state: Arc::new(tokio::sync::Mutex::new(HState::Pending(h))),
+            id,
+            duplicate,
+            result: rx,
             sched,
         }
     }
@@ -447,42 +720,276 @@ impl TaskHandle {
     }
     /// Coroutine resolving to the result (same as awaiting the handle).
     fn result<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let (state, id) = (self.state.clone(), self.id);
+        let (mut rx, id) = (self.result.clone(), self.id);
         spawn_py(py, async move {
-            let mut g = state.lock().await;
-            if let HState::Pending(h) = &mut *g {
-                let r = h.await;
-                *g = HState::Done(r);
-            }
-            let HState::Done(r) = &*g else { unreachable!() };
+            let r = match rx.wait_for(Option::is_some).await {
+                Ok(v) => v.clone().expect("checked"),
+                Err(_) => Err(TaskFailure::Shutdown),
+            };
             Python::attach(|py| match r {
                 Ok(o) => Ok(o.clone_ref(py)),
-                Err(f) => Err(failure_to_pyerr(py, f, id)),
+                Err(f) => Err(failure_to_pyerr(py, &f, id)),
             })
         })
     }
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         self.result(py)?.call_method0("__await__")
     }
-    /// True once the result is available.
+    /// True once the task has finished (whether or not the handle was awaited).
     fn done(&self) -> bool {
-        matches!(self.state.try_lock().as_deref(), Ok(HState::Done(_)))
+        self.result.borrow().is_some()
     }
     /// Request cancellation (fire and forget).
     fn cancel(&self) {
         let (s, id) = (self.sched.clone(), self.id);
-        pyo3_async_runtimes::tokio::get_runtime().spawn(async move {
+        runtime().spawn(async move {
             let _ = s.cancel(TaskRef::Id(TaskId(id))).await;
         });
     }
     fn __repr__(&self) -> String {
         format!(
-            "TaskHandle(id={}, duplicate={})",
+            "TaskHandle(id={}, duplicate={}, done={})",
             self.id,
-            if self.duplicate { "True" } else { "False" }
+            if self.duplicate { "True" } else { "False" },
+            if self.done() { "True" } else { "False" }
         )
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Events
+
+/// A task status transition.
+#[pyclass(frozen, get_all, module = "cronoq._cronoq")]
+#[derive(Clone, Debug)]
+pub struct StatusEvent {
+    /// Task id.
+    id: u64,
+    /// Pool name.
+    pool: String,
+    /// Task key, if it has one.
+    key: Option<String>,
+    /// Status name, e.g. `"running"` or `"succeeded"`.
+    status: String,
+    /// Attempt number (0 before the first dispatch).
+    attempt: u32,
+    /// When it happened, as Unix seconds (like `time.time()`).
+    at: f64,
+    /// Failure or skip reason, if any.
+    message: Option<String>,
+}
+
+#[pymethods]
+impl StatusEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "StatusEvent(id={}, pool={:?}, key={:?}, status={:?}, attempt={})",
+            self.id, self.pool, self.key, self.status, self.attempt
+        )
+    }
+}
+
+struct StreamState {
+    queue: Mutex<VecDeque<StatusEvent>>,
+    capacity: usize,
+    /// Dropped since the last `on_lag="raise"` report.
+    unreported: AtomicU64,
+    /// Dropped in total.
+    lagged: AtomicU64,
+    /// No more events will arrive (scheduler stopped or stream closed).
+    ended: AtomicBool,
+    notify: Notify,
+}
+
+impl StreamState {
+    fn push(&self, e: StatusEvent) {
+        let mut q = self.queue.lock().unwrap();
+        if q.len() >= self.capacity {
+            q.pop_front();
+            self.lagged.fetch_add(1, Ordering::Relaxed);
+            self.unreported.fetch_add(1, Ordering::Relaxed);
+        }
+        q.push_back(e);
+        drop(q);
+        self.notify.notify_one();
+    }
+    fn lag(&self, n: u64) {
+        self.lagged.fetch_add(n, Ordering::Relaxed);
+        self.unreported.fetch_add(n, Ordering::Relaxed);
+        self.notify.notify_one();
+    }
+    fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+}
+
+enum Next {
+    Event(StatusEvent),
+    Lagged(u64),
+    End,
+}
+
+/// Async iterator of `StatusEvent`s returned by `Scheduler.events()`.
+#[pyclass(frozen, module = "cronoq._cronoq")]
+pub struct EventStream {
+    state: Arc<StreamState>,
+    raise_on_lag: bool,
+    relay: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl EventStream {
+    fn spawn(s: Sched, pools: Arc<[Arc<str>]>, capacity: usize, raise_on_lag: bool) -> Self {
+        let state = Arc::new(StreamState {
+            queue: Mutex::new(VecDeque::new()),
+            capacity,
+            unreported: AtomicU64::new(0),
+            lagged: AtomicU64::new(0),
+            ended: AtomicBool::new(false),
+            notify: Notify::new(),
+        });
+        let mut rx = s.events();
+        let clock = *s.clock();
+        let st = state.clone();
+        let relay = runtime().spawn(async move {
+            // Task handles keep scheduler clones (and so the event sender) alive after
+            // shutdown, so end on `stopped()` rather than waiting for the channel to close.
+            let stopped = s.stopped();
+            tokio::pin!(stopped);
+            loop {
+                tokio::select! {
+                    r = rx.recv() => match r {
+                        Ok(e) => st.push(convert(&e, &pools, &clock)),
+                        Err(broadcast::error::RecvError::Lagged(n)) => st.lag(n),
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                    _ = &mut stopped => {
+                        while let Ok(e) = rx.try_recv() {
+                            st.push(convert(&e, &pools, &clock));
+                        }
+                        break;
+                    }
+                }
+            }
+            st.end();
+        });
+        EventStream {
+            state,
+            raise_on_lag,
+            relay: Mutex::new(Some(relay)),
+        }
+    }
+
+    fn take_next(&self) -> Option<Next> {
+        if self.raise_on_lag {
+            let n = self.state.unreported.swap(0, Ordering::Relaxed);
+            if n > 0 {
+                return Some(Next::Lagged(n));
+            }
+        }
+        if let Some(e) = self.state.queue.lock().unwrap().pop_front() {
+            return Some(Next::Event(e));
+        }
+        self.state.ended.load(Ordering::SeqCst).then_some(Next::End)
+    }
+}
+
+fn convert(e: &CoreEvent, pools: &[Arc<str>], clock: &cronoq::Clock) -> StatusEvent {
+    let at = match clock.to_system(e.at).duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(err) => -err.duration().as_secs_f64(),
+    };
+    StatusEvent {
+        id: e.id.0,
+        pool: pools
+            .get(e.pool.0 as usize)
+            .map(|p| p.to_string())
+            .unwrap_or_default(),
+        key: e.key.as_deref().map(str::to_string),
+        status: e.status.name().to_string(),
+        attempt: e.attempt,
+        at,
+        message: e.message.as_deref().map(str::to_string),
+    }
+}
+
+#[pymethods]
+impl EventStream {
+    fn __aiter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    fn __anext__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        spawn_py(py, async move {
+            let state = slf.get().state.clone();
+            loop {
+                let notified = state.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let next = slf.get().take_next();
+                match next {
+                    Some(Next::Event(e)) => return Ok(e),
+                    Some(Next::Lagged(n)) => {
+                        return Err(Python::attach(|py| py_error(py, "EventsLagged", (n,))));
+                    }
+                    Some(Next::End) => return Err(PyStopAsyncIteration::new_err(())),
+                    None => notified.await,
+                }
+            }
+        })
+    }
+
+    /// Stop receiving events. Buffered events are discarded and iteration ends.
+    fn close(&self) {
+        if let Some(r) = self.relay.lock().unwrap().take() {
+            r.abort();
+        }
+        self.state.queue.lock().unwrap().clear();
+        self.state.end();
+    }
+
+    /// Coroutine form of `close()` (for `contextlib.aclosing`).
+    fn aclose<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.close();
+        spawn_py(py, async { Ok(NONE) })
+    }
+
+    fn __aenter__<'py>(slf: Py<Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        spawn_py(py, async move { Ok(slf) })
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __aexit__<'py>(
+        &self,
+        py: Python<'py>,
+        _args: &Bound<'py, PyTuple>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.aclose(py)
+    }
+
+    /// Number of events dropped because this stream fell behind.
+    #[getter]
+    fn lagged(&self) -> u64 {
+        self.state.lagged.load(Ordering::Relaxed)
+    }
+
+    /// True once no more events will be delivered.
+    #[getter]
+    fn closed(&self) -> bool {
+        self.state.ended.load(Ordering::SeqCst) && self.state.queue.lock().unwrap().is_empty()
+    }
+}
+
+impl Drop for EventStream {
+    fn drop(&mut self) {
+        if let Some(r) = self.relay.lock().unwrap().take() {
+            r.abort();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Snapshots
 
 /// Metrics for one pool (durations in seconds).
 #[pyclass(frozen, get_all, module = "cronoq._cronoq")]

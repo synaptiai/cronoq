@@ -2,12 +2,13 @@
 
 Executors control retries by raising :class:`Retryable` or :class:`Permanent`; any other
 exception is treated as retryable. Awaiting a task that did not succeed raises
-:class:`TaskFailed`.
+:class:`TaskFailed`. All exceptions here derive from :class:`CronoqError` and can be pickled
+(e.g. sent across ``multiprocessing`` boundaries).
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 
 class CronoqError(Exception):
@@ -25,10 +26,14 @@ class SubmitError(CronoqError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+        self.message = message
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (type(self), (self.code, self.message))
 
 
 class SchedulerError(CronoqError):
-    """The scheduler is shut down, misconfigured, or its store failed."""
+    """The scheduler is shut down or stopped, misconfigured, or its store failed."""
 
 
 class TaskFailed(CronoqError):
@@ -44,8 +49,23 @@ class TaskFailed(CronoqError):
         self.message = message
         self.task_id = task_id
 
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (type(self), (self.status, self.message, self.task_id))
 
-class Retryable(Exception):
+
+class EventsLagged(CronoqError):
+    """Raised by an ``events(on_lag="raise")`` stream that fell behind: ``skipped`` events were
+    dropped. Iterating again continues with the events that are still buffered."""
+
+    def __init__(self, skipped: int) -> None:
+        super().__init__(f"event stream fell behind; {skipped} events were dropped")
+        self.skipped = skipped
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (type(self), (self.skipped,))
+
+
+class Retryable(CronoqError):
     """Raise from an executor to request a retry (subject to the retry policy).
 
     ``retry_after`` (seconds) delays the next attempt, e.g. for HTTP 429 responses.
@@ -57,8 +77,11 @@ class Retryable(Exception):
         super().__init__(message)
         self.retry_after = retry_after
 
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (type(self), (str(self), self.retry_after))
 
-class Permanent(Exception):
+
+class Permanent(CronoqError):
     """Raise from an executor to fail the task without retrying."""
 
     _cronoq_kind = "permanent"

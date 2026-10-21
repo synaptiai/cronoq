@@ -55,10 +55,50 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-- Executors are `async def` functions run on the event loop that started the scheduler; plain
-  functions run in the loop's default thread pool.
-- Awaiting a task that did not succeed raises `cronoq.TaskFailed` (`.status`, `.message`).
-- Cancelling a task, a timeout, or a lost lease cancels the executor's asyncio task.
+* A scheduler is bound to the event loop that started it: use `async with cronoq.Scheduler(...)`
+  (or `await sched.start()` / `await sched.shutdown()`) inside that loop. If the loop closes
+  without a shutdown, the scheduler stops and further calls raise `cronoq.SchedulerError`.
+  Leaving `async with` waits up to `shutdown_grace` seconds (default 5) for running attempts.
+* Executors are `async def run(ctx, payload)` coroutines and run on that loop. `ctx` has `id`,
+  `attempt`, `kind`, `key`, `pool`, `tags`, `timeout`, `deadline` (Unix seconds),
+  `is_cancelled()` and `heartbeat()`.
+* Plain (sync) functions are accepted too and run in the loop's default thread pool. A thread
+  cannot be interrupted: on timeout or cancellation the attempt is aborted, but the function
+  keeps running until it returns, and the next attempt may overlap with it. Check
+  `ctx.is_cancelled()` in long-running sync executors.
+* Payloads and results are arbitrary Python objects (never serialized).
+* Tasks without `pool=` go to the scheduler's `default_pool`: the pool named `"default"`, or
+  the first pool.
+* `cronoq.Retryable` / `cronoq.Permanent` control retries; any other exception is retryable.
+  Awaiting a task that did not succeed raises `cronoq.TaskFailed` (`.status`, `.message`).
+  All cronoq exceptions can be pickled.
+* Cancelling a task, a timeout, or a lost lease cancels the executor's asyncio task. A
+  `CancelledError` the executor raises on its own (not caused by cronoq) is a retryable failure.
+  An executor that swallows `CancelledError` keeps running and may overlap with the retry.
+* Invalid durations or configuration (negative, NaN, out of range) raise `ValueError`.
+* `cronoq.compat.ElasticPriorityScheduler` is a synchronous, thread-safe API for code written
+  against `ElasticPriorityScheduler`.
+* Wheels use the stable ABI (`abi3`, CPython 3.9+). Free-threaded (no-GIL) CPython builds are
+  not supported.
+
+### Status events
+
+`sched.events()` is an async iterator of `cronoq.StatusEvent` (`id`, `pool`, `key`, `status`,
+`attempt`, `at` in Unix seconds, `message`). It delivers terminal events (`succeeded`,
+`failed`, `dead_lettered`, `cancelled`, ...) by default, and every transition (`ready`,
+`running`, `retrying`, ...) when the scheduler is created with `emit_transitions=True`.
+
+```python
+async with sched.events() as events:          # or: events = sched.events(); ...; events.close()
+    async for e in events:
+        print(e.id, e.status, e.message)
+```
+
+* Each stream buffers up to `event_capacity` events (a `Scheduler` argument, default 1024).
+  When the consumer falls behind, the oldest events are dropped and counted in
+  `events.lagged`. With `sched.events(on_lag="raise")` the next iteration raises
+  `cronoq.EventsLagged` (`.skipped`); iterating again continues with the buffered events.
+* A stream ends (`StopAsyncIteration`) when the scheduler shuts down or the stream is closed.
 
 More: [Python quickstart](https://synaptiai.github.io/cronoq/guides/python-quickstart.html) ·
 [use cases](https://synaptiai.github.io/cronoq/use-cases/index.html) ·
@@ -101,7 +141,11 @@ await worker.run()                  # reconnects with backoff; `await worker.sto
   set.
 - Failed calls raise `cronoq.client.ClientError` with the gRPC status name in `.code`
   (e.g. `unauthenticated`, `resource_exhausted` when a pool is full); `Client.wait` raises
-  `TimeoutError` on timeout.
+  `TimeoutError` on timeout, as does `Client.submit(..., call_timeout=...)`.
+* `Client` and `Worker` can be created outside a running loop; they connect on first use.
+  `Worker.stop()` can be called more than once (callers wait for the same drain), and a stopped
+  worker can be run again. A handler that swallows `CancelledError` keeps running after an
+  abort and may overlap with the retry of the same task.
 
 ## Migrating from `ElasticPriorityScheduler`
 
@@ -115,10 +159,11 @@ A synchronous, thread-safe drop-in for the original API. See the
 ## Development
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate
-pip install maturin pytest pytest-asyncio grpcio protobuf
-maturin develop -m crates/cronoq-py/Cargo.toml
-cd crates/cronoq-py && python -m pytest
+python3 -m venv .venv
+.venv/bin/pip install maturin pytest pytest-asyncio grpcio protobuf mypy
+.venv/bin/maturin develop -m crates/cronoq-py/Cargo.toml
+cd crates/cronoq-py && ../../.venv/bin/python -m pytest
+../../.venv/bin/python -m mypy.stubtest cronoq._cronoq   # stubs match the extension
 ```
 
 `python/tests/test_client.py` starts a real `cronoq-server` (building it with cargo if needed,
