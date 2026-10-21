@@ -4,12 +4,21 @@
 //!
 //! - **Write-ahead state**: every engine state transition is committed in batches, one
 //!   transaction per batch, before submitters are acknowledged.
-//! - **Leader election**: a dedicated session holds `pg_advisory_lock`; acquiring it bumps a
-//!   fencing epoch in `cronoq_leader`.
-//! - **Fencing**: each commit re-reads the epoch (`FOR SHARE`) in the same transaction and
-//!   fails with [`StoreError::Fenced`] if another instance took over.
-//! - **Recovery**: a new leader loads live tasks, recently finished ones (for dependencies
-//!   and key deduplication) and recurring schedules.
+//! - **Isolation**: each scheduler cluster lives in its own PostgreSQL schema
+//!   ([`PgStoreConfig::schema`]); clusters in different schemas share nothing, not even locks.
+//! - **Leader election**: a dedicated session holds an advisory lock derived from the schema;
+//!   acquiring it bumps a fencing epoch in `cronoq_leader`.
+//! - **Fencing**: each commit re-reads the epoch in the same transaction and fails with
+//!   [`StoreError::Fenced`] if another instance took over.
+//! - **Recovery**: a new leader loads live tasks, recently finished ones (for key
+//!   deduplication), every finished task a live task still depends on, and recurring
+//!   schedules. Rows that cannot be decoded are quarantined (marked failed) instead of
+//!   blocking recovery.
+//! - **Errors**: connection loss, timeouts, serialization failures and server shutdowns are
+//!   reported as [`StoreError::Unavailable`], which the scheduler retries.
+//!
+//! Times are stored as wall-clock Unix nanoseconds. PostgreSQL cannot store NUL characters in
+//! text, so NUL in strings (messages, keys, tags, ...) is stored as U+FFFD.
 //!
 //! ```no_run
 //! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,10 +41,12 @@
 //! # Ok(()) }
 //! ```
 
+#![warn(missing_docs)]
+
 mod codec;
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -53,33 +64,58 @@ use tokio::task::JoinHandle;
 
 use codec::*;
 
-const SCHEMA: &str = include_str!("schema.sql");
+/// Ordered schema migrations; `cronoq_schema_version` records how many were applied. Each one
+/// is idempotent so databases created before versioning upgrade cleanly.
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    // v2: high-water mark of issued task ids, so pruning can never cause id reuse.
+    "ALTER TABLE cronoq_leader ADD COLUMN IF NOT EXISTS max_id BIGINT NOT NULL DEFAULT 0",
+];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
 /// Fencing epochs stay within 1..=32767 so epoch-prefixed task ids fit in a signed BIGINT.
 const MAX_EPOCH: i32 = 32767;
+/// First key of the two-key advisory locks taken by this crate ("croq" / "crom").
+const LOCK_NS_LEADER: i32 = 0x6372_6f71;
+const LOCK_NS_MIGRATE: i32 = 0x6372_6f6d;
+/// Rows deleted per statement by [`PgStore::prune`].
+const PRUNE_BATCH: i64 = 1000;
+/// Longest wait between attempts to reach the database while acquiring leadership.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 /// Store configuration.
 #[derive(Clone, Debug)]
 pub struct PgStoreConfig {
-    /// Advisory lock key identifying this scheduler cluster.
-    pub lock_key: i64,
-    /// How long finished tasks are loaded on recovery (dependencies and key dedup).
+    /// PostgreSQL schema holding this cluster's tables (created if missing). Instances
+    /// configured with the same schema form one active-passive cluster; different schemas
+    /// are fully independent. Letters, digits and `_` only.
+    pub schema: String,
+    /// How long finished tasks are loaded on recovery, for key deduplication. Finished tasks
+    /// that live tasks depend on are always loaded.
     pub retention: Duration,
     /// Interval between attempts to take the leader lock.
     pub lock_poll: Duration,
     /// Interval of liveness checks on the leader lock session.
     pub keepalive: Duration,
+    /// How long the leader lock session may stay unresponsive before this instance steps
+    /// down. Also used for the server-side TCP keepalive of that session.
+    pub session_timeout: Duration,
+    /// Upper bound on one commit; a slower commit fails as [`StoreError::Unavailable`] (and
+    /// is retried by the scheduler).
+    pub commit_timeout: Duration,
+    /// Size of the connection pool used for commits and queries.
     pub max_connections: u32,
 }
 
 impl Default for PgStoreConfig {
     fn default() -> Self {
         PgStoreConfig {
-            lock_key: 0x6372_6f6e_6f71, // "cronoq"
+            schema: "public".into(),
             retention: Duration::from_secs(3600),
             lock_poll: Duration::from_millis(500),
             keepalive: Duration::from_secs(1),
+            session_timeout: Duration::from_secs(10),
+            commit_timeout: Duration::from_secs(30),
             max_connections: 8,
         }
     }
@@ -88,16 +124,25 @@ impl Default for PgStoreConfig {
 /// Persisted view of a task, for lookups by id or key.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskRecord {
+    /// Task id.
     pub id: TaskId,
+    /// Deduplication key, if any.
     pub key: Option<String>,
+    /// Pool the task runs in.
     pub pool: String,
+    /// Task kind.
     pub kind: String,
+    /// Priority.
     pub priority: Priority,
     /// `None` while queued: the store does not track blocked/scheduled/ready separately.
     pub status: Option<TaskStatus>,
+    /// Number of attempts started.
     pub attempt: u32,
+    /// Last message recorded for the task (e.g. the latest error).
     pub message: Option<String>,
+    /// Output, once the task succeeded.
     pub output: Option<Bytes>,
+    /// Time of the last recorded transition.
     pub updated: SystemTime,
 }
 
@@ -110,6 +155,8 @@ struct Inner {
     pool: PgPool,
     opts: PgConnectOptions,
     cfg: PgStoreConfig,
+    /// Second key of the leader advisory lock: the schema's OID.
+    lock_id: i32,
     leader: Mutex<Option<Leader>>,
     /// `true` once leadership was lost (or before it was ever acquired: `false`).
     lost: watch::Sender<bool>,
@@ -129,21 +176,40 @@ pub struct PgStore {
     inner: Arc<Inner>,
 }
 
+/// Map a database error, classifying failures that are worth retrying as `Unavailable`.
 fn db(e: sqlx::Error) -> StoreError {
-    StoreError::Other(e.to_string())
+    use sqlx::Error as E;
+    let transient = match &e {
+        E::Io(_) | E::Tls(_) | E::PoolTimedOut | E::WorkerCrashed => true,
+        E::Database(d) => d.code().is_some_and(|c| {
+            // 08: connection exception, 53: insufficient resources, 57P: shutdown/crash,
+            // 40001/40P01: serialization failure/deadlock, 55P03: lock not available.
+            c.starts_with("08")
+                || c.starts_with("53")
+                || c.starts_with("57P")
+                || matches!(&*c, "40001" | "40P01" | "55P03")
+        }),
+        _ => false,
+    };
+    if transient {
+        StoreError::Unavailable(e.to_string())
+    } else {
+        StoreError::Other(e.to_string())
+    }
 }
 
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as i64
+        .as_nanos()
+        .min(i64::MAX as u128) as i64
 }
 
-/// `SCHEMA` split into statements. Comment lines are dropped first; the schema has no
+/// A migration split into statements. Comment lines are dropped first; migrations have no
 /// function bodies or string literals containing semicolons.
-fn schema_statements() -> Vec<String> {
-    let code: String = SCHEMA
+fn statements(sql: &str) -> Vec<String> {
+    let code: String = sql
         .lines()
         .filter(|l| !l.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -154,54 +220,136 @@ fn schema_statements() -> Vec<String> {
         .collect()
 }
 
+fn valid_schema(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 impl PgStore {
     /// Connect with default settings and apply the schema.
     pub async fn connect(url: &str) -> Result<PgStore, StoreError> {
         Self::connect_with(url, PgStoreConfig::default()).await
     }
 
+    /// Connect with `cfg` and apply the schema.
     pub async fn connect_with(url: &str, cfg: PgStoreConfig) -> Result<PgStore, StoreError> {
+        if !valid_schema(&cfg.schema) {
+            return Err(StoreError::Other(format!(
+                "invalid schema name {:?}: use letters, digits and '_'",
+                cfg.schema
+            )));
+        }
         let opts: PgConnectOptions = url.parse().map_err(db)?;
+        let opts = opts.options([("search_path", format!("\"{}\"", cfg.schema))]);
         let pool = PgPoolOptions::new()
             .max_connections(cfg.max_connections.max(1))
             .connect_with(opts.clone())
             .await
             .map_err(db)?;
-        let store = PgStore {
+        Self::migrate_pool(&pool, &cfg.schema).await?;
+        let oid: i64 =
+            sqlx::query_scalar("SELECT oid::bigint FROM pg_namespace WHERE nspname = $1")
+                .bind(&cfg.schema)
+                .fetch_one(&pool)
+                .await
+                .map_err(db)?;
+        Ok(PgStore {
             inner: Arc::new(Inner {
                 pool,
                 opts,
                 cfg,
+                lock_id: oid as u32 as i32,
                 leader: Mutex::new(None),
                 lost: watch::channel(false).0,
             }),
-        };
-        store.migrate().await?;
-        Ok(store)
+        })
     }
 
-    /// Apply the schema (idempotent; serialized across instances).
+    /// Apply pending schema migrations (idempotent; serialized across instances that use
+    /// the same schema). [`PgStore::connect`] already does this.
     pub async fn migrate(&self) -> Result<(), StoreError> {
-        let mut tx = self.inner.pool.begin().await.map_err(db)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(self.inner.cfg.lock_key.wrapping_add(1))
+        Self::migrate_pool(&self.inner.pool, &self.inner.cfg.schema).await
+    }
+
+    async fn migrate_pool(pool: &PgPool, schema: &str) -> Result<(), StoreError> {
+        let mut tx = pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(LOCK_NS_MIGRATE)
+            .bind(schema)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)")
+                .bind(schema)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        if !exists {
+            sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS cronoq_schema_version \
+             (id SMALLINT PRIMARY KEY CHECK (id = 1), version INT NOT NULL)",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO cronoq_schema_version (id, version) VALUES (1, 0) \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        let version: i32 =
+            sqlx::query_scalar("SELECT version FROM cronoq_schema_version WHERE id = 1")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+        let version = usize::try_from(version).unwrap_or(0);
+        if version > MIGRATIONS.len() {
+            return Err(StoreError::Other(format!(
+                "database schema version {version} is newer than this build supports ({})",
+                MIGRATIONS.len()
+            )));
+        }
         // One statement at a time: `raw_sql` on a connection yields a future that callers cannot
         // prove `Send` (sqlx higher-ranked lifetime issue), which breaks `tokio::spawn`.
-        for stmt in schema_statements() {
-            sqlx::query(&stmt).execute(&mut *tx).await.map_err(db)?;
+        for m in &MIGRATIONS[version..] {
+            for stmt in statements(m) {
+                sqlx::query(&stmt).execute(&mut *tx).await.map_err(db)?;
+            }
+        }
+        if version < MIGRATIONS.len() {
+            sqlx::query("UPDATE cronoq_schema_version SET version = $1 WHERE id = 1")
+                .bind(MIGRATIONS.len() as i32)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
         }
         tx.commit().await.map_err(db)
     }
 
+    /// The connection pool (its sessions use the configured schema).
     pub fn pool(&self) -> &PgPool {
         &self.inner.pool
     }
 
+    /// The configuration this store was opened with.
     pub fn config(&self) -> &PgStoreConfig {
         &self.inner.cfg
+    }
+
+    /// The two keys of the advisory lock held by the leader (`pg_locks.classid`, `objid`),
+    /// for monitoring.
+    pub fn leader_lock(&self) -> (i32, i32) {
+        (LOCK_NS_LEADER, self.inner.lock_id)
     }
 
     /// Current fencing epoch, if this instance holds leadership.
@@ -212,6 +360,7 @@ impl PgStore {
         self.inner.leader.lock().unwrap().as_ref().map(|l| l.epoch)
     }
 
+    /// Whether this instance currently holds leadership.
     pub fn is_leader(&self) -> bool {
         self.epoch().is_some()
     }
@@ -247,7 +396,7 @@ impl PgStore {
             TaskRef::Key(k) => sqlx::query(&format!(
                 "SELECT {COLS} FROM cronoq_tasks WHERE key = $1 ORDER BY id DESC LIMIT 1"
             ))
-            .bind(&**k)
+            .bind(clean(k))
             .fetch_optional(&self.inner.pool)
             .await
             .map_err(db)?,
@@ -263,51 +412,81 @@ impl PgStore {
             priority: Priority::from_index(r.get::<i16, _>("priority") as usize)
                 .unwrap_or_default(),
             status: TaskStatus::from_name(&status),
-            attempt: r.get::<i32, _>("attempt") as u32,
+            attempt: r.get::<i32, _>("attempt").max(0) as u32,
             message: r.get("message"),
             output: r.get::<Option<Vec<u8>>, _>("output").map(Bytes::from),
             updated: UNIX_EPOCH + Duration::from_nanos(updated.max(0) as u64),
         }))
     }
 
-    /// Delete finished tasks last updated more than `older_than` ago. Returns rows removed.
+    /// Delete finished tasks last updated more than `older_than` ago, except those that live
+    /// tasks still depend on. Deletes in bounded batches; returns the number of rows removed.
     pub async fn prune(&self, older_than: Duration) -> Result<u64, StoreError> {
         let cutoff = now_unix().saturating_sub(dur_ns(older_than));
-        let r = sqlx::query("DELETE FROM cronoq_tasks WHERE terminal AND updated_unix_ns < $1")
+        let mut total = 0;
+        loop {
+            let r = sqlx::query(
+                "WITH refs AS ( \
+                   SELECT (d->>'id')::bigint AS id, d->>'key' AS key \
+                   FROM cronoq_tasks l, jsonb_array_elements(l.deps) d \
+                   WHERE NOT l.terminal AND l.deps <> '[]'::jsonb), \
+                 victims AS ( \
+                   SELECT t.id FROM cronoq_tasks t \
+                   WHERE t.terminal AND t.updated_unix_ns < $1 \
+                   AND t.id NOT IN (SELECT id FROM refs WHERE id IS NOT NULL) \
+                   AND (t.key IS NULL OR t.key NOT IN (SELECT key FROM refs WHERE key IS NOT NULL)) \
+                   ORDER BY t.updated_unix_ns LIMIT $2) \
+                 DELETE FROM cronoq_tasks WHERE id IN (SELECT id FROM victims)",
+            )
             .bind(cutoff)
+            .bind(PRUNE_BATCH)
             .execute(&self.inner.pool)
             .await
             .map_err(db)?;
-        Ok(r.rows_affected())
+            total += r.rows_affected();
+            if r.rows_affected() < PRUNE_BATCH as u64 {
+                return Ok(total);
+            }
+        }
     }
 
-    async fn keeper(store: std::sync::Weak<Inner>, mut conn: PgConnection, every: Duration) {
+    async fn keeper(
+        store: std::sync::Weak<Inner>,
+        mut conn: PgConnection,
+        every: Duration,
+        limit: Duration,
+    ) {
         loop {
             tokio::time::sleep(every).await;
-            let alive = sqlx::query("SELECT 1").execute(&mut conn).await.is_ok();
+            let alive = matches!(
+                tokio::time::timeout(limit, sqlx::query("SELECT 1").execute(&mut conn)).await,
+                Ok(Ok(_))
+            );
             let Some(inner) = store.upgrade() else { return };
             if !alive {
                 tracing::error!("cronoq leader lock session lost; stepping down");
                 inner.lost.send_replace(true);
+                // Dropping the connection closes the session, releasing the lock if the
+                // server still holds it.
                 return;
             }
         }
     }
-}
 
-#[async_trait]
-impl Store<Bytes, Bytes> for PgStore {
-    async fn acquire_leadership(&self) -> Result<u16, StoreError> {
+    /// Open the lock session and wait for the lock; returns the session and the new epoch.
+    async fn try_lead(&self) -> Result<(PgConnection, i32), StoreError> {
         let inner = &self.inner;
-        let old = inner.leader.lock().unwrap().take();
-        if let Some(l) = old {
-            l.keeper.abort();
-            let _ = l.keeper.await;
-        }
-        let mut conn = PgConnection::connect_with(&inner.opts).await.map_err(db)?;
+        let idle = inner.cfg.session_timeout.as_secs().max(1).to_string();
+        let opts = inner.opts.clone().options([
+            ("tcp_keepalives_idle", idle.as_str()),
+            ("tcp_keepalives_interval", "1"),
+            ("tcp_keepalives_count", "3"),
+        ]);
+        let mut conn = PgConnection::connect_with(&opts).await.map_err(db)?;
         loop {
-            let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-                .bind(inner.cfg.lock_key)
+            let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1, $2)")
+                .bind(LOCK_NS_LEADER)
+                .bind(inner.lock_id)
                 .fetch_one(&mut conn)
                 .await
                 .map_err(db)?;
@@ -324,46 +503,28 @@ impl Store<Bytes, Bytes> for PgStore {
         .fetch_one(&mut conn)
         .await
         .map_err(db)?;
-        let keeper = tokio::spawn(Self::keeper(
-            Arc::downgrade(inner),
-            conn,
-            inner.cfg.keepalive,
-        ));
-        *inner.leader.lock().unwrap() = Some(Leader {
-            epoch: epoch as u16,
-            keeper,
-        });
-        inner.lost.send_replace(false);
-        tracing::info!(epoch, "acquired cronoq leadership");
-        Ok(epoch as u16)
+        Ok((conn, epoch))
     }
 
-    async fn commit(
+    async fn release(&self) {
+        PgStore::release_leadership(self).await
+    }
+
+    async fn commit_inner(
         &self,
         epoch: u16,
         base: TimeBase,
         batch: &[Mutation<Bytes>],
         outputs: &[(TaskId, &Bytes)],
     ) -> Result<(), StoreError> {
-        if *self.inner.lost.borrow() {
-            return Err(StoreError::Fenced);
-        }
-        let mut tx = self.inner.pool.begin().await.map_err(db)?;
-        let current: i32 =
-            sqlx::query_scalar("SELECT epoch FROM cronoq_leader WHERE id = 1 FOR SHARE")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(db)?;
-        if current != epoch as i32 {
-            self.inner.lost.send_replace(true);
-            return Err(StoreError::Fenced);
-        }
-
-        // 1. New tasks, in one statement.
+        // Fold the batch: new tasks are inserted with their latest status; tasks inserted
+        // earlier get one update each. Later mutations win; a message carries forward until a
+        // later transition replaces it, so the result does not depend on batching.
         let mut ins = Inserts::default();
-        // 2. Latest status per task (later mutations in the batch win).
-        let mut latest: Vec<StatusRow> = Vec::new();
-        let mut index: HashMap<TaskId, usize> = HashMap::new();
+        let mut inserted: HashMap<TaskId, usize> = HashMap::new();
+        let mut updates: Vec<(TaskId, StatusRow)> = Vec::new();
+        let mut updated: HashMap<TaskId, usize> = HashMap::new();
+        let now = now_unix();
         for m in batch {
             match m {
                 Mutation::Submitted {
@@ -371,7 +532,12 @@ impl Store<Bytes, Bytes> for PgStore {
                     seq,
                     arrival,
                     spec,
-                } => ins.push(base, *id, *seq, *arrival, spec),
+                } => {
+                    if let Entry::Vacant(e) = inserted.entry(*id) {
+                        e.insert(ins.id.len());
+                        ins.push(base, now, *id, *seq, *arrival, spec);
+                    }
+                }
                 Mutation::Status {
                     id,
                     status: st,
@@ -379,37 +545,68 @@ impl Store<Bytes, Bytes> for PgStore {
                     at,
                     message,
                 } => {
-                    let row = (*id, *st, *attempt, to_unix(base, *at), message.clone());
-                    match index.entry(*id) {
-                        Entry::Occupied(e) => latest[*e.get()] = row,
-                        Entry::Vacant(e) => {
-                            e.insert(latest.len());
-                            latest.push(row);
+                    let row = StatusRow {
+                        status: *st,
+                        attempt: *attempt,
+                        at: to_unix(base, *at),
+                        message: message.as_deref().map(cleaned),
+                    };
+                    if let Some(&i) = inserted.get(id) {
+                        ins.set_status(i, row);
+                    } else {
+                        match updated.entry(*id) {
+                            Entry::Occupied(e) => updates[*e.get()].1.fold(row),
+                            Entry::Vacant(e) => {
+                                e.insert(updates.len());
+                                updates.push((*id, row));
+                            }
                         }
                     }
                 }
                 _ => {}
             }
         }
-        if !ins.id.is_empty() {
-            ins.execute(&mut tx).await?;
+
+        let mut tx = self.inner.pool.begin().await.map_err(db)?;
+        let current: i32 = match ins.id.iter().max() {
+            // Record the id high-water mark while checking the epoch.
+            Some(max) => sqlx::query_scalar(
+                "UPDATE cronoq_leader SET max_id = GREATEST(max_id, $1) WHERE id = 1 \
+                 RETURNING epoch",
+            )
+            .bind(*max)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?,
+            None => sqlx::query_scalar("SELECT epoch FROM cronoq_leader WHERE id = 1 FOR SHARE")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?,
+        };
+        if current != epoch as i32 {
+            self.inner.lost.send_replace(true);
+            return Err(StoreError::Fenced);
         }
-        if !latest.is_empty() {
-            let mut ids = Vec::with_capacity(latest.len());
-            let mut sts = Vec::with_capacity(latest.len());
-            let mut terms = Vec::with_capacity(latest.len());
-            let mut atts = Vec::with_capacity(latest.len());
-            let mut ats = Vec::with_capacity(latest.len());
-            let mut msgs: Vec<Option<String>> = Vec::with_capacity(latest.len());
-            for (id, st, att, at, msg) in &latest {
+
+        // 1. Transitions of existing tasks first, so keys they release can be reused by tasks
+        //    inserted in this batch.
+        if !updates.is_empty() {
+            let n = updates.len();
+            let mut ids = Vec::with_capacity(n);
+            let mut sts = Vec::with_capacity(n);
+            let mut terms = Vec::with_capacity(n);
+            let mut atts = Vec::with_capacity(n);
+            let mut ats = Vec::with_capacity(n);
+            let mut msgs: Vec<Option<String>> = Vec::with_capacity(n);
+            for (id, row) in updates {
                 ids.push(id.0 as i64);
-                sts.push(st.name().to_string());
-                terms.push(st.is_terminal());
-                atts.push(*att as i32);
-                ats.push(*at);
-                msgs.push(msg.as_ref().map(|m| m.to_string()));
+                sts.push(row.status.name());
+                terms.push(row.status.is_terminal());
+                atts.push(row.attempt as i32);
+                ats.push(row.at);
+                msgs.push(row.message);
             }
-            sqlx::query(
+            let r = sqlx::query(
                 "UPDATE cronoq_tasks t SET status = u.status, terminal = u.terminal, attempt = u.attempt, \
                  updated_unix_ns = u.at, message = COALESCE(u.message, t.message) \
                  FROM UNNEST($1::bigint[], $2::text[], $3::bool[], $4::int[], $5::bigint[], $6::text[]) \
@@ -424,11 +621,23 @@ impl Store<Bytes, Bytes> for PgStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+            if r.rows_affected() != n as u64 {
+                tracing::warn!(
+                    expected = n,
+                    updated = r.rows_affected(),
+                    "status updates for tasks missing from the store (pruned?)"
+                );
+            }
         }
+        // 2. New tasks, in one statement.
+        if !ins.id.is_empty() {
+            ins.execute(&mut tx).await?;
+        }
+        // 3. Outputs of tasks that succeeded in this batch.
         if !outputs.is_empty() {
             let ids: Vec<i64> = outputs.iter().map(|(id, _)| id.0 as i64).collect();
             let outs: Vec<Vec<u8>> = outputs.iter().map(|(_, o)| o.to_vec()).collect();
-            sqlx::query(
+            let r = sqlx::query(
                 "UPDATE cronoq_tasks t SET output = u.output \
                  FROM UNNEST($1::bigint[], $2::bytea[]) AS u(id, output) WHERE t.id = u.id",
             )
@@ -437,8 +646,15 @@ impl Store<Bytes, Bytes> for PgStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
+            if r.rows_affected() != outputs.len() as u64 {
+                tracing::warn!(
+                    expected = outputs.len(),
+                    updated = r.rows_affected(),
+                    "outputs for tasks missing from the store"
+                );
+            }
         }
-        // 3. Recurring schedules: rare, applied in order.
+        // 4. Recurring schedules: rare, applied in order.
         for m in batch {
             match m {
                 Mutation::RecurringUpsert { spec } => {
@@ -446,7 +662,7 @@ impl Store<Bytes, Bytes> for PgStore {
                         "INSERT INTO cronoq_recurring (name, spec, template_payload) VALUES ($1, $2::jsonb, $3) \
                          ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec, template_payload = EXCLUDED.template_payload",
                     )
-                    .bind(&*spec.name)
+                    .bind(clean(&spec.name))
                     .bind(recurring_json(base, spec))
                     .bind(spec.template.payload.to_vec())
                     .execute(&mut *tx)
@@ -455,14 +671,14 @@ impl Store<Bytes, Bytes> for PgStore {
                 }
                 Mutation::RecurringRemove { name } => {
                     sqlx::query("DELETE FROM cronoq_recurring WHERE name = $1")
-                        .bind(&**name)
+                        .bind(clean(name))
                         .execute(&mut *tx)
                         .await
                         .map_err(db)?;
                 }
                 Mutation::RecurringNext { name, next } => {
                     sqlx::query("UPDATE cronoq_recurring SET next_unix_ns = $2 WHERE name = $1")
-                        .bind(&**name)
+                        .bind(clean(name))
                         .bind(next.map(|t| to_unix(base, t)))
                         .execute(&mut *tx)
                         .await
@@ -473,115 +689,264 @@ impl Store<Bytes, Bytes> for PgStore {
         }
         tx.commit().await.map_err(db)
     }
+}
+
+/// Decode a live task row.
+fn decode_task(base: TimeBase, r: &sqlx::postgres::PgRow) -> Result<RecoveredTask<Bytes>, String> {
+    let mut spec = TaskSpec::new(Bytes::from(r.get::<Vec<u8>, _>("payload")))
+        .kind(r.get::<String, _>("kind"))
+        .pool(r.get::<String, _>("pool"))
+        .priority(Priority::from_index(r.get::<i16, _>("priority") as usize).unwrap_or_default());
+    spec.key = r.get::<Option<String>, _>("key").map(Into::into);
+    spec.deadline = r
+        .get::<Option<i64>, _>("deadline_unix_ns")
+        .map(|u| from_unix(base, u));
+    if let Some(at) = r.get::<Option<i64>, _>("fixed_at_unix_ns") {
+        spec.fixed_start = Some(cronoq_core::FixedStart {
+            at: from_unix(base, at),
+            tolerance: ns_dur(
+                r.get::<Option<i64>, _>("fixed_tolerance_ns")
+                    .unwrap_or(1_000_000_000),
+            ),
+            on_miss: miss_from(
+                r.get::<Option<String>, _>("fixed_on_miss")
+                    .as_deref()
+                    .unwrap_or(""),
+            ),
+        });
+    }
+    spec.duration_hint = r.get::<Option<i64>, _>("duration_hint_ns").map(ns_dur);
+    spec.timeout = r.get::<Option<i64>, _>("timeout_ns").map(ns_dur);
+    spec.retry = retry_from(r.get::<Option<String>, _>("retry").as_deref())?;
+    spec.deps = deps_from(&r.get::<String, _>("deps"))?;
+    spec.resources = resources_from(&r.get::<String, _>("resources"))?
+        .into_iter()
+        .collect();
+    spec.tags = tags_from(&r.get::<String, _>("tags"))?;
+    Ok(RecoveredTask {
+        id: TaskId(r.get::<i64, _>("id") as u64),
+        seq: r.get::<i64, _>("seq") as u64,
+        arrival: from_unix(base, r.get("arrival_unix_ns")),
+        spec,
+        attempt: r.get::<i32, _>("attempt").max(0) as u32,
+    })
+}
+
+fn terminal_from(base: TimeBase, r: &sqlx::postgres::PgRow) -> Option<RecoveredTerminal> {
+    let status: String = r.get("status");
+    Some(RecoveredTerminal {
+        id: TaskId(r.get::<i64, _>("id") as u64),
+        key: r.get::<Option<String>, _>("key").map(Into::into),
+        status: TaskStatus::from_name(&status)?,
+        at: from_unix(base, r.get("updated_unix_ns")),
+    })
+}
+
+#[async_trait]
+impl Store<Bytes, Bytes> for PgStore {
+    async fn acquire_leadership(&self) -> Result<u16, StoreError> {
+        let inner = &self.inner;
+        let old = inner.leader.lock().unwrap().take();
+        if let Some(l) = old {
+            l.keeper.abort();
+            let _ = l.keeper.await;
+        }
+        let mut delay = inner.cfg.lock_poll.max(Duration::from_millis(50));
+        let (conn, epoch) = loop {
+            match self.try_lead().await {
+                Ok(v) => break v,
+                Err(e @ StoreError::Unavailable(_)) => {
+                    // Dropping the session (if any) releases a lock taken before the error.
+                    tracing::warn!(error = %e, "cannot reach the database to acquire leadership; retrying");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(MAX_RETRY_DELAY);
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let keeper = tokio::spawn(Self::keeper(
+            Arc::downgrade(inner),
+            conn,
+            inner.cfg.keepalive,
+            inner.cfg.session_timeout,
+        ));
+        *inner.leader.lock().unwrap() = Some(Leader {
+            epoch: epoch as u16,
+            keeper,
+        });
+        inner.lost.send_replace(false);
+        tracing::info!(epoch, "acquired cronoq leadership");
+        Ok(epoch as u16)
+    }
+
+    async fn release_leadership(&self) {
+        self.release().await
+    }
+
+    async fn commit(
+        &self,
+        epoch: u16,
+        base: TimeBase,
+        batch: &[Mutation<Bytes>],
+        outputs: &[(TaskId, &Bytes)],
+    ) -> Result<(), StoreError> {
+        if *self.inner.lost.borrow() {
+            return Err(StoreError::Fenced);
+        }
+        match tokio::time::timeout(
+            self.inner.cfg.commit_timeout,
+            self.commit_inner(epoch, base, batch, outputs),
+        )
+        .await
+        {
+            Ok(r) => r,
+            // Commits are idempotent, so retrying one that did land is harmless.
+            Err(_) => Err(StoreError::Unavailable(format!(
+                "commit timed out after {:?}",
+                self.inner.cfg.commit_timeout
+            ))),
+        }
+    }
 
     async fn recover(&self, base: TimeBase) -> Result<Recovered<Bytes>, StoreError> {
         let pool = &self.inner.pool;
         let mut rec = Recovered::default();
-        let max_id: Option<i64> = sqlx::query_scalar("SELECT MAX(id) FROM cronoq_tasks")
-            .fetch_one(pool)
-            .await
-            .map_err(db)?;
-        rec.next_id = max_id.map(|m| m as u64 + 1).unwrap_or(0);
+        let max_id: i64 = sqlx::query_scalar(
+            "SELECT GREATEST((SELECT max_id FROM cronoq_leader WHERE id = 1), \
+             (SELECT COALESCE(MAX(id), 0) FROM cronoq_tasks))",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(db)?;
+        rec.next_id = if max_id > 0 { max_id as u64 + 1 } else { 0 };
 
         let rows = sqlx::query(
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
-             fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, retry, deps, \
-             resources, tags, attempt FROM cronoq_tasks WHERE NOT terminal ORDER BY id",
+             fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
+             retry::text AS retry, deps::text AS deps, resources::text AS resources, \
+             tags::text AS tags, attempt FROM cronoq_tasks WHERE NOT terminal ORDER BY id",
         )
         .fetch_all(pool)
         .await
         .map_err(db)?;
-        for r in rows {
-            let bad = |e: String| StoreError::Other(format!("corrupt task row: {e}"));
-            let mut spec = TaskSpec::new(Bytes::from(r.get::<Vec<u8>, _>("payload")))
-                .kind(r.get::<String, _>("kind"))
-                .pool(r.get::<String, _>("pool"))
-                .priority(
-                    Priority::from_index(r.get::<i16, _>("priority") as usize).unwrap_or_default(),
-                );
-            spec.key = r.get::<Option<String>, _>("key").map(Into::into);
-            spec.deadline = r
-                .get::<Option<i64>, _>("deadline_unix_ns")
-                .map(|u| from_unix(base, u));
-            if let Some(at) = r.get::<Option<i64>, _>("fixed_at_unix_ns") {
-                spec.fixed_start = Some(cronoq_core::FixedStart {
-                    at: from_unix(base, at),
-                    tolerance: ns_dur(
-                        r.get::<Option<i64>, _>("fixed_tolerance_ns")
-                            .unwrap_or(1_000_000_000),
-                    ),
-                    on_miss: miss_from(
-                        r.get::<Option<String>, _>("fixed_on_miss")
-                            .as_deref()
-                            .unwrap_or(""),
-                    ),
-                });
+        let mut corrupt: Vec<(i64, Option<String>, String)> = Vec::new();
+        for r in &rows {
+            match decode_task(base, r) {
+                Ok(t) => rec.tasks.push(t),
+                Err(e) => {
+                    let id: i64 = r.get("id");
+                    tracing::error!(task = id, error = %e, "quarantining undecodable task row");
+                    corrupt.push((id, r.get("key"), format!("corrupt task row: {e}")));
+                }
             }
-            spec.duration_hint = r.get::<Option<i64>, _>("duration_hint_ns").map(ns_dur);
-            spec.timeout = r.get::<Option<i64>, _>("timeout_ns").map(ns_dur);
-            spec.retry = retry_from(r.get("retry")).map_err(bad)?;
-            spec.deps = deps_from(r.get("deps")).map_err(bad)?;
-            spec.resources = resources_from(r.get("resources"))
-                .map_err(bad)?
-                .into_iter()
-                .collect();
-            spec.tags = tags_from(r.get("tags")).map_err(bad)?;
-            rec.tasks.push(RecoveredTask {
-                id: TaskId(r.get::<i64, _>("id") as u64),
-                seq: r.get::<i64, _>("seq") as u64,
-                arrival: from_unix(base, r.get("arrival_unix_ns")),
-                spec,
-                attempt: r.get::<i32, _>("attempt").max(0) as u32,
-            });
+        }
+        drop(rows);
+        let now = now_unix();
+        if !corrupt.is_empty() {
+            let ids: Vec<i64> = corrupt.iter().map(|c| c.0).collect();
+            let msgs: Vec<String> = corrupt.iter().map(|c| cleaned(&c.2)).collect();
+            sqlx::query(
+                "UPDATE cronoq_tasks t SET status = $3, terminal = TRUE, updated_unix_ns = $4, \
+                 message = u.message FROM UNNEST($1::bigint[], $2::text[]) AS u(id, message) \
+                 WHERE t.id = u.id",
+            )
+            .bind(ids)
+            .bind(msgs)
+            .bind(TaskStatus::Failed.name())
+            .bind(now)
+            .execute(pool)
+            .await
+            .map_err(db)?;
         }
 
-        let cutoff = now_unix().saturating_sub(dur_ns(self.inner.cfg.retention));
+        // Finished tasks: those within retention, plus any that live tasks depend on.
+        let cutoff = now.saturating_sub(dur_ns(self.inner.cfg.retention));
+        let mut dep_ids = HashSet::new();
+        let mut dep_keys = HashSet::new();
+        for t in &rec.tasks {
+            for d in &t.spec.deps {
+                match &d.target {
+                    TaskRef::Id(id) => dep_ids.insert(id.0 as i64),
+                    TaskRef::Key(k) => dep_keys.insert(cleaned(k)),
+                };
+            }
+        }
         let rows = sqlx::query(
             "SELECT id, key, status, updated_unix_ns FROM cronoq_tasks \
-             WHERE terminal AND updated_unix_ns >= $1 ORDER BY updated_unix_ns",
+             WHERE terminal AND (updated_unix_ns >= $1 OR id = ANY($2) OR key = ANY($3)) \
+             ORDER BY updated_unix_ns, id",
         )
         .bind(cutoff)
+        .bind(dep_ids.into_iter().collect::<Vec<_>>())
+        .bind(dep_keys.into_iter().collect::<Vec<_>>())
         .fetch_all(pool)
         .await
         .map_err(db)?;
-        for r in rows {
-            let status: String = r.get("status");
-            let Some(status) = TaskStatus::from_name(&status) else {
-                continue;
-            };
-            rec.terminal.push(RecoveredTerminal {
-                id: TaskId(r.get::<i64, _>("id") as u64),
-                key: r.get::<Option<String>, _>("key").map(Into::into),
-                status,
-                at: from_unix(base, r.get("updated_unix_ns")),
-            });
-        }
+        rec.terminal = rows.iter().filter_map(|r| terminal_from(base, r)).collect();
+        // Quarantined rows were just updated, so they come last in this order.
+        rec.terminal
+            .extend(corrupt.into_iter().map(|(id, key, _)| RecoveredTerminal {
+                id: TaskId(id as u64),
+                key: key.map(Into::into),
+                status: TaskStatus::Failed,
+                at: from_unix(base, now),
+            }));
 
         let rows = sqlx::query(
-            "SELECT name, spec, template_payload, next_unix_ns FROM cronoq_recurring ORDER BY name",
+            "SELECT name, spec::text AS spec, template_payload, next_unix_ns \
+             FROM cronoq_recurring ORDER BY name",
         )
         .fetch_all(pool)
         .await
         .map_err(db)?;
         for r in rows {
-            let spec = recurring_from(
-                base,
-                r.get("name"),
-                r.get("spec"),
-                r.get("template_payload"),
-            )
-            .map_err(|e| StoreError::Other(format!("corrupt recurring row: {e}")))?;
-            let next = r
-                .get::<Option<i64>, _>("next_unix_ns")
-                .map(|u| from_unix(base, u));
-            rec.recurring.push((spec, next));
+            let name: String = r.get("name");
+            let spec: String = r.get("spec");
+            match recurring_from(base, name.clone(), &spec, r.get("template_payload")) {
+                Ok(spec) => {
+                    let next = r
+                        .get::<Option<i64>, _>("next_unix_ns")
+                        .map(|u| from_unix(base, u));
+                    rec.recurring.push((spec, next));
+                }
+                // Left in place (so it can be repaired) but not scheduled.
+                Err(e) => tracing::error!(
+                    schedule = %name,
+                    error = %e,
+                    "skipping undecodable recurring schedule"
+                ),
+            }
         }
         Ok(rec)
     }
+
+    async fn load_output(&self, id: TaskId) -> Result<Option<Bytes>, StoreError> {
+        let out: Option<Option<Vec<u8>>> =
+            sqlx::query_scalar("SELECT output FROM cronoq_tasks WHERE id = $1 AND status = $2")
+                .bind(id.0 as i64)
+                .bind(TaskStatus::Succeeded.name())
+                .fetch_optional(&self.inner.pool)
+                .await
+                .map_err(db)?;
+        Ok(out.flatten().map(Bytes::from))
+    }
 }
 
-/// Latest status of a task within a batch: (id, status, attempt, at, message).
-type StatusRow = (TaskId, TaskStatus, u32, i64, Option<Arc<str>>);
+/// Latest transition of a task within a batch.
+struct StatusRow {
+    status: TaskStatus,
+    attempt: u32,
+    at: i64,
+    message: Option<String>,
+}
+
+impl StatusRow {
+    /// Apply a later transition, keeping the message unless the later one has its own.
+    fn fold(&mut self, later: StatusRow) {
+        let message = later.message.or(self.message.take());
+        *self = StatusRow { message, ..later };
+    }
+}
 
 /// Column-wise buffers for a multi-row `INSERT ... SELECT FROM UNNEST`.
 #[derive(Default)]
@@ -604,12 +969,18 @@ struct Inserts {
     deps: Vec<String>,
     resources: Vec<String>,
     tags: Vec<String>,
+    status: Vec<&'static str>,
+    terminal: Vec<bool>,
+    attempt: Vec<i32>,
+    updated: Vec<i64>,
+    message: Vec<Option<String>>,
 }
 
 impl Inserts {
     fn push(
         &mut self,
         base: TimeBase,
+        now: i64,
         id: TaskId,
         seq: u64,
         arrival: cronoq_core::Time,
@@ -619,10 +990,10 @@ impl Inserts {
         self.id.push(id.0 as i64);
         self.seq.push(seq as i64);
         self.arrival.push(to_unix(base, arrival));
-        self.pool.push(s.pool.to_string());
-        self.kind.push(s.kind.to_string());
+        self.pool.push(cleaned(&s.pool));
+        self.kind.push(cleaned(&s.kind));
         self.priority.push(s.priority as i16);
-        self.key.push(s.key.as_ref().map(|k| k.to_string()));
+        self.key.push(s.key.as_deref().map(cleaned));
         self.payload.push(s.payload.to_vec());
         self.deadline.push(s.deadline.map(|d| to_unix(base, d)));
         self.fixed_at.push(fa);
@@ -634,25 +1005,41 @@ impl Inserts {
         self.deps.push(deps_json(&s.deps));
         self.resources.push(resources_json(s));
         self.tags.push(tags_json(s));
+        self.status.push(QUEUED);
+        self.terminal.push(false);
+        self.attempt.push(0);
+        self.updated.push(now);
+        self.message.push(None);
+    }
+
+    /// Apply a transition to the task at row `i`.
+    fn set_status(&mut self, i: usize, row: StatusRow) {
+        self.status[i] = row.status.name();
+        self.terminal[i] = row.status.is_terminal();
+        self.attempt[i] = row.attempt as i32;
+        self.updated[i] = row.at;
+        if row.message.is_some() {
+            self.message[i] = row.message;
+        }
     }
 
     async fn execute(
         self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), StoreError> {
-        let now = now_unix();
         sqlx::query(
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
-             retry, deps, resources, tags, status, updated_unix_ns) \
+             retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message) \
              SELECT u.id, u.seq, u.arrival, u.pool, u.kind, u.priority, u.key, u.payload, u.deadline, u.fixed_at, \
              u.fixed_tol, u.fixed_miss, u.hint, u.timeout, u.retry::jsonb, u.deps::jsonb, u.resources::jsonb, \
-             u.tags::jsonb, $19, $20 \
+             u.tags::jsonb, u.status, u.terminal, u.attempt, u.updated, u.message \
              FROM UNNEST($1::bigint[], $2::bigint[], $3::bigint[], $4::text[], $5::text[], $6::smallint[], \
              $7::text[], $8::bytea[], $9::bigint[], $10::bigint[], $11::bigint[], $12::text[], $13::bigint[], \
-             $14::bigint[], $15::text[], $16::text[], $17::text[], $18::text[]) \
+             $14::bigint[], $15::text[], $16::text[], $17::text[], $18::text[], $19::text[], $20::bool[], \
+             $21::int[], $22::bigint[], $23::text[]) \
              AS u(id, seq, arrival, pool, kind, priority, key, payload, deadline, fixed_at, fixed_tol, fixed_miss, \
-             hint, timeout, retry, deps, resources, tags) \
+             hint, timeout, retry, deps, resources, tags, status, terminal, attempt, updated, message) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
@@ -673,11 +1060,38 @@ impl Inserts {
         .bind(self.deps)
         .bind(self.resources)
         .bind(self.tags)
-        .bind(QUEUED)
-        .bind(now)
+        .bind(self.status)
+        .bind(self.terminal)
+        .bind(self.attempt)
+        .bind(self.updated)
+        .bind(self.message)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_failures_are_transient() {
+        let io = sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset",
+        ));
+        assert!(db(io).is_transient());
+        assert!(db(sqlx::Error::PoolTimedOut).is_transient());
+        assert!(!db(sqlx::Error::RowNotFound).is_transient());
+    }
+
+    #[test]
+    fn schema_names_are_validated() {
+        assert!(valid_schema("cronoq_prod2"));
+        for bad in ["", "1abc", "a-b", "a\"b", &"x".repeat(64)] {
+            assert!(!valid_schema(bad), "{bad}");
+        }
     }
 }

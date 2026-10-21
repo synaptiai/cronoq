@@ -4,6 +4,10 @@ use async_trait::async_trait;
 
 use crate::error::ScaleError;
 
+/// Carries out capacity changes requested by the autoscaler.
+///
+/// Responses are applied in request order: a slow response to an older request never
+/// overrides a newer one. A panic inside `scale_to` is logged and ignored.
 #[async_trait]
 pub trait Scaler: Send + Sync + 'static {
     /// Request `desired` workers for `pool`; return the capacity available now.

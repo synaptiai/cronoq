@@ -1,5 +1,10 @@
 //! Conversions between engine types and their stored representation.
+//!
+//! Times are stored as Unix nanoseconds in `BIGINT` columns (saturating in the year 2262);
+//! durations inside JSON documents are exact (`u128` nanoseconds). PostgreSQL text and JSONB
+//! cannot hold NUL characters, so every string is stored with NUL replaced by U+FFFD.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,19 +18,36 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) type Tag = (Arc<str>, Arc<str>);
 
-/// Engine time to wall-clock Unix nanoseconds.
+/// `s` with NUL characters (rejected by PostgreSQL text and JSONB) replaced by U+FFFD.
+#[inline]
+pub(crate) fn clean(s: &str) -> Cow<'_, str> {
+    if s.contains('\0') {
+        Cow::Owned(s.replace('\0', "\u{FFFD}"))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// [`clean`], owned.
+#[inline]
+pub(crate) fn cleaned(s: &str) -> String {
+    clean(s).into_owned()
+}
+
+/// Engine time to wall-clock Unix nanoseconds (saturating).
 #[inline]
 pub(crate) fn to_unix(base: TimeBase, t: Time) -> i64 {
     base.unix_nanos_at_zero
-        .saturating_add(t.0.min(i64::MAX as u64) as i64)
+        .saturating_add(i64::try_from(t.0).unwrap_or(i64::MAX))
 }
 
-/// Wall-clock Unix nanoseconds to engine time (clamped at the engine epoch).
+/// Wall-clock Unix nanoseconds to engine time (times before engine zero map to zero).
 #[inline]
 pub(crate) fn from_unix(base: TimeBase, unix: i64) -> Time {
-    Time(unix.saturating_sub(base.unix_nanos_at_zero).max(0) as u64)
+    Time(u64::try_from(unix.saturating_sub(base.unix_nanos_at_zero)).unwrap_or(0))
 }
 
+/// Duration as `BIGINT` nanoseconds (saturating at ~292 years).
 #[inline]
 pub(crate) fn dur_ns(d: Duration) -> i64 {
     d.as_nanos().min(i64::MAX as u128) as i64
@@ -34,6 +56,18 @@ pub(crate) fn dur_ns(d: Duration) -> i64 {
 #[inline]
 pub(crate) fn ns_dur(ns: i64) -> Duration {
     Duration::from_nanos(ns.max(0) as u64)
+}
+
+/// Exact nanoseconds of `d`, for JSON documents.
+#[inline]
+fn dur_ns128(d: Duration) -> u128 {
+    d.as_nanos()
+}
+
+#[inline]
+fn ns128_dur(ns: u128) -> Duration {
+    const NS: u128 = 1_000_000_000;
+    Duration::new((ns / NS).min(u64::MAX as u128) as u64, (ns % NS) as u32)
 }
 
 pub(crate) fn miss_name(p: MissPolicy) -> &'static str {
@@ -64,19 +98,23 @@ pub(crate) struct DepJ {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct RetryJ {
     max_attempts: u32,
-    initial_backoff_ns: u64,
-    multiplier: f64,
-    max_backoff_ns: u64,
+    initial_backoff_ns: u128,
+    /// `None` (JSON `null`) for a multiplier that JSON cannot represent (non-finite).
+    multiplier: Option<f64>,
+    max_backoff_ns: u128,
     jitter: bool,
 }
+
+/// Multiplier used when the stored one is missing or unusable.
+const DEFAULT_MULTIPLIER: f64 = 2.0;
 
 impl From<&RetryPolicy> for RetryJ {
     fn from(r: &RetryPolicy) -> Self {
         RetryJ {
             max_attempts: r.max_attempts,
-            initial_backoff_ns: r.initial_backoff.as_nanos() as u64,
-            multiplier: r.multiplier,
-            max_backoff_ns: r.max_backoff.as_nanos() as u64,
+            initial_backoff_ns: dur_ns128(r.initial_backoff),
+            multiplier: Some(r.multiplier).filter(|m| m.is_finite() && *m >= 0.0),
+            max_backoff_ns: dur_ns128(r.max_backoff),
             jitter: r.jitter,
         }
     }
@@ -86,9 +124,12 @@ impl From<RetryJ> for RetryPolicy {
     fn from(r: RetryJ) -> Self {
         RetryPolicy {
             max_attempts: r.max_attempts.max(1),
-            initial_backoff: Duration::from_nanos(r.initial_backoff_ns),
-            multiplier: r.multiplier,
-            max_backoff: Duration::from_nanos(r.max_backoff_ns),
+            initial_backoff: ns128_dur(r.initial_backoff_ns),
+            multiplier: r
+                .multiplier
+                .filter(|m| m.is_finite() && *m >= 0.0)
+                .unwrap_or(DEFAULT_MULTIPLIER),
+            max_backoff: ns128_dur(r.max_backoff_ns),
             jitter: r.jitter,
         }
     }
@@ -100,7 +141,7 @@ pub(crate) fn deps_json(deps: &[Dep]) -> String {
         .map(|d| {
             let (id, key) = match &d.target {
                 TaskRef::Id(id) => (Some(id.0), None),
-                TaskRef::Key(k) => (None, Some(k.to_string())),
+                TaskRef::Key(k) => (None, Some(cleaned(k))),
             };
             let cond = match d.cond {
                 EdgeCond::OnSuccess => "on_success",
@@ -117,8 +158,12 @@ pub(crate) fn deps_json(deps: &[Dep]) -> String {
     serde_json::to_string(&v).expect("serializable")
 }
 
-pub(crate) fn deps_from(v: serde_json::Value) -> Result<Vec<Dep>, String> {
-    let deps: Vec<DepJ> = serde_json::from_value(v).map_err(|e| e.to_string())?;
+pub(crate) fn deps_from(v: &str) -> Result<Vec<Dep>, String> {
+    let deps: Vec<DepJ> = serde_json::from_str(v).map_err(|e| e.to_string())?;
+    deps_from_j(deps)
+}
+
+fn deps_from_j(deps: Vec<DepJ>) -> Result<Vec<Dep>, String> {
     deps.into_iter()
         .map(|d| {
             let target = match (d.id, d.key) {
@@ -141,9 +186,9 @@ pub(crate) fn retry_json(r: &Option<RetryPolicy>) -> Option<String> {
         .map(|r| serde_json::to_string(&RetryJ::from(r)).expect("serializable"))
 }
 
-pub(crate) fn retry_from(v: Option<serde_json::Value>) -> Result<Option<RetryPolicy>, String> {
+pub(crate) fn retry_from(v: Option<&str>) -> Result<Option<RetryPolicy>, String> {
     v.map(|v| {
-        serde_json::from_value::<RetryJ>(v)
+        serde_json::from_str::<RetryJ>(v)
             .map(Into::into)
             .map_err(|e| e.to_string())
     })
@@ -151,22 +196,26 @@ pub(crate) fn retry_from(v: Option<serde_json::Value>) -> Result<Option<RetryPol
 }
 
 pub(crate) fn resources_json<P>(spec: &TaskSpec<P>) -> String {
-    let v: Vec<(&str, u32)> = spec.resources.iter().map(|(n, a)| (&**n, *a)).collect();
+    let v: Vec<(Cow<'_, str>, u32)> = spec.resources.iter().map(|(n, a)| (clean(n), *a)).collect();
     serde_json::to_string(&v).expect("serializable")
 }
 
-pub(crate) fn resources_from(v: serde_json::Value) -> Result<Vec<(Arc<str>, u32)>, String> {
-    let r: Vec<(String, u32)> = serde_json::from_value(v).map_err(|e| e.to_string())?;
+pub(crate) fn resources_from(v: &str) -> Result<Vec<(Arc<str>, u32)>, String> {
+    let r: Vec<(String, u32)> = serde_json::from_str(v).map_err(|e| e.to_string())?;
     Ok(r.into_iter().map(|(n, a)| (n.into(), a)).collect())
 }
 
 pub(crate) fn tags_json<P>(spec: &TaskSpec<P>) -> String {
-    let v: Vec<(&str, &str)> = spec.tags.iter().map(|(k, v)| (&**k, &**v)).collect();
+    let v: Vec<(Cow<'_, str>, Cow<'_, str>)> = spec
+        .tags
+        .iter()
+        .map(|(k, v)| (clean(k), clean(v)))
+        .collect();
     serde_json::to_string(&v).expect("serializable")
 }
 
-pub(crate) fn tags_from(v: serde_json::Value) -> Result<Vec<Tag>, String> {
-    let t: Vec<(String, String)> = serde_json::from_value(v).map_err(|e| e.to_string())?;
+pub(crate) fn tags_from(v: &str) -> Result<Vec<Tag>, String> {
+    let t: Vec<(String, String)> = serde_json::from_str(v).map_err(|e| e.to_string())?;
     Ok(t.into_iter().map(|(k, v)| (k.into(), v.into())).collect())
 }
 
@@ -176,7 +225,7 @@ pub(crate) struct RecurringJ {
     cron: String,
     tz: Option<String>,
     overlap: String,
-    tolerance_ns: u64,
+    tolerance_ns: u128,
     on_miss: String,
     template: TemplateJ,
 }
@@ -191,12 +240,12 @@ struct TemplateJ {
     #[serde(default)]
     deadline_unix_ns: Option<i64>,
     #[serde(default)]
-    duration_hint_ns: Option<u64>,
+    duration_hint_ns: Option<u128>,
     #[serde(default)]
-    timeout_ns: Option<u64>,
+    timeout_ns: Option<u128>,
     #[serde(default)]
     retry: Option<RetryJ>,
-    deps: serde_json::Value,
+    deps: Vec<DepJ>,
     resources: Vec<(String, u32)>,
     tags: Vec<(String, String)>,
 }
@@ -204,33 +253,29 @@ struct TemplateJ {
 pub(crate) fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String {
     let t = &r.template;
     let j = RecurringJ {
-        cron: r.cron.to_string(),
-        tz: r.tz.as_ref().map(|s| s.to_string()),
+        cron: cleaned(&r.cron),
+        tz: r.tz.as_deref().map(cleaned),
         overlap: match r.overlap {
             OverlapPolicy::Skip => "skip".into(),
             OverlapPolicy::Allow => "allow".into(),
         },
-        tolerance_ns: r.tolerance.as_nanos() as u64,
+        tolerance_ns: dur_ns128(r.tolerance),
         on_miss: miss_name(r.on_miss).into(),
         template: TemplateJ {
-            kind: t.kind.to_string(),
-            pool: t.pool.to_string(),
+            kind: cleaned(&t.kind),
+            pool: cleaned(&t.pool),
             priority: t.priority as u8,
-            key: t.key.as_ref().map(|k| k.to_string()),
+            key: t.key.as_deref().map(cleaned),
             deadline_unix_ns: t.deadline.map(|d| to_unix(base, d)),
-            duration_hint_ns: t.duration_hint.map(|d| d.as_nanos() as u64),
-            timeout_ns: t.timeout.map(|d| d.as_nanos() as u64),
+            duration_hint_ns: t.duration_hint.map(dur_ns128),
+            timeout_ns: t.timeout.map(dur_ns128),
             retry: t.retry.as_ref().map(RetryJ::from),
             deps: serde_json::from_str(&deps_json(&t.deps)).expect("valid json"),
-            resources: t
-                .resources
-                .iter()
-                .map(|(n, a)| (n.to_string(), *a))
-                .collect(),
+            resources: t.resources.iter().map(|(n, a)| (cleaned(n), *a)).collect(),
             tags: t
                 .tags
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .map(|(k, v)| (cleaned(k), cleaned(v)))
                 .collect(),
         },
     };
@@ -240,10 +285,10 @@ pub(crate) fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String
 pub(crate) fn recurring_from(
     base: TimeBase,
     name: String,
-    spec: serde_json::Value,
+    spec: &str,
     payload: Vec<u8>,
 ) -> Result<RecurringSpec<Bytes>, String> {
-    let j: RecurringJ = serde_json::from_value(spec).map_err(|e| e.to_string())?;
+    let j: RecurringJ = serde_json::from_str(spec).map_err(|e| e.to_string())?;
     let t = j.template;
     let mut template = TaskSpec::new(Bytes::from(payload))
         .kind(t.kind)
@@ -251,10 +296,10 @@ pub(crate) fn recurring_from(
         .priority(Priority::from_index(t.priority as usize).unwrap_or_default());
     template.key = t.key.map(Into::into);
     template.deadline = t.deadline_unix_ns.map(|u| from_unix(base, u));
-    template.duration_hint = t.duration_hint_ns.map(Duration::from_nanos);
-    template.timeout = t.timeout_ns.map(Duration::from_nanos);
+    template.duration_hint = t.duration_hint_ns.map(ns128_dur);
+    template.timeout = t.timeout_ns.map(ns128_dur);
     template.retry = t.retry.map(Into::into);
-    template.deps = deps_from(t.deps)?;
+    template.deps = deps_from_j(t.deps)?;
     template.resources = t
         .resources
         .into_iter()
@@ -275,7 +320,7 @@ pub(crate) fn recurring_from(
         } else {
             OverlapPolicy::Skip
         },
-        tolerance: Duration::from_nanos(j.tolerance_ns),
+        tolerance: ns128_dur(j.tolerance_ns),
         on_miss: miss_from(&j.on_miss),
     })
 }
@@ -292,5 +337,46 @@ pub(crate) fn fixed_cols(
             Some(miss_name(f.on_miss).into()),
         ),
         None => (None, None, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strings_lose_only_nul() {
+        assert_eq!(clean("a\0b"), "a\u{FFFD}b");
+        assert!(matches!(clean("plain"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn times_are_identity_and_saturate() {
+        let b = TimeBase {
+            unix_nanos_at_zero: 0,
+        };
+        assert_eq!(to_unix(b, Time(123)), 123);
+        assert_eq!(from_unix(b, 123), Time(123));
+        assert_eq!(to_unix(b, Time(u64::MAX)), i64::MAX);
+        assert_eq!(from_unix(b, -5), Time::ZERO);
+    }
+
+    #[test]
+    fn retry_round_trips_exactly_and_tolerates_bad_multipliers() {
+        let big = Duration::from_secs(1 << 40);
+        let r = RetryPolicy {
+            max_attempts: 2,
+            initial_backoff: Duration::from_nanos(1),
+            multiplier: f64::INFINITY,
+            max_backoff: big,
+            jitter: true,
+        };
+        let j = retry_json(&Some(r)).unwrap();
+        let back = retry_from(Some(&j)).unwrap().unwrap();
+        assert_eq!(back.max_backoff, big);
+        assert_eq!(back.multiplier, DEFAULT_MULTIPLIER);
+        // Rows written before multipliers were sanitized hold `null`.
+        let old = r#"{"max_attempts":3,"initial_backoff_ns":1,"multiplier":null,"max_backoff_ns":2,"jitter":false}"#;
+        assert_eq!(retry_from(Some(old)).unwrap().unwrap().multiplier, 2.0);
     }
 }
