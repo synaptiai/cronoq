@@ -3,19 +3,46 @@
 use async_trait::async_trait;
 use cronoq::{ScaleError, Scaler};
 
+/// Posts `{"pool": ..., "desired": n}` to a URL whenever a pool's target capacity changes.
+/// Capacity itself follows from workers connecting, not from this call.
 pub struct WebhookScaler {
     url: String,
     token: Option<String>,
     client: reqwest::Client,
 }
 
+impl std::fmt::Debug for WebhookScaler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookScaler")
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 impl WebhookScaler {
-    pub fn new(url: String, token: Option<String>) -> Self {
+    /// Scaler posting to `url`, with an optional bearer token.
+    pub fn new(url: String, token: Option<String>) -> anyhow::Result<Self> {
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|e| anyhow::anyhow!("scaler webhook url '{url}': {e}"))?;
+        match parsed.scheme() {
+            "https" => {}
+            "http" => {
+                let local = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+                if !local {
+                    tracing::warn!(url = %url, "scaler webhook uses plain http; use https outside a trusted network");
+                    if token.is_some() {
+                        tracing::warn!("the scaler webhook token is sent over plain http");
+                    }
+                }
+            }
+            s => anyhow::bail!("scaler webhook url must be http or https, not {s}"),
+        }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("http client");
-        WebhookScaler { url, token, client }
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        Ok(WebhookScaler { url, token, client })
     }
 }
 
@@ -32,7 +59,7 @@ impl Scaler for WebhookScaler {
         let resp = req
             .send()
             .await
-            .map_err(|e| ScaleError::Other(e.to_string()))?;
+            .map_err(|e| ScaleError::Other(e.without_url().to_string()))?;
         if !resp.status().is_success() {
             return Err(ScaleError::Other(format!(
                 "scaler webhook returned {}",
