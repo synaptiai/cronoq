@@ -4,3 +4,4 @@
 *.pyd
 .venv
 dist/
+.claude/worktrees/
