@@ -111,37 +111,59 @@ pip install "cronoq[client]"
 ```
 
 ```python
-from cronoq.client import Client, Worker, task
+import os
+from cronoq.client import CancelTask, Client, Reject, Worker, task
 
-# Submit and inspect (client token).
-async with Client("localhost:7070", token="client-token") as c:
+# Submit and inspect (client token; the server requires tokens of at least 16 characters).
+async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
     sub = await c.submit({"prompt": "hi"}, pool="llm", priority="high",
                          deadline_in=30, timeout=60, key="job-1")
-    result = await c.wait(sub.id, timeout=120)       # Result(id, status, output, message)
+    result = await c.wait(sub.id, timeout=120)        # Result(id, status, output, message, ...)
     print(result.status, result.json())
 
+    done = await c.submit("quick", wait=True, wait_timeout=10)   # submit and wait in one call
+    info = await c.get("job-1")      # TaskInfo: status, pool, key, kind, attempt, timestamps, ...
+
     await c.submit_batch([task("a", key="a"), task("b", key="b", after=["a"])])
-    async for event in c.watch(pools=["llm"]):          # status events
-        ...
+    async for event in c.watch(pools=["llm"], keys=["job-1"], all_transitions=True):
+        ...                          # every transition of job-1 (default: terminal statuses only)
 
 # Serve a pool (worker token).
-async def handle(lease):            # lease.payload / .json() / .text(), .attempt, .tags, .cancelled
-    return {"answer": 42}           # bytes, str, JSON-serialisable value or None
+async def handle(lease):  # lease.payload / .json() / .text(), .attempt, .pool, .tags, .cancelled
+    if not can_handle(lease):
+        raise Reject("missing model")    # hand the lease back unrun
+    if obsolete(lease):
+        raise CancelTask("superseded")   # end the task as cancelled
+    return {"answer": 42}                # bytes, str, JSON-serialisable value or None
 
-worker = Worker("localhost:7070", "llm", handle, slots=8, token="worker-token")
+worker = Worker("localhost:7070", "llm", handle, slots=8,
+                token=os.environ["CRONOQ_WORKER_TOKEN"])
 await worker.run()                  # reconnects with backoff; `await worker.stop()` drains
 ```
 
 - Payloads: `bytes` are sent as-is, `str` as UTF-8 text, other values as JSON
-  (`application/json`). Outputs are encoded the same way.
+  (`application/json`). Outputs are encoded the same way and carry their content type.
 - Handlers raise `cronoq.Retryable(msg, retry_after=...)` or `cronoq.Permanent(msg)`; any other
-  exception is a retryable failure.
-- Each running lease is heartbeated every `lease_ttl / 3`; when the server aborts an attempt
-  (timeout, cancellation, lease expiry) the handler task is cancelled and `lease.cancelled` is
-  set.
+  exception is a retryable failure. An output larger than the server's `max_message_bytes` is a
+  permanent failure.
+- `Reject(reason)` gives the lease back: the server offers it, within the same attempt, to
+  another worker of the pool with a free slot; if there is none, the attempt fails as retryable
+  and counts against the retry budget. `CancelTask(reason)` ends the task as `cancelled`.
+- The worker speaks protocol version 2. The server may grant fewer slots than requested
+  (`worker.granted_slots`, capped by `limits.max_slots_per_worker`); leases beyond the grant are
+  handed back. When the server announces it is shutting down (`worker.last_shutdown`) the worker
+  reconnects with backoff, or immediately when leadership moved to another node.
+- Each running lease is heartbeated every `lease.lease_ttl / 3`; when the server aborts an
+  attempt (timeout, cancellation, lease expiry) the handler task is cancelled and
+  `lease.cancelled` is set.
 - Failed calls raise `cronoq.client.ClientError` with the gRPC status name in `.code`
-  (e.g. `unauthenticated`, `resource_exhausted` when a pool is full); `Client.wait` raises
-  `TimeoutError` on timeout, as does `Client.submit(..., call_timeout=...)`.
+  (e.g. `unauthenticated`, `not_found` from `get`/`wait` on an unknown task,
+  `resource_exhausted` when a pool is full, `unavailable` when the server is not the leader or is
+  shutting down); `.retryable` is true for the last two. `Client.wait` and
+  `Client.submit(..., wait=True)` raise `TimeoutError` when the wait times out (the server caps
+  waits at `limits.max_wait_s`), as does `Client.submit(..., call_timeout=...)`.
+- `Client.snapshot()` (metrics or admin token) returns per-pool figures, `totals` and
+  `workers_connected`.
 * `Client` and `Worker` can be created outside a running loop; they connect on first use.
   `Worker.stop()` can be called more than once (callers wait for the same drain), and a stopped
   worker can be run again. A handler that swallows `CancelledError` keeps running after an
