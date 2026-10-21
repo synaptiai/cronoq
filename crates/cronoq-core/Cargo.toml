@@ -1,0 +1,24 @@
+[package]
+name = "cronoq-core"
+description = "Sans-IO core engine of the cronoq elastic priority scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rustc-hash.workspace = true
+smallvec.workspace = true
+croner.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "core"
+harness = false
