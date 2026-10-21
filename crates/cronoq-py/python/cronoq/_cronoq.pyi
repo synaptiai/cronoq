@@ -5,37 +5,70 @@ from __future__ import annotations
 import datetime
 from typing import Any, Awaitable, Callable, Generator, Literal, Mapping, Optional, Sequence, Union
 
+from typing_extensions import Self, TypeAlias, final
+
 __version__: str
+__all__ = [
+    "AutoscaleConfig",
+    "Dep",
+    "EventStream",
+    "Pool",
+    "PoolSnapshot",
+    "Priority",
+    "Resource",
+    "RetryPolicy",
+    "Scheduler",
+    "Snapshot",
+    "StatusEvent",
+    "Task",
+    "TaskContext",
+    "TaskHandle",
+    "__version__",
+]
 
-PriorityLike = Union["Priority", int, str]
-TaskRefLike = Union[str, int]
-TimeLike = Union[datetime.datetime, float]
-Executor = Callable[["TaskContext", Any], Any]
+_PriorityLike: TypeAlias = Union["Priority", int, str]
+_TaskRefLike: TypeAlias = Union[str, int]
+_TimeLike: TypeAlias = Union[datetime.datetime, float]
+_Executor: TypeAlias = Callable[["TaskContext", Any], Any]
+_MissPolicy: TypeAlias = Literal["run_late", "skip", "fail"]
+_DepCondition: TypeAlias = Literal["success", "failure", "complete", "on_success", "on_failure", "on_complete"]
 
+@final
 class Priority:
     CRITICAL: Priority
     HIGH: Priority
     NORMAL: Priority
     LOW: Priority
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
     def __int__(self) -> int: ...
+    def __lt__(self, value: Priority, /) -> bool: ...
+    def __le__(self, value: Priority, /) -> bool: ...
+    def __gt__(self, value: Priority, /) -> bool: ...
+    def __ge__(self, value: Priority, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
+@final
 class RetryPolicy:
     max_attempts: int
     initial_backoff: float
     multiplier: float
     max_backoff: float
     jitter: bool
-    def __init__(
-        self,
+    def __new__(
+        cls,
         max_attempts: int = 3,
         initial_backoff: float = 1.0,
         multiplier: float = 2.0,
         max_backoff: float = 60.0,
         jitter: bool = True,
-    ) -> None: ...
+    ) -> Self: ...
     @staticmethod
     def none() -> RetryPolicy: ...
 
+@final
 class AutoscaleConfig:
     interval: float
     target_utilization: float
@@ -46,35 +79,39 @@ class AutoscaleConfig:
     max_step_up_abs: int
     max_step_down: int
     cost_per_worker_second: float
-    def __init__(
-        self,
+    slo: dict[str, float]
+    def __new__(
+        cls,
         interval: float = 1.0,
         target_utilization: float = 0.75,
         drain_time: float = 30.0,
-        slo: Optional[Mapping[PriorityLike, float]] = None,
+        slo: Optional[Mapping[_PriorityLike, float]] = None,
         reservation_horizon: float = 60.0,
         stabilization_window: float = 60.0,
         cooldown: float = 30.0,
         max_step_up_abs: int = 4,
         max_step_down: int = 1,
         cost_per_worker_second: float = 0.0,
-    ) -> None: ...
+    ) -> Self: ...
 
+@final
 class Dep:
-    def __init__(self, target: TaskRefLike, on: Literal["success", "failure", "complete"] = "success") -> None: ...
+    def __new__(cls, target: _TaskRefLike, on: _DepCondition = "success") -> Self: ...
 
+@final
 class Resource:
     @staticmethod
     def semaphore(name: str, permits: int) -> Resource: ...
     @staticmethod
     def token_bucket(name: str, rate: float, burst: int) -> Resource: ...
 
+@final
 class Pool:
     name: str
-    def __init__(
-        self,
+    def __new__(
+        cls,
         name: str,
-        executor: Executor,
+        executor: _Executor,
         *,
         min: int = 1,
         max: int = 10,
@@ -88,34 +125,36 @@ class Pool:
         await_timeout: Optional[float] = None,
         default_duration: float = 1.0,
         reservable_fraction: float = 0.5,
-    ) -> None: ...
+    ) -> Self: ...
 
+@final
 class Task:
     payload: Any
     key: Optional[str]
-    def __init__(
-        self,
+    def __new__(
+        cls,
         payload: Any,
         *,
-        priority: Optional[PriorityLike] = None,
+        priority: Optional[_PriorityLike] = None,
         pool: Optional[str] = None,
         kind: Optional[str] = None,
         key: Optional[str] = None,
         deadline_in: Optional[float] = None,
-        deadline_at: Optional[TimeLike] = None,
+        deadline_at: Optional[_TimeLike] = None,
         start_in: Optional[float] = None,
-        start_at: Optional[TimeLike] = None,
+        start_at: Optional[_TimeLike] = None,
         tolerance: Optional[float] = None,
-        on_miss: Optional[Literal["run_late", "skip", "fail"]] = None,
+        on_miss: Optional[_MissPolicy] = None,
         duration_hint: Optional[float] = None,
         timeout: Optional[float] = None,
         retry: Optional[RetryPolicy] = None,
-        after: Union[TaskRefLike, Sequence[TaskRefLike], None] = None,
+        after: Union[_TaskRefLike, Sequence[_TaskRefLike], None] = None,
         deps: Optional[Sequence[Dep]] = None,
         resources: Optional[Mapping[str, int]] = None,
         tags: Optional[Mapping[str, Any]] = None,
-    ) -> None: ...
+    ) -> Self: ...
 
+@final
 class TaskContext:
     id: int
     attempt: int
@@ -125,8 +164,11 @@ class TaskContext:
     tags: dict[str, str]
     timeout: Optional[float]
     def is_cancelled(self) -> bool: ...
+    @property
+    def deadline(self) -> Optional[float]: ...
     def heartbeat(self) -> None: ...
 
+@final
 class TaskHandle:
     id: int
     duplicate: bool
@@ -135,6 +177,7 @@ class TaskHandle:
     def done(self) -> bool: ...
     def cancel(self) -> None: ...
 
+@final
 class PoolSnapshot:
     name: str
     capacity: int
@@ -163,6 +206,7 @@ class PoolSnapshot:
     worker_seconds: float
     cost: float
 
+@final
 class Snapshot:
     pools: list[PoolSnapshot]
     live_tasks: int
@@ -171,40 +215,95 @@ class Snapshot:
     totals: dict[str, int]
     def pool(self, name: str) -> Optional[PoolSnapshot]: ...
 
+@final
+class StatusEvent:
+    id: int
+    pool: str
+    key: Optional[str]
+    status: str
+    attempt: int
+    at: float
+    message: Optional[str]
+
+@final
+class EventStream:
+    @property
+    def lagged(self) -> int: ...
+    @property
+    def closed(self) -> bool: ...
+    def __aiter__(self) -> Self: ...
+    def __anext__(self) -> Awaitable[StatusEvent]: ...
+    def close(self) -> None: ...
+    def aclose(self) -> Awaitable[None]: ...
+    def __aenter__(self) -> Awaitable[Self]: ...
+    def __aexit__(self, *args: Any) -> Awaitable[None]: ...
+
+@final
 class Scheduler:
-    started: bool
-    pools: list[str]
-    def __init__(
-        self, pools: Sequence[Pool], resources: Optional[Sequence[Resource]] = None, emit_transitions: bool = False
-    ) -> None: ...
+    @property
+    def started(self) -> bool: ...
+    @property
+    def pools(self) -> list[str]: ...
+    @property
+    def default_pool(self) -> str: ...
+    def __new__(
+        cls,
+        pools: Sequence[Pool],
+        resources: Optional[Sequence[Resource]] = None,
+        emit_transitions: bool = False,
+        *,
+        shutdown_grace: float = 5.0,
+        event_capacity: int = 1024,
+    ) -> Self: ...
     def start(self) -> Awaitable[None]: ...
     def submit(
         self,
         payload: Any,
         *,
-        priority: Optional[PriorityLike] = None,
+        priority: Optional[_PriorityLike] = None,
         pool: Optional[str] = None,
         kind: Optional[str] = None,
         key: Optional[str] = None,
         deadline_in: Optional[float] = None,
-        deadline_at: Optional[TimeLike] = None,
+        deadline_at: Optional[_TimeLike] = None,
         start_in: Optional[float] = None,
-        start_at: Optional[TimeLike] = None,
+        start_at: Optional[_TimeLike] = None,
         tolerance: Optional[float] = None,
-        on_miss: Optional[Literal["run_late", "skip", "fail"]] = None,
+        on_miss: Optional[_MissPolicy] = None,
         duration_hint: Optional[float] = None,
         timeout: Optional[float] = None,
         retry: Optional[RetryPolicy] = None,
-        after: Union[TaskRefLike, Sequence[TaskRefLike], None] = None,
+        after: Union[_TaskRefLike, Sequence[_TaskRefLike], None] = None,
         deps: Optional[Sequence[Dep]] = None,
         resources: Optional[Mapping[str, int]] = None,
         tags: Optional[Mapping[str, Any]] = None,
     ) -> Awaitable[TaskHandle]: ...
-    def enqueue(self, payload: Any, **options: Any) -> Awaitable[int]: ...
+    def enqueue(
+        self,
+        payload: Any,
+        *,
+        priority: Optional[_PriorityLike] = None,
+        pool: Optional[str] = None,
+        kind: Optional[str] = None,
+        key: Optional[str] = None,
+        deadline_in: Optional[float] = None,
+        deadline_at: Optional[_TimeLike] = None,
+        start_in: Optional[float] = None,
+        start_at: Optional[_TimeLike] = None,
+        tolerance: Optional[float] = None,
+        on_miss: Optional[_MissPolicy] = None,
+        duration_hint: Optional[float] = None,
+        timeout: Optional[float] = None,
+        retry: Optional[RetryPolicy] = None,
+        after: Union[_TaskRefLike, Sequence[_TaskRefLike], None] = None,
+        deps: Optional[Sequence[Dep]] = None,
+        resources: Optional[Mapping[str, int]] = None,
+        tags: Optional[Mapping[str, Any]] = None,
+    ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
-    def cancel(self, target: TaskRefLike) -> Awaitable[bool]: ...
-    def status(self, target: TaskRefLike) -> Awaitable[Optional[str]]: ...
-    def handle(self, target: TaskRefLike) -> Awaitable[Optional[TaskHandle]]: ...
+    def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
+    def status(self, target: _TaskRefLike) -> Awaitable[Optional[str]]: ...
+    def handle(self, target: _TaskRefLike) -> Awaitable[Optional[TaskHandle]]: ...
     def snapshot(self) -> Awaitable[Snapshot]: ...
     def set_capacity(self, pool: str, capacity: int) -> Awaitable[None]: ...
     def add_recurring(
@@ -216,8 +315,8 @@ class Scheduler:
         tz: Optional[str] = None,
         overlap: Literal["skip", "allow"] = "skip",
         tolerance: float = 1.0,
-        on_miss: Literal["run_late", "skip", "fail"] = "run_late",
-        priority: Optional[PriorityLike] = None,
+        on_miss: _MissPolicy = "run_late",
+        priority: Optional[_PriorityLike] = None,
         pool: Optional[str] = None,
         kind: Optional[str] = None,
         duration_hint: Optional[float] = None,
@@ -227,6 +326,7 @@ class Scheduler:
         tags: Optional[Mapping[str, Any]] = None,
     ) -> Awaitable[None]: ...
     def remove_recurring(self, name: str) -> Awaitable[bool]: ...
+    def events(self, on_lag: Literal["skip", "raise"] = "skip") -> EventStream: ...
     def shutdown(self, grace: float = 5.0) -> Awaitable[None]: ...
-    async def __aenter__(self) -> Scheduler: ...
-    async def __aexit__(self, *args: Any) -> None: ...
+    def __aenter__(self) -> Awaitable[Self]: ...
+    def __aexit__(self, *args: Any) -> Awaitable[None]: ...

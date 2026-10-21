@@ -472,3 +472,122 @@ def test_task_spec_builder() -> None:
         task(1, priority="urgent")
     with pytest.raises(ValueError):
         task(1, deps=[("x", "sometimes")])
+
+
+# ---------------------------------------------------------------------------------------------
+# Regressions found in review
+
+
+def test_after_accepts_a_single_key_or_id() -> None:
+    assert [d.target.key for d in task("y", after="parent-key").deps] == ["parent-key"]
+    assert [d.target.id for d in task("y", after=7).deps] == [7]
+    assert [d.target.key for d in task("y", after=["a", "b"]).deps] == ["a", "b"]
+    with pytest.raises(ValueError):
+        task("y", deadline_in=1.0, deadline_at=time.time() + 5)
+    with pytest.raises(ValueError):
+        task("y", start_in=1.0, start_at=time.time() + 5)
+    # The native `Dep(on=...)` condition names are accepted too.
+    spec = task("y", deps=[("a", "failure"), {"ref": "b", "cond": "on_complete"}])
+    pb = cronoq.client.pb
+    assert [d.cond for d in spec.deps] == [pb.EDGE_COND_ON_FAILURE, pb.EDGE_COND_ON_COMPLETE]
+
+
+async def test_handler_output_edge_cases(server: Server, client: Client) -> None:
+    async def handler(lease: Lease) -> Any:
+        if lease.text() == "none":
+            return None
+        if lease.text() == "set":
+            return {1, 2}  # not JSON-serialisable
+        return "ok"
+
+    async with Running() as r:
+        await r.add(server, handler)
+        await wait_capacity(client, 1)
+        none = (await client.submit("none", wait=True)).result
+        assert none is not None and none.ok and none.json() is None
+        bad = (await client.submit("set", wait=True)).result
+        assert bad is not None and bad.status == "failed" and "JSON" in bad.message
+
+
+async def test_handler_raising_cancelled_error_does_not_leak_the_slot(server: Server, client: Client) -> None:
+    async def handler(lease: Lease) -> Any:
+        if lease.text() == "selfcancel":
+            fut = asyncio.get_running_loop().create_future()
+            fut.cancel()
+            await fut
+        return "ok"
+
+    async with Running() as r:
+        w = await r.add(server, handler)
+        await wait_capacity(client, 1)
+        sub = await client.submit(
+            "selfcancel", retry={"max_attempts": 2, "initial_backoff": 0.01}, wait=True, call_timeout=0.8
+        )  # must not wait for the 1 s lease TTL
+        res = sub.result
+        assert res is not None and res.status == "dead_lettered" and "CancelledError" in res.message
+        nxt = (await client.submit("next", wait=True)).result
+        assert nxt is not None and nxt.ok
+        assert w.running == 0
+
+
+def test_client_and_worker_built_outside_a_loop(server: Server) -> None:
+    c = Client(server.target, token=CLIENT)
+    w = Worker(server.target, "default", upper, token=WORKER, backoff=(0.05, 0.2))
+
+    async def use() -> None:
+        assert await c.get(10**15) is None
+        run = asyncio.ensure_future(w.run())
+        await w.wait_registered(10)
+        await w.stop(1)
+        await asyncio.wait_for(run, 10)
+
+    asyncio.run(use())
+    asyncio.run(use())  # both can be reused on a new event loop
+    asyncio.run(c.close())
+
+
+async def test_worker_stop_is_idempotent_and_drains(server: Server, client: Client) -> None:
+    async def slow(lease: Lease) -> Any:
+        await asyncio.sleep(0.3)
+        return "done"
+
+    w = Worker(server.target, "default", slow, slots=2, token=WORKER, backoff=(0.05, 0.2))
+    run = asyncio.ensure_future(w.run())
+    await w.wait_registered(10)
+    await wait_capacity(client, 2)
+    sub = await client.submit("x")
+    for _ in range(200):
+        if w.running:
+            break
+        await asyncio.sleep(0.01)
+    # Two concurrent stops: both return only after the running lease finished.
+    await asyncio.gather(w.stop(grace=5), w.stop(grace=5))
+    assert w.running == 0
+    assert (await client.wait(sub.id, timeout=5)).ok
+    await asyncio.wait_for(run, 10)
+    await w.stop()  # stopping a stopped worker is a no-op
+    # The same worker can serve again after a stop.
+    run = asyncio.ensure_future(w.run())
+    await w.wait_registered(10)
+    await wait_capacity(client, 2)
+    assert (await client.submit("y", wait=True, call_timeout=10)).result.ok  # type: ignore[union-attr]
+    await w.stop(grace=5)
+    await asyncio.wait_for(run, 10)
+
+
+async def test_wait_has_a_client_side_deadline(server: Server, client: Client) -> None:
+    sub = await client.submit("never-runs")  # no workers connected
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await client.wait(sub.id, timeout=0.2)
+    with pytest.raises(TimeoutError):
+        await client.submit("x", wait=True, call_timeout=0.2)
+    assert time.monotonic() - t0 < 5
+
+
+def test_client_error_pickles() -> None:
+    import pickle
+
+    e = ClientError("not_found", "unknown task")
+    back = pickle.loads(pickle.dumps(e))
+    assert (back.code, back.message, str(back)) == (e.code, e.message, str(e))

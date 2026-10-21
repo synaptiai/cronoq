@@ -1,5 +1,6 @@
 //! Configuration and value types exposed to Python.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,22 +11,53 @@ use cronoq::{
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
+use pyo3::types::{PyBool, PyDict, PyString};
 
 pub(crate) type PyObj = Py<PyAny>;
 
-fn secs(v: f64, what: &str) -> PyResult<Duration> {
+/// A finite, non-negative number of seconds that fits in a `Duration`.
+pub(crate) fn secs(v: f64, what: &str) -> PyResult<Duration> {
     if !v.is_finite() || v < 0.0 {
         return Err(PyValueError::new_err(format!(
-            "{what} must be a non-negative number of seconds"
+            "{what} must be a finite, non-negative number of seconds (got {v})"
         )));
     }
-    Ok(Duration::from_secs_f64(v))
+    Duration::try_from_secs_f64(v)
+        .map_err(|_| PyValueError::new_err(format!("{what} is too large (got {v} seconds)")))
+}
+
+/// Like [`secs`], but strictly positive.
+fn positive_secs(v: f64, what: &str) -> PyResult<Duration> {
+    let d = secs(v, what)?;
+    if d.is_zero() {
+        return Err(PyValueError::new_err(format!("{what} must be > 0")));
+    }
+    Ok(d)
+}
+
+/// `v` in `(lo, hi]` (or `[lo, hi]` with `lo_inclusive`).
+fn in_range(v: f64, lo: f64, hi: f64, lo_inclusive: bool, what: &str) -> PyResult<f64> {
+    let above = if lo_inclusive { v >= lo } else { v > lo };
+    if v.is_finite() && above && v <= hi {
+        return Ok(v);
+    }
+    let open = if lo_inclusive { "[" } else { "(" };
+    Err(PyValueError::new_err(format!(
+        "{what} must be in {open}{lo}, {hi}] (got {v})"
+    )))
 }
 
 /// Task priority class (lower value = more important).
-#[pyclass(eq, eq_int, frozen, from_py_object, module = "cronoq._cronoq")]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[pyclass(
+    eq,
+    eq_int,
+    ord,
+    hash,
+    frozen,
+    from_py_object,
+    module = "cronoq._cronoq"
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
     #[pyo3(name = "CRITICAL")]
     Critical = 0,
@@ -37,6 +69,25 @@ pub enum Priority {
     Low = 3,
 }
 
+#[pymethods]
+impl Priority {
+    /// The member name, e.g. `"HIGH"`.
+    #[getter]
+    fn name(&self) -> &'static str {
+        match self {
+            Priority::Critical => "CRITICAL",
+            Priority::High => "HIGH",
+            Priority::Normal => "NORMAL",
+            Priority::Low => "LOW",
+        }
+    }
+    /// The class index: 0 (critical) to 3 (low).
+    #[getter]
+    fn value(&self) -> u8 {
+        *self as u8
+    }
+}
+
 impl From<Priority> for CorePriority {
     fn from(p: Priority) -> Self {
         CorePriority::from_index(p as usize).expect("valid priority")
@@ -45,6 +96,11 @@ impl From<Priority> for CorePriority {
 
 /// Accepts `Priority`, an int 0..=3 (e.g. an `IntEnum`), or a name like `"high"`.
 pub(crate) fn extract_priority(obj: &Bound<'_, PyAny>) -> PyResult<CorePriority> {
+    if obj.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(
+            "priority must be a Priority, int or str, not bool",
+        ));
+    }
     if let Ok(p) = obj.extract::<Priority>() {
         return Ok(p.into());
     }
@@ -76,6 +132,7 @@ pub struct RetryPolicy {
 
 #[pymethods]
 impl RetryPolicy {
+    /// `multiplier` must be finite and >= 1; backoffs are seconds.
     #[new]
     #[pyo3(signature = (max_attempts=3, initial_backoff=1.0, multiplier=2.0, max_backoff=60.0, jitter=true))]
     fn new(
@@ -90,6 +147,11 @@ impl RetryPolicy {
         }
         secs(initial_backoff, "initial_backoff")?;
         secs(max_backoff, "max_backoff")?;
+        if !multiplier.is_finite() || multiplier < 1.0 {
+            return Err(PyValueError::new_err(format!(
+                "multiplier must be a finite number >= 1 (got {multiplier})"
+            )));
+        }
         Ok(RetryPolicy {
             max_attempts,
             initial_backoff,
@@ -123,6 +185,7 @@ impl RetryPolicy {
 
 impl RetryPolicy {
     pub(crate) fn to_core(&self) -> CoreRetry {
+        // Values were validated in `new`.
         CoreRetry {
             max_attempts: self.max_attempts,
             initial_backoff: Duration::from_secs_f64(self.initial_backoff),
@@ -140,7 +203,8 @@ pub struct AutoscaleConfig {
     pub interval: f64,
     pub target_utilization: f64,
     pub drain_time: f64,
-    pub slo: Option<Vec<Option<f64>>>,
+    /// Maximum acceptable queue wait in seconds, by lower-case priority name.
+    pub slo: BTreeMap<String, f64>,
     pub reservation_horizon: f64,
     pub stabilization_window: f64,
     pub cooldown: f64,
@@ -151,7 +215,8 @@ pub struct AutoscaleConfig {
 
 #[pymethods]
 impl AutoscaleConfig {
-    /// `slo` maps a priority (or its name/int) to the maximum acceptable queue wait in seconds.
+    /// `slo` maps a priority (`Priority`, its name or int) to the maximum acceptable queue wait
+    /// in seconds.
     #[new]
     #[pyo3(signature = (
         interval=1.0, target_utilization=0.75, drain_time=30.0, slo=None, reservation_horizon=60.0,
@@ -171,8 +236,8 @@ impl AutoscaleConfig {
         max_step_down: u32,
         cost_per_worker_second: f64,
     ) -> PyResult<Self> {
+        positive_secs(interval, "interval")?;
         for (v, n) in [
-            (interval, "interval"),
             (drain_time, "drain_time"),
             (reservation_horizon, "reservation_horizon"),
             (stabilization_window, "stabilization_window"),
@@ -180,22 +245,26 @@ impl AutoscaleConfig {
         ] {
             secs(v, n)?;
         }
-        let slo = match slo {
-            None => None,
-            Some(d) => {
-                let mut v = vec![None; 4];
-                for (k, s) in d.iter() {
-                    let p = extract_priority(&k)?;
-                    v[p.index()] = Some(s.extract::<f64>()?);
-                }
-                Some(v)
+        in_range(target_utilization, 0.0, 1.0, false, "target_utilization")?;
+        if !cost_per_worker_second.is_finite() || cost_per_worker_second < 0.0 {
+            return Err(PyValueError::new_err(
+                "cost_per_worker_second must be a finite, non-negative number",
+            ));
+        }
+        let mut slo_map = BTreeMap::new();
+        if let Some(d) = slo {
+            for (k, s) in d.iter() {
+                let p = extract_priority(&k)?;
+                let v: f64 = s.extract()?;
+                secs(v, "slo")?;
+                slo_map.insert(p.name().to_string(), v);
             }
-        };
+        }
         Ok(AutoscaleConfig {
             interval,
             target_utilization,
             drain_time,
-            slo,
+            slo: slo_map,
             reservation_horizon,
             stabilization_window,
             cooldown,
@@ -208,10 +277,11 @@ impl AutoscaleConfig {
 
 impl AutoscaleConfig {
     pub(crate) fn to_core(&self) -> cronoq::AutoscaleConfig {
+        // Values were validated in `new`.
         let mut slo = [None; 4];
-        if let Some(v) = &self.slo {
-            for (i, s) in v.iter().enumerate().take(4) {
-                slo[i] = s.map(Duration::from_secs_f64);
+        for (name, s) in &self.slo {
+            if let Some(p) = CorePriority::ALL.into_iter().find(|p| p.name() == name) {
+                slo[p.index()] = Some(Duration::from_secs_f64(*s));
             }
         }
         cronoq::AutoscaleConfig {
@@ -239,14 +309,15 @@ pub struct Dep {
 
 #[pymethods]
 impl Dep {
-    /// `target` is a task key (str) or id (int); `on` is "success", "failure" or "complete".
+    /// `target` is a task key (str) or id (int); `on` is `"success"`, `"failure"` or
+    /// `"complete"` (the `on_`-prefixed spellings used by `cronoq.client` are accepted too).
     #[new]
     #[pyo3(signature = (target, on="success"))]
     fn new(target: &Bound<'_, PyAny>, on: &str) -> PyResult<Self> {
         let cond = match on {
-            "success" => EdgeCond::OnSuccess,
-            "failure" => EdgeCond::OnFailure,
-            "complete" => EdgeCond::OnComplete,
+            "success" | "on_success" => EdgeCond::OnSuccess,
+            "failure" | "on_failure" => EdgeCond::OnFailure,
+            "complete" | "on_complete" => EdgeCond::OnComplete,
             _ => {
                 return Err(PyValueError::new_err(
                     "on must be 'success', 'failure' or 'complete'",
@@ -267,6 +338,11 @@ impl Dep {
 
 /// A task key (str) or id (int).
 pub(crate) fn extract_ref(obj: &Bound<'_, PyAny>) -> PyResult<TaskRef> {
+    if obj.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(
+            "task reference must be a key (str) or id (int), not bool",
+        ));
+    }
     if let Ok(i) = obj.extract::<u64>() {
         return Ok(TaskRef::Id(TaskId(i)));
     }
@@ -287,19 +363,31 @@ pub struct Resource {
 
 #[pymethods]
 impl Resource {
-    /// At most `permits` units held at once (released when an attempt ends).
+    /// At most `permits` (>= 1) units held at once (released when an attempt ends).
     #[staticmethod]
-    fn semaphore(name: &str, permits: u32) -> Self {
-        Resource {
+    fn semaphore(name: &str, permits: u32) -> PyResult<Self> {
+        if permits == 0 {
+            return Err(PyValueError::new_err("permits must be >= 1"));
+        }
+        Ok(Resource {
             inner: ResourceConfig::semaphore(name, permits),
-        }
+        })
     }
-    /// Units refill at `rate` per second up to `burst` (e.g. API requests per second).
+    /// Units refill at `rate` (> 0) per second up to `burst` (>= 1), e.g. API requests per
+    /// second.
     #[staticmethod]
-    fn token_bucket(name: &str, rate: f64, burst: u32) -> Self {
-        Resource {
-            inner: ResourceConfig::token_bucket(name, rate, burst),
+    fn token_bucket(name: &str, rate: f64, burst: u32) -> PyResult<Self> {
+        if !rate.is_finite() || rate <= 0.0 {
+            return Err(PyValueError::new_err(format!(
+                "rate must be a finite number > 0 (got {rate})"
+            )));
         }
+        if burst == 0 {
+            return Err(PyValueError::new_err("burst must be >= 1"));
+        }
+        Ok(Resource {
+            inner: ResourceConfig::token_bucket(name, rate, burst),
+        })
     }
     fn __repr__(&self) -> String {
         format!("Resource({:?})", self.inner)
@@ -345,9 +433,13 @@ impl Pool {
         if !executor.is_callable() {
             return Err(PyTypeError::new_err("executor must be callable"));
         }
+        if max == 0 {
+            return Err(PyValueError::new_err("max must be >= 1"));
+        }
         if min > max {
             return Err(PyValueError::new_err("min must be <= max"));
         }
+        in_range(reservable_fraction, 0.0, 1.0, true, "reservable_fraction")?;
         let mut cfg = PoolConfig::new(name);
         cfg.min_workers = min;
         cfg.max_workers = max;
@@ -366,7 +458,9 @@ impl Pool {
             cfg.initial_workers = max;
             cfg.min_workers = max;
         }
-        cfg.lease_ttl = lease_ttl.map(|s| secs(s, "lease_ttl")).transpose()?;
+        cfg.lease_ttl = lease_ttl
+            .map(|s| positive_secs(s, "lease_ttl"))
+            .transpose()?;
         cfg.bounds.max_pending = max_pending;
         cfg.overflow = match overflow {
             "wait" => OverflowPolicy::Wait,
@@ -443,7 +537,10 @@ fn to_system_time(obj: &Bound<'_, PyAny>) -> PyResult<SystemTime> {
             "time must be a datetime or a non-negative epoch timestamp",
         ));
     }
-    Ok(UNIX_EPOCH + Duration::from_secs_f64(ts))
+    Duration::try_from_secs_f64(ts)
+        .ok()
+        .and_then(|d| UNIX_EPOCH.checked_add(d))
+        .ok_or_else(|| PyValueError::new_err("time is too far in the future"))
 }
 
 /// Parsed task options (pure Rust, so they can cross threads freely).
@@ -562,13 +659,12 @@ impl Opts {
         Ok(o)
     }
 
-    pub(crate) fn to_task(&self, payload: PyObj) -> cronoq::Task<PyObj> {
-        let mut t = cronoq::Task::new(payload);
+    /// Build the runtime task; `default_pool` is used when no pool was given.
+    pub(crate) fn to_task(&self, payload: PyObj, default_pool: &Arc<str>) -> cronoq::Task<PyObj> {
+        let mut t = cronoq::Task::new(payload)
+            .pool(self.pool.clone().unwrap_or_else(|| default_pool.clone()));
         if let Some(p) = self.priority {
             t = t.priority(p);
-        }
-        if let Some(p) = &self.pool {
-            t = t.pool(p.clone());
         }
         if let Some(k) = &self.kind {
             t = t.kind(k.clone());

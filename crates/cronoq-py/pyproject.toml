@@ -1,12 +1,14 @@
 [build-system]
-requires = ["maturin>=1.7,<2"]
+requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [project]
 name = "cronoq"
 description = "Elastic, priority-aware task scheduler with a Rust core and asyncio bindings"
+readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT OR Apache-2.0" }
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Daniel Bentes", email = "daniel.bentes@synapti.ai" }]
 classifiers = [
     "Programming Language :: Rust",
@@ -19,7 +21,7 @@ dynamic = ["version"]
 # gRPC client and remote worker for cronoq-server (`cronoq.client`). The generated stubs need
 # runtimes at least as new as the generator (see scripts/gen_proto.sh).
 client = ["grpcio>=1.66.2", "protobuf>=5.27.2,<8"]
-test = ["pytest>=7", "pytest-asyncio>=0.23", "grpcio>=1.66.2", "protobuf>=5.27.2,<8"]
+test = ["cronoq[client]", "pytest>=7", "pytest-asyncio>=0.23", "mypy>=1.13"]
 
 [tool.maturin]
 python-source = "python"

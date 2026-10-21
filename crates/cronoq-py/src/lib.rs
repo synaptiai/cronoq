@@ -26,6 +26,8 @@ fn _cronoq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<scheduler::TaskHandle>()?;
     m.add_class::<scheduler::Snapshot>()?;
     m.add_class::<scheduler::PoolSnapshot>()?;
+    m.add_class::<scheduler::StatusEvent>()?;
+    m.add_class::<scheduler::EventStream>()?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

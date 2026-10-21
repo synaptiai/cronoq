@@ -18,6 +18,7 @@ Example::
 from ._cronoq import (
     AutoscaleConfig,
     Dep,
+    EventStream,
     Pool,
     PoolSnapshot,
     Priority,
@@ -25,6 +26,7 @@ from ._cronoq import (
     RetryPolicy,
     Scheduler,
     Snapshot,
+    StatusEvent,
     Task,
     TaskContext,
     TaskHandle,
@@ -32,6 +34,7 @@ from ._cronoq import (
 )
 from .errors import (
     CronoqError,
+    EventsLagged,
     Permanent,
     Retryable,
     SchedulerError,
@@ -43,6 +46,8 @@ __all__ = [
     "AutoscaleConfig",
     "CronoqError",
     "Dep",
+    "EventStream",
+    "EventsLagged",
     "Permanent",
     "Pool",
     "PoolSnapshot",
@@ -53,6 +58,7 @@ __all__ = [
     "Scheduler",
     "SchedulerError",
     "Snapshot",
+    "StatusEvent",
     "SubmitError",
     "Task",
     "TaskContext",

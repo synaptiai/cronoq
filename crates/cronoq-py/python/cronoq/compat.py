@@ -17,18 +17,22 @@ Differences from the prototype (all deliberate fixes):
 * ``schedule_quality`` is total work divided by the worker-seconds provisioned between the first
   start and the last completion, instead of using the worker count at the time of the call
   (which may have changed since).
+* Submitting an id that is still pending is a no-op (returns ``True``); the prototype queued it
+  twice. Submitting an id that already completed runs it again, as in the prototype.
+* Tasks that did not finish before ``stop()`` stay pending and run after the next ``start()``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import statistics
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Awaitable, Callable, List, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, TypeVar
 
 from ._cronoq import AutoscaleConfig, Pool, Scheduler
 from .errors import SubmitError
@@ -46,6 +50,8 @@ __all__ = [
 
 EPSILON = 0.001
 FIXED_SCHEDULE_BUFFER_SECONDS = 1.0
+#: Fraction of ``max_workers`` that overlapping fixed-start tasks may occupy (engine default).
+RESERVABLE_FRACTION = 0.5
 
 T = TypeVar("T")
 
@@ -129,12 +135,14 @@ class ElasticPriorityScheduler:
         self._cost_rate = worker_cost_per_second
         self.scale_up_threshold = scale_up_threshold
         self.scale_down_threshold = scale_down_threshold
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._lifecycle = threading.RLock()
         self._completed: List[ScheduledTask] = []
         self._ws_first: Optional[float] = None  # worker-seconds at first start
         self._ws_last: Optional[float] = None  # worker-seconds at latest completion
-        self._pending: dict[str, Task] = {}
-        self._queued: List[Task] = []  # submitted before start()
+        self._pending: Dict[str, Task] = {}
+        self._queued: List[Task] = []  # waiting for start()
+        self._generation: Dict[str, int] = {}  # submissions per id (for engine keys)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._sched: Optional[Scheduler] = None
@@ -154,52 +162,65 @@ class ElasticPriorityScheduler:
         return asyncio.run_coroutine_threadsafe(run(), self._loop).result(timeout)
 
     def start(self) -> None:
-        """Start the scheduler (and submit tasks queued before start)."""
-        if self._sched is not None:
-            return
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, name="cronoq-compat", daemon=True)
-        self._thread.start()
-        pool = Pool(
-            "default",
-            self._execute,
-            min=1,
-            initial=self._initial,
-            max=self._max,
-            autoscale=AutoscaleConfig(
-                drain_time=2.0,
-                stabilization_window=5.0,
-                cooldown=2.0,
-                cost_per_worker_second=self._cost_rate,
-            ),
-            unknown_dependency="await",
-        )
-        sched = Scheduler([pool])
-        self._call(sched.start)
-        self._sched = sched
-        self._start_time = time.time()
-        self._stop_time = None
-        with self._lock:
-            queued, self._queued = self._queued, []
-        for task in queued:
-            self.submit(task)
-        logger.info("Scheduler started")
+        """Start the scheduler (and submit tasks that are waiting for it)."""
+        with self._lifecycle:
+            if self._sched is not None:
+                return
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self._loop.run_forever, name="cronoq-compat", daemon=True)
+            self._thread.start()
+            pool = Pool(
+                "default",
+                self._execute,
+                min=1,
+                initial=self._initial,
+                max=self._max,
+                autoscale=AutoscaleConfig(
+                    drain_time=2.0,
+                    stabilization_window=5.0,
+                    cooldown=2.0,
+                    cost_per_worker_second=self._cost_rate,
+                ),
+                unknown_dependency="await",
+            )
+            sched = Scheduler([pool])
+            self._call(sched.start)
+            # Worker-seconds restart with each engine.
+            self._ws_first = self._ws_last = None
+            self._sched = sched
+            self._start_time = time.time()
+            self._stop_time = None
+            with self._lock:
+                queued, self._queued = self._queued, []
+            for task in queued:
+                if not self._submit_native(task):
+                    with self._lock:
+                        self._pending.pop(task.id, None)
+            logger.info("Scheduler started")
 
     def stop(self) -> None:
-        """Stop gracefully (running tasks get up to 2 seconds)."""
-        if self._sched is None:
-            return
-        try:
-            self._last = self._native_stats()
-            sched = self._sched
-            self._call(lambda: sched.shutdown(2.0))
-        finally:
-            assert self._loop is not None and self._thread is not None
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._thread.join(timeout=2.0)
-            self._sched = None
-            self._stop_time = time.time()
-        logger.info("Scheduler stopped")
+        """Stop gracefully: running tasks get up to 2 seconds. Tasks that did not finish stay
+        pending and run after the next :meth:`start`."""
+        with self._lifecycle:
+            if self._sched is None:
+                return
+            try:
+                self._last = self._native_stats()
+                sched = self._sched
+                self._call(lambda: sched.shutdown(2.0))
+            finally:
+                assert self._loop is not None and self._thread is not None
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                self._thread.join(timeout=5.0)
+                if not self._thread.is_alive():
+                    self._loop.close()
+                self._loop = None
+                self._thread = None
+                self._sched = None
+                self._stop_time = time.time()
+                with self._lock:
+                    self._queued = list(self._pending.values())
+            logger.info("Scheduler stopped")
 
     # ------------------------------------------------------------------ work
 
@@ -219,44 +240,107 @@ class ElasticPriorityScheduler:
             self._pending.pop(task.id, None)
             self._completed.append(ScheduledTask(task=task, worker_id=0, start_time=start, end_time=time.time()))
 
-    def submit(self, task: Task) -> bool:
-        """Submit a task. Returns False if it was rejected (e.g. fixed-start conflict, cycle)."""
-        if task.arrival_time == 0:
-            task.arrival_time = time.time()
-        if self._sched is None:
-            with self._lock:
-                self._queued.append(task)
-                self._pending[task.id] = task
-            return True
+    def _key(self, task_id: str) -> str:
+        """Engine key of the latest submission of `task_id` (its first one: the id itself)."""
+        gen = self._generation.get(task_id, 0)
+        return task_id if gen <= 1 else f"{task_id}#{gen}"
+
+    def _submit_native(self, task: Task) -> bool:
+        sched = self._sched
+        assert sched is not None
+        with self._lock:
+            self._generation[task.id] = self._generation.get(task.id, 0) + 1
+            key = self._key(task.id)
+            after = [self._key(d) for d in task.dependencies] or None
         try:
-            sched = self._sched
             self._call(
                 lambda: sched.enqueue(
                     task,
-                    key=task.id,
+                    key=key,
                     priority=int(task.priority),
                     duration_hint=max(task.duration, EPSILON),
                     start_at=task.fixed_start,
                     tolerance=FIXED_SCHEDULE_BUFFER_SECONDS if task.fixed_start is not None else None,
                     deadline_at=task.deadline,
-                    after=list(task.dependencies) or None,
+                    after=after,
                 )
             )
         except SubmitError as e:
             logger.warning("Task %s rejected: %s", task.id, e)
-            with self._lock:
-                self._pending.pop(task.id, None)
             return False
-        with self._lock:
-            self._pending[task.id] = task
         return True
+
+    def submit(self, task: Task) -> bool:
+        """Submit a task. Returns False if it was rejected (e.g. fixed-start conflict, cycle)."""
+        if task.arrival_time == 0:
+            task.arrival_time = time.time()
+        with self._lifecycle:
+            with self._lock:
+                if task.id in self._pending:
+                    return True  # already queued or running
+            if self._sched is None:
+                with self._lock:
+                    reason = self._prestart_rejection(task)
+                    if reason is not None:
+                        logger.warning("Task %s rejected: %s", task.id, reason)
+                        return False
+                    self._queued.append(task)
+                    self._pending[task.id] = task
+                return True
+            with self._lock:
+                self._pending[task.id] = task
+            if not self._submit_native(task):
+                with self._lock:
+                    self._pending.pop(task.id, None)
+                return False
+            return True
+
+    def _prestart_rejection(self, task: Task) -> Optional[str]:
+        """The engine's admission checks for tasks waiting for :meth:`start`."""
+        # Dependency cycles among waiting tasks (including depending on itself).
+        deps: Dict[str, List[str]] = {t.id: t.dependencies for t in self._queued}
+        deps[task.id] = task.dependencies
+        stack, seen = list(task.dependencies), set()  # type: List[str], Set[str]
+        while stack:
+            d = stack.pop()
+            if d == task.id:
+                return "dependency cycle"
+            if d not in seen:
+                seen.add(d)
+                stack.extend(deps.get(d, []))
+        # Fixed-start reservations: at most `limit` may overlap.
+        if task.fixed_start is not None:
+            limit = max(1, math.floor(self._max * RESERVABLE_FRACTION))
+
+            def interval(t: Task) -> tuple[float, float]:
+                assert t.fixed_start is not None
+                tol = FIXED_SCHEDULE_BUFFER_SECONDS
+                return t.fixed_start - tol, t.fixed_start + max(t.duration, EPSILON) + tol
+
+            s, e = interval(task)
+            events = []
+            for other in self._queued:
+                if other.fixed_start is None:
+                    continue
+                os_, oe = interval(other)
+                if os_ < e and oe > s:
+                    events += [(max(os_, s), 1), (min(oe, e), -1)]
+            cur = peak = 0
+            for _, delta in sorted(events):
+                cur += delta
+                peak = max(peak, cur)
+            if peak >= limit:
+                return "fixed-start reservation conflict"
+        return None
 
     # ------------------------------------------------------------------ metrics
 
     def _native_stats(self) -> tuple[int, int, float, float]:
         if self._sched is None:
             if self._last is not None:
-                return self._last
+                pending, workers, adherence, cost = self._last
+                with self._lock:
+                    return (len(self._pending), workers, adherence, cost)
             with self._lock:
                 return (len(self._pending), self._initial, 1.0, 0.0)
         sched = self._sched
@@ -271,7 +355,7 @@ class ElasticPriorityScheduler:
             completed = list(self._completed)
         if completed:
             total_work = sum(s.task.duration for s in completed)
-            if self._ws_first is not None and self._ws_last is not None:
+            if self._ws_first is not None and self._ws_last is not None and self._ws_last > self._ws_first:
                 provisioned = self._ws_last - self._ws_first
             else:
                 makespan = max(s.end_time for s in completed) - min(s.start_time for s in completed)

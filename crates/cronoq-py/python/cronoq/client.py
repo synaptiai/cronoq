@@ -84,6 +84,9 @@ class ClientError(CronoqError):
         self.code = code
         self.message = message
 
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (type(self), (self.code, self.message))
+
     @classmethod
     def from_rpc(cls, e: grpc.RpcError) -> "ClientError":
         code = e.code() if hasattr(e, "code") else None
@@ -103,6 +106,8 @@ def _status_name(value: int) -> str:
 def _decode_json(data: Optional[bytes]) -> Any:
     if data is None:
         raise ValueError("no output")
+    if not data:
+        return None  # a handler that returned None
     return json.loads(data)
 
 
@@ -120,7 +125,8 @@ class Result:
         return self.status == "succeeded"
 
     def json(self) -> Any:
-        """Decode the output as JSON."""
+        """Decode the output as JSON (``None`` for an empty output). Raises ``ValueError`` if
+        the task produced no output."""
         return _decode_json(self.output)
 
     def text(self) -> str:
@@ -215,6 +221,10 @@ _CONDS = {
     "on_success": pb.EDGE_COND_ON_SUCCESS,
     "on_complete": pb.EDGE_COND_ON_COMPLETE,
     "on_failure": pb.EDGE_COND_ON_FAILURE,
+    # The spellings used by the native `cronoq.Dep(on=...)`.
+    "success": pb.EDGE_COND_ON_SUCCESS,
+    "complete": pb.EDGE_COND_ON_COMPLETE,
+    "failure": pb.EDGE_COND_ON_FAILURE,
 }
 
 
@@ -291,18 +301,24 @@ def task(
     duration_hint: Optional[float] = None,
     timeout: Optional[float] = None,
     retry: Any = None,
-    after: Iterable[TaskRef] = (),
+    after: Union[TaskRef, Iterable[TaskRef], None] = None,
     deps: Iterable[Union[Tuple[TaskRef, str], Mapping[str, Any]]] = (),
     resources: Optional[Mapping[str, int]] = None,
     tags: Optional[Mapping[str, str]] = None,
     content_type: Optional[str] = None,
 ) -> "pb.TaskSpec":
-    """Build a wire task spec (for :meth:`Client.submit_batch`).
+    """Build a wire task spec (for :meth:`Client.submit_batch` and :meth:`Client.add_recurring`).
 
     Times are seconds: ``*_in`` relative to now, ``*_at`` absolute (Unix seconds or a
-    timezone-aware ``datetime``). ``deps`` entries are ``(ref, cond)`` tuples or
-    ``{"ref": ..., "cond": ...}`` with ``cond`` in ``on_success``/``on_complete``/``on_failure``.
+    timezone-aware ``datetime``); give at most one of each pair. ``after`` is a key, an id or a
+    list of them (each must succeed first). ``deps`` entries are ``(ref, cond)`` tuples or
+    ``{"ref": ..., "cond": ...}`` with ``cond`` in ``success``/``complete``/``failure`` (or the
+    ``on_``-prefixed spellings).
     """
+    if deadline_in is not None and deadline_at is not None:
+        raise ValueError("use either deadline_in or deadline_at")
+    if start_in is not None and start_at is not None:
+        raise ValueError("use either start_in or start_at")
     data, ct = _encode(payload, content_type)
     spec = pb.TaskSpec(
         payload=data,
@@ -333,7 +349,13 @@ def task(
         spec.timeout_s = float(timeout)
     if retry is not None:
         spec.retry.CopyFrom(_retry(retry))
-    for a in after:
+    if after is None:
+        after_refs: Iterable[TaskRef] = ()
+    elif isinstance(after, (str, int)):
+        after_refs = (after,)
+    else:
+        after_refs = after
+    for a in after_refs:
         spec.deps.append(pb.Dep(target=_ref(a), cond=pb.EDGE_COND_ON_SUCCESS))
     for d in deps:
         if isinstance(d, Mapping):
@@ -374,6 +396,10 @@ def _channel(
     return grpc.aio.insecure_channel(_target(target), options=opts)
 
 
+#: Extra time the client waits beyond a server-side ``Wait`` timeout before giving up itself.
+_WAIT_DEADLINE_MARGIN = 5.0
+
+
 def _metadata(token: Optional[str]) -> Tuple[Tuple[str, str], ...]:
     return (("authorization", f"Bearer {token}"),) if token else ()
 
@@ -388,6 +414,9 @@ class Client:
     ``target`` is ``host:port`` (an ``http://``/``https://`` prefix is accepted). Use
     ``tls=True`` for TLS with system roots, or pass ``grpc.ssl_channel_credentials(...)`` as
     ``credentials`` (e.g. for mTLS).
+
+    The client can be created anywhere; its gRPC channel is opened on first use on the running
+    event loop (and reopened if used from a different loop later).
     """
 
     def __init__(
@@ -400,31 +429,68 @@ class Client:
         options: Optional[Sequence[Tuple[str, Any]]] = None,
     ) -> None:
         self.target = target
-        self._channel = _channel(target, tls, credentials, options)
+        self._tls = tls
+        self._credentials = credentials
+        self._options = options
         self._md = _metadata(token)
-        self._tasks = pb_grpc.TasksStub(self._channel)
-        self._admin = pb_grpc.AdminStub(self._channel)
+        self._channel: Optional[grpc.aio.Channel] = None
+        self._channel_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._tasks_stub: Any = None
+        self._admin_stub: Any = None
+
+    def _ensure_channel(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._channel is None or self._channel_loop is not loop:
+            self._channel = _channel(self.target, self._tls, self._credentials, self._options)
+            self._channel_loop = loop
+            self._tasks_stub = pb_grpc.TasksStub(self._channel)
+            self._admin_stub = pb_grpc.AdminStub(self._channel)
+
+    @property
+    def _tasks(self) -> Any:
+        self._ensure_channel()
+        return self._tasks_stub
+
+    @property
+    def _admin(self) -> Any:
+        self._ensure_channel()
+        return self._admin_stub
 
     async def __aenter__(self) -> "Client":
+        self._ensure_channel()
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
     async def close(self) -> None:
-        await self._channel.close()
+        channel, self._channel = self._channel, None
+        if channel is not None and self._channel_loop is asyncio.get_running_loop():
+            await channel.close()
+        self._channel_loop = None
 
     async def _call(self, fn: Callable[..., Awaitable[Any]], req: Any, timeout: Optional[float] = None) -> Any:
         try:
             return await fn(req, metadata=self._md, timeout=timeout)
         except grpc.aio.AioRpcError as e:
+            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED and timeout is not None:
+                raise TimeoutError(f"no response within {timeout}s") from None
             raise ClientError.from_rpc(e) from None
 
-    async def submit(self, payload: Payload = None, *, wait: bool = False, **opts: Any) -> Submitted:
-        """Submit one task (see :func:`task` for options). With ``wait=True`` the call
-        returns when the task finished, with ``Submitted.result`` set."""
+    async def submit(
+        self,
+        payload: Payload = None,
+        *,
+        wait: bool = False,
+        call_timeout: Optional[float] = None,
+        **opts: Any,
+    ) -> Submitted:
+        """Submit one task (see :func:`task` for options; ``timeout`` there is the task's
+        execution timeout). With ``wait=True`` the call returns when the task finished, with
+        ``Submitted.result`` set. ``call_timeout`` (seconds) bounds the whole call;
+        :class:`TimeoutError` is raised when it expires (the task keeps running on the server)."""
         req = pb.SubmitRequest(task=task(payload, **opts), wait=wait)
-        r = await self._call(self._tasks.Submit, req)
+        r = await self._call(self._tasks.Submit, req, call_timeout)
         return Submitted(r.id, r.duplicate, Result._from_pb(r.result) if r.HasField("result") else None)
 
     async def submit_batch(self, tasks: Sequence["pb.TaskSpec"]) -> List[Submitted]:
@@ -442,12 +508,17 @@ class Client:
         return TaskInfo(r.id, _status_name(r.status)) if r.found else None
 
     async def wait(self, ref: TaskRef, timeout: Optional[float] = None) -> Result:
-        """Wait for a task to finish. Raises :class:`TimeoutError` after ``timeout`` seconds."""
+        """Wait for a task to finish. Raises :class:`TimeoutError` after ``timeout`` seconds.
+
+        The server enforces ``timeout``; the client also applies a gRPC deadline slightly
+        later, so a half-open connection cannot block forever."""
         req = pb.WaitRequest(task=_ref(ref))
+        deadline = None
         if timeout is not None:
             req.timeout_s = float(timeout)
+            deadline = float(timeout) + _WAIT_DEADLINE_MARGIN
         try:
-            r = await self._tasks.Wait(req, metadata=self._md)
+            r = await self._tasks.Wait(req, metadata=self._md, timeout=deadline)
         except grpc.aio.AioRpcError as e:
             if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
                 raise TimeoutError(f"task {ref!r} still running after {timeout}s") from None
@@ -507,10 +578,31 @@ class Client:
         )
 
     async def add_recurring(
-        self, name: str, cron: str, template: "pb.TaskSpec", *, tz: str = "", allow_overlap: bool = False
+        self,
+        name: str,
+        cron: str,
+        payload: Union[Payload, "pb.TaskSpec"] = None,
+        *,
+        tz: Optional[str] = None,
+        overlap: str = "skip",
+        allow_overlap: Optional[bool] = None,
+        **opts: Any,
     ) -> None:
-        """Add a cron schedule (requires an admin token)."""
-        req = pb.RecurringRequest(name=name, cron=cron, tz=tz, template=template, allow_overlap=allow_overlap)
+        """Add a cron schedule (requires an admin token).
+
+        Like the native ``Scheduler.add_recurring``: ``payload`` plus :func:`task` options, or a
+        prebuilt spec from :func:`task`. ``overlap`` is ``"skip"`` (default) or ``"allow"``;
+        ``allow_overlap`` is accepted as an older spelling."""
+        if isinstance(payload, pb.TaskSpec):
+            if opts:
+                raise TypeError("task options cannot be combined with a prebuilt TaskSpec")
+            template = payload
+        else:
+            template = task(payload, **opts)
+        if overlap not in ("skip", "allow"):
+            raise ValueError("overlap must be 'skip' or 'allow'")
+        allow = (overlap == "allow") if allow_overlap is None else bool(allow_overlap)
+        req = pb.RecurringRequest(name=name, cron=cron, tz=tz or "", template=template, allow_overlap=allow)
         await self._call(self._admin.AddRecurring, req)
 
     async def remove_recurring(self, name: str) -> bool:
@@ -566,9 +658,17 @@ class Worker:
 
     ``handler(lease)`` returns the output (``bytes``, ``str``, JSON-serialisable values or
     ``None``). Raise :class:`cronoq.Retryable` / :class:`cronoq.Permanent` to control retries;
-    any other exception is reported as a retryable failure. At most ``slots`` leases run at
-    once. If the stream drops, the worker reconnects with exponential backoff (unless
-    ``reconnect=False``); attempts in flight at that moment are retried by the server.
+    any other exception is reported as a retryable failure (an output that cannot be
+    JSON-encoded is a permanent failure). At most ``slots`` leases run at once. If the stream
+    drops, the worker reconnects with exponential backoff (unless ``reconnect=False``); attempts
+    in flight at that moment are retried by the server.
+
+    A worker can be created outside a running event loop and run again after :meth:`stop`
+    (also on a different loop).
+
+    Note: when the server aborts an attempt (timeout, lease loss, cancellation), the handler's
+    task is cancelled and the slot is freed immediately. A handler that swallows
+    ``asyncio.CancelledError`` keeps running and may overlap with the retry of the same task.
     """
 
     def __init__(
@@ -601,9 +701,14 @@ class Worker:
         self._credentials = credentials
         self._options = options
         self._md = _metadata(token)
-        self._stopping = asyncio.Event()
-        self._registered = asyncio.Event()
-        self._closed = asyncio.Event()
+        # Created lazily on the running loop (asyncio primitives bind to a loop on Python 3.9).
+        self._events_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stopping_ev: Optional[asyncio.Event] = None
+        self._registered_ev: Optional[asyncio.Event] = None
+        self._closed_ev: Optional[asyncio.Event] = None
+        self._stop_task: Optional["asyncio.Future[None]"] = None
+        self._draining = False
+        self._finished = False
         self._outbox: Optional[asyncio.Queue] = None
         self._running: Dict[int, Tuple[asyncio.Task, Lease]] = {}
         self._call: Any = None
@@ -611,6 +716,33 @@ class Worker:
         self.lease_ttl: Optional[float] = None
         #: Number of (re)connections made, for monitoring.
         self.connections = 0
+
+    def _ensure_events(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._events_loop is not loop:
+            self._events_loop = loop
+            self._stopping_ev = asyncio.Event()
+            self._registered_ev = asyncio.Event()
+            self._closed_ev = asyncio.Event()
+            self._stop_task = None
+
+    @property
+    def _stopping(self) -> asyncio.Event:
+        self._ensure_events()
+        assert self._stopping_ev is not None
+        return self._stopping_ev
+
+    @property
+    def _registered(self) -> asyncio.Event:
+        self._ensure_events()
+        assert self._registered_ev is not None
+        return self._registered_ev
+
+    @property
+    def _closed(self) -> asyncio.Event:
+        self._ensure_events()
+        assert self._closed_ev is not None
+        return self._closed_ev
 
     @property
     def running(self) -> int:
@@ -622,6 +754,21 @@ class Worker:
 
     async def run(self) -> None:
         """Serve until :meth:`stop` is called (or a non-retryable error occurs)."""
+        self._ensure_events()
+        if self._finished:
+            # Running again after a previous run ended: start from a clean state.
+            self._finished = False
+            self._draining = False
+            self._stop_task = None
+            self._stopping.clear()
+            self._registered.clear()
+            self._closed.clear()
+        try:
+            await self._serve()
+        finally:
+            self._finished = True
+
+    async def _serve(self) -> None:
         delay = self.backoff[0]
         while not self._stopping.is_set():
             started = time.monotonic()
@@ -636,8 +783,8 @@ class Worker:
             finally:
                 self._registered.clear()
                 self._abandon_running()
-            if self._stopping.is_set():
-                break
+            if self._stopping.is_set() or self._draining:
+                break  # never reconnect while stopping
             if not self.reconnect:
                 raise ClientError("unavailable", "worker stream ended")
             if time.monotonic() - started > 10 * self.backoff[1]:
@@ -650,15 +797,24 @@ class Worker:
 
     async def stop(self, grace: Optional[float] = None) -> None:
         """Stop taking leases, let running ones finish for up to ``grace`` seconds, then
-        cancel the rest and disconnect."""
-        if self._stopping.is_set():
-            return
-        grace = self.grace if grace is None else grace
+        cancel the rest and disconnect. Concurrent calls wait for the same shutdown."""
+        self._ensure_events()
+        if self._stop_task is None:
+            self._stop_task = asyncio.ensure_future(self._stop(self.grace if grace is None else grace))
+        await asyncio.shield(self._stop_task)
+
+    async def _stop(self, grace: float) -> None:
+        self._draining = True
         if self._outbox is not None and self._registered.is_set():
             self._outbox.put_nowait(pb.WorkerMessage(set_slots=pb.SetSlots(slots=0)))
-        tasks = [t for t, _ in self._running.values()]
-        if tasks:
-            await asyncio.wait(tasks, timeout=grace)
+        # Wait for running leases, including any that arrived just before the server saw
+        # SetSlots(0).
+        deadline = time.monotonic() + grace
+        while self._running:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            await asyncio.wait([t for t, _ in self._running.values()], timeout=min(left, 0.1))
         self._stopping.set()
         for t, lease in list(self._running.values()):
             lease.cancelled.set()
@@ -752,10 +908,26 @@ class Worker:
         msg: Optional[pb.WorkerMessage] = None
         try:
             out = await self.handler(lease)
-            data, _ = _encode(out, None)
+            try:
+                data, _ = _encode(out, None)
+            except (TypeError, ValueError) as e:
+                raise Permanent(f"handler output is not JSON-serialisable: {e}") from None
             msg = pb.WorkerMessage(complete=pb.Complete(lease=lease.id, output=data))
         except asyncio.CancelledError:
-            return  # aborted by the server or the worker is stopping
+            current = asyncio.current_task()
+            cancelling = getattr(current, "cancelling", None)
+            external = (
+                lease.cancelled.is_set()
+                or self._stopping.is_set()
+                or (cancelling is not None and cancelling() > 0)
+            )
+            if external:
+                return  # aborted by the server or the worker is stopping
+            # The handler itself raised CancelledError (e.g. awaited a future that something
+            # else cancelled): report it, or the server would wait for the lease to expire.
+            msg = pb.WorkerMessage(
+                fail=pb.Fail(lease=lease.id, message="CancelledError: raised by the handler", permanent=False)
+            )
         except Permanent as e:
             msg = pb.WorkerMessage(fail=pb.Fail(lease=lease.id, message=str(e) or "permanent failure", permanent=True))
         except Retryable as e:
