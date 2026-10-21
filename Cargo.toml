@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/cronoq-core", "crates/cronoq", "crates/cronoq-proto", "crates/cronoq-server", "crates/cronoq-store-postgres"]
+members = [
+    "crates/cronoq-core",
+    "crates/cronoq",
+    "crates/cronoq-proto",
+    "crates/cronoq-server",
+    "crates/cronoq-store-postgres",
+    "crates/cronoq-py",
+]
 
 [workspace.package]
 version = "0.1.0"
