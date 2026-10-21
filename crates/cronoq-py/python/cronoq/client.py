@@ -2,11 +2,13 @@
 
 Requires the ``client`` extra: ``pip install "cronoq[client]"``.
 
+Speaks worker protocol version 2 (see ``cronoq.v1`` in ``cronoq-proto``).
+
 Submitting work::
 
     from cronoq.client import Client
 
-    async with Client("localhost:7070", token="client-token") as c:
+    async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
         sub = await c.submit({"prompt": "hi"}, pool="llm", priority="high", wait=True)
         print(sub.result.json())
 
@@ -17,7 +19,8 @@ Serving a pool::
     async def handle(lease):
         return {"echo": lease.json()}
 
-    await Worker("localhost:7070", "llm", handle, slots=8, token="worker-token").run()
+    await Worker("localhost:7070", "llm", handle, slots=8,
+                 token=os.environ["CRONOQ_WORKER_TOKEN"]).run()
 """
 
 from __future__ import annotations
@@ -54,18 +57,25 @@ from ._proto import cronoq_pb2_grpc as pb_grpc
 from .errors import CronoqError, Permanent, Retryable
 
 __all__ = [
+    "CancelTask",
     "Client",
     "ClientError",
     "Event",
     "Lease",
+    "PROTOCOL_VERSION",
     "PoolSnapshot",
+    "Reject",
     "Result",
     "Snapshot",
     "Submitted",
     "TaskInfo",
+    "Totals",
     "Worker",
     "task",
 ]
+
+#: Worker protocol version this client speaks.
+PROTOCOL_VERSION = 2
 
 log = logging.getLogger("cronoq.client")
 
@@ -75,9 +85,10 @@ TaskRef = Union[int, str]
 
 class ClientError(CronoqError):
     """A gRPC call failed. ``code`` is the lower-case gRPC status name, e.g.
-    ``unauthenticated``, ``permission_denied``, ``not_found``, ``resource_exhausted``
-    (queue full), ``failed_precondition`` (reservation conflict), ``invalid_argument``,
-    ``unavailable``."""
+    ``unauthenticated``, ``permission_denied``, ``not_found`` (unknown task, pool or
+    dependency), ``resource_exhausted`` (queue full, retry later), ``failed_precondition``
+    (reservation conflict), ``invalid_argument``, ``unavailable`` (not the leader or shutting
+    down: retry, e.g. against the new leader)."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
@@ -87,11 +98,34 @@ class ClientError(CronoqError):
     def __reduce__(self) -> Tuple[Any, ...]:
         return (type(self), (self.code, self.message))
 
+    @property
+    def retryable(self) -> bool:
+        """True for errors where retrying the same call later can succeed."""
+        return self.code in ("unavailable", "resource_exhausted")
+
     @classmethod
     def from_rpc(cls, e: grpc.RpcError) -> "ClientError":
         code = e.code() if hasattr(e, "code") else None
         details = e.details() if hasattr(e, "details") else str(e)
         return cls(code.name.lower() if code is not None else "unknown", details or "")
+
+
+class Reject(CronoqError):
+    """Raise from a :class:`Worker` handler to give the lease back without running it (sent as
+    ``Nack``). The server offers it, within the same attempt, to another worker of the pool that
+    has a free slot; if there is none, the attempt fails as retryable and counts against the
+    task's retry budget."""
+
+    def __init__(self, reason: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+    def __reduce__(self) -> Tuple[Any, ...]:
+        return (type(self), (self.reason,))
+
+
+class CancelTask(CronoqError):
+    """Raise from a :class:`Worker` handler to end the task as ``cancelled`` (no retry)."""
 
 
 def _status_name(value: int) -> str:
@@ -113,12 +147,15 @@ def _decode_json(data: Optional[bytes]) -> Any:
 
 @dataclass(frozen=True)
 class Result:
-    """Outcome of a finished task."""
+    """Outcome of a finished task. ``status`` is always terminal (``succeeded``, ``failed``,
+    ``dead_lettered``, ``cancelled``, ``skipped``, ``missed`` or ``shed``).
+    ``output_available`` is False for a succeeded task whose output is no longer retained."""
 
     id: int
     status: str
     output: Optional[bytes]
     message: str = ""
+    output_available: bool = False
 
     @property
     def ok(self) -> bool:
@@ -139,6 +176,7 @@ class Result:
             status=_status_name(r.status),
             output=r.output if r.HasField("output") else None,
             message=r.message,
+            output_available=r.output_available,
         )
 
 
@@ -149,10 +187,54 @@ class Submitted:
     result: Optional[Result] = None
 
 
+def _opt_secs(msg: Any, field_name: str) -> Optional[float]:
+    return getattr(msg, field_name) / 1e9 if msg.HasField(field_name) else None
+
+
 @dataclass(frozen=True)
 class TaskInfo:
+    """Task details from :meth:`Client.get`. Fields other than ``id`` and ``status`` are best
+    effort (known for tasks the serving leader submitted or observed, and for persisted
+    tasks). Times are Unix seconds."""
+
     id: int
     status: str
+    pool: str = ""
+    key: str = ""
+    kind: str = ""
+    attempt: int = 0
+    #: 0 if unknown.
+    max_attempts: int = 0
+    created_at: Optional[float] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    #: Last error or status message.
+    message: str = ""
+    output_available: bool = False
+
+    @property
+    def done(self) -> bool:
+        return self.status in _TERMINAL
+
+    @classmethod
+    def _from_pb(cls, r: "pb.TaskInfo") -> "TaskInfo":
+        return cls(
+            id=r.id,
+            status=_status_name(r.status),
+            pool=r.pool,
+            key=r.key,
+            kind=r.kind,
+            attempt=r.attempt,
+            max_attempts=r.max_attempts,
+            created_at=_opt_secs(r, "created_unix_ns"),
+            started_at=_opt_secs(r, "started_unix_ns"),
+            finished_at=_opt_secs(r, "finished_unix_ns"),
+            message=r.message,
+            output_available=r.output_available,
+        )
+
+
+_TERMINAL = frozenset({"succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed"})
 
 
 @dataclass(frozen=True)
@@ -188,10 +270,29 @@ class PoolSnapshot:
     wait_p90: float
     wait_p99: float
     cost: float
+    workers_connected: int = 0
 
     @property
     def pending(self) -> int:
         return sum(self.pending_by_class)
+
+
+@dataclass(frozen=True)
+class Totals:
+    """Counters since the leader started."""
+
+    submitted: int = 0
+    dispatched: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    dead_lettered: int = 0
+    cancelled: int = 0
+    skipped: int = 0
+    missed: int = 0
+    shed: int = 0
+    retries: int = 0
+    timeouts: int = 0
+    lease_expiries: int = 0
 
 
 @dataclass(frozen=True)
@@ -200,6 +301,8 @@ class Snapshot:
     live_tasks: int
     running: int
     pending: int
+    totals: Totals = field(default_factory=Totals)
+    workers_connected: int = 0
 
     def pool(self, name: str) -> Optional[PoolSnapshot]:
         return next((p for p in self.pools if p.name == name), None)
@@ -399,6 +502,15 @@ def _channel(
 #: Extra time the client waits beyond a server-side ``Wait`` timeout before giving up itself.
 _WAIT_DEADLINE_MARGIN = 5.0
 
+#: Room left in a message for everything but the output bytes.
+_MESSAGE_OVERHEAD = 1024
+
+
+def _priority_name(value: int) -> Optional[str]:
+    if value == pb.PRIORITY_UNSPECIFIED:
+        return None
+    return pb.Priority.Name(value)[len("PRIORITY_"):].lower()
+
 
 def _metadata(token: Optional[str]) -> Tuple[Tuple[str, str], ...]:
     return (("authorization", f"Bearer {token}"),) if token else ()
@@ -473,8 +585,9 @@ class Client:
         try:
             return await fn(req, metadata=self._md, timeout=timeout)
         except grpc.aio.AioRpcError as e:
-            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED and timeout is not None:
-                raise TimeoutError(f"no response within {timeout}s") from None
+            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                # Either our own deadline, or the server's wait limit (task still running).
+                raise TimeoutError(e.details() or f"no response within {timeout}s") from None
             raise ClientError.from_rpc(e) from None
 
     async def submit(
@@ -482,14 +595,26 @@ class Client:
         payload: Payload = None,
         *,
         wait: bool = False,
+        wait_timeout: Optional[float] = None,
         call_timeout: Optional[float] = None,
         **opts: Any,
     ) -> Submitted:
         """Submit one task (see :func:`task` for options; ``timeout`` there is the task's
-        execution timeout). With ``wait=True`` the call returns when the task finished, with
-        ``Submitted.result`` set. ``call_timeout`` (seconds) bounds the whole call;
-        :class:`TimeoutError` is raised when it expires (the task keeps running on the server)."""
+        execution timeout).
+
+        With ``wait=True`` the call returns when the task finished, with ``Submitted.result``
+        set. ``wait_timeout`` bounds the wait on the server (which also caps it at its
+        ``limits.max_wait_s``); ``call_timeout`` bounds the whole call on the client. Either
+        expiring raises :class:`TimeoutError` (the task stays submitted: ``wait`` on it
+        later). :class:`ClientError` ``unavailable`` means the server shut down or lost
+        leadership before the task finished."""
         req = pb.SubmitRequest(task=task(payload, **opts), wait=wait)
+        if wait_timeout is not None:
+            if not wait:
+                raise ValueError("wait_timeout requires wait=True")
+            req.wait_timeout_s = float(wait_timeout)
+            if call_timeout is None:
+                call_timeout = float(wait_timeout) + _WAIT_DEADLINE_MARGIN
         r = await self._call(self._tasks.Submit, req, call_timeout)
         return Submitted(r.id, r.duplicate, Result._from_pb(r.result) if r.HasField("result") else None)
 
@@ -499,19 +624,24 @@ class Client:
         return [Submitted(t.id, t.duplicate) for t in r.tasks]
 
     async def cancel(self, ref: TaskRef) -> bool:
-        r = await self._call(self._tasks.Cancel, _ref(ref))
+        """Cancel a task by id or key; ``False`` if it already finished."""
+        r = await self._call(self._tasks.Cancel, pb.CancelRequest(task=_ref(ref)))
         return r.cancelled
 
-    async def get(self, ref: TaskRef) -> Optional[TaskInfo]:
-        """Current status, or ``None`` if the task is unknown (or no longer retained)."""
-        r = await self._call(self._tasks.Get, _ref(ref))
-        return TaskInfo(r.id, _status_name(r.status)) if r.found else None
+    async def get(self, ref: TaskRef) -> TaskInfo:
+        """Task details by id or key. Raises :class:`ClientError` ``not_found`` if the task is
+        unknown (or no longer retained)."""
+        r = await self._call(self._tasks.Get, pb.GetRequest(task=_ref(ref)))
+        return TaskInfo._from_pb(r)
 
     async def wait(self, ref: TaskRef, timeout: Optional[float] = None) -> Result:
-        """Wait for a task to finish. Raises :class:`TimeoutError` after ``timeout`` seconds.
+        """Wait for a task to finish and return its :class:`Result`.
 
-        The server enforces ``timeout``; the client also applies a gRPC deadline slightly
-        later, so a half-open connection cannot block forever."""
+        Raises :class:`TimeoutError` if it is still running after ``timeout`` seconds (or the
+        server's ``limits.max_wait_s``), and :class:`ClientError` ``unavailable`` if the server
+        shut down or lost leadership first (wait again, against the new leader). The client
+        also applies a gRPC deadline slightly after ``timeout``, so a half-open connection
+        cannot block forever."""
         req = pb.WaitRequest(task=_ref(ref))
         deadline = None
         if timeout is not None:
@@ -525,9 +655,27 @@ class Client:
             raise ClientError.from_rpc(e) from None
         return Result._from_pb(r)
 
-    async def watch(self, pools: Optional[Iterable[str]] = None) -> AsyncIterator[Event]:
-        """Stream status events (terminal ones, plus all transitions if the server emits them)."""
-        call = self._tasks.Watch(pb.WatchRequest(pools=list(pools or [])), metadata=self._md)
+    async def watch(
+        self,
+        pools: Optional[Iterable[str]] = None,
+        *,
+        ids: Optional[Iterable[int]] = None,
+        keys: Optional[Iterable[str]] = None,
+        all_transitions: bool = False,
+    ) -> AsyncIterator[Event]:
+        """Stream status events, optionally filtered by pool, task id or key.
+
+        Only terminal statuses are sent unless ``all_transitions=True`` (then also blocked,
+        ready, running, retrying, ...). The stream ends with :class:`ClientError`
+        ``unavailable`` when the server shuts down or loses leadership, and ``data_loss`` if
+        this consumer falls too far behind."""
+        req = pb.WatchRequest(
+            pools=list(pools or []),
+            ids=[int(i) for i in ids or []],
+            keys=list(keys or []),
+            all_transitions=all_transitions,
+        )
+        call = self._tasks.Watch(req, metadata=self._md)
         try:
             async for e in call:
                 yield Event(
@@ -546,8 +694,10 @@ class Client:
             call.cancel()
 
     async def snapshot(self) -> Snapshot:
-        """Windowed quality metrics per pool (requires an admin token)."""
+        """Windowed quality metrics per pool, totals and connected workers (requires a
+        ``metrics`` or ``admin`` token)."""
         r = await self._call(self._admin.Snapshot, pb.Empty())
+        t = r.totals
         return Snapshot(
             pools=tuple(
                 PoolSnapshot(
@@ -569,12 +719,28 @@ class Client:
                     wait_p90=p.wait_p90_s,
                     wait_p99=p.wait_p99_s,
                     cost=p.cost,
+                    workers_connected=p.workers_connected,
                 )
                 for p in r.pools
             ),
             live_tasks=r.live_tasks,
             running=r.running,
             pending=r.pending,
+            totals=Totals(
+                submitted=t.submitted,
+                dispatched=t.dispatched,
+                succeeded=t.succeeded,
+                failed=t.failed,
+                dead_lettered=t.dead_lettered,
+                cancelled=t.cancelled,
+                skipped=t.skipped,
+                missed=t.missed,
+                shed=t.shed,
+                retries=t.retries,
+                timeouts=t.timeouts,
+                lease_expiries=t.lease_expiries,
+            ),
+            workers_connected=r.workers_connected,
         )
 
     async def add_recurring(
@@ -628,6 +794,11 @@ class Lease:
     tags: Dict[str, str]
     timeout: Optional[float]
     deadline: Optional[float]  # Unix seconds
+    pool: str = ""
+    #: ``critical``/``high``/``normal``/``low``, or ``None`` if the server did not say.
+    priority: Optional[str] = None
+    #: Heartbeat at least this often (seconds); sent automatically by the worker.
+    lease_ttl: Optional[float] = None
     #: Set when the server aborts this attempt (timeout, lease loss, cancellation).
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -657,11 +828,19 @@ class Worker:
     """Serve a pool: lease tasks from the server and run ``handler`` on them.
 
     ``handler(lease)`` returns the output (``bytes``, ``str``, JSON-serialisable values or
-    ``None``). Raise :class:`cronoq.Retryable` / :class:`cronoq.Permanent` to control retries;
-    any other exception is reported as a retryable failure (an output that cannot be
-    JSON-encoded is a permanent failure). At most ``slots`` leases run at once. If the stream
-    drops, the worker reconnects with exponential backoff (unless ``reconnect=False``); attempts
-    in flight at that moment are retried by the server.
+    ``None``). In the handler:
+
+    - raise :class:`cronoq.Retryable` / :class:`cronoq.Permanent` to control retries; any
+      other exception is reported as a retryable failure (an output that cannot be JSON-encoded,
+      or that exceeds the server's message limit, is a permanent failure);
+    - raise :class:`Reject` to hand the lease back unrun (the server offers it to another
+      worker with a free slot, or else fails the attempt as retryable);
+    - raise :class:`CancelTask` to end the task as ``cancelled``.
+
+    At most ``slots`` leases run at once; the server may grant fewer (``granted_slots``), and
+    leases beyond the grant are handed back. If the stream drops, or the server announces it is
+    shutting down or no longer the leader, the worker reconnects with exponential backoff
+    (unless ``reconnect=False``); attempts in flight at that moment are retried by the server.
 
     A worker can be created outside a running event loop and run again after :meth:`stop`
     (also on a different loop).
@@ -714,6 +893,15 @@ class Worker:
         self._call: Any = None
         self.worker_id: Optional[int] = None
         self.lease_ttl: Optional[float] = None
+        #: Slots the server granted (may be lower than requested), once registered.
+        self.granted_slots: Optional[int] = None
+        #: Worker protocol version the server speaks, once registered.
+        self.server_protocol: Optional[int] = None
+        #: Largest message the server accepts (outputs must fit), once registered.
+        self.max_message_bytes: Optional[int] = None
+        #: Reason given by the server in its last ``Shutdown`` message, if any.
+        self.last_shutdown: Optional[str] = None
+        self._reconnect_now = False
         #: Number of (re)connections made, for monitoring.
         self.connections = 0
 
@@ -787,8 +975,10 @@ class Worker:
                 break  # never reconnect while stopping
             if not self.reconnect:
                 raise ClientError("unavailable", "worker stream ended")
-            if time.monotonic() - started > 10 * self.backoff[1]:
-                delay = self.backoff[0]  # the last session was healthy
+            if self._reconnect_now or time.monotonic() - started > 10 * self.backoff[1]:
+                # Leadership moved (reconnect right away), or the last session was healthy.
+                delay = self.backoff[0]
+            self._reconnect_now = False
             try:
                 await asyncio.wait_for(self._stopping.wait(), delay)
             except asyncio.TimeoutError:
@@ -840,7 +1030,14 @@ class Worker:
         self._outbox = outbox
         self._closed.clear()
         outbox.put_nowait(
-            pb.WorkerMessage(register=pb.Register(pool=self.pool, slots=self.slots, worker_name=self.name))
+            pb.WorkerMessage(
+                register=pb.Register(
+                    pool=self.pool,
+                    slots=self.slots,
+                    worker_name=self.name,
+                    protocol_version=PROTOCOL_VERSION,
+                )
+            )
         )
 
         async def requests() -> AsyncIterator["pb.WorkerMessage"]:
@@ -859,10 +1056,15 @@ class Worker:
                 async for msg in call:
                     kind = msg.WhichOneof("msg")
                     if kind == "registered":
-                        self.worker_id = msg.registered.worker_id
-                        self.lease_ttl = (
-                            msg.registered.lease_ttl_s if msg.registered.HasField("lease_ttl_s") else None
-                        )
+                        reg = msg.registered
+                        self.worker_id = reg.worker_id
+                        self.lease_ttl = reg.lease_ttl_s if reg.HasField("lease_ttl_s") else None
+                        # Version-1 servers send neither field.
+                        self.granted_slots = reg.slots or self.slots
+                        self.server_protocol = reg.protocol_version or 1
+                        self.max_message_bytes = reg.max_message_bytes or None
+                        if self.granted_slots < self.slots:
+                            log.info("server granted %d of %d slots", self.granted_slots, self.slots)
                         self._registered.set()
                     elif kind == "lease":
                         self._start(msg.lease, outbox)
@@ -871,6 +1073,11 @@ class Worker:
                         if entry is not None:
                             entry[1].cancelled.set()
                             entry[0].cancel()
+                    elif kind == "shutdown":
+                        self.last_shutdown = msg.shutdown.reason or "shutdown"
+                        self._reconnect_now = msg.shutdown.not_leader
+                        log.info("server is going away (%s); reconnecting", self.last_shutdown)
+                        break
             except asyncio.CancelledError:
                 if not self._stopping.is_set():
                     raise
@@ -879,7 +1086,19 @@ class Worker:
                 self._closed.set()
                 outbox.put_nowait(_STOP)
 
+    def _give_back(self, lease_id: int, reason: str, outbox: asyncio.Queue) -> None:
+        if (self.server_protocol or 1) >= 2:
+            outbox.put_nowait(pb.WorkerMessage(nack=pb.Nack(lease=lease_id, reason=reason)))
+        else:
+            outbox.put_nowait(pb.WorkerMessage(fail=pb.Fail(lease=lease_id, message=reason, permanent=False)))
+
     def _start(self, m: "pb.Lease", outbox: asyncio.Queue) -> None:
+        if self._draining or self._stopping.is_set():
+            self._give_back(m.lease, "worker is stopping", outbox)
+            return
+        if len(self._running) >= (self.granted_slots or self.slots):
+            self._give_back(m.lease, "worker has no free slot", outbox)
+            return
         lease = Lease(
             id=m.lease,
             task_id=m.task_id,
@@ -891,14 +1110,18 @@ class Worker:
             tags=dict(m.tags),
             timeout=m.timeout_s if m.HasField("timeout_s") else None,
             deadline=m.deadline_unix_ns / 1e9 if m.HasField("deadline_unix_ns") else None,
+            pool=m.pool or self.pool,
+            priority=_priority_name(m.priority),
+            lease_ttl=m.lease_ttl_s if m.HasField("lease_ttl_s") else self.lease_ttl,
         )
         task = asyncio.get_running_loop().create_task(self._run_lease(lease, outbox))
         self._running[lease.id] = (task, lease)
 
     async def _heartbeat(self, lease: Lease, outbox: asyncio.Queue) -> None:
-        if not self.lease_ttl:
+        ttl = lease.lease_ttl or self.lease_ttl
+        if not ttl:
             return
-        period = max(self.lease_ttl / 3, 0.01)
+        period = max(ttl / 3, 0.01)
         while True:
             await asyncio.sleep(period)
             outbox.put_nowait(pb.WorkerMessage(heartbeat=pb.Heartbeat(lease=lease.id)))
@@ -909,10 +1132,15 @@ class Worker:
         try:
             out = await self.handler(lease)
             try:
-                data, _ = _encode(out, None)
+                data, content_type = _encode(out, None)
             except (TypeError, ValueError) as e:
                 raise Permanent(f"handler output is not JSON-serialisable: {e}") from None
-            msg = pb.WorkerMessage(complete=pb.Complete(lease=lease.id, output=data))
+            limit = self.max_message_bytes
+            if limit is not None and len(data) + _MESSAGE_OVERHEAD > limit:
+                raise Permanent(
+                    f"output of {len(data)} bytes exceeds the server's message limit of {limit} bytes"
+                )
+            msg = pb.WorkerMessage(complete=pb.Complete(lease=lease.id, output=data, content_type=content_type))
         except asyncio.CancelledError:
             current = asyncio.current_task()
             cancelling = getattr(current, "cancelling", None)
@@ -928,6 +1156,16 @@ class Worker:
             msg = pb.WorkerMessage(
                 fail=pb.Fail(lease=lease.id, message="CancelledError: raised by the handler", permanent=False)
             )
+        except Reject as e:
+            self._running.pop(lease.id, None)
+            self._give_back(lease.id, e.reason or "rejected by the handler", outbox)
+        except CancelTask as e:
+            if (self.server_protocol or 1) >= 2:
+                msg = pb.WorkerMessage(cancelled=pb.Cancelled(lease=lease.id))
+            else:
+                msg = pb.WorkerMessage(
+                    fail=pb.Fail(lease=lease.id, message=str(e) or "cancelled by the handler", permanent=True)
+                )
         except Permanent as e:
             msg = pb.WorkerMessage(fail=pb.Fail(lease=lease.id, message=str(e) or "permanent failure", permanent=True))
         except Retryable as e:

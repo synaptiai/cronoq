@@ -46,12 +46,12 @@ class TasksStub(object):
                 _registered_method=True)
         self.Cancel = channel.unary_unary(
                 '/cronoq.v1.Tasks/Cancel',
-                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.TaskRef.SerializeToString,
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.CancelRequest.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.CancelResponse.FromString,
                 _registered_method=True)
         self.Get = channel.unary_unary(
                 '/cronoq.v1.Tasks/Get',
-                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.TaskRef.SerializeToString,
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.GetRequest.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.TaskInfo.FromString,
                 _registered_method=True)
         self.Wait = channel.unary_unary(
@@ -100,7 +100,9 @@ class TasksServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Watch(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """Ends with UNAVAILABLE when the server shuts down or loses leadership, and with
+        DATA_LOSS if the client falls too far behind.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -120,12 +122,12 @@ def add_TasksServicer_to_server(servicer, server):
             ),
             'Cancel': grpc.unary_unary_rpc_method_handler(
                     servicer.Cancel,
-                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.TaskRef.FromString,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.CancelRequest.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.CancelResponse.SerializeToString,
             ),
             'Get': grpc.unary_unary_rpc_method_handler(
                     servicer.Get,
-                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.TaskRef.FromString,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.GetRequest.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.TaskInfo.SerializeToString,
             ),
             'Wait': grpc.unary_unary_rpc_method_handler(
@@ -218,7 +220,7 @@ class Tasks(object):
             request,
             target,
             '/cronoq.v1.Tasks/Cancel',
-            cronoq_dot_v1_dot_cronoq__pb2.TaskRef.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.CancelRequest.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.CancelResponse.FromString,
             options,
             channel_credentials,
@@ -245,7 +247,7 @@ class Tasks(object):
             request,
             target,
             '/cronoq.v1.Tasks/Get',
-            cronoq_dot_v1_dot_cronoq__pb2.TaskRef.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.GetRequest.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.TaskInfo.FromString,
             options,
             channel_credentials,

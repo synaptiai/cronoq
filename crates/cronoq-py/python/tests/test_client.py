@@ -18,9 +18,18 @@ import pytest
 grpc = pytest.importorskip("grpc")
 
 import cronoq  # noqa: E402
-from cronoq.client import Client, ClientError, Lease, Worker, task  # noqa: E402
+from cronoq.client import CancelTask, Client, ClientError, Lease, Reject, Worker, task  # noqa: E402
 
-CLIENT, WORKER, ADMIN = "client-token", "worker-token", "admin-token"
+# The server requires tokens of at least 16 characters.
+CLIENT, WORKER, METRICS, ADMIN = (
+    "client-token-0123456789",
+    "worker-token-0123456789",
+    "metrics-token-0123456789",
+    "admin-token-0123456789",
+)
+#: Server-side caps used by the tests below.
+MAX_SLOTS_PER_WORKER = 4
+MAX_MESSAGE_BYTES = 256 * 1024
 # The source checkout, when the tests run from it (wheel tests run from a copy elsewhere).
 _HERE = Path(__file__).resolve()
 REPO: Optional[Path] = _HERE.parents[4] if len(_HERE.parents) > 4 else None
@@ -76,8 +85,16 @@ role = "client"
 token = "{WORKER}"
 role = "worker"
 [[auth.tokens]]
+token = "{METRICS}"
+role = "metrics"
+[[auth.tokens]]
 token = "{ADMIN}"
 role = "admin"
+
+[limits]
+max_slots_per_worker = {MAX_SLOTS_PER_WORKER}
+max_message_bytes = {MAX_MESSAGE_BYTES}
+max_wait_s = 30
 
 [[pools]]
 name = "default"
@@ -210,8 +227,10 @@ async def test_submit_and_wait_through_python_worker(server: Server, client: Cli
         assert sub.result is not None and sub.result.ok
         assert sub.result.text() == "HELLO"
         info = await client.get(sub.id)
-        assert info is not None and info.status == "succeeded"
-        assert await client.get(10**15) is None
+        assert info.status == "succeeded" and info.done
+        with pytest.raises(ClientError) as e:
+            await client.get(10**15)
+        assert e.value.code == "not_found"
 
 
 async def test_json_payload_round_trip(server: Server, client: Client) -> None:
@@ -333,6 +352,9 @@ async def test_auth_errors(server: Server) -> None:
     async with Client(server.target, token=ADMIN) as admin:
         snap = await admin.snapshot()
         assert snap.pool("default") is not None
+    async with Client(server.target, token=METRICS) as metrics:
+        snap = await metrics.snapshot()
+        assert snap.totals.submitted >= 0 and snap.workers_connected == 0
     w = Worker(server.target, "default", upper, token=CLIENT)
     with pytest.raises(ClientError) as e:
         await asyncio.wait_for(w.run(), 10)
@@ -437,6 +459,8 @@ async def test_worker_reconnects_after_server_restart(server: Server) -> None:
                 break
             await asyncio.sleep(0.05)
         assert w.connections >= 2
+        # A graceful server stop announces itself before closing the stream.
+        assert w.last_shutdown is not None
         async with Client(server.target, token=CLIENT) as c:
             await wait_capacity(c, 1)
             sub = await c.submit("after restart", wait=True)
@@ -535,7 +559,8 @@ def test_client_and_worker_built_outside_a_loop(server: Server) -> None:
     w = Worker(server.target, "default", upper, token=WORKER, backoff=(0.05, 0.2))
 
     async def use() -> None:
-        assert await c.get(10**15) is None
+        with pytest.raises(ClientError):
+            await c.get(10**15)
         run = asyncio.ensure_future(w.run())
         await w.wait_registered(10)
         await w.stop(1)
@@ -591,3 +616,148 @@ def test_client_error_pickles() -> None:
     e = ClientError("not_found", "unknown task")
     back = pickle.loads(pickle.dumps(e))
     assert (back.code, back.message, str(back)) == (e.code, e.message, str(e))
+
+
+# ---------------------------------------------------------------------------------------------
+# Protocol version 2
+
+
+async def test_get_returns_task_details(server: Server, client: Client) -> None:
+    async with Running() as r:
+        await r.add(server, upper)
+        await wait_capacity(client, 1)
+        sub = await client.submit("x", key="details", kind="upper", wait=True)
+        info = await client.get("details")
+    assert info.id == sub.id and info.status == "succeeded"
+    assert (info.pool, info.key, info.kind, info.attempt) == ("default", "details", "upper", 1)
+    assert info.max_attempts == 3
+    assert info.created_at and info.finished_at and info.finished_at >= info.created_at
+    assert info.output_available
+
+
+async def test_submit_wait_timeout(client: Client) -> None:
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await client.submit("never-runs", wait=True, wait_timeout=0.2)  # no workers connected
+    assert time.monotonic() - t0 < 5
+    with pytest.raises(ValueError):
+        await client.submit("x", wait_timeout=1)
+
+
+async def test_watch_filters_and_transitions(server: Server, client: Client) -> None:
+    async def collect(**kw: Any) -> List[str]:
+        out: List[str] = []
+        async for e in client.watch(**kw):
+            out.append(e.status)
+            if e.status == "succeeded":
+                return out
+        return out
+
+    async with Running() as r:
+        await r.add(server, upper)
+        await wait_capacity(client, 1)
+        terminal = asyncio.create_task(collect(keys=["t-1"]))
+        everything = asyncio.create_task(collect(keys=["t-1"], all_transitions=True))
+        other = asyncio.create_task(collect(keys=["t-2"]))
+        await asyncio.sleep(0.2)
+        await client.submit("x", key="t-1", wait=True)
+        assert await asyncio.wait_for(terminal, 5) == ["succeeded"]
+        statuses = await asyncio.wait_for(everything, 5)
+        assert "running" in statuses and statuses[-1] == "succeeded"
+        assert not other.done(), "filtered by key"
+        other.cancel()
+
+
+async def test_server_grants_capped_slots(server: Server, client: Client) -> None:
+    gate = asyncio.Event()
+    started: List[int] = []
+
+    async def held(lease: Lease) -> Any:
+        started.append(lease.task_id)
+        await gate.wait()
+        return "ok"
+
+    async with Running() as r:
+        w = await r.add(server, held, slots=MAX_SLOTS_PER_WORKER + 6)
+        assert w.granted_slots == MAX_SLOTS_PER_WORKER
+        assert w.server_protocol == 2 and w.max_message_bytes == MAX_MESSAGE_BYTES
+        await wait_capacity(client, MAX_SLOTS_PER_WORKER)
+        subs = [await client.submit(i) for i in range(MAX_SLOTS_PER_WORKER + 2)]
+        for _ in range(200):
+            if len(started) == MAX_SLOTS_PER_WORKER:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)
+        assert len(started) == MAX_SLOTS_PER_WORKER and w.running == MAX_SLOTS_PER_WORKER
+        gate.set()
+        for sub in subs:
+            assert (await client.wait(sub.id, timeout=10)).ok
+
+
+async def test_reject_hands_the_lease_to_another_worker(server: Server, client: Client) -> None:
+    refused: List[int] = []
+
+    async def picky(lease: Lease) -> Any:
+        refused.append(lease.task_id)
+        raise Reject("not for me")
+
+    async def willing(lease: Lease) -> Any:
+        return f"done@{lease.attempt}"
+
+    # A Nack is re-offered within the same attempt only while another worker has a free slot,
+    # so both workers connect first and the willing one always has room for every task.
+    async with Running() as r:
+        await r.add(server, picky, name="picky", slots=1)
+        await r.add(server, willing, name="willing", slots=MAX_SLOTS_PER_WORKER)
+        await wait_capacity(client, 1 + MAX_SLOTS_PER_WORKER)
+        subs = [await client.submit(i, retry={"max_attempts": 1}) for i in range(MAX_SLOTS_PER_WORKER - 1)]
+        results = [await client.wait(s.id, timeout=10) for s in subs]
+    assert all(res.ok and res.text() == "done@1" for res in results), results
+    assert refused, "the picky worker was offered at least one lease"
+
+
+async def test_cancel_task_from_the_handler(server: Server, client: Client) -> None:
+    async def cancel(lease: Lease) -> Any:
+        raise CancelTask("no longer needed")
+
+    async with Running() as r:
+        await r.add(server, cancel)
+        await wait_capacity(client, 1)
+        sub = await client.submit("x", wait=True)
+    assert sub.result is not None and sub.result.status == "cancelled"
+
+
+async def test_oversized_output_fails_permanently(server: Server, client: Client) -> None:
+    async def big(lease: Lease) -> Any:
+        return b"x" * (MAX_MESSAGE_BYTES + 1)
+
+    async with Running() as r:
+        w = await r.add(server, big)
+        await wait_capacity(client, 1)
+        sub = await client.submit("x", wait=True)
+        assert sub.result is not None and sub.result.status == "failed"
+        assert "message limit" in sub.result.message
+        assert w.connections == 1, "the worker stays connected"
+
+
+async def test_lease_metadata(server: Server, client: Client) -> None:
+    seen: List[Lease] = []
+
+    async def record(lease: Lease) -> Any:
+        seen.append(lease)
+        return "ok"
+
+    async with Running() as r:
+        await r.add(server, record)
+        await wait_capacity(client, 1)
+        await client.submit("x", wait=True)
+    lease = seen[0]
+    assert lease.pool == "default" and lease.lease_ttl == pytest.approx(1.0)
+    assert lease.priority in (None, "normal")
+
+
+def test_reject_and_cancel_task_pickle() -> None:
+    import pickle
+
+    assert pickle.loads(pickle.dumps(Reject("busy"))).reason == "busy"
+    assert str(pickle.loads(pickle.dumps(CancelTask("stop")))) == "stop"
