@@ -109,6 +109,14 @@ jobs:
           pip install -r ../../.github/requirements/ci.txt
           maturin develop
           pytest -q python/tests
+      - name: Type checks (stubs match the extension; package type-checks)
+        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.13'
+        shell: bash
+        working-directory: crates/cronoq-py
+        run: |
+          . .venv/bin/activate
+          python -m mypy.stubtest cronoq._cronoq
+          python -m mypy --ignore-missing-imports python/cronoq
 
   # Build a real wheel on each platform and test it installed into a clean environment, outside
   # the source tree, exactly as users get it from PyPI.

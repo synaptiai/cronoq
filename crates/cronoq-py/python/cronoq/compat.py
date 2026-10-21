@@ -363,11 +363,11 @@ class ElasticPriorityScheduler:
             quality = min(total_work / max(provisioned, EPSILON), 1.0)
         else:
             quality = 1.0 if pending == 0 else 0.5
-        fixed = [s for s in completed if s.task.fixed_start is not None]
+        offsets = [
+            abs(s.start_time - s.task.fixed_start) for s in completed if s.task.fixed_start is not None
+        ]
         hits = (
-            sum(1 for s in fixed if abs(s.start_time - s.task.fixed_start) < FIXED_SCHEDULE_BUFFER_SECONDS) / len(fixed)
-            if fixed
-            else 1.0
+            sum(1 for o in offsets if o < FIXED_SCHEDULE_BUFFER_SECONDS) / len(offsets) if offsets else 1.0
         )
         end = self._stop_time or time.time()
         elapsed = end - self._start_time if self._start_time else 0.0

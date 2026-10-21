@@ -44,6 +44,7 @@ from typing import (
     Sequence,
     Tuple,
     Union,
+    cast,
 )
 
 try:
@@ -428,7 +429,8 @@ def task(
         content_type=ct,
         kind=kind or "",
         pool=pool or "",
-        priority=_priority(priority),
+        # Protobuf enum fields accept their integer values; the generated stubs only list names.
+        priority=cast(Any, _priority(priority)),
         key=key or "",
     )
     if deadline_in is not None:

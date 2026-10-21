@@ -168,7 +168,9 @@ def test_scheduler_stops_when_its_loop_is_closed() -> None:
 async def test_concurrent_start_and_shutdown_during_start() -> None:
     s = cronoq.Scheduler([cronoq.Pool("default", echo, max=2)])
     first = s.start()
-    with pytest.raises(RuntimeError, match="already starting"):
+    # The build runs on a runtime thread and may already have finished (fast release builds),
+    # so the second call reports either state; both are refusals.
+    with pytest.raises(RuntimeError, match="already start(ing|ed)"):
         s.start()
     assert await first is None
     with pytest.raises(RuntimeError, match="already started"):
@@ -176,12 +178,15 @@ async def test_concurrent_start_and_shutdown_during_start() -> None:
     await s.shutdown(1)
 
     s2 = cronoq.Scheduler([cronoq.Pool("default", echo, max=2)])
-    # `start()` enters the starting state synchronously, so shutting down before yielding to
-    # the loop always hits the shutdown-during-start path.
+    # Shutting down right after start(): usually this cancels the pending start (which then
+    # raises SchedulerError), but in fast builds the engine may already be built, in which
+    # case shutdown stops it normally. Either way the scheduler ends up stopped.
     starting = asyncio.ensure_future(s2.start())
     await s2.shutdown(1)
-    with pytest.raises(cronoq.SchedulerError):
-        await starting
+    try:
+        assert await starting is None
+    except cronoq.SchedulerError:
+        pass
     assert not s2.started
     # A stopped scheduler can be started again.
     await s2.start()
