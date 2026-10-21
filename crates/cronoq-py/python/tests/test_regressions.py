@@ -176,8 +176,9 @@ async def test_concurrent_start_and_shutdown_during_start() -> None:
     await s.shutdown(1)
 
     s2 = cronoq.Scheduler([cronoq.Pool("default", echo, max=2)])
+    # `start()` enters the starting state synchronously, so shutting down before yielding to
+    # the loop always hits the shutdown-during-start path.
     starting = asyncio.ensure_future(s2.start())
-    await asyncio.sleep(0)
     await s2.shutdown(1)
     with pytest.raises(cronoq.SchedulerError):
         await starting

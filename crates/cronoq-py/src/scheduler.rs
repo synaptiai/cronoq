@@ -594,6 +594,16 @@ impl Scheduler {
     fn shutdown<'py>(&self, py: Python<'py>, grace: f64) -> PyResult<Bound<'py, PyAny>> {
         let grace = grace_duration(grace)?;
         let shared = self.shared.clone();
+        // Cancel a pending `start()` synchronously, at call time (as `start()` claims its state
+        // at call time). Deciding inside the spawned future would race with the build.
+        {
+            let mut life = shared.life.lock().unwrap();
+            if matches!(&*life, Life::Starting(_)) {
+                *life = Life::Idle;
+                drop(life);
+                shared.changed.notify_waiters();
+            }
+        }
         spawn_py(py, async move {
             loop {
                 let changed = shared.changed.notified();
