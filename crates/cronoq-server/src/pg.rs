@@ -17,6 +17,24 @@ pub async fn open(url: &str) -> anyhow::Result<(Arc<dyn Store<Bytes, Bytes>>, Pg
     Ok((Arc::new(pg.clone()), pg))
 }
 
+/// Warn about connection settings that are risky outside a trusted network.
+pub fn warn_insecure_url(url: &str, inline: bool) {
+    if inline {
+        tracing::warn!(
+            "store.url is set inline in the config file; prefer store.url_env to keep credentials out of files"
+        );
+    }
+    let lower = url.to_ascii_lowercase();
+    let local = ["@localhost", "@127.0.0.1", "@[::1]", "host=/", "@/"]
+        .iter()
+        .any(|h| lower.contains(h));
+    if !local && !lower.contains("sslmode=verify-full") && !lower.contains("sslmode=verify-ca") {
+        tracing::warn!(
+            "the Postgres URL does not set sslmode=verify-full; connections to a remote database may be unencrypted or unauthenticated"
+        );
+    }
+}
+
 /// Resolves when leadership is lost (never, without a store).
 pub fn leadership_lost(pg: Option<PgStore>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(async move {

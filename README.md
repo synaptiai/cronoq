@@ -104,14 +104,19 @@ drop-in for the prototype. See [`crates/cronoq-py`](crates/cronoq-py/README.md).
 
 ```sh
 cargo run --release -p cronoq-server -- -c deploy/cronoq.example.toml
-# or: docker build -t cronoq . && docker run -p 7070:7070 -p 7071:7071 cronoq
+# or: docker build -t cronoq . && docker run -p 7070:7070 -p 7071:7071 \
+#       -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN cronoq
 ```
+
+Without a config file the server listens on 127.0.0.1 only; it refuses to listen on other
+addresses without auth tokens (unless started with `--insecure-no-auth`).
 
 - **Clients** submit work over gRPC (`cronoq.v1.Tasks`, defined in
   [`crates/cronoq-proto/proto`](crates/cronoq-proto/proto/cronoq/v1/cronoq.proto)) or HTTP/JSON:
 
   ```sh
-  curl -X POST localhost:7071/v1/tasks -H 'authorization: Bearer $TOKEN' \
+  curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $TOKEN" \
+       -H 'content-type: application/json' \
        -d '{"payload": {"q": "hi"}, "pool": "llm", "priority": "high", "wait": true}'
   ```
 
@@ -121,7 +126,9 @@ cargo run --release -p cronoq-server -- -c deploy/cronoq.example.toml
   Clients exist for Rust (`cronoq_server::worker::run_worker`) and Python (`cronoq.client`).
 - **HA.** Point several replicas at the same Postgres. One leads; the others answer `/readyz`
   with 503 and take over within seconds, resuming every accepted task.
-- **Auth.** Bearer tokens with `client`, `worker` and `admin` roles, plus optional mTLS.
+- **Auth.** Bearer tokens (or mTLS client certificates mapped to roles) with `client`,
+  `worker`, `metrics` and `admin` roles, optionally limited to some pools. TLS covers both the
+  gRPC and HTTP listeners. The server is meant for one tenant (team or trust domain).
 
 ## Layout
 

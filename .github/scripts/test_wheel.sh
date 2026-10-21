@@ -12,9 +12,9 @@ trap 'rm -rf "$work"' EXIT
 
 python -m venv "$work/venv"
 if [ -f "$work/venv/bin/activate" ]; then . "$work/venv/bin/activate"; else . "$work/venv/Scripts/activate"; fi
-python -m pip install --quiet --upgrade pip
+# Tooling versions come from the pinned CI requirements (as constraints).
 wheel="$(ls "$dist"/*.whl | head -n 1)"
-python -m pip install --quiet "${wheel}[client]" pytest pytest-asyncio
+python -m pip install --quiet -c "$repo/.github/requirements/ci.txt" "${wheel}[client]" pytest pytest-asyncio
 
 exe=""
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=".exe" ;; esac

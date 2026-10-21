@@ -5,12 +5,19 @@
 //! operators inspect it via `cronoq.v1.Admin`, `/v1/snapshot` and Prometheus `/metrics`.
 //! With the Postgres store, several replicas run active-passive: one leader serves, the
 //! others report `/readyz` = 503 and take over on failure.
+//!
+//! The server is designed for a single tenant (one team or trust domain). Tokens can be
+//! restricted to pools, which scopes submission, lookups, watches and worker registration,
+//! but task keys and resources share one namespace.
+
+#![warn(missing_docs)]
 
 pub mod auth;
 pub mod config;
 pub mod convert;
 pub mod grpc;
 pub mod http;
+pub mod info;
 pub mod metrics;
 mod pg;
 pub mod remote;

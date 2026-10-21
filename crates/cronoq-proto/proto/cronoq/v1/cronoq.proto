@@ -1,8 +1,18 @@
-// cronoq server API.
+// cronoq server API (v1).
 //
-// Times are either relative seconds (`*_in_s`) or absolute Unix nanoseconds (`*_unix_ns`).
-// Authentication: `authorization: Bearer <token>` metadata; tokens carry a role
-// (client, worker or admin).
+// Times are either relative seconds (`*_in_s`, `*_s`) or absolute Unix nanoseconds
+// (`*_unix_ns`). Authentication: `authorization: Bearer <token>` metadata (or a client
+// certificate mapped to a role when mTLS is configured). Roles: client (Tasks), worker
+// (Workers), metrics (Admin.Snapshot), admin (everything).
+//
+// Errors use gRPC status codes:
+//   INVALID_ARGUMENT     malformed request or spec
+//   NOT_FOUND            unknown task, pool, resource or dependency
+//   FAILED_PRECONDITION  fixed-start reservation conflict, wrong pool kind
+//   RESOURCE_EXHAUSTED   queue bounds reached (retry later)
+//   DEADLINE_EXCEEDED    a wait timed out while the task is still running
+//   UNAVAILABLE          not the leader, or shutting down (retry against the leader)
+//   UNAUTHENTICATED / PERMISSION_DENIED
 syntax = "proto3";
 
 package cronoq.v1;
@@ -32,15 +42,17 @@ enum TaskStatus {
 }
 
 enum EdgeCond {
-  EDGE_COND_ON_SUCCESS = 0;
-  EDGE_COND_ON_COMPLETE = 1;
-  EDGE_COND_ON_FAILURE = 2;
+  EDGE_COND_UNSPECIFIED = 0; // treated as ON_SUCCESS
+  EDGE_COND_ON_SUCCESS = 1;
+  EDGE_COND_ON_COMPLETE = 2;
+  EDGE_COND_ON_FAILURE = 3;
 }
 
 enum MissPolicy {
-  MISS_POLICY_RUN_LATE = 0;
-  MISS_POLICY_SKIP = 1;
-  MISS_POLICY_FAIL = 2;
+  MISS_POLICY_UNSPECIFIED = 0; // treated as RUN_LATE
+  MISS_POLICY_RUN_LATE = 1;
+  MISS_POLICY_SKIP = 2;
+  MISS_POLICY_FAIL = 3;
 }
 
 message TaskRef {
@@ -88,6 +100,8 @@ message SubmitRequest {
   TaskSpec task = 1;
   // Block until the task finishes and return its result.
   bool wait = 2;
+  // Upper bound for `wait` (capped by the server's `limits.max_wait_s`).
+  optional double wait_timeout_s = 3;
 }
 
 message SubmitResponse {
@@ -104,30 +118,55 @@ message SubmitBatchResponse {
   repeated SubmitResponse tasks = 1;
 }
 
+message CancelRequest {
+  TaskRef task = 1;
+}
+
 message CancelResponse {
   bool cancelled = 1;
 }
 
+message GetRequest {
+  TaskRef task = 1;
+}
+
+// Task details. Fields other than id and status are best effort: they are known for tasks
+// submitted or observed by the serving leader (and for persisted tasks with Postgres).
 message TaskInfo {
   uint64 id = 1;
   TaskStatus status = 2;
-  bool found = 3;
+  string pool = 3;
+  string key = 4;
+  string kind = 5;
+  uint32 attempt = 6;
+  uint32 max_attempts = 7;          // 0 if unknown
+  optional int64 created_unix_ns = 8;
+  optional int64 started_unix_ns = 9;
+  optional int64 finished_unix_ns = 10;
+  string message = 11;              // last error or status message
+  bool output_available = 12;
 }
 
 message TaskResult {
   uint64 id = 1;
-  TaskStatus status = 2;
+  TaskStatus status = 2;            // always terminal
   optional bytes output = 3;
   string message = 4;
+  // False for a succeeded task whose output is no longer retained.
+  bool output_available = 5;
 }
 
 message WaitRequest {
   TaskRef task = 1;
-  optional double timeout_s = 2;
+  optional double timeout_s = 2;    // capped by the server's `limits.max_wait_s`
 }
 
 message WatchRequest {
-  repeated string pools = 1;    // empty = all
+  repeated string pools = 1;        // empty = all pools the caller may see
+  repeated uint64 ids = 2;          // optional task id filter
+  repeated string keys = 3;         // optional task key filter
+  // Every transition (blocked, ready, running, ...), not only terminal statuses.
+  bool all_transitions = 4;
 }
 
 message StatusEvent {
@@ -143,9 +182,11 @@ message StatusEvent {
 service Tasks {
   rpc Submit(SubmitRequest) returns (SubmitResponse);
   rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
-  rpc Cancel(TaskRef) returns (CancelResponse);
-  rpc Get(TaskRef) returns (TaskInfo);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc Get(GetRequest) returns (TaskInfo);
   rpc Wait(WaitRequest) returns (TaskResult);
+  // Ends with UNAVAILABLE when the server shuts down or loses leadership, and with
+  // DATA_LOSS if the client falls too far behind.
   rpc Watch(WatchRequest) returns (stream StatusEvent);
 }
 
@@ -153,10 +194,15 @@ service Tasks {
 // Remote workers open one bidirectional stream, register for a pool with a number of slots,
 // then receive leases and report heartbeats and outcomes.
 
+// Protocol version spoken by this definition.
+// 1: initial version.
+// 2: Nack/Cancelled outcomes, Shutdown, lease metadata, Complete.content_type.
+
 message Register {
   string pool = 1;
   uint32 slots = 2;
   string worker_name = 3;
+  uint32 protocol_version = 4;      // 0 is treated as 1
 }
 
 message Heartbeat {
@@ -166,6 +212,7 @@ message Heartbeat {
 message Complete {
   uint64 lease = 1;
   bytes output = 2;
+  string content_type = 3;
 }
 
 message Fail {
@@ -179,6 +226,18 @@ message SetSlots {
   uint32 slots = 1;
 }
 
+// The worker cannot take this lease (e.g. it is draining); the server offers it to another
+// worker without counting an attempt when possible.
+message Nack {
+  uint64 lease = 1;
+  string reason = 2;
+}
+
+// The handler observed cancellation of this lease.
+message Cancelled {
+  uint64 lease = 1;
+}
+
 message WorkerMessage {
   oneof msg {
     Register register = 1;
@@ -186,12 +245,17 @@ message WorkerMessage {
     Complete complete = 3;
     Fail fail = 4;
     SetSlots set_slots = 5;
+    Nack nack = 6;
+    Cancelled cancelled = 7;
   }
 }
 
 message Registered {
   uint64 worker_id = 1;
-  optional double lease_ttl_s = 2; // heartbeat at least this often (per lease)
+  optional double lease_ttl_s = 2;  // heartbeat at least this often (per lease)
+  uint32 slots = 3;                 // slots granted (may be lower than requested)
+  uint32 protocol_version = 4;
+  uint64 max_message_bytes = 5;     // largest message the server accepts
 }
 
 message Lease {
@@ -205,6 +269,9 @@ message Lease {
   map<string, string> tags = 8;
   optional double timeout_s = 9;
   optional int64 deadline_unix_ns = 10;
+  string pool = 11;
+  Priority priority = 12;
+  optional double lease_ttl_s = 13;
 }
 
 message Abort {
@@ -212,11 +279,18 @@ message Abort {
   string reason = 2;
 }
 
+// The server is going away: finish or abandon running leases and reconnect (with backoff).
+message Shutdown {
+  string reason = 1;
+  bool not_leader = 2;
+}
+
 message ServerMessage {
   oneof msg {
     Registered registered = 1;
     Lease lease = 2;
     Abort abort = 3;
+    Shutdown shutdown = 4;
   }
 }
 
@@ -247,6 +321,22 @@ message PoolSnapshot {
   double wait_p90_s = 16;
   double wait_p99_s = 17;
   double cost = 18;
+  uint64 workers_connected = 19;
+}
+
+message Totals {
+  uint64 submitted = 1;
+  uint64 dispatched = 2;
+  uint64 succeeded = 3;
+  uint64 failed = 4;
+  uint64 dead_lettered = 5;
+  uint64 cancelled = 6;
+  uint64 skipped = 7;
+  uint64 missed = 8;
+  uint64 shed = 9;
+  uint64 retries = 10;
+  uint64 timeouts = 11;
+  uint64 lease_expiries = 12;
 }
 
 message SnapshotResponse {
@@ -254,6 +344,8 @@ message SnapshotResponse {
   uint64 live_tasks = 2;
   uint64 running = 3;
   uint64 pending = 4;
+  Totals totals = 5;
+  uint64 workers_connected = 6;
 }
 
 message RecurringRequest {

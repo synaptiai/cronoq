@@ -478,8 +478,11 @@ gRPC (`cronoq.v1`):
   Heartbeat / Complete / Fail.
 - `AdminService`: ListPools, Snapshot, SetPoolBounds, Pause/Resume pool.
 
-HTTP gateway (axum): `POST /v1/tasks`, `GET /v1/tasks/{id}`, `DELETE /v1/tasks/{id}`,
-`GET /v1/snapshot`, `GET /metrics`, `GET /healthz`, `GET /readyz` (ready only on the leader).
+HTTP gateway (axum): `POST /v1/tasks`, `POST /v1/tasks:batch`, `GET|DELETE /v1/tasks/{id}`,
+`GET /v1/tasks/{id}/result`, the same under `/v1/tasks/by-key/{key}`, `GET /v1/snapshot`,
+`GET /metrics`, `GET /healthz`, `GET /readyz` (ready only on the leader). Task ids are JSON
+strings; errors are `{"error": ..., "code": ...}` with a matching status (504 for a wait that
+timed out, 503 while standing by).
 Auth: static bearer tokens (config) and optional mTLS. Config: TOML plus environment
 overrides.
 
@@ -551,8 +554,23 @@ Differences from, and clarifications of, the sections above:
 - **Outputs** are cached in memory (bounded by count and bytes) and persisted in Postgres
   when it is configured. `Wait` on a finished task reads from the cache, then from the
   database.
-- **`/metrics`** is rendered from the scheduler snapshot in Prometheus text format and is
-  unauthenticated. OpenTelemetry instruments use the globally installed meter provider.
+- **`/metrics`** is rendered from the scheduler snapshot in Prometheus text format. On the
+  main HTTP listener it requires the `metrics` (or `admin`) role; `server.metrics_addr` adds
+  an unauthenticated listener for scrapers on a private interface. OpenTelemetry instruments
+  use the globally installed meter provider.
+- **Server security.** Listeners default to 127.0.0.1, and non-loopback listeners require
+  credentials unless `--insecure-no-auth` is given. Requests are authenticated before their
+  body is read. TLS applies to gRPC and HTTP; with a client CA, certificates are required and
+  their DNS names can map to roles. Tokens are stored as SHA-256 digests and compared in
+  constant time, and can be limited to pools (submissions, lookups, watches and workers). The
+  server is single-tenant: keys and resources share one namespace. Limits (`[limits]`) bound
+  batch sizes, pending tasks, message and body sizes, string lengths, waits, concurrent
+  requests and worker slots; HTTP/2 keepalive detects dead connections.
+- **Worker protocol (v2).** `Register` carries `protocol_version`; `Registered` returns the
+  granted slots and the largest accepted message. Workers may `Nack` a lease (offered to
+  another worker) or report `Cancelled`. On shutdown or loss of leadership the server sends
+  `Shutdown` (with `not_leader`) and workers reconnect with backoff. A worker whose stream
+  backs up (it stopped reading) is disconnected.
 - **Benchmarks.** The wall-clock targets in §1 are checked by `.github/workflows/bench.yml`
   with 30% headroom for CI noise. For profiling, use instruction counts (callgrind) on the
   `prof` example.

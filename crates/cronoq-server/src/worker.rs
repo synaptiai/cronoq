@@ -1,5 +1,10 @@
 //! Rust client for remote workers.
 //!
+//! [`run_worker`] connects to a cronoq server, registers for a pool and runs a handler for each
+//! lease, with at most `slots` handlers at a time. It heartbeats running leases, reports
+//! outcomes, reconnects with backoff when the connection drops or the server steps down, and
+//! drains running handlers when `shutdown` resolves.
+//!
 //! ```no_run
 //! # async fn demo() -> anyhow::Result<()> {
 //! use cronoq_server::worker::{WorkerOptions, run_worker};
@@ -7,32 +12,97 @@
 //! run_worker(opts, |lease| async move { Ok(lease.payload) }, std::future::pending()).await
 //! # }
 //! ```
+//!
+//! A handler that panics fails its attempt as retryable; an output larger than the server
+//! accepts fails it permanently.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cronoq::TaskError;
 use cronoq_proto::v1 as pb;
+use futures_util::FutureExt;
+use pb::worker_message::Msg;
 use pb::workers_client::WorkersClient;
 use rustc_hash::FxHashMap;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Notify, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+use tonic::Code;
 use tonic::metadata::MetadataValue;
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
 
-#[derive(Clone, Debug)]
+/// TLS settings for the worker connection.
+#[derive(Clone, Default)]
+pub struct WorkerTls {
+    /// PEM CA certificate(s) to trust (default: the system roots).
+    pub ca_pem: Option<Vec<u8>>,
+    /// PEM client certificate and key, for mTLS.
+    pub identity: Option<(Vec<u8>, Vec<u8>)>,
+    /// Server name to verify (default: the endpoint host).
+    pub domain: Option<String>,
+}
+
+impl fmt::Debug for WorkerTls {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerTls")
+            .field("ca_pem", &self.ca_pem.as_ref().map(|_| "<pem>"))
+            .field("identity", &self.identity.as_ref().map(|_| "<redacted>"))
+            .field("domain", &self.domain)
+            .finish()
+    }
+}
+
+/// Worker settings.
+#[derive(Clone)]
 pub struct WorkerOptions {
+    /// Server gRPC endpoint (`http://` or `https://`).
     pub endpoint: String,
+    /// Pool to serve.
     pub pool: String,
+    /// Leases run concurrently (the server may grant fewer).
     pub slots: u32,
+    /// Bearer token (role `worker`).
     pub token: Option<String>,
+    /// Name shown in server logs.
     pub name: String,
+    /// TLS settings (used for `https://` endpoints).
+    pub tls: Option<WorkerTls>,
+    /// Reconnect after the connection drops or the server steps down (default `true`).
+    pub reconnect: bool,
+    /// First reconnect delay (doubles up to `max_backoff`).
+    pub initial_backoff: Duration,
+    /// Longest reconnect delay.
+    pub max_backoff: Duration,
+    /// How long running handlers may take to finish after `shutdown` resolves.
+    pub drain_timeout: Duration,
+    /// Largest lease message accepted from the server.
+    pub max_message_bytes: usize,
+}
+
+impl fmt::Debug for WorkerOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerOptions")
+            .field("endpoint", &self.endpoint)
+            .field("pool", &self.pool)
+            .field("slots", &self.slots)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("name", &self.name)
+            .field("tls", &self.tls)
+            .field("reconnect", &self.reconnect)
+            .field("drain_timeout", &self.drain_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkerOptions {
+    /// Options for serving `pool` on the server at `endpoint`, with one slot.
     pub fn new(endpoint: impl Into<String>, pool: impl Into<String>) -> Self {
         WorkerOptions {
             endpoint: endpoint.into(),
@@ -40,18 +110,42 @@ impl WorkerOptions {
             slots: 1,
             token: None,
             name: String::new(),
+            tls: None,
+            reconnect: true,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(10),
+            drain_timeout: Duration::from_secs(30),
+            max_message_bytes: 64 << 20,
         }
     }
+    /// Concurrent leases.
     pub fn slots(mut self, n: u32) -> Self {
         self.slots = n;
         self
     }
+    /// Bearer token.
     pub fn token(mut self, t: impl Into<String>) -> Self {
         self.token = Some(t.into());
         self
     }
+    /// Name shown in server logs.
     pub fn name(mut self, n: impl Into<String>) -> Self {
         self.name = n.into();
+        self
+    }
+    /// TLS settings.
+    pub fn tls(mut self, tls: WorkerTls) -> Self {
+        self.tls = Some(tls);
+        self
+    }
+    /// Whether to reconnect after the connection drops.
+    pub fn reconnect(mut self, on: bool) -> Self {
+        self.reconnect = on;
+        self
+    }
+    /// Time running handlers get to finish on shutdown.
+    pub fn drain_timeout(mut self, d: Duration) -> Self {
+        self.drain_timeout = d;
         self
     }
 }
@@ -59,20 +153,109 @@ impl WorkerOptions {
 /// One leased attempt.
 #[derive(Clone, Debug)]
 pub struct LeaseInfo {
+    /// Lease id (unique per attempt).
     pub lease: u64,
+    /// Task id.
     pub task_id: u64,
+    /// Attempt number (1-based).
     pub attempt: u32,
+    /// Pool the task runs in.
+    pub pool: String,
+    /// Task payload.
     pub payload: Bytes,
+    /// Payload content type (may be empty).
     pub content_type: String,
+    /// Task kind.
     pub kind: String,
+    /// Task key (may be empty).
     pub key: String,
+    /// Task tags.
     pub tags: HashMap<String, String>,
+    /// Attempt timeout, if any.
     pub timeout: Option<Duration>,
-    /// Cancelled when the server aborts this attempt.
+    /// Task deadline, if any.
+    pub deadline: Option<SystemTime>,
+    /// Cancelled when the server aborts this attempt or the worker stops.
     pub cancel: CancellationToken,
 }
 
-/// Connect, register and process leases until `shutdown` resolves or the stream ends.
+fn duration(s: Option<f64>) -> Option<Duration> {
+    s.and_then(|s| Duration::try_from_secs_f64(s).ok())
+}
+
+/// Errors that retrying cannot fix.
+fn fatal(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Unauthenticated
+            | Code::PermissionDenied
+            | Code::NotFound
+            | Code::InvalidArgument
+            | Code::FailedPrecondition
+            | Code::Unimplemented
+    )
+}
+
+/// Running handlers, across connections.
+#[derive(Default)]
+struct Running {
+    leases: Mutex<FxHashMap<u64, Lease>>,
+    count: AtomicUsize,
+    idle: Notify,
+}
+
+struct Lease {
+    cancel: CancellationToken,
+    /// Set when the server aborted the attempt: no outcome is reported.
+    aborted: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Decrements the running count when a handler task ends, however it ends.
+struct Slot {
+    running: Arc<Running>,
+    lease: u64,
+}
+
+impl Running {
+    /// Free a lease's slot (once): when its handler ends, or as soon as the server aborts it,
+    /// so the server may reuse the slot right away.
+    fn release(&self, lease: u64) -> Option<Lease> {
+        let l = self.leases.lock().unwrap().remove(&lease)?;
+        if self.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.idle.notify_waiters();
+        }
+        Some(l)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.running.release(self.lease);
+    }
+}
+
+/// Aborts a spawned task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+enum SessionEnd {
+    /// The caller asked to stop.
+    Shutdown,
+    /// The server closed the stream or asked us to go away.
+    Ended(String),
+    /// A gRPC error.
+    Failed(tonic::Status),
+}
+
+/// Connect, register and process leases until `shutdown` resolves (then drain running
+/// handlers), reconnecting with backoff when the connection is lost. Returns an error for
+/// failures that retrying cannot fix (bad credentials, unknown pool, ...), or for any failure
+/// when reconnecting is disabled.
 pub async fn run_worker<F, Fut>(
     opts: WorkerOptions,
     handler: F,
@@ -82,130 +265,381 @@ where
     F: Fn(LeaseInfo) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Bytes, TaskError>> + Send + 'static,
 {
-    let channel = tonic::transport::Endpoint::from_shared(opts.endpoint.clone())?
-        .connect()
-        .await?;
+    let endpoint = endpoint(&opts)?;
     let auth: Option<MetadataValue<_>> = match &opts.token {
         Some(t) => Some(format!("Bearer {t}").parse()?),
         None => None,
     };
-    let mut client = WorkersClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
-        if let Some(a) = &auth {
-            req.metadata_mut().insert("authorization", a.clone());
+    let handler = Arc::new(handler);
+    let running = Arc::new(Running::default());
+    let stop = CancellationToken::new();
+    // Handlers are cancelled if this future is dropped, too.
+    let _stop_on_drop = stop.clone().drop_guard();
+    tokio::pin!(shutdown);
+    let mut backoff = opts.initial_backoff;
+    let result = loop {
+        let session = async {
+            let channel = endpoint
+                .connect()
+                .await
+                .map_err(|e| tonic::Status::unavailable(format!("connect: {e}")))?;
+            let auth = auth.clone();
+            let client =
+                WorkersClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+                    if let Some(a) = &auth {
+                        req.metadata_mut().insert("authorization", a.clone());
+                    }
+                    Ok(req)
+                })
+                .max_decoding_message_size(opts.max_message_bytes);
+            Ok::<_, tonic::Status>(client)
+        };
+        let end = tokio::select! {
+            c = session => match c {
+                Ok(client) => serve(&opts, client, handler.clone(), running.clone(), &stop, &mut shutdown, &mut backoff).await,
+                Err(s) => SessionEnd::Failed(s),
+            },
+            _ = &mut shutdown => SessionEnd::Shutdown,
+        };
+        match end {
+            SessionEnd::Shutdown => break Ok(()),
+            SessionEnd::Failed(s) if fatal(s.code()) => {
+                break Err(anyhow::anyhow!("worker rejected: {s}"));
+            }
+            SessionEnd::Failed(s) if !opts.reconnect => {
+                break Err(anyhow::anyhow!("worker stream failed: {s}"));
+            }
+            SessionEnd::Ended(why) if !opts.reconnect => {
+                break Err(anyhow::anyhow!("worker stream ended: {why}"));
+            }
+            SessionEnd::Failed(s) => {
+                tracing::warn!(error = %s, retry_in = ?backoff, "worker connection failed")
+            }
+            SessionEnd::Ended(why) => {
+                tracing::info!(reason = %why, retry_in = ?backoff, "worker stream ended; reconnecting")
+            }
         }
-        Ok(req)
-    });
-    let (tx, rx) = mpsc::channel::<pb::WorkerMessage>(1024);
-    use pb::worker_message::Msg;
-    tx.send(pb::WorkerMessage {
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => {}
+            _ = &mut shutdown => break Ok(()),
+        }
+        backoff = (backoff * 2).min(opts.max_backoff);
+    };
+    // Whatever is still running after the drain (or after a fatal error) is cancelled.
+    stop.cancel();
+    for (_, l) in running.leases.lock().unwrap().drain() {
+        l.cancel.cancel();
+    }
+    result
+}
+
+fn endpoint(opts: &WorkerOptions) -> anyhow::Result<Endpoint> {
+    let mut ep = Endpoint::from_shared(opts.endpoint.clone())?
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_keepalive(Some(Duration::from_secs(20)))
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .keep_alive_timeout(Duration::from_secs(20))
+        .keep_alive_while_idle(true);
+    let https = opts.endpoint.starts_with("https://");
+    if https || opts.tls.is_some() {
+        let tls = opts.tls.clone().unwrap_or_default();
+        let mut cfg = ClientTlsConfig::new();
+        cfg = match &tls.ca_pem {
+            Some(ca) => cfg.ca_certificate(Certificate::from_pem(ca)),
+            None => cfg.with_native_roots(),
+        };
+        if let Some((cert, key)) = &tls.identity {
+            cfg = cfg.identity(Identity::from_pem(cert, key));
+        }
+        if let Some(d) = &tls.domain {
+            cfg = cfg.domain_name(d.clone());
+        }
+        ep = ep.tls_config(cfg)?;
+    }
+    Ok(ep)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve<F, Fut, I>(
+    opts: &WorkerOptions,
+    mut client: WorkersClient<
+        tonic::service::interceptor::InterceptedService<tonic::transport::Channel, I>,
+    >,
+    handler: Arc<F>,
+    running: Arc<Running>,
+    stop: &CancellationToken,
+    shutdown: &mut std::pin::Pin<&mut impl Future<Output = ()>>,
+    backoff: &mut Duration,
+) -> SessionEnd
+where
+    F: Fn(LeaseInfo) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Bytes, TaskError>> + Send + 'static,
+    I: tonic::service::Interceptor,
+{
+    let cap = (opts.slots as usize).saturating_mul(4).clamp(64, 65_536);
+    let (tx, rx) = mpsc::channel::<pb::WorkerMessage>(cap);
+    let register = pb::WorkerMessage {
         msg: Some(Msg::Register(pb::Register {
             pool: opts.pool.clone(),
             slots: opts.slots,
             worker_name: opts.name.clone(),
+            protocol_version: cronoq_proto::PROTOCOL_VERSION,
         })),
-    })
-    .await?;
-    let mut inbound = client.work(ReceiverStream::new(rx)).await?.into_inner();
-    let ttl = match inbound.message().await?.and_then(|m| m.msg) {
-        Some(pb::server_message::Msg::Registered(r)) => r.lease_ttl_s.map(Duration::from_secs_f64),
-        other => anyhow::bail!("unexpected first server message: {other:?}"),
     };
-    let handler = Arc::new(handler);
-    let running: Arc<Mutex<FxHashMap<u64, CancellationToken>>> = Arc::default();
-    tokio::pin!(shutdown);
+    if tx.send(register).await.is_err() {
+        return SessionEnd::Ended("local channel closed".into());
+    }
+    let mut inbound = match client.work(ReceiverStream::new(rx)).await {
+        Ok(r) => r.into_inner(),
+        Err(s) => return SessionEnd::Failed(s),
+    };
+    let registered = match inbound.message().await {
+        Ok(Some(pb::ServerMessage {
+            msg: Some(pb::server_message::Msg::Registered(r)),
+        })) => r,
+        Ok(Some(pb::ServerMessage {
+            msg: Some(pb::server_message::Msg::Shutdown(s)),
+        })) => {
+            return SessionEnd::Ended(format!("server shutting down: {}", s.reason));
+        }
+        Ok(other) => {
+            return SessionEnd::Failed(tonic::Status::internal(format!(
+                "unexpected first server message: {other:?}"
+            )));
+        }
+        Err(s) => return SessionEnd::Failed(s),
+    };
+    *backoff = opts.initial_backoff;
+    let ttl = duration(registered.lease_ttl_s);
+    let slots = registered.slots as usize;
+    // Leave room for the message envelope.
+    let max_output = (registered.max_message_bytes as usize).saturating_sub(1024);
+    tracing::info!(worker = registered.worker_id, pool = %opts.pool, slots, "worker registered");
+    let mut draining: Option<tokio::time::Instant> = None;
     loop {
-        let msg = tokio::select! {
-            m = inbound.message() => m?,
-            _ = &mut shutdown => break,
+        let drain_done = async {
+            match draining {
+                Some(deadline) => loop {
+                    let idle = running.idle.notified();
+                    if running.count.load(Ordering::SeqCst) == 0 {
+                        return;
+                    }
+                    tokio::select! {
+                        _ = idle => {}
+                        _ = tokio::time::sleep_until(deadline) => return,
+                    }
+                },
+                None => std::future::pending().await,
+            }
         };
-        let Some(msg) = msg.and_then(|m| m.msg) else {
-            break;
+        let msg = tokio::select! {
+            m = inbound.message() => m,
+            _ = shutdown.as_mut(), if draining.is_none() => {
+                tracing::info!(running = running.count.load(Ordering::SeqCst), "worker draining");
+                draining = Some(tokio::time::Instant::now() + opts.drain_timeout);
+                continue;
+            }
+            _ = drain_done => {
+                // Handlers still running after the drain timeout report a retryable failure.
+                for l in running.leases.lock().unwrap().values() {
+                    l.cancel.cancel();
+                }
+                // Half-close: once every outcome is sent, the server ends the stream.
+                drop(tx);
+                let flush = async { while let Ok(Some(_)) = inbound.message().await {} };
+                let _ = tokio::time::timeout(Duration::from_secs(5), flush).await;
+                return SessionEnd::Shutdown;
+            }
+        };
+        let msg = match msg {
+            Ok(Some(m)) => m.msg,
+            Ok(None) => {
+                return if draining.is_some() {
+                    SessionEnd::Shutdown
+                } else {
+                    SessionEnd::Ended("server closed the stream".into())
+                };
+            }
+            Err(s) => {
+                return if draining.is_some() {
+                    SessionEnd::Shutdown
+                } else {
+                    SessionEnd::Failed(s)
+                };
+            }
         };
         match msg {
-            pb::server_message::Msg::Lease(l) => {
-                let cancel = CancellationToken::new();
-                running.lock().await.insert(l.lease, cancel.clone());
-                let info = LeaseInfo {
-                    lease: l.lease,
-                    task_id: l.task_id,
-                    attempt: l.attempt,
-                    payload: Bytes::from(l.payload),
-                    content_type: l.content_type,
-                    kind: l.kind,
-                    key: l.key,
-                    tags: l.tags,
-                    timeout: l.timeout_s.map(Duration::from_secs_f64),
-                    cancel: cancel.clone(),
-                };
-                let (h, tx, running) = (handler.clone(), tx.clone(), running.clone());
-                tokio::spawn(async move {
-                    let lease = info.lease;
-                    let beat = ttl.map(|t| {
-                        let tx = tx.clone();
-                        tokio::spawn(async move {
-                            let mut iv =
-                                tokio::time::interval((t / 3).max(Duration::from_millis(10)));
-                            iv.tick().await;
-                            loop {
-                                iv.tick().await;
-                                let hb = pb::WorkerMessage {
-                                    msg: Some(Msg::Heartbeat(pb::Heartbeat { lease })),
-                                };
-                                if tx.send(hb).await.is_err() {
-                                    break;
-                                }
-                            }
-                        })
+            Some(pb::server_message::Msg::Lease(l)) => {
+                let busy = running.count.load(Ordering::SeqCst);
+                if draining.is_some() || busy >= slots {
+                    let reason = if draining.is_some() {
+                        "worker is draining"
+                    } else {
+                        "no free slot"
+                    };
+                    let _ = tx.try_send(pb::WorkerMessage {
+                        msg: Some(Msg::Nack(pb::Nack {
+                            lease: l.lease,
+                            reason: reason.into(),
+                        })),
                     });
-                    let result = tokio::select! {
-                        r = h(info) => Some(r),
-                        _ = cancel.cancelled() => None,
-                    };
-                    if let Some(b) = beat {
-                        b.abort();
-                    }
-                    running.lock().await.remove(&lease);
-                    let msg = match result {
-                        None => return, // aborted by the server
-                        Some(Ok(output)) => Msg::Complete(pb::Complete {
-                            lease,
-                            output: output.to_vec(),
-                        }),
-                        Some(Err(TaskError::Permanent { message })) => Msg::Fail(pb::Fail {
-                            lease,
-                            message: message.to_string(),
-                            permanent: true,
-                            retry_after_s: None,
-                        }),
-                        Some(Err(TaskError::Retryable {
-                            message,
-                            retry_after,
-                        })) => Msg::Fail(pb::Fail {
-                            lease,
-                            message: message.to_string(),
-                            permanent: false,
-                            retry_after_s: retry_after.map(|d| d.as_secs_f64()),
-                        }),
-                        Some(Err(TaskError::Cancelled)) => Msg::Fail(pb::Fail {
-                            lease,
-                            message: "cancelled".into(),
-                            permanent: true,
-                            retry_after_s: None,
-                        }),
-                    };
-                    let _ = tx.send(pb::WorkerMessage { msg: Some(msg) }).await;
-                });
+                    continue;
+                }
+                start_lease(
+                    l,
+                    handler.clone(),
+                    running.clone(),
+                    tx.clone(),
+                    ttl,
+                    max_output,
+                    stop,
+                );
             }
-            pb::server_message::Msg::Abort(a) => {
-                if let Some(c) = running.lock().await.remove(&a.lease) {
-                    c.cancel();
+            Some(pb::server_message::Msg::Abort(a)) => {
+                if let Some(l) = running.release(a.lease) {
+                    l.aborted.store(true, Ordering::SeqCst);
+                    l.cancel.cancel();
                 }
             }
-            pb::server_message::Msg::Registered(_) => {}
+            Some(pb::server_message::Msg::Shutdown(s)) => {
+                if draining.is_some() {
+                    return SessionEnd::Shutdown;
+                }
+                let why = if s.not_leader {
+                    format!("server is no longer the leader: {}", s.reason)
+                } else {
+                    s.reason
+                };
+                return SessionEnd::Ended(why);
+            }
+            Some(pb::server_message::Msg::Registered(_)) | None => {}
         }
     }
-    for (_, c) in running.lock().await.drain() {
-        c.cancel();
-    }
-    Ok(())
+}
+
+fn start_lease<F, Fut>(
+    l: pb::Lease,
+    handler: Arc<F>,
+    running: Arc<Running>,
+    tx: mpsc::Sender<pb::WorkerMessage>,
+    ttl: Option<Duration>,
+    max_output: usize,
+    stop: &CancellationToken,
+) where
+    F: Fn(LeaseInfo) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Bytes, TaskError>> + Send + 'static,
+{
+    let lease = l.lease;
+    let cancel = stop.child_token();
+    let aborted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    running.count.fetch_add(1, Ordering::SeqCst);
+    running.leases.lock().unwrap().insert(
+        lease,
+        Lease {
+            cancel: cancel.clone(),
+            aborted: aborted.clone(),
+        },
+    );
+    let slot = Slot { running, lease };
+    let info = LeaseInfo {
+        lease,
+        task_id: l.task_id,
+        attempt: l.attempt,
+        pool: l.pool,
+        payload: Bytes::from(l.payload),
+        content_type: l.content_type,
+        kind: l.kind,
+        key: l.key,
+        tags: l.tags,
+        timeout: duration(l.timeout_s),
+        deadline: l
+            .deadline_unix_ns
+            .filter(|ns| *ns >= 0)
+            .map(|ns| UNIX_EPOCH + Duration::from_nanos(ns as u64)),
+        cancel: cancel.clone(),
+    };
+    let ttl = duration(l.lease_ttl_s).or(ttl);
+    tokio::spawn(async move {
+        let _slot = slot;
+        let _beat = ttl.map(|t| {
+            let tx = tx.clone();
+            AbortOnDrop(tokio::spawn(async move {
+                let mut iv = tokio::time::interval((t / 3).max(Duration::from_millis(10)));
+                iv.tick().await;
+                loop {
+                    iv.tick().await;
+                    if tx
+                        .send(pb::WorkerMessage {
+                            msg: Some(Msg::Heartbeat(pb::Heartbeat { lease })),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }))
+        });
+        let run = AssertUnwindSafe(handler(info)).catch_unwind();
+        let result = tokio::select! {
+            r = run => Some(r),
+            _ = cancel.cancelled() => None,
+        };
+        let msg = match result {
+            None if aborted.load(Ordering::SeqCst) => return,
+            None => Msg::Fail(pb::Fail {
+                lease,
+                message: "worker stopped before the attempt finished".into(),
+                permanent: false,
+                retry_after_s: None,
+            }),
+            Some(Err(panic)) => {
+                let what = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".into());
+                tracing::error!(lease, panic = %what, "handler panicked");
+                Msg::Fail(pb::Fail {
+                    lease,
+                    message: format!("handler panicked: {what}"),
+                    permanent: false,
+                    retry_after_s: None,
+                })
+            }
+            Some(Ok(Ok(output))) if max_output > 0 && output.len() > max_output => {
+                Msg::Fail(pb::Fail {
+                    lease,
+                    message: format!(
+                        "output of {} bytes exceeds the server limit of {max_output} bytes",
+                        output.len()
+                    ),
+                    permanent: true,
+                    retry_after_s: None,
+                })
+            }
+            Some(Ok(Ok(output))) => Msg::Complete(pb::Complete {
+                lease,
+                output: output.to_vec(),
+                content_type: String::new(),
+            }),
+            Some(Ok(Err(TaskError::Permanent { message }))) => Msg::Fail(pb::Fail {
+                lease,
+                message: message.to_string(),
+                permanent: true,
+                retry_after_s: None,
+            }),
+            Some(Ok(Err(TaskError::Retryable {
+                message,
+                retry_after,
+            }))) => Msg::Fail(pb::Fail {
+                lease,
+                message: message.to_string(),
+                permanent: false,
+                retry_after_s: retry_after.map(|d| d.as_secs_f64()),
+            }),
+            Some(Ok(Err(TaskError::Cancelled))) => Msg::Cancelled(pb::Cancelled { lease }),
+        };
+        let _ = tx.send(pb::WorkerMessage { msg: Some(msg) }).await;
+    });
 }
