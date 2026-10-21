@@ -84,6 +84,16 @@ Payload = Union[bytes, bytearray, memoryview, str, dict, list, int, float, bool,
 TaskRef = Union[int, str]
 
 
+def _is_deadline(e: "grpc.aio.AioRpcError") -> bool:
+    """Whether an RPC failed because a deadline expired. grpcio reports a client-side deadline
+    as ``DEADLINE_EXCEEDED`` or, in some versions and platforms, as ``CANCELLED`` with the
+    details "Timeout expired"."""
+    code = e.code()
+    if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        return True
+    return code == grpc.StatusCode.CANCELLED and "timeout expired" in (e.details() or "").lower()
+
+
 class ClientError(CronoqError):
     """A gRPC call failed. ``code`` is the lower-case gRPC status name, e.g.
     ``unauthenticated``, ``permission_denied``, ``not_found`` (unknown task, pool or
@@ -587,7 +597,7 @@ class Client:
         try:
             return await fn(req, metadata=self._md, timeout=timeout)
         except grpc.aio.AioRpcError as e:
-            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            if _is_deadline(e):
                 # Either our own deadline, or the server's wait limit (task still running).
                 raise TimeoutError(e.details() or f"no response within {timeout}s") from None
             raise ClientError.from_rpc(e) from None
@@ -652,7 +662,7 @@ class Client:
         try:
             r = await self._tasks.Wait(req, metadata=self._md, timeout=deadline)
         except grpc.aio.AioRpcError as e:
-            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            if _is_deadline(e):
                 raise TimeoutError(f"task {ref!r} still running after {timeout}s") from None
             raise ClientError.from_rpc(e) from None
         return Result._from_pb(r)

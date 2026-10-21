@@ -459,8 +459,10 @@ async def test_worker_reconnects_after_server_restart(server: Server) -> None:
                 break
             await asyncio.sleep(0.05)
         assert w.connections >= 2
-        # A graceful server stop announces itself before closing the stream.
-        assert w.last_shutdown is not None
+        # A graceful server stop (SIGTERM) announces itself before closing the stream. On
+        # Windows the test stops the server with TerminateProcess, which is not graceful.
+        if os.name != "nt":
+            assert w.last_shutdown is not None
         async with Client(server.target, token=CLIENT) as c:
             await wait_capacity(c, 1)
             sub = await c.submit("after restart", wait=True)
