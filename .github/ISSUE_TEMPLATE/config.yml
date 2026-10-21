@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussions
+    url: https://github.com/synaptiai/cronoq/discussions
+    about: Ask questions and share ideas with the community.
+  - name: Documentation
+    url: https://synaptiai.github.io/cronoq/
+    about: Concepts, use cases, guides and reference.
+  - name: Report a security vulnerability
+    url: https://github.com/synaptiai/cronoq/security/advisories/new
+    about: Please report security issues privately.

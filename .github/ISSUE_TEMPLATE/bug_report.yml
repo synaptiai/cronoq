@@ -1,0 +1,55 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! For security issues, please follow SECURITY.md instead of filing an issue.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Engine (cronoq-core)
+        - Rust runtime (cronoq)
+        - Server (cronoq-server)
+        - Postgres store (cronoq-store-postgres)
+        - Python package (cronoq)
+        - Python client (cronoq.client)
+        - Documentation
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Crate/package version or commit hash
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Code, configuration or commands that reproduce the problem. A failing test is ideal.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "OS, Rust/Python version, PostgreSQL version"

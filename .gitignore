@@ -5,3 +5,4 @@
 .venv
 dist/
 .claude/worktrees/
+docs/book/book/

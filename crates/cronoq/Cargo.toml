@@ -7,7 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-keywords = ["scheduler", "queue", "priority", "autoscaling", "tasks"]
+homepage.workspace = true
+documentation = "https://docs.rs/cronoq"
+readme = "README.md"
+keywords = ["scheduler", "task-queue", "priority", "autoscaling", "rate-limit"]
 categories = ["asynchronous", "concurrency"]
 
 [features]

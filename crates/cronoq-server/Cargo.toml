@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/cronoq-server"
+readme = "README.md"
+keywords = ["scheduler", "task-queue", "grpc", "worker", "autoscaling"]
+categories = ["network-programming", "web-programming::http-server", "concurrency"]
 
 [[bin]]
 name = "cronoq-server"

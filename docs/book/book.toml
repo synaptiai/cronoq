@@ -1,0 +1,22 @@
+[book]
+title = "cronoq"
+description = "Elastic, priority-aware task scheduling for Rust, Python and gRPC"
+authors = ["The cronoq contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/synaptiai/cronoq"
+edit-url-template = "https://github.com/synaptiai/cronoq/edit/main/docs/book/{path}"
+site-url = "/cronoq/"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true

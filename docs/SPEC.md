@@ -1,7 +1,12 @@
 # cronoq — Specification v0.1
 
 > Status: **Accepted (v0.1 baseline)** · Owner: Daniel Bentes · License: MIT OR Apache-2.0
-> Origin: rewrite of the Python prototype in `docs/prototype/` (Elastic Priority Scheduler).
+> Predecessor: the Python `ElasticPriorityScheduler` in `docs/prototype/`, whose API is preserved
+> by `cronoq.compat`.
+
+> **This is the design document**: decisions, invariants and rationale for contributors. For
+> user documentation (concepts, use cases, guides and reference) see the
+> [cronoq book](https://synaptiai.github.io/cronoq/) (source in `docs/book/`).
 
 cronoq is an embeddable, elastic, priority-aware task scheduler written in Rust,
 with Python bindings and an optional gRPC/HTTP server backed by Postgres.
