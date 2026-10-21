@@ -1,0 +1,24 @@
+[package]
+name = "cronoq-py"
+description = "Python bindings for the cronoq elastic priority scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "_cronoq"
+crate-type = ["cdylib"]
+
+[dependencies]
+cronoq = { path = "../cronoq" }
+pyo3 = { version = "0.30", features = ["abi3-py39"] }
+pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
+tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+
+[features]
+# Enabled by maturin when building the extension module.
+extension-module = ["pyo3/extension-module"]
