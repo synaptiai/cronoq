@@ -218,7 +218,8 @@ On conflict: `SubmitError::ReservationConflict`.
 
 ### 6.2 Holding workers
 At `hold_at = at − hold_lead`, where `hold_lead = max(tolerance, p90 duration of the pool's
-non-fixed work, capped by max_hold /*default 5 min*/)`:
+non-fixed work, capped by max_hold /*default 5 min*/)`, re-evaluated from current
+statistics until the hold is taken (§21):
 - if a free slot exists, it becomes **held** for this reservation;
 - otherwise the next slot that frees up in the pool is held (holds have priority over lanes).
 
@@ -349,6 +350,8 @@ This replaces the prototype's makespan-based "quality" trigger (prototype bug #5
 - `ShedLowest`: evict the newest task of the lowest class that is below the incoming
   task's class (→ `Shed`); otherwise reject;
 - `ShedOldest`: evict the oldest Low-class task.
+
+Fixed-start tasks are never shed (see §21).
 
 Waiters are woken by the engine when capacity frees up. Bounds are also visible to the
 server as gRPC `RESOURCE_EXHAUSTED`.
@@ -542,10 +545,30 @@ Differences from, and clarifications of, the sections above:
   by latest start time.
 - **Aging is measured from submission.** A task released by its dependencies, or retried,
   keeps its original place in its class.
-- **Hold lead time** is computed when a fixed task is submitted, from the duration
-  statistics known at that point (pool p90 or `default_duration`). Recurring occurrences are
+- **Hold lead time** is re-evaluated, not fixed at submission. The hold timer first fires
+  at `at − max_hold` (or immediately if that is past). Each time it fires, it recomputes
+  the lead from the current p90 of the pool's non-fixed work (or `default_duration`). If it
+  is still early, it re-arms itself, halving the remaining gap. Recurring occurrences are
   materialized one at a time, `hold lead + tolerance` (capped by `max_hold`) before they
   start.
+- **Shedding** considers queued ready tasks (lanes and deadline queues) and parked tasks
+  waiting for a resource. `ShedLowest` evicts the newest such task by submission order, and
+  `ShedOldest` evicts the oldest. Fixed-start tasks are never shed: they hold an admitted
+  reservation, and their `MissPolicy` already defines what happens when they cannot run. The
+  reservation conflict check runs before bounds, so a submission that is rejected for a
+  conflict never sheds anything.
+- **Abandoned `awaits`.** When a task waiting on an unknown key ends (time-out, cancel or
+  skip), it is removed from that key's waiter list, and empty lists are dropped.
+- **Recovery and dependencies.** A recovered live task whose parent (by id or key) is no
+  longer known treats that edge as satisfied, because a live child implies the edge was
+  satisfied before. Recurring schedules restore their overlap guard from the latest live
+  recovered occurrence tagged `cronoq.recurring=<name>`.
+- **Engine time** makes no assumption about its epoch. Rates and accounting are anchored on
+  the first `advance` call, so `Time` may be Unix nanoseconds.
+- **Cron occurrences** are computed at whole-second resolution. At a DST fall-back, croner
+  fires a daily job once. For an hourly job, croner skips the repeated wall-clock hour
+  rather than running it twice. We accept this behaviour; it is documented by tests in
+  `crates/cronoq-core/tests/review2.rs`.
 - **Recovery.** A task that was running when the leader died counts that attempt. If its
   retry budget is then exhausted, it is dead-lettered.
 - **Time base.** Engine time is Unix-epoch nanoseconds (`epoch_unix_nanos = 0`), so stored
@@ -593,18 +616,9 @@ Differences from, and clarifications of, the sections above:
   with 30% headroom for CI noise. For profiling, use instruction counts (callgrind) on the
   `prof` example.
 - **Python.** Executors run on the event loop that called `start()`. Plain functions run in
-  the loop's default executor. Event subscription is not yet exposed in Python.
+  the loop's default executor. `Scheduler.events()` streams status events (terminal ones by
+  default, every transition with `emit_transitions=True`).
 
 ### Known limitations (tracked for v0.2)
 - Recurring templates cannot carry a deadline, fixed start, key or dependencies (a relative
   deadline per occurrence needs engine support); `add_recurring` rejects them.
-- `awaits` entries for keys that never appear are kept after their waiters time out or are
-  cancelled. Memory grows only with distinct abandoned keys.
-- Shedding considers ready tasks in lanes and deadline queues only. Parked (resource-blocked)
-  and due fixed-start tasks are never shed.
-- A submission can shed victims and then still be rejected with `ReservationConflict`,
-  because bounds are checked before reservations.
-- Recurring occurrences recovered after a failover lose their overlap guard for the
-  occurrence that was in flight.
-- Hold lead time is fixed when a task is submitted (see above). Very long tasks submitted
-  before any duration statistics exist may start late.

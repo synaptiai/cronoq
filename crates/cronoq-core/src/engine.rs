@@ -19,7 +19,7 @@ use crate::reservations::Reservations;
 use crate::rng::Rng;
 use crate::snapshot::{PoolSnapshot, Snapshot};
 use crate::spec::*;
-use crate::stats::{DurStats, Window};
+use crate::stats::{DurStats, P90Stats, Window};
 use crate::time::{Time, secs};
 
 // ---------------------------------------------------------------------------------------------
@@ -74,6 +74,8 @@ struct Entry<P> {
     attempt: u32,
     unmet: u32,
     awaiting: u32,
+    /// Registered awaits on unknown keys (listed in `Core::awaited_by`, cleaned up at the end).
+    has_awaits: bool,
     /// Counted in the pending bounds.
     pending: bool,
     lease: Option<LeaseId>,
@@ -125,10 +127,12 @@ struct Resource {
 impl Resource {
     fn refill(&mut self, now: Time) {
         if let ResourceKind::TokenBucket { rate, .. } = self.kind {
-            let dt = now.diff_secs(self.last_refill).max(0.0);
-            self.available = (self.available + rate * dt).min(self.capacity);
+            let dt = now.diff_secs(self.last_refill);
+            if dt > 0.0 && rate > 0.0 {
+                self.available = (self.available + rate * dt).min(self.capacity);
+            }
         }
-        self.last_refill = now;
+        self.last_refill = self.last_refill.max(now);
     }
 }
 
@@ -141,13 +145,21 @@ struct Pool {
     edf: [BTreeMap<(Time, u64), Key>; Priority::COUNT],
     due: BTreeMap<(Time, u64), Key>,
     pending_holds: BTreeMap<(Time, u64), Key>,
+    /// Fixed-start tasks currently holding a slot (at most the reservation limit).
+    held_tasks: BTreeMap<(Time, u64), Key>,
     reservations: Reservations,
+    /// Reservations of fixed-start tasks that have not started yet (autoscaling signal).
+    unstarted: Reservations,
+    /// Tasks waiting for a retry backoff, per class.
+    retrying: [usize; Priority::COUNT],
     pending: usize,
     pending_class: [usize; Priority::COUNT],
     autoscale: Option<AutoscaleState>,
     arrivals: u64,
     last_eval: Time,
     stats: DurStats,
+    /// Runtimes of non-fixed work only (drives the hold lead for fixed starts).
+    adhoc_stats: P90Stats,
     window: Window,
     last_acct: Time,
     worker_secs: f64,
@@ -207,18 +219,31 @@ enum Parent {
 /// Engine-wide totals since start.
 #[derive(Clone, Debug, Default)]
 pub struct Totals {
+    /// Tasks accepted.
     pub submitted: u64,
+    /// Attempts started.
     pub dispatched: u64,
+    /// Tasks that succeeded.
     pub succeeded: u64,
+    /// Tasks that failed permanently.
     pub failed: u64,
+    /// Tasks that exhausted their retries.
     pub dead_lettered: u64,
+    /// Tasks cancelled.
     pub cancelled: u64,
+    /// Tasks skipped because a dependency condition could not be met.
     pub skipped: u64,
+    /// Fixed-start tasks that missed their tolerance.
     pub missed: u64,
+    /// Tasks evicted under overload.
     pub shed: u64,
+    /// Retries scheduled.
     pub retries: u64,
+    /// Attempts aborted for exceeding their timeout.
     pub timeouts: u64,
+    /// Attempts aborted because their lease expired.
     pub lease_expiries: u64,
+    /// Recurring occurrences not created because the reservation limit was reached.
     pub recurring_conflicts: u64,
 }
 
@@ -261,10 +286,23 @@ pub struct Core<P> {
     emit_transitions: bool,
     totals: Totals,
     empty_tags: Tags,
+    /// Keys of tasks being recovered (only set while `recover` runs).
+    recovering_keys: Option<FxHashSet<Arc<str>>>,
+    /// Overlap guard and materialization state of removed recurring schedules, so re-adding
+    /// one does not duplicate an occurrence that already exists.
+    recurring_history: FxHashMap<Arc<str>, (Option<TaskId>, Option<Time>)>,
+    /// Whether time-based accounting has been anchored to the first observed `now`.
+    started: bool,
+    /// Unknown keys each awaiting task registered for, so they can be cleaned up when it ends.
+    awaited_by: FxHashMap<TaskId, Box<[Arc<str>]>>,
 }
 
 impl<P> Core<P> {
+    /// Create an engine. Structural errors (no pools, duplicate names, `min_workers >
+    /// max_workers`) panic; use [`CoreConfig::validate`] first to report them gracefully.
+    /// Out-of-range numeric settings are clamped to safe values.
     pub fn new(cfg: CoreConfig) -> Self {
+        let cfg = cfg.sanitized();
         assert!(!cfg.pools.is_empty(), "at least one pool is required");
         assert!(cfg.pools.len() <= u16::MAX as usize && cfg.resources.len() <= u16::MAX as usize);
         let mut pool_index = FxHashMap::default();
@@ -296,13 +334,17 @@ impl<P> Core<P> {
                 edf: Default::default(),
                 due: BTreeMap::new(),
                 pending_holds: BTreeMap::new(),
+                held_tasks: BTreeMap::new(),
                 reservations: Reservations::default(),
+                unstarted: Reservations::default(),
+                retrying: [0; Priority::COUNT],
                 pending: 0,
                 pending_class: [0; Priority::COUNT],
                 autoscale: pc.autoscale.as_ref().map(|_| AutoscaleState::default()),
                 arrivals: 0,
                 last_eval: Time::ZERO,
                 stats: DurStats::default(),
+                adhoc_stats: P90Stats::default(),
                 window: Window::new(cfg.metrics_window),
                 last_acct: Time::ZERO,
                 worker_secs: 0.0,
@@ -370,6 +412,10 @@ impl<P> Core<P> {
             emit_transitions: false,
             totals: Totals::default(),
             empty_tags: Arc::from(Vec::new()),
+            recovering_keys: None,
+            recurring_history: FxHashMap::default(),
+            started: false,
+            awaited_by: FxHashMap::default(),
         }
     }
 
@@ -378,22 +424,27 @@ impl<P> Core<P> {
         self.emit_transitions = on;
     }
 
+    /// The (sanitized) configuration the engine runs with.
     pub fn config(&self) -> &CoreConfig {
         &self.cfg
     }
 
+    /// Id of the pool named `name`.
     pub fn pool_id(&self, name: &str) -> Option<PoolId> {
         self.pool_index.get(name).map(|&i| PoolId(i))
     }
 
+    /// Name of `pool`. Panics if `pool` is not from this engine.
     pub fn pool_name(&self, pool: PoolId) -> &Arc<str> {
         &self.pools[pool.0 as usize].cfg.name
     }
 
+    /// Current worker capacity of `pool`. Panics if `pool` is not from this engine.
     pub fn pool_capacity(&self, pool: PoolId) -> u32 {
         self.pools[pool.0 as usize].capacity
     }
 
+    /// Counters since start.
     pub fn totals(&self) -> &Totals {
         &self.totals
     }
@@ -409,6 +460,7 @@ impl<P> Core<P> {
         out.extend(self.actions.drain(..));
     }
 
+    /// Whether actions are waiting to be polled.
     pub fn has_actions(&self) -> bool {
         !self.actions.is_empty()
     }
@@ -452,9 +504,8 @@ impl<P> Core<P> {
             Ok(p) => p,
             Err(e) => return Err((e, spec)),
         };
-        if let Err(e) = self.check_bounds(pool, spec.priority, 1, true) {
-            return Err((e, spec));
-        }
+        // Reservations are checked before bounds, so a submission that will be rejected anyway
+        // never sheds other work first.
         if let Some(f) = &spec.fixed_start {
             let (s, e) = self.reservation_interval(pool, &spec, f);
             if self.pools[pool as usize].reservations.max_overlap(s, e)
@@ -463,9 +514,17 @@ impl<P> Core<P> {
                 return Err((SubmitError::ReservationConflict, spec));
             }
         }
+        if let Err(e) = self.check_bounds(pool, spec.priority, 1, true) {
+            return Err((e, spec));
+        }
+        let fixed = spec.fixed_start.is_some();
         let id = self.alloc_id();
         let seq = self.alloc_seq();
         self.insert(now, id, seq, now, spec, pool, 0, None);
+        if fixed {
+            // A fixed start already past its window applies its miss policy before dispatch.
+            self.advance(now);
+        }
         self.pump();
         Ok(Submitted {
             id,
@@ -599,6 +658,7 @@ impl<P> Core<P> {
                 duplicate: false,
             };
         }
+        self.advance(now);
         self.pump();
         Ok(out)
     }
@@ -852,19 +912,15 @@ impl<P> Core<P> {
                 (OverflowPolicy::Reject, _) | (_, false) => return Err(SubmitError::Overloaded),
                 // Victims are strictly lower classes, so they never relieve a class bound.
                 (OverflowPolicy::ShedLowest, true) if class_full => None,
-                (OverflowPolicy::ShedLowest, true) => {
-                    (c + 1..Priority::COUNT).rev().find_map(|vc| {
-                        p.lanes[vc]
-                            .last()
-                            .or_else(|| p.edf[vc].last_key_value().map(|(_, k)| *k))
-                    })
-                }
+                (OverflowPolicy::ShedLowest, true) => (c + 1..Priority::COUNT)
+                    .rev()
+                    .find_map(|vc| self.shed_victim(pool, vc, true)),
                 (OverflowPolicy::ShedOldest, true) => {
                     let low = Priority::Low.index();
                     if class_full && c != low {
                         None
                     } else {
-                        p.lanes[low].first()
+                        self.shed_victim(pool, low, false)
                     }
                 }
             };
@@ -872,6 +928,45 @@ impl<P> Core<P> {
                 Some(k) => self.finish(k, TaskStatus::Shed, Some("shed under overload".into())),
                 None => return Err(SubmitError::Overloaded),
             }
+        }
+    }
+
+    /// The newest (or oldest) waiting task of `class` in `pool` that may be shed: ready tasks
+    /// in lanes and deadline queues, and tasks parked on resources. Fixed-start tasks are never
+    /// shed: they hold capacity reservations that were promised at admission.
+    fn shed_victim(&self, pool: u16, class: usize, newest: bool) -> Option<Key> {
+        let p = &self.pools[pool as usize];
+        let seq = |k: &Key| self.entry(*k).seq;
+        let lane = if newest {
+            p.lanes[class].last()
+        } else {
+            p.lanes[class].first()
+        };
+        let edf = p.edf[class].values();
+        let edf = if newest {
+            edf.max_by_key(|k| seq(k))
+        } else {
+            edf.min_by_key(|k| seq(k))
+        };
+        let parked = self
+            .resources
+            .iter()
+            .flat_map(|r| r.waiters.iter())
+            .filter(|k| {
+                self.slot_entry(**k).is_some_and(|e| {
+                    matches!(e.loc, Loc::Parked(_)) && e.pool == pool && e.class as usize == class
+                })
+            });
+        let parked = if newest {
+            parked.max_by_key(|k| seq(k))
+        } else {
+            parked.min_by_key(|k| seq(k))
+        };
+        let candidates = [lane, edf.copied(), parked.copied()].into_iter().flatten();
+        if newest {
+            candidates.max_by_key(|k| seq(k))
+        } else {
+            candidates.min_by_key(|k| seq(k))
         }
     }
 
@@ -950,9 +1045,11 @@ impl<P> Core<P> {
             .unwrap_or(self.pools[pool as usize].cfg.default_duration)
     }
 
+    /// How long before a fixed start a worker is held: long enough for the ad-hoc work that
+    /// might otherwise take the slot (p90 of non-fixed runtimes) to finish.
     fn hold_lead(&self, pool: u16, tolerance: Duration) -> Duration {
         let p = &self.pools[pool as usize];
-        let p90 = p.stats.p90().unwrap_or(p.cfg.default_duration);
+        let p90 = p.adhoc_stats.p90().unwrap_or(p.cfg.default_duration);
         tolerance.max(p90).min(p.cfg.max_hold)
     }
 
@@ -994,7 +1091,11 @@ impl<P> Core<P> {
         };
         let fixed = spec.fixed_start.map(|f| {
             let (s, e) = self.reservation_interval(pool, &spec, &f);
-            self.pools[pool as usize].reservations.insert(id, s, e);
+            let p = &mut self.pools[pool as usize];
+            p.reservations.insert(id, s, e);
+            if attempt == 0 {
+                p.unstarted.insert(id, s, e);
+            }
             Box::new(FixedInfo {
                 at: f.at,
                 tolerance: f.tolerance,
@@ -1012,22 +1113,37 @@ impl<P> Core<P> {
             UnknownDependency::Reject => None,
         };
         let mut parents = Vec::with_capacity(spec.deps.len());
-        for d in &spec.deps {
+        for d in spec.deps.iter() {
+            let recovering = self.recovering_keys.is_some();
             let p = match &d.target {
                 TaskRef::Id(pid) => match self.index.get(pid) {
                     Some(_) => Parent::Live(*pid),
-                    None => Parent::Done(
-                        self.retained
-                            .get(pid)
-                            .map(|r| r.0)
-                            .unwrap_or(TaskStatus::Succeeded),
-                    ),
+                    None => match self.retained.get(pid) {
+                        Some(r) => Parent::Done(r.0),
+                        // Recovering a live task whose parent left retention: the parent was
+                        // terminal and the child is still live, so its edge was satisfied.
+                        None if recovering => continue,
+                        // Unreachable for validated submissions.
+                        None => Parent::Done(TaskStatus::Succeeded),
+                    },
                 },
                 TaskRef::Key(k) => {
                     if let Some(&pid) = self.keys.get(k) {
                         Parent::Live(pid)
-                    } else if let Some(pid) = self.retained_keys.get(k) {
-                        Parent::Done(self.retained[pid].0)
+                    } else if let Some(r) = self
+                        .retained_keys
+                        .get(k)
+                        .and_then(|pid| self.retained.get(pid))
+                    {
+                        Parent::Done(r.0)
+                    } else if self
+                        .recovering_keys
+                        .as_ref()
+                        .is_some_and(|ks| !ks.contains(k))
+                    {
+                        // As above: a key that is neither live, retained, nor being recovered
+                        // belonged to a parent that finished long ago.
+                        continue;
                     } else {
                         Parent::Await(k.clone())
                     }
@@ -1054,6 +1170,7 @@ impl<P> Core<P> {
             attempt,
             unmet: 0,
             awaiting: 0,
+            has_awaits: false,
             pending: true,
             lease: None,
             retry_at: Time::ZERO,
@@ -1082,6 +1199,7 @@ impl<P> Core<P> {
         // Wire dependency edges.
         let mut unsatisfied: Option<TaskStatus> = None;
         let (mut unmet, mut awaiting) = (0u32, 0u32);
+        let mut awaited: Option<Vec<Arc<str>>> = None;
         for (p, cond) in parents {
             match p {
                 Parent::Live(pid) => {
@@ -1095,7 +1213,8 @@ impl<P> Core<P> {
                     }
                 }
                 Parent::Await(k) => {
-                    self.awaits.entry(k).or_default().push((id, cond));
+                    self.awaits.entry(k.clone()).or_default().push((id, cond));
+                    awaited.get_or_insert_with(Vec::new).push(k);
                     unmet += 1;
                     awaiting += 1;
                 }
@@ -1117,6 +1236,10 @@ impl<P> Core<P> {
             let e = self.entry_mut(key);
             e.unmet = unmet;
             e.awaiting = awaiting;
+            if let Some(keys) = awaited {
+                e.has_awaits = true;
+                self.awaited_by.insert(id, keys.into_boxed_slice());
+            }
         }
         if awaiting > 0 {
             if let Some(t) = await_timeout {
@@ -1124,10 +1247,16 @@ impl<P> Core<P> {
             }
         }
         if let Some(f) = spec.fixed_start {
-            let lead = self.hold_lead(pool, f.tolerance);
-            self.schedule(f.at - lead, Timer::HoldAt(id));
+            // The hold lead is re-evaluated when this timer fires (see `Timer::HoldAt`), so it
+            // tracks duration statistics learned after submission.
+            let max_hold = self.pools[pool as usize].cfg.max_hold;
+            self.schedule((f.at - max_hold).max(now), Timer::HoldAt(id));
             self.schedule(f.at, Timer::StartAt(id));
-            self.schedule(f.at + f.tolerance, Timer::MissAt(id));
+            // Missed only when strictly past `at + tolerance`.
+            self.schedule(
+                f.at + f.tolerance + Duration::from_nanos(1),
+                Timer::MissAt(id),
+            );
         }
         if let Some(st) = unsatisfied {
             self.finish(
@@ -1181,14 +1310,17 @@ impl<P> Core<P> {
         let ran = now.saturating_sub(l.started);
         match outcome {
             Outcome::Success => {
-                let (pool, kind) = {
+                let (pool, kind, fixed) = {
                     let e = self.entry(l.key);
-                    (e.pool, e.kind)
+                    (e.pool, e.kind, e.fixed.is_some())
                 };
                 let s = ran.as_secs_f64();
                 self.dur.entry((pool, kind)).or_default().observe(s);
                 let p = &mut self.pools[pool as usize];
                 p.stats.observe(s);
+                if !fixed {
+                    p.adhoc_stats.observe(s);
+                }
                 let b = p.window.at(now);
                 b.succeeded += 1;
                 b.work_secs += s;
@@ -1211,13 +1343,18 @@ impl<P> Core<P> {
     /// Extend a lease (remote workers). Returns `false` if the lease is unknown.
     pub fn heartbeat(&mut self, now: Time, lease: LeaseId) -> bool {
         self.advance(now);
-        let Some(l) = self.leases.get_mut(&lease) else {
-            return false;
+        let known = match self.leases.get_mut(&lease) {
+            Some(l) => {
+                if let Some(ttl) = self.pools[l.pool as usize].cfg.lease_ttl {
+                    l.expires = now + ttl;
+                }
+                true
+            }
+            None => false,
         };
-        if let Some(ttl) = self.pools[l.pool as usize].cfg.lease_ttl {
-            l.expires = now + ttl;
-        }
-        true
+        // Timers fired by `advance` may have made work ready.
+        self.pump();
+        known
     }
 
     fn end_attempt(&mut self, l: &Lease) {
@@ -1296,7 +1433,7 @@ impl<P> Core<P> {
         };
         let mut delay = policy.backoff(attempt + 1);
         if policy.jitter {
-            delay = Duration::from_secs_f64(delay.as_secs_f64() * self.rng.next_f64());
+            delay = delay.mul_f64(self.rng.next_f64());
         }
         if let Some(ra) = retry_after {
             delay = delay.max(ra);
@@ -1308,6 +1445,7 @@ impl<P> Core<P> {
             e.retry_at = at;
             (e.id, e.class as usize)
         };
+        self.pools[pool as usize].retrying[class] += 1;
         self.pools[pool as usize].window.at(now).retried += 1;
         self.add_pending(key, pool, class);
         self.schedule(at, Timer::Retry(id));
@@ -1386,6 +1524,7 @@ impl<P> Core<P> {
         self.retained.get(&id).map(|r| r.0)
     }
 
+    /// Id of a live or retained task by id or key.
     pub fn resolve(&self, target: &TaskRef) -> Option<TaskId> {
         match target {
             TaskRef::Id(id) => {
@@ -1399,8 +1538,15 @@ impl<P> Core<P> {
         }
     }
 
+    /// Number of live (non-terminal) tasks.
     pub fn live_tasks(&self) -> usize {
         self.index.len()
+    }
+
+    /// Number of distinct unknown keys that live tasks are waiting for.
+    #[doc(hidden)]
+    pub fn awaited_keys(&self) -> usize {
+        self.awaits.len()
     }
 
     fn lookup(&self, target: &TaskRef) -> Option<Key> {
@@ -1454,6 +1600,7 @@ impl<P> Core<P> {
             .recurring
             .get(&name)
             .map(|old| (old.last_task, old.materialized))
+            .or_else(|| self.recurring_history.remove(&name))
             .unwrap_or((None, None));
         let mut r = Recurring {
             spec,
@@ -1478,18 +1625,26 @@ impl<P> Core<P> {
         Ok(())
     }
 
+    /// Remove a recurring schedule. An occurrence already materialized still runs.
     pub fn remove_recurring(&mut self, now: Time, name: &str) -> bool {
         self.advance(now);
-        let removed = self.recurring.remove(name).is_some();
-        if removed && self.cfg.persist {
-            self.actions
-                .push_back(Action::Persist(Box::new(Mutation::RecurringRemove {
-                    name: name.into(),
-                })));
+        let removed = self.recurring.remove(name);
+        if let Some(r) = &removed {
+            // Remembered so re-adding the schedule does not duplicate that occurrence.
+            self.recurring_history
+                .insert(name.into(), (r.last_task, r.materialized));
+            if self.cfg.persist {
+                self.actions
+                    .push_back(Action::Persist(Box::new(Mutation::RecurringRemove {
+                        name: name.into(),
+                    })));
+            }
         }
-        removed
+        self.pump();
+        removed.is_some()
     }
 
+    /// Names of all recurring schedules.
     pub fn recurring_names(&self) -> Vec<Arc<str>> {
         self.recurring.keys().cloned().collect()
     }
@@ -1497,9 +1652,10 @@ impl<P> Core<P> {
     fn next_occurrence(&self, r: &Recurring<P>, after: Time) -> Option<Time> {
         use chrono::TimeZone;
         let wall = self.cfg.epoch_unix_nanos as i128 + after.0 as i128;
-        let secs = wall.div_euclid(1_000_000_000) as i64;
-        let nanos = wall.rem_euclid(1_000_000_000) as u32;
-        let dt = r.tz.timestamp_opt(secs, nanos).single()?;
+        // Cron has whole-second resolution: drop the sub-second part so occurrences land
+        // exactly on the second instead of inheriting the offset of `after`.
+        let secs = i64::try_from(wall.div_euclid(1_000_000_000)).ok()?;
+        let dt = r.tz.timestamp_opt(secs, 0).single()?;
         let next = r.cron.find_next_occurrence(&dt, false).ok()?;
         let ns = next.timestamp_nanos_opt()? as i128 - self.cfg.epoch_unix_nanos as i128;
         (ns >= 0).then_some(Time(ns as u64))
@@ -1605,6 +1761,9 @@ impl<P> Core<P> {
         }
         let mut tasks = rec.tasks;
         tasks.sort_by_key(|t| t.id);
+        // Keys that will exist once recovery completes; dependencies on any other unknown key
+        // belong to parents that finished outside the retention window.
+        self.recovering_keys = Some(tasks.iter().filter_map(|t| t.spec.key.clone()).collect());
         for t in tasks {
             self.next_id = self.next_id.max(t.id.0 + 1);
             self.next_seq = self.next_seq.max(t.seq + 1);
@@ -1644,7 +1803,26 @@ impl<P> Core<P> {
                 None,
             );
         }
+        self.recovering_keys = None;
+        // The latest live occurrence of each schedule restores its overlap guard.
+        let mut latest: FxHashMap<Arc<str>, (TaskId, Time)> = FxHashMap::default();
+        for k in self.index.values() {
+            let e = self.entry(*k);
+            let (Some(tags), Some(f)) = (&e.tags, &e.fixed) else {
+                continue;
+            };
+            if let Some((_, name)) = tags.iter().find(|(t, _)| &**t == "cronoq.recurring") {
+                let slot = latest.entry(name.clone()).or_insert((e.id, f.at));
+                if f.at > slot.1 {
+                    *slot = (e.id, f.at);
+                }
+            }
+        }
         for (spec, next) in rec.recurring {
+            let name = spec.name.clone();
+            if let Some(&(id, at)) = latest.get(&name) {
+                self.recurring_history.insert(name, (Some(id), Some(at)));
+            }
             let _ = self.add_recurring_inner(now, spec, next);
         }
         // Timers already in the past (missed fixed starts, expired awaits) apply before
@@ -1665,6 +1843,18 @@ impl<P> Core<P> {
     fn advance(&mut self, now: Time) {
         let now = now.max(self.now);
         self.now = now;
+        if !self.started {
+            // Engine time may be anything (e.g. Unix nanoseconds): start accounting here
+            // rather than integrating capacity over the whole span since `Time::ZERO`.
+            self.started = true;
+            for p in &mut self.pools {
+                p.last_acct = now;
+                p.last_eval = now;
+            }
+            for r in &mut self.resources {
+                r.last_refill = now;
+            }
+        }
         while let Some(Reverse((t, _, _))) = self.timers.peek() {
             if *t > now {
                 break;
@@ -1681,7 +1871,9 @@ impl<P> Core<P> {
                 if let Some(k) = self.index.get(&id).copied() {
                     let e = self.entry(k);
                     if e.status == TaskStatus::Retrying && e.retry_at <= now {
-                        if e.unmet == 0 {
+                        let (pool, class) = (e.pool as usize, e.class as usize);
+                        self.pools[pool].retrying[class] -= 1;
+                        if self.entry(k).unmet == 0 {
                             self.make_eligible(k);
                         } else {
                             self.entry_mut(k).status = TaskStatus::Blocked;
@@ -1698,7 +1890,21 @@ impl<P> Core<P> {
                     ) && e.fixed.as_ref().is_some_and(|f| !f.held && !f.hold_pending);
                     if ok {
                         let pool = e.pool;
-                        let (at, seq) = (e.fixed.as_ref().unwrap().at, e.seq);
+                        let f = e.fixed.as_ref().unwrap();
+                        let (at, tolerance, seq) = (f.at, f.tolerance, e.seq);
+                        // Recompute the lead from current statistics. If it is not time yet,
+                        // check again halfway there, so a lead that grows meanwhile is caught.
+                        let target = at - self.hold_lead(pool, tolerance);
+                        if now < target {
+                            let gap = target.saturating_sub(now);
+                            let next = if gap > Duration::from_secs(1) {
+                                now + gap / 2
+                            } else {
+                                target
+                            };
+                            self.schedule(next, Timer::HoldAt(id));
+                            return;
+                        }
                         self.entry_mut(k).fixed.as_mut().unwrap().hold_pending = true;
                         self.pools[pool as usize].pending_holds.insert((at, seq), k);
                         self.mark_dirty(pool);
@@ -1773,12 +1979,22 @@ impl<P> Core<P> {
     }
 
     fn on_miss(&mut self, k: Key) {
-        let (status, pool, policy) = {
+        let (status, pool, policy, attempt, late) = {
             let e = self.entry(k);
             let Some(f) = e.fixed.as_ref() else { return };
-            (e.status, e.pool, f.on_miss)
+            (
+                e.status,
+                e.pool,
+                f.on_miss,
+                e.attempt,
+                self.now > f.at + f.tolerance,
+            )
         };
-        if matches!(status, TaskStatus::Running)
+        // A task that already started once (now retrying or waiting for a slot to retry)
+        // made its fixed start; only a start that never happened can be missed.
+        if attempt > 0
+            || !late
+            || matches!(status, TaskStatus::Running)
             || status.is_terminal()
             || status == TaskStatus::Retrying
         {
@@ -1814,6 +2030,7 @@ impl<P> Core<P> {
         let p = &mut self.pools[pool];
         if was_held {
             p.held -= 1;
+            p.held_tasks.remove(&(at, seq));
             p.dirty = true;
             self.dirty.push(pool as u16);
         }
@@ -1910,6 +2127,11 @@ impl<P> Core<P> {
                 Loc::Parked(r) => Some(r),
                 _ => None,
             };
+            if self.entry(k).status == TaskStatus::Retrying {
+                let e = self.entry(k);
+                let (pool, class) = (e.pool as usize, e.class as usize);
+                self.pools[pool].retrying[class] -= 1;
+            }
             self.unqueue(k);
             self.remove_pending(k);
             if self.entry(k).fixed.is_some() {
@@ -1917,6 +2139,7 @@ impl<P> Core<P> {
                 let e = self.entry(k);
                 let (pool, id, rs) = (e.pool as usize, e.id, e.fixed.as_ref().unwrap().res_start);
                 self.pools[pool].reservations.remove(id, rs);
+                self.pools[pool].unstarted.remove(id, rs);
             }
             match status {
                 TaskStatus::Succeeded => self.totals.succeeded += 1,
@@ -1928,6 +2151,18 @@ impl<P> Core<P> {
                 _ => {}
             }
             let e = self.slab_remove(k);
+            if e.has_awaits {
+                if let Some(keys) = self.awaited_by.remove(&e.id) {
+                    for key in keys.iter() {
+                        if let Some(list) = self.awaits.get_mut(key) {
+                            list.retain(|(cid, _)| *cid != e.id);
+                            if list.is_empty() {
+                                self.awaits.remove(key);
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(r) = parked_on {
                 // This task may have been the head waiter blocking others that now fit.
                 self.wake_waiters(r.0);
@@ -2080,50 +2315,54 @@ impl<P> Core<P> {
             if p.free() == 0 {
                 break;
             }
-            let Some((_, k)) = p.pending_holds.pop_first() else {
+            let Some((hk, k)) = p.pending_holds.pop_first() else {
                 break;
             };
             p.held += 1;
+            p.held_tasks.insert(hk, k);
             let f = self.entry_mut(k).fixed.as_mut().unwrap();
             f.hold_pending = false;
             f.held = true;
         }
-        // 2. Due fixed-start tasks (earliest first).
-        let due: Vec<((Time, u64), Key)> = self.pools[pool as usize]
-            .due
-            .iter()
-            .map(|(a, b)| (*a, *b))
-            .collect();
-        for (dk, k) in due {
-            let (held, skip_if) = {
-                let f = self.entry(k).fixed.as_ref().unwrap();
-                (f.held, f.skip_if_live)
-            };
-            if let Some(prev) = skip_if {
-                if self.index.contains_key(&prev) {
-                    self.finish(
-                        k,
-                        TaskStatus::Skipped,
-                        Some("previous occurrence still running".into()),
-                    );
-                    continue;
-                }
-            }
-            let p = &self.pools[pool as usize];
-            if !held && p.free() == 0 {
-                continue;
-            }
-            if !self.try_acquire(k) {
-                self.schedule_refills(k);
-                continue;
-            }
-            self.pools[pool as usize].due.remove(&dk);
-            self.entry_mut(k).loc = Loc::None;
-            // Frees the held slot for this dispatch and drops any hold still pending.
-            self.release_hold(k);
-            self.dispatch(now, pool, k);
+        if self.pools[pool as usize].due.is_empty() {
+            self.pump_regular(now, pool);
+            return;
         }
-        // 3. Regular work by effective score.
+        // 2a. Due fixed-start tasks that hold a slot start first (there are few of them).
+        if !self.pools[pool as usize].held_tasks.is_empty() {
+            let held: Vec<Key> = self.pools[pool as usize]
+                .held_tasks
+                .values()
+                .copied()
+                .filter(|k| self.entry(*k).loc == Loc::Due)
+                .collect();
+            for k in held {
+                self.start_due(now, pool, k);
+            }
+        }
+        // 2b. Other due fixed-start tasks, earliest first, while slots are free. Walking the
+        // map in order (instead of copying it) keeps a large run-late backlog linear.
+        let mut cursor: Option<(Time, u64)> = None;
+        while self.pools[pool as usize].free() > 0 {
+            let p = &self.pools[pool as usize];
+            let next = match cursor {
+                None => p.due.iter().next(),
+                Some(c) => p
+                    .due
+                    .range((core::ops::Bound::Excluded(c), core::ops::Bound::Unbounded))
+                    .next(),
+            };
+            let Some((&dk, &k)) = next else {
+                break;
+            };
+            cursor = Some(dk);
+            self.start_due(now, pool, k);
+        }
+        self.pump_regular(now, pool);
+    }
+
+    /// 3. Regular work by effective score.
+    fn pump_regular(&mut self, now: Time, pool: u16) {
         while self.pools[pool as usize].free() > 0 {
             let Some(k) = self.best_candidate(pool, now) else {
                 break;
@@ -2135,6 +2374,51 @@ impl<P> Core<P> {
             }
             self.dispatch(now, pool, k);
         }
+    }
+
+    /// Try to start a due fixed-start task (in a held slot or a free one).
+    fn start_due(&mut self, now: Time, pool: u16, k: Key) {
+        let (held, skip_if, at, seq) = {
+            let e = self.entry(k);
+            let f = e.fixed.as_ref().unwrap();
+            (f.held, f.skip_if_live, f.at, e.seq)
+        };
+        if let Some(prev) = skip_if {
+            if self.index.contains_key(&prev) {
+                // The schedule's guard moves back to the occurrence that is still running, so
+                // the next occurrence is checked against it rather than this skipped one.
+                let e = self.entry(k);
+                let id = e.id;
+                let name = e
+                    .tags
+                    .as_ref()
+                    .and_then(|t| t.iter().find(|(k, _)| &**k == "cronoq.recurring"))
+                    .map(|(_, v)| v.clone());
+                if let Some(r) = name.and_then(|n| self.recurring.get_mut(&n)) {
+                    if r.last_task == Some(id) {
+                        r.last_task = Some(prev);
+                    }
+                }
+                self.finish(
+                    k,
+                    TaskStatus::Skipped,
+                    Some("previous occurrence still running".into()),
+                );
+                return;
+            }
+        }
+        if !held && self.pools[pool as usize].free() == 0 {
+            return;
+        }
+        if !self.try_acquire(k) {
+            self.schedule_refills(k);
+            return;
+        }
+        self.pools[pool as usize].due.remove(&(at, seq));
+        self.entry_mut(k).loc = Loc::None;
+        // Frees the held slot for this dispatch and drops any hold still pending.
+        self.release_hold(k);
+        self.dispatch(now, pool, k);
     }
 
     fn score(&self, e: &Entry<P>, now: Time) -> f64 {
@@ -2231,7 +2515,8 @@ impl<P> Core<P> {
                 return;
             }
             let missing = (need as f64 - rs.available).max(0.0);
-            let at = now + Duration::from_secs_f64(missing / rate).max(Duration::from_micros(1));
+            let wait = Duration::try_from_secs_f64(missing / rate).unwrap_or(Duration::MAX);
+            let at = now + wait.max(Duration::from_micros(1));
             if rs.refill_at.is_none_or(|t| at < t) {
                 rs.refill_at = Some(at);
                 self.schedule(at, Timer::Refill(r));
@@ -2305,9 +2590,12 @@ impl<P> Core<P> {
                 e.timeout_ns,
                 e.attempt == 1,
                 e.arrival,
-                e.fixed.as_ref().map(|f| (f.at, f.tolerance)),
+                e.fixed.as_ref().map(|f| (f.at, f.tolerance, f.res_start)),
             )
         };
+        if let Some((_, _, res_start)) = fixed {
+            self.pools[pool as usize].unstarted.remove(id, res_start);
+        }
         let lease_ttl = {
             let p = &mut self.pools[pool as usize];
             p.account(now);
@@ -2320,7 +2608,8 @@ impl<P> Core<P> {
             if first {
                 b.wait.record(now.saturating_sub(arrival));
             }
-            if let Some((at, tol)) = fixed {
+            if let (Some((at, tol, _)), true) = (fixed, first) {
+                // Only the first start counts: retries are not late fixed starts.
                 b.fixed_total += 1;
                 if now.diff_secs(at).abs() <= tol.as_secs_f64() {
                     b.fixed_hits += 1;
@@ -2386,7 +2675,7 @@ impl<P> Core<P> {
         p.last_eval = now;
         let mut backlog = [0u64; Priority::COUNT];
         for (c, b) in backlog.iter_mut().enumerate() {
-            *b = (p.lanes[c].len() + p.edf[c].len()) as u64;
+            *b = (p.lanes[c].len() + p.edf[c].len() + p.retrying[c]) as u64;
         }
         backlog[0] += p.due.len() as u64;
         let signals = Signals {
@@ -2400,9 +2689,8 @@ impl<P> Core<P> {
             backlog,
             busy: p.busy,
             capacity: p.capacity,
-            reserved: p
-                .reservations
-                .max_overlap(now, now + cfg.reservation_horizon),
+            // Running fixed tasks are already counted in `busy`.
+            reserved: p.unstarted.max_overlap(now, now + cfg.reservation_horizon),
             min: p.cfg.min_workers,
             max: p.cfg.max_workers,
         };
@@ -2418,8 +2706,11 @@ impl<P> Core<P> {
     // Snapshot
     // -----------------------------------------------------------------------------------------
 
+    /// Advance to `now` (firing due timers) and return current state and metrics.
     pub fn snapshot(&mut self, now: Time) -> Snapshot {
         self.advance(now);
+        // Timers fired by `advance` may have made work ready.
+        self.pump();
         let mut pools = Vec::with_capacity(self.pools.len());
         for p in &mut self.pools {
             p.account(now);
@@ -2557,6 +2848,23 @@ impl<P> Core<P> {
         let mut held = vec![0u32; self.pools.len()];
         let mut pending = vec![0usize; self.pools.len()];
         let mut queued = vec![0usize; self.pools.len()];
+        let mut pending_class = vec![[0usize; Priority::COUNT]; self.pools.len()];
+        let mut retrying = vec![[0usize; Priority::COUNT]; self.pools.len()];
+        let mut reservations = vec![0usize; self.pools.len()];
+        let mut live_parents: FxHashMap<TaskId, usize> = FxHashMap::default();
+        for k in self.index.values() {
+            for (child, _) in &self.entry(*k).dependents {
+                *live_parents.entry(*child).or_default() += 1;
+            }
+        }
+        let mut awaiting: FxHashMap<TaskId, usize> = FxHashMap::default();
+        for list in self.awaits.values() {
+            for (id, _) in list {
+                if self.index.contains_key(id) {
+                    *awaiting.entry(*id).or_default() += 1;
+                }
+            }
+        }
         for (id, k) in &self.index {
             let e = self.slot_entry(*k).expect("index points to live slot");
             assert_eq!(e.id, *id);
@@ -2593,8 +2901,57 @@ impl<P> Core<P> {
             }
             if e.status == TaskStatus::Blocked {
                 assert!(
-                    e.unmet > 0 || e.fixed.is_some() || e.attempt > 0,
+                    e.unmet > 0 || e.fixed.is_some(),
                     "blocked task {id} without unmet deps"
+                );
+            }
+            if e.pending {
+                pending_class[e.pool as usize][e.class as usize] += 1;
+            }
+            if e.status == TaskStatus::Retrying {
+                retrying[e.pool as usize][e.class as usize] += 1;
+            }
+            if let Loc::Parked(r) = e.loc {
+                assert!(
+                    self.resources[r.0 as usize].waiters.contains(k),
+                    "parked task {id} missing from its waiter queue"
+                );
+            }
+            if let Some(f) = &e.fixed {
+                assert!(
+                    !(f.held && f.hold_pending),
+                    "task {id} both held and pending a hold"
+                );
+                assert_eq!(
+                    p.pending_holds.get(&(f.at, e.seq)) == Some(k),
+                    f.hold_pending,
+                    "task {id} pending-hold mismatch"
+                );
+                assert_eq!(
+                    p.held_tasks.get(&(f.at, e.seq)) == Some(k),
+                    f.held,
+                    "task {id} held mismatch"
+                );
+                assert!(
+                    p.reservations.contains(e.id, f.res_start),
+                    "fixed task {id} lost its reservation"
+                );
+                assert_eq!(
+                    p.unstarted.contains(e.id, f.res_start),
+                    e.attempt == 0 && e.status != TaskStatus::Running,
+                    "task {id} unstarted-reservation mismatch"
+                );
+                reservations[e.pool as usize] += 1;
+            }
+            // Every unmet dependency is a live parent or an awaited key.
+            let parents = live_parents.get(id).copied().unwrap_or(0);
+            let awaited = awaiting.get(id).copied().unwrap_or(0);
+            assert_eq!(e.awaiting as usize, awaited, "task {id} awaiting mismatch");
+            if e.status == TaskStatus::Blocked && e.fixed.is_none() {
+                assert_eq!(
+                    e.unmet as usize,
+                    parents + awaited,
+                    "task {id} unmet mismatch"
                 );
             }
         }
@@ -2612,8 +2969,57 @@ impl<P> Core<P> {
                 "pool {} queue mismatch",
                 p.cfg.name
             );
+            assert_eq!(
+                p.pending_class, pending_class[i],
+                "pool {} per-class pending",
+                p.cfg.name
+            );
+            assert_eq!(
+                p.retrying, retrying[i],
+                "pool {} retrying mismatch",
+                p.cfg.name
+            );
+            assert_eq!(
+                p.reservations.len(),
+                reservations[i],
+                "pool {} stray reservations",
+                p.cfg.name
+            );
+            assert_eq!(
+                p.held_tasks.len() as u32,
+                p.held,
+                "pool {} held_tasks mismatch",
+                p.cfg.name
+            );
         }
         assert_eq!(self.total_pending, pending.iter().sum::<usize>());
+        for c in 0..Priority::COUNT {
+            let sum: usize = pending_class.iter().map(|pc| pc[c]).sum();
+            assert_eq!(
+                self.pending_class[c], sum,
+                "global per-class pending mismatch"
+            );
+        }
+        // Semaphore permits in use equal what running attempts hold.
+        let mut in_use = vec![0u64; self.resources.len()];
+        for l in self.leases.values() {
+            if let Some(res) = &self.entry(l.key).resources {
+                for (r, a) in res.iter() {
+                    in_use[r.0 as usize] += *a as u64;
+                }
+            }
+        }
+        for (i, r) in self.resources.iter().enumerate() {
+            if let ResourceKind::Semaphore { permits } = r.kind {
+                let used = permits as f64 - r.available;
+                assert!(
+                    (used - in_use[i] as f64).abs() < 1e-6,
+                    "semaphore {} leaks permits: {used} in use, {} held",
+                    r.name,
+                    in_use[i]
+                );
+            }
+        }
         for r in &self.resources {
             assert!(
                 r.available <= r.capacity + 1e-9,
