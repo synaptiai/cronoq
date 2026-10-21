@@ -188,7 +188,7 @@ impl pb::tasks_server::Tasks for TasksService {
         check_grpc(&self.state.auth, &req, Role::Client)?;
         let r = req.into_inner();
         let target = convert::task_ref(r.task)?;
-        let timeout = r.timeout_s.map(Duration::from_secs_f64);
+        let timeout = r.timeout_s.map(convert::secs).transpose()?;
         Ok(Response::new(
             wait_result(&self.state, target, timeout).await?,
         ))
@@ -287,17 +287,17 @@ impl pb::workers_server::Workers for WorkersService {
         }
         let (tx, rx) = mpsc::channel(1024);
         let registry = self.state.registry.clone();
-        let worker = registry.register(pool.clone(), reg.slots, tx.clone());
-        tracing::info!(worker, pool = %pool, slots = reg.slots, name = %reg.worker_name, "worker registered");
+        let worker = registry.next_worker_id();
         let ttl = self.state.lease_ttl.get(&pool).copied();
-        let _ = tx
-            .send(Ok(pb::ServerMessage {
-                msg: Some(pb::server_message::Msg::Registered(pb::Registered {
-                    worker_id: worker,
-                    lease_ttl_s: ttl.map(|d| d.as_secs_f64()),
-                })),
-            }))
-            .await;
+        // The ack is queued before the worker becomes eligible for leases.
+        let _ = tx.try_send(Ok(pb::ServerMessage {
+            msg: Some(pb::server_message::Msg::Registered(pb::Registered {
+                worker_id: worker,
+                lease_ttl_s: ttl.map(|d| d.as_secs_f64()),
+            })),
+        }));
+        registry.register(worker, pool.clone(), reg.slots, tx.clone());
+        tracing::info!(worker, pool = %pool, slots = reg.slots, name = %reg.worker_name, "worker registered");
         tokio::spawn(async move {
             loop {
                 let msg = match inbound.message().await {
@@ -320,10 +320,7 @@ impl pb::workers_server::Workers for WorkersService {
                         } else {
                             cronoq::TaskError::Retryable {
                                 message: f.message.into(),
-                                retry_after: f
-                                    .retry_after_s
-                                    .filter(|s| s.is_finite() && *s >= 0.0)
-                                    .map(Duration::from_secs_f64),
+                                retry_after: f.retry_after_s.and_then(|s| convert::secs(s).ok()),
                             }
                         };
                         registry.finish(worker, f.lease, Err(err));

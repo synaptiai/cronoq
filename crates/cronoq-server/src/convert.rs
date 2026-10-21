@@ -14,8 +14,12 @@ use tonic::Status;
 /// Tag carrying the payload content type.
 pub const CONTENT_TYPE_TAG: &str = "cronoq.content_type";
 
-fn secs(s: f64) -> Result<Duration, Status> {
-    if !s.is_finite() || s < 0.0 {
+/// Longest duration accepted from clients (100 years).
+pub const MAX_SECS: f64 = 100.0 * 365.0 * 86400.0;
+
+/// Validate a client-supplied duration in seconds.
+pub fn secs(s: f64) -> Result<Duration, Status> {
+    if !s.is_finite() || !(0.0..=MAX_SECS).contains(&s) {
         return Err(Status::invalid_argument(format!("invalid duration {s}")));
     }
     Ok(Duration::from_secs_f64(s))
@@ -241,6 +245,14 @@ pub fn submit_error(e: SubmitError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_are_validated() {
+        for bad in [-1.0, f64::NAN, f64::INFINITY, 1e300] {
+            assert!(secs(bad).is_err(), "{bad}");
+        }
+        assert_eq!(secs(1.5).unwrap(), Duration::from_millis(1500));
+    }
 
     #[test]
     fn task_from_proto() {

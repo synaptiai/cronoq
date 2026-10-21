@@ -261,6 +261,10 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                         let snap = self.core.snapshot(self.clock.now());
                         self.metrics.update(&snap);
                         self.next_gauge = Instant::now() + Duration::from_secs(1);
+                        self.waiters.retain(|_, ws| {
+                            ws.retain(|w| !w.is_closed());
+                            !ws.is_empty()
+                        });
                     }
                 }
             }
@@ -366,7 +370,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             Cmd::Snapshot { reply } => {
                 let _ = reply.send(self.core.snapshot(now));
             }
-            Cmd::SetCapacity { pool, capacity } => self.core.set_capacity(now, pool, capacity),
+            Cmd::SetCapacity { pool, capacity } => {
+                if self.shutdown.is_none() {
+                    self.core.set_capacity(now, pool, capacity);
+                }
+            }
             Cmd::AddRecurring { spec, reply } => {
                 let _ = reply.send(self.core.add_recurring(now, spec));
             }
@@ -376,6 +384,10 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             Cmd::Shutdown { grace, reply } => {
                 let deadline = Instant::now() + grace;
                 self.shutdown = Some(self.shutdown.map_or(deadline, |d| d.min(deadline)));
+                // Drain: running attempts may finish, but nothing new starts.
+                for i in 0..self.pools.len() {
+                    self.core.set_capacity(now, PoolId(i as u16), 0);
+                }
                 self.shutdown_replies.push(reply);
                 for b in self.blocked.drain(..) {
                     let _ = b.reply.send(Err(Error::Shutdown));
@@ -462,7 +474,12 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     message,
                 }));
             }
-            _ => self.waiters.entry(id).or_default().push(tx),
+            _ => {
+                let ws = self.waiters.entry(id).or_default();
+                // Drop waiters whose handles were abandoned (e.g. a timed-out `Wait` RPC).
+                ws.retain(|w| !w.is_closed());
+                ws.push(tx);
+            }
         }
         rx
     }
@@ -512,7 +529,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             Feedback::Heartbeat(lease) => {
                 self.core.heartbeat(now, lease);
             }
-            Feedback::Capacity { pool, capacity } => self.core.set_capacity(now, pool, capacity),
+            Feedback::Capacity { pool, capacity } => {
+                if self.shutdown.is_none() {
+                    self.core.set_capacity(now, pool, capacity);
+                }
+            }
         }
     }
 
@@ -645,6 +666,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             }
             Action::Abort { lease, reason, .. } => {
                 if let Some(r) = self.running.remove(&lease) {
+                    self.pools[r.pool as usize].executor.abort(lease);
                     r.cancel.cancel();
                     if let Some(a) = r.abort {
                         a.abort();

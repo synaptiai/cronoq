@@ -653,3 +653,70 @@ async fn fenced_store_stops_the_scheduler() {
     let r = s.shutdown(Duration::ZERO).await;
     assert!(matches!(r, Err(Error::Store(StoreError::Fenced))), "{r:?}");
 }
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_stops_dispatching_queued_work() {
+    let started = Arc::new(AtomicU32::new(0));
+    let st = started.clone();
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 1).executor_fn(move |_c, x: Arc<u64>| {
+                let st = st.clone();
+                async move {
+                    st.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok(*x)
+                }
+            }),
+        )
+        .build()
+        .await
+        .unwrap();
+    for i in 0..5 {
+        s.enqueue(Task::new(i)).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let t0 = Instant::now();
+    s.shutdown(Duration::from_secs(10)).await.unwrap();
+    assert_eq!(
+        started.load(Ordering::SeqCst),
+        1,
+        "queued tasks must not start during shutdown"
+    );
+    assert!(
+        t0.elapsed() < Duration::from_secs(1),
+        "shutdown waited {:?}",
+        t0.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn executor_is_told_about_aborts_synchronously() {
+    struct Probe(Arc<Mutex<Vec<LeaseId>>>);
+    impl Executor<u64, u64> for Probe {
+        fn execute(&self, _ctx: TaskContext, _p: Arc<u64>) -> BoxFuture<Result<u64, TaskError>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(0)
+            })
+        }
+        fn abort(&self, lease: LeaseId) {
+            self.0.lock().unwrap().push(lease);
+        }
+    }
+    let aborted = Arc::new(Mutex::new(Vec::new()));
+    let s: Sched = Scheduler::builder()
+        .pool(Pool::fixed("default", 1).executor(Probe(aborted.clone())))
+        .build()
+        .await
+        .unwrap();
+    let h = s
+        .submit(Task::new(1).timeout(Duration::from_secs(1)).no_retry())
+        .await
+        .unwrap();
+    assert_eq!(
+        h.await.unwrap_err().status(),
+        Some(TaskStatus::DeadLettered)
+    );
+    assert_eq!(*aborted.lock().unwrap(), vec![LeaseId(1)]);
+}

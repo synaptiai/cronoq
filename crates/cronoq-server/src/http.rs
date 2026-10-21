@@ -364,9 +364,11 @@ async fn result(
     Query(q): Query<WaitQuery>,
 ) -> Result<Json<Value>, ApiError> {
     authorize(&st, &headers, Role::Client)?;
-    let timeout = Some(Duration::from_secs_f64(
-        q.timeout_s.unwrap_or(30.0).clamp(0.0, 3600.0),
-    ));
+    let t = q.timeout_s.unwrap_or(30.0);
+    if !t.is_finite() {
+        return Err(bad("timeout_s must be a finite number"));
+    }
+    let timeout = Some(Duration::from_secs_f64(t.clamp(0.0, 3600.0)));
     let r = grpc::wait_result(&st, parse_ref(&task), timeout).await?;
     Ok(Json(result_json(&r)))
 }

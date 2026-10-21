@@ -473,3 +473,44 @@ async fn watch_streams_events_and_admin_snapshot() {
     assert_eq!(snap.pools[0].succeeded, 1);
     server.stop().await;
 }
+
+#[tokio::test]
+async fn aborted_slot_is_reusable_immediately() {
+    // One slot: when the slow task times out, the queued task is dispatched into the same
+    // slot in the same engine step. It must not fail for lack of a free worker.
+    let server = TestServer::start("").await;
+    let (_w, _j) = spawn_worker(&server, 1, Arc::default());
+    wait_for_capacity(&server, 1).await;
+    let mut c = server.client(CLIENT).await;
+    let no_retry = Some(pb::RetryPolicy {
+        max_attempts: 1,
+        ..Default::default()
+    });
+    let mut slow = spec("slow");
+    slow.timeout_s = Some(0.3);
+    slow.retry = no_retry;
+    let mut next = spec("next");
+    next.retry = no_retry;
+    c.submit(pb::SubmitRequest {
+        task: Some(slow),
+        wait: false,
+    })
+    .await
+    .unwrap();
+    let r = c
+        .submit(pb::SubmitRequest {
+            task: Some(next),
+            wait: true,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let res = r.result.unwrap();
+    assert_eq!(
+        res.status,
+        pb::TaskStatus::Succeeded as i32,
+        "{}",
+        res.message
+    );
+    server.stop().await;
+}

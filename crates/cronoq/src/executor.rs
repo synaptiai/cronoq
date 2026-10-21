@@ -15,6 +15,11 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// Runs one attempt of a task.
 pub trait Executor<P, O>: Send + Sync + 'static {
     fn execute(&self, ctx: TaskContext, payload: Arc<P>) -> BoxFuture<Result<O, TaskError>>;
+
+    /// Called synchronously when the engine abandons an attempt (timeout, cancellation, lease
+    /// expiry), before any new dispatch. The attempt's future is cancelled afterwards; use this
+    /// to release resources tied to the lease immediately (e.g. a remote worker's slot).
+    fn abort(&self, _lease: LeaseId) {}
 }
 
 /// Executor from an async closure.

@@ -45,7 +45,8 @@ struct State {
 #[derive(Default)]
 pub struct WorkerRegistry {
     state: Mutex<State>,
-    sched: OnceLock<Scheduler<Bytes, Bytes>>,
+    /// Capacity totals, applied to the scheduler in the order they were computed.
+    capacity_tx: OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
 }
 
 impl WorkerRegistry {
@@ -54,44 +55,52 @@ impl WorkerRegistry {
     }
 
     pub fn attach(&self, sched: Scheduler<Bytes, Bytes>) {
-        let _ = self.sched.set(sched);
+        let (tx, mut rx) = mpsc::unbounded_channel::<(Arc<str>, u32)>();
+        if self.capacity_tx.set(tx).is_err() {
+            return;
+        }
+        tokio::spawn(async move {
+            while let Some((pool, total)) = rx.recv().await {
+                let _ = sched.set_capacity(&pool, total).await;
+            }
+        });
     }
 
-    pub fn register(&self, pool: Arc<str>, slots: u32, tx: WorkerTx) -> u64 {
-        let id = {
-            let mut st = self.state.lock().unwrap();
-            st.next_worker += 1;
-            let id = st.next_worker;
-            st.workers.insert(
-                id,
-                WorkerConn {
-                    pool: pool.clone(),
-                    tx,
-                    slots,
-                    busy: 0,
-                },
-            );
-            id
-        };
-        self.publish_capacity(&pool);
-        id
+    /// Reserve a worker id. Send `Registered` before calling [`Self::register`], so the worker
+    /// never receives a lease before its registration ack.
+    pub fn next_worker_id(&self) -> u64 {
+        let mut st = self.state.lock().unwrap();
+        st.next_worker += 1;
+        st.next_worker
+    }
+
+    pub fn register(&self, id: u64, pool: Arc<str>, slots: u32, tx: WorkerTx) {
+        let mut st = self.state.lock().unwrap();
+        st.workers.insert(
+            id,
+            WorkerConn {
+                pool: pool.clone(),
+                tx,
+                slots,
+                busy: 0,
+            },
+        );
+        self.publish_capacity(&st, &pool);
     }
 
     pub fn set_slots(&self, worker: u64, slots: u32) {
-        let pool = {
-            let mut st = self.state.lock().unwrap();
-            let Some(w) = st.workers.get_mut(&worker) else {
-                return;
-            };
-            w.slots = slots;
-            w.pool.clone()
+        let mut st = self.state.lock().unwrap();
+        let Some(w) = st.workers.get_mut(&worker) else {
+            return;
         };
-        self.publish_capacity(&pool);
+        w.slots = slots;
+        let pool = w.pool.clone();
+        self.publish_capacity(&st, &pool);
     }
 
     /// Remove a worker; its in-flight leases fail as retryable.
     pub fn unregister(&self, worker: u64) {
-        let (pool, lost) = {
+        let lost = {
             let mut st = self.state.lock().unwrap();
             let Some(w) = st.workers.remove(&worker) else {
                 return;
@@ -106,14 +115,28 @@ impl WorkerRegistry {
                 .into_iter()
                 .filter_map(|l| st.pending.remove(&l))
                 .collect();
-            (w.pool, lost)
+            self.publish_capacity(&st, &w.pool);
+            lost
         };
         for p in lost {
             let _ = p
                 .done
                 .send(Err(TaskError::retryable("worker disconnected")));
         }
-        self.publish_capacity(&pool);
+    }
+
+    /// Queue the pool's new total. Called with the state lock held, so updates are applied in
+    /// the same order as the membership changes that caused them.
+    fn publish_capacity(&self, st: &State, pool: &Arc<str>) {
+        let total: u64 = st
+            .workers
+            .values()
+            .filter(|w| &w.pool == pool)
+            .map(|w| w.slots as u64)
+            .sum();
+        if let Some(tx) = self.capacity_tx.get() {
+            let _ = tx.send((pool.clone(), total.min(u32::MAX as u64) as u32));
+        }
     }
 
     pub fn heartbeat(&self, worker: u64, lease: u64) {
@@ -147,24 +170,6 @@ impl WorkerRegistry {
         let task = p.task;
         let _ = p.done.send(result);
         Some(task)
-    }
-
-    fn publish_capacity(&self, pool: &Arc<str>) {
-        let total: u32 = {
-            let st = self.state.lock().unwrap();
-            st.workers
-                .values()
-                .filter(|w| &w.pool == pool)
-                .map(|w| w.slots)
-                .sum()
-        };
-        if let Some(s) = self.sched.get() {
-            let s = s.clone();
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let _ = s.set_capacity(&pool, total).await;
-            });
-        }
     }
 
     /// Pick a worker with a free slot and send it the lease.
@@ -207,8 +212,8 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    /// Tell the worker to stop an attempt the engine no longer wants.
-    fn abort(&self, lease: u64, reason: &str) {
+    /// Tell the worker to stop an attempt the engine no longer wants, freeing its slot.
+    pub fn abort(&self, lease: u64, reason: &str) {
         let tx = {
             let mut st = self.state.lock().unwrap();
             let Some(p) = st.pending.remove(&lease) else {
@@ -267,6 +272,11 @@ impl Drop for LeaseGuard {
 }
 
 impl Executor<Bytes, Bytes> for RemoteExecutor {
+    fn abort(&self, lease: cronoq::LeaseId) {
+        // Free the worker slot now: the engine may dispatch into it in the same batch.
+        self.registry.abort(lease.0, "aborted");
+    }
+
     fn execute(
         &self,
         ctx: TaskContext,

@@ -189,6 +189,8 @@ struct Recurring<P> {
     tz: chrono_tz::Tz,
     next: Option<Time>,
     last_task: Option<TaskId>,
+    /// Latest occurrence already turned into a task.
+    materialized: Option<Time>,
 }
 
 enum Parent {
@@ -536,9 +538,10 @@ impl<P> Core<P> {
                 *counts.entry((pools[i], s.priority)).or_default() += 1;
             }
         }
-        for (&(p, c), &k) in &counts {
-            self.check_bounds(p, c, k, false).map_err(|e| (0, e))?;
+        if let Some(i) = self.batch_cycle(&specs, &pools, &batch_keys) {
+            return Err((i, SubmitError::Cycle));
         }
+        self.check_batch_bounds(&counts).map_err(|e| (0, e))?;
         // Reservations: tentative insertion so batch members see each other.
         let mut tentative = Vec::new();
         let mut conflict = None;
@@ -593,6 +596,110 @@ impl<P> Core<P> {
         }
         self.pump();
         Ok(out)
+    }
+
+    /// Find a dependency cycle through batch members, including cycles closed by existing
+    /// tasks that await a key the batch defines. Returns a batch index on the cycle.
+    fn batch_cycle(
+        &self,
+        specs: &[TaskSpec<P>],
+        pools: &[u16],
+        batch_keys: &FxHashMap<Arc<str>, usize>,
+    ) -> Option<usize> {
+        #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+        enum N {
+            B(usize),
+            L(TaskId),
+        }
+        let n = specs.len();
+        let mut batch_children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut live_children: FxHashMap<TaskId, Vec<usize>> = FxHashMap::default();
+        for (i, s) in specs.iter().enumerate() {
+            if pools[i] == u16::MAX {
+                continue;
+            }
+            for d in &s.deps {
+                match &d.target {
+                    TaskRef::Key(k) => {
+                        if let Some(&id) = self.keys.get(k) {
+                            live_children.entry(id).or_default().push(i);
+                        } else if let Some(&j) = batch_keys.get(k) {
+                            batch_children[j].push(i);
+                        }
+                    }
+                    TaskRef::Id(id) => {
+                        if self.index.contains_key(id) {
+                            live_children.entry(*id).or_default().push(i);
+                        }
+                    }
+                }
+            }
+        }
+        let succ = |node: N| -> Vec<N> {
+            let mut out = Vec::new();
+            match node {
+                N::B(j) => {
+                    out.extend(batch_children[j].iter().map(|&i| N::B(i)));
+                    if let Some(k) = &specs[j].key {
+                        if let Some(w) = self.awaits.get(k) {
+                            out.extend(
+                                w.iter()
+                                    .filter(|(id, _)| self.index.contains_key(id))
+                                    .map(|(id, _)| N::L(*id)),
+                            );
+                        }
+                    }
+                }
+                N::L(id) => {
+                    if let Some(e) = self.entry_by_id(id) {
+                        out.extend(e.dependents.iter().map(|d| N::L(d.0)));
+                        if let Some(k) = &e.key {
+                            if let Some(w) = self.awaits.get(k) {
+                                out.extend(w.iter().map(|(id, _)| N::L(*id)));
+                            }
+                        }
+                    }
+                    if let Some(c) = live_children.get(&id) {
+                        out.extend(c.iter().map(|&i| N::B(i)));
+                    }
+                }
+            }
+            out
+        };
+        // Iterative three-colour DFS.
+        let mut color: FxHashMap<N, u8> = FxHashMap::default(); // 1 = on stack, 2 = done
+        for start in (0..n).filter(|&i| pools[i] != u16::MAX) {
+            if color.contains_key(&N::B(start)) {
+                continue;
+            }
+            let mut stack: Vec<(N, Vec<N>)> = vec![(N::B(start), succ(N::B(start)))];
+            color.insert(N::B(start), 1);
+            while let Some((node, children)) = stack.last_mut() {
+                if let Some(next) = children.pop() {
+                    match color.get(&next) {
+                        Some(1) => {
+                            return Some(match next {
+                                N::B(i) => i,
+                                N::L(_) => match *node {
+                                    N::B(i) => i,
+                                    N::L(_) => start,
+                                },
+                            });
+                        }
+                        Some(_) => {}
+                        None => {
+                            color.insert(next, 1);
+                            let c = succ(next);
+                            stack.push((next, c));
+                        }
+                    }
+                } else {
+                    color.insert(*node, 2);
+                    stack.pop();
+                }
+            }
+        }
+        None
     }
 
     fn existing_key(&self, key: Option<&str>) -> Option<TaskId> {
@@ -717,18 +824,19 @@ impl<P> Core<P> {
         n: usize,
         allow_shed: bool,
     ) -> Result<(), SubmitError> {
+        let c = class.index();
         loop {
             let p = &self.pools[pool as usize];
-            let c = class.index();
             let over = |cur: usize, lim: Option<usize>| lim.is_some_and(|l| cur + n > l);
-            let full = over(self.total_pending, self.cfg.global_bounds.max_pending)
-                || over(
-                    self.pending_class[c],
-                    self.cfg.global_bounds.max_pending_per_class[c],
-                )
-                || over(p.pending, p.cfg.bounds.max_pending)
-                || over(p.pending_class[c], p.cfg.bounds.max_pending_per_class[c]);
-            if !full {
+            // Bounds on the incoming task's own class can only be relieved by evicting tasks of
+            // that same class; totals can be relieved by evicting any task of this pool.
+            let class_full = over(
+                self.pending_class[c],
+                self.cfg.global_bounds.max_pending_per_class[c],
+            ) || over(p.pending_class[c], p.cfg.bounds.max_pending_per_class[c]);
+            let total_full = over(self.total_pending, self.cfg.global_bounds.max_pending)
+                || over(p.pending, p.cfg.bounds.max_pending);
+            if !class_full && !total_full {
                 return Ok(());
             }
             let victim = match (p.cfg.overflow, allow_shed) {
@@ -737,6 +845,8 @@ impl<P> Core<P> {
                     return Err(SubmitError::Full);
                 }
                 (OverflowPolicy::Reject, _) | (_, false) => return Err(SubmitError::Overloaded),
+                // Victims are strictly lower classes, so they never relieve a class bound.
+                (OverflowPolicy::ShedLowest, true) if class_full => None,
                 (OverflowPolicy::ShedLowest, true) => {
                     (c + 1..Priority::COUNT).rev().find_map(|vc| {
                         p.lanes[vc]
@@ -746,7 +856,11 @@ impl<P> Core<P> {
                 }
                 (OverflowPolicy::ShedOldest, true) => {
                     let low = Priority::Low.index();
-                    p.lanes[low].first()
+                    if class_full && c != low {
+                        None
+                    } else {
+                        p.lanes[low].first()
+                    }
                 }
             };
             match victim {
@@ -756,13 +870,58 @@ impl<P> Core<P> {
         }
     }
 
+    /// Bounds for a whole batch: per pool and class, then summed globally.
+    fn check_batch_bounds(
+        &mut self,
+        counts: &FxHashMap<(u16, Priority), usize>,
+    ) -> Result<(), SubmitError> {
+        for (&(p, c), &k) in counts {
+            self.check_bounds(p, c, k, false)?;
+        }
+        let over = |cur: usize, n: usize, lim: Option<usize>| lim.is_some_and(|l| cur + n > l);
+        let total: usize = counts.values().sum();
+        let mut full = over(
+            self.total_pending,
+            total,
+            self.cfg.global_bounds.max_pending,
+        );
+        let mut per_pool: FxHashMap<u16, usize> = FxHashMap::default();
+        for c in Priority::ALL {
+            let n: usize = counts
+                .iter()
+                .filter(|((_, pc), _)| *pc == c)
+                .map(|(_, k)| k)
+                .sum();
+            full |= over(
+                self.pending_class[c.index()],
+                n,
+                self.cfg.global_bounds.max_pending_per_class[c.index()],
+            );
+        }
+        for (&(p, _), &k) in counts {
+            *per_pool.entry(p).or_default() += k;
+        }
+        for (&p, &k) in &per_pool {
+            let pool = &self.pools[p as usize];
+            full |= over(pool.pending, k, pool.cfg.bounds.max_pending);
+        }
+        if !full {
+            return Ok(());
+        }
+        let wait = per_pool
+            .keys()
+            .any(|p| self.pools[*p as usize].cfg.overflow == OverflowPolicy::Wait);
+        if wait {
+            self.space_waiters = true;
+            Err(SubmitError::Full)
+        } else {
+            Err(SubmitError::Overloaded)
+        }
+    }
+
     fn reservation_interval(&self, pool: u16, spec: &TaskSpec<P>, f: &FixedStart) -> (Time, Time) {
         let kind = self.kind_index.get(&spec.kind).copied();
-        let d = self.estimate_raw(
-            pool,
-            kind,
-            spec.duration_hint.map(|d| d.as_nanos() as u64).unwrap_or(0),
-        );
+        let d = self.estimate_raw(pool, kind, spec.duration_hint.map(nanos).unwrap_or(0));
         (f.at - f.tolerance, f.at + d + f.tolerance)
     }
 
@@ -816,10 +975,7 @@ impl<P> Core<P> {
                 })));
         }
         let kind = self.intern_kind(&spec.kind);
-        let hint_ns = spec
-            .duration_hint
-            .map(|d| d.as_nanos().max(1) as u64)
-            .unwrap_or(0);
+        let hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
         let resources = if spec.resources.is_empty() {
             None
         } else {
@@ -888,10 +1044,7 @@ impl<P> Core<P> {
             deadline: spec.deadline.unwrap_or(Time::MAX),
             lst: Time::MAX,
             hint_ns,
-            timeout_ns: spec
-                .timeout
-                .map(|d| d.as_nanos().max(1) as u64)
-                .unwrap_or(0),
+            timeout_ns: spec.timeout.map(nanos).unwrap_or(0),
             retry: spec.retry.map(Box::new),
             attempt,
             unmet: 0,
@@ -979,7 +1132,7 @@ impl<P> Core<P> {
             );
             return;
         }
-        if attempt > 0 && unmet == 0 && self.entry(key).fixed.is_none() {
+        if attempt > 0 && unmet == 0 {
             // Recovered task whose last attempt was lost: it counts against the retry budget.
             let max = {
                 let e = self.entry(key);
@@ -995,10 +1148,13 @@ impl<P> Core<P> {
                     TaskStatus::DeadLettered,
                     Some("attempt lost in failover; retries exhausted".into()),
                 );
-            } else {
-                self.schedule_retry(now, key, None);
+                return;
             }
-            return;
+            if self.entry(key).fixed.is_none() {
+                self.schedule_retry(now, key, None);
+                return;
+            }
+            // Fixed-start tasks fall through: they wait for their slot (and miss policy) again.
         }
         self.emit(key, TaskStatus::Blocked, None);
         if unmet == 0 {
@@ -1287,17 +1443,30 @@ impl<P> Core<P> {
                 })));
         }
         let name = spec.name.clone();
+        // Replacing a schedule keeps its history, so an occurrence that was already
+        // materialized is neither duplicated nor allowed to overlap.
+        let (last_task, materialized) = self
+            .recurring
+            .get(&name)
+            .map(|old| (old.last_task, old.materialized))
+            .unwrap_or((None, None));
         let mut r = Recurring {
             spec,
             cron,
             tz,
             next: None,
-            last_task: None,
+            last_task,
+            materialized,
         };
-        let next = match next {
+        let mut next = match next {
             Some(n) => Some(n),
             None => self.next_occurrence(&r, now),
         };
+        if let (Some(n), Some(m)) = (next, materialized) {
+            if n <= m {
+                next = self.next_occurrence(&r, m);
+            }
+        }
         r.next = next;
         self.recurring.insert(name.clone(), r);
         self.arm_recurring(now, &name);
@@ -1355,6 +1524,24 @@ impl<P> Core<P> {
             return; // stale timer from a replaced schedule
         }
         let at = occurrence;
+        // Far past its start (e.g. after downtime): run at most this one occurrence late,
+        // then resume from the present instead of replaying every missed occurrence.
+        let late = at + r.spec.tolerance < now;
+        if late && r.spec.on_miss != MissPolicy::RunLate {
+            self.totals.missed += 1;
+            let next = self.next_occurrence(r, now);
+            let r = self.recurring.get_mut(&name).unwrap();
+            r.next = next;
+            if self.cfg.persist {
+                self.actions
+                    .push_back(Action::Persist(Box::new(Mutation::RecurringNext {
+                        name: name.clone(),
+                        next,
+                    })));
+            }
+            self.arm_recurring(now, &name);
+            return;
+        }
         let pool = self.pool_index[&r.spec.template.pool];
         let mut spec = r.spec.template.clone();
         spec.fixed_start = Some(FixedStart {
@@ -1381,11 +1568,13 @@ impl<P> Core<P> {
         } else {
             self.totals.recurring_conflicts += 1;
         }
-        let next = self.next_occurrence(self.recurring.get(&name).unwrap(), at);
+        let from = if late { now } else { at };
+        let next = self.next_occurrence(self.recurring.get(&name).unwrap(), from);
         let r = self.recurring.get_mut(&name).unwrap();
         if task.is_some() {
             r.last_task = task;
         }
+        r.materialized = Some(at);
         r.next = next;
         if self.cfg.persist {
             self.actions
@@ -1414,21 +1603,48 @@ impl<P> Core<P> {
         for t in tasks {
             self.next_id = self.next_id.max(t.id.0 + 1);
             self.next_seq = self.next_seq.max(t.seq + 1);
-            let Some(&pool) = self.pool_index.get(&t.spec.pool) else {
-                continue;
+            let pool = self.pool_index.get(&t.spec.pool).copied();
+            let missing = match pool {
+                None => Some(format!("pool '{}' no longer exists", t.spec.pool)),
+                Some(_) => t
+                    .spec
+                    .resources
+                    .iter()
+                    .find(|(n, _)| !self.resource_index.contains_key(n))
+                    .map(|(n, _)| format!("resource '{n}' no longer exists")),
             };
-            if t.spec
-                .resources
-                .iter()
-                .any(|(n, _)| !self.resource_index.contains_key(n))
-            {
+            if let Some(reason) = missing {
+                // Close it out durably so its key is released and it is not recovered again.
+                self.totals.failed += 1;
+                self.retain(t.id, t.spec.key.clone(), TaskStatus::Failed, now);
+                self.push_status(
+                    t.id,
+                    0,
+                    t.spec.key,
+                    TaskStatus::Failed,
+                    t.attempt,
+                    Some(reason.into()),
+                    true,
+                );
                 continue;
             }
-            self.insert(now, t.id, t.seq, t.arrival, t.spec, pool, t.attempt, None);
+            self.insert(
+                now,
+                t.id,
+                t.seq,
+                t.arrival,
+                t.spec,
+                pool.unwrap(),
+                t.attempt,
+                None,
+            );
         }
         for (spec, next) in rec.recurring {
             let _ = self.add_recurring_inner(now, spec, next);
         }
+        // Timers already in the past (missed fixed starts, expired awaits) apply before
+        // anything is dispatched.
+        self.advance(now);
         self.pump();
     }
 
@@ -1685,6 +1901,10 @@ impl<P> Core<P> {
             if self.slot_entry(k).is_none() {
                 continue;
             }
+            let parked_on = match self.entry(k).loc {
+                Loc::Parked(r) => Some(r),
+                _ => None,
+            };
             self.unqueue(k);
             self.remove_pending(k);
             if self.entry(k).fixed.is_some() {
@@ -1703,6 +1923,10 @@ impl<P> Core<P> {
                 _ => {}
             }
             let e = self.slab_remove(k);
+            if let Some(r) = parked_on {
+                // This task may have been the head waiter blocking others that now fit.
+                self.wake_waiters(r.0);
+            }
             self.index.remove(&e.id);
             if let Some(key) = &e.key {
                 if self.keys.get(key) == Some(&e.id) {
@@ -1890,11 +2114,8 @@ impl<P> Core<P> {
             }
             self.pools[pool as usize].due.remove(&dk);
             self.entry_mut(k).loc = Loc::None;
-            if held {
-                let p = &mut self.pools[pool as usize];
-                p.held -= 1;
-                self.entry_mut(k).fixed.as_mut().unwrap().held = false;
-            }
+            // Frees the held slot for this dispatch and drops any hold still pending.
+            self.release_hold(k);
             self.dispatch(now, pool, k);
         }
         // 3. Regular work by effective score.
@@ -2393,6 +2614,12 @@ impl<P> Core<P> {
             assert!(r.available >= -1e-9, "resource {} negative", r.name);
         }
     }
+}
+
+/// Duration in nanoseconds, at least 1 and saturating at `u64::MAX`.
+#[inline]
+fn nanos(d: Duration) -> u64 {
+    d.as_nanos().clamp(1, u64::MAX as u128) as u64
 }
 
 #[inline]
