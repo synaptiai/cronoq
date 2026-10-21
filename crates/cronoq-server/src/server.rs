@@ -298,6 +298,9 @@ async fn lead(
     let info = TaskInfoCache::new(cfg.outputs.info_entries);
     let mut builder = Scheduler::<Bytes, Bytes>::builder()
         .store_arc(store)
+        // Outputs are cached by the server (bounded by count and bytes) and the store; the
+        // runtime's count-only cache would hold up to 1024 maximum-size outputs.
+        .output_cache(0)
         .emit_transitions(true)
         .configure(|c| c.global_bounds.max_pending = Some(limits.max_pending_total));
     let mut pools = FxHashMap::default();
