@@ -17,10 +17,13 @@ then verifies the tag, builds and tests everything, and publishes:
 2. **PyPI trusted publisher.** On PyPI, add a trusted publisher for project `cronoq`
    (create it as a pending publisher before the first release): owner `synaptiai`, repository
    `cronoq`, workflow `release.yml`, environment `pypi`.
-3. **crates.io trusted publishing.** Publish each crate once manually with a token (crates.io
-   requires an existing crate before trusted publishing can be configured), then for every crate
-   add a trusted publisher: repository `synaptiai/cronoq`, workflow `release.yml`, environment
-   `crates-io`.
+3. **crates.io trusted publishing.** crates.io can configure trusted publishing only for crates
+   that already exist. For the first release, create an API token on crates.io with the
+   `publish-new` and `publish-update` scopes and store it as the secret `CARGO_REGISTRY_TOKEN` of
+   the `crates-io` environment (`gh secret set CARGO_REGISTRY_TOKEN --env crates-io`); the
+   release workflow uses it when present. After the first release, add a trusted publisher to
+   every crate (repository `synaptiai/cronoq`, workflow `release.yml`, environment `crates-io`),
+   then delete the secret and revoke the token.
 4. **GHCR.** The workflow pushes with the built-in `GITHUB_TOKEN`; after the first push, make the
    `cronoq` package public under *Packages* if desired.
 5. **Repository visibility.** ARM runners (`ubuntu-24.04-arm`, `windows-11-arm`) used by the
