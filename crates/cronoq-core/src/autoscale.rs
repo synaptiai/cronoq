@@ -16,21 +16,29 @@ pub struct Signals {
     pub dt: f64,
     /// Mean service time in seconds.
     pub service_secs: f64,
-    /// Waiting tasks per class.
+    /// Waiting tasks per class (ready, due and retrying).
     pub backlog: [u64; Priority::COUNT],
+    /// Workers currently running a task.
     pub busy: u32,
+    /// Workers currently available to the pool.
     pub capacity: u32,
-    /// Peak concurrent reservations within the horizon.
+    /// Peak concurrent reservations of not-yet-started fixed-start tasks within the horizon.
     pub reserved: u32,
+    /// Lower bound on the result (`PoolConfig::min_workers`).
     pub min: u32,
+    /// Upper bound on the result (`PoolConfig::max_workers`).
     pub max: u32,
 }
 
+/// Per-pool autoscaler state: smoothed rates, the last target and the history used for
+/// scale-down stabilization.
 #[derive(Clone, Debug, Default)]
 pub struct AutoscaleState {
+    /// Smoothed arrival rate (tasks per second).
     pub arrival_rate: Ewma,
     /// Last requested target.
     pub target: Option<u32>,
+    /// Desired capacity computed at the last evaluation (before step limits).
     pub last_desired: u32,
     history: VecDeque<(Time, u32)>,
     last_down: Option<Time>,

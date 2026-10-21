@@ -35,32 +35,45 @@ pub struct PoolId(pub u16);
 pub struct ResourceId(pub u16);
 
 /// Priority class. Lower discriminant = more important.
+///
+/// Classes set the base of a task's effective score; waiting time adds a capped aging bonus
+/// and deadlines add urgency (see [`PriorityConfig`](crate::PriorityConfig) and
+/// [`UrgencyConfig`](crate::UrgencyConfig)).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Priority {
+    /// Work that must run before anything else (alerts, interactive critical paths).
     Critical = 0,
+    /// Latency-sensitive work (interactive requests).
     High = 1,
+    /// Regular work (the default).
     #[default]
     Normal = 2,
+    /// Background work that runs when nothing more important is waiting.
     Low = 3,
 }
 
 impl Priority {
+    /// All classes, most important first.
     pub const ALL: [Priority; 4] = [
         Priority::Critical,
         Priority::High,
         Priority::Normal,
         Priority::Low,
     ];
+    /// Number of classes.
     pub const COUNT: usize = 4;
 
+    /// Position in [`Priority::ALL`] (0 = `Critical`).
     #[inline]
     pub fn index(self) -> usize {
         self as usize
     }
+    /// The class at `i` in [`Priority::ALL`].
     pub fn from_index(i: usize) -> Option<Priority> {
         Self::ALL.get(i).copied()
     }
+    /// Lowercase name (`"critical"`, `"high"`, `"normal"`, `"low"`).
     pub fn name(self) -> &'static str {
         match self {
             Priority::Critical => "critical",
@@ -74,7 +87,9 @@ impl Priority {
 /// Reference to another task, used for dependencies and cancellation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TaskRef {
+    /// By engine-assigned id.
     Id(TaskId),
+    /// By the caller-chosen key given at submission.
     Key(Arc<str>),
 }
 
@@ -106,25 +121,32 @@ pub enum EdgeCond {
     OnFailure,
 }
 
+/// A dependency on another task. The dependent becomes eligible once every edge is satisfied
+/// and ends as `Skipped` as soon as one edge can no longer be satisfied.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Dep {
+    /// The parent task.
     pub target: TaskRef,
+    /// Which parent outcomes satisfy the edge.
     pub cond: EdgeCond,
 }
 
 impl Dep {
+    /// Run after `target` succeeds.
     pub fn on_success(target: impl Into<TaskRef>) -> Dep {
         Dep {
             target: target.into(),
             cond: EdgeCond::OnSuccess,
         }
     }
+    /// Run after `target` ends, whatever its outcome (cleanup steps).
     pub fn on_complete(target: impl Into<TaskRef>) -> Dep {
         Dep {
             target: target.into(),
             cond: EdgeCond::OnComplete,
         }
     }
+    /// Run only if `target` fails or is dead-lettered (failure handlers).
     pub fn on_failure(target: impl Into<TaskRef>) -> Dep {
         Dep {
             target: target.into(),
@@ -145,14 +167,20 @@ pub enum MissPolicy {
     Fail,
 }
 
+/// A start time the scheduler plans capacity for: a worker slot is reserved at admission and
+/// held free shortly before `at`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FixedStart {
+    /// When the task should start.
     pub at: Time,
+    /// How late the start may be and still count as on time.
     pub tolerance: Duration,
+    /// What happens if the task has not started by `at + tolerance`.
     pub on_miss: MissPolicy,
 }
 
 impl FixedStart {
+    /// Start at `at` with a 1 s tolerance, running late if missed.
     pub fn at(at: Time) -> FixedStart {
         FixedStart {
             at,
@@ -167,8 +195,11 @@ impl FixedStart {
 pub struct RetryPolicy {
     /// Total attempts including the first one (>= 1).
     pub max_attempts: u32,
+    /// Backoff before the first retry.
     pub initial_backoff: Duration,
+    /// Growth factor of the backoff per retry.
     pub multiplier: f64,
+    /// Upper bound on the backoff.
     pub max_backoff: Duration,
     /// Full jitter: the delay is uniformly drawn from `[0, backoff]`.
     pub jitter: bool,
@@ -187,6 +218,7 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// A single attempt, never retried.
     pub fn none() -> Self {
         RetryPolicy {
             max_attempts: 1,
@@ -197,7 +229,12 @@ impl RetryPolicy {
     pub fn backoff(&self, next_attempt: u32) -> Duration {
         let exp = next_attempt.saturating_sub(2).min(63) as i32;
         let d = self.initial_backoff.as_secs_f64() * self.multiplier.powi(exp);
-        Duration::from_secs_f64(d.min(self.max_backoff.as_secs_f64()).max(0.0))
+        if d.is_nan() {
+            return self.max_backoff;
+        }
+        // Saturates: huge or infinite values become `max_backoff` (or `Duration::MAX`).
+        let d = Duration::try_from_secs_f64(d.max(0.0)).unwrap_or(Duration::MAX);
+        d.min(self.max_backoff)
     }
 }
 
@@ -212,21 +249,36 @@ pub fn default_name() -> Arc<str> {
 }
 
 /// Everything the engine needs to schedule one task.
+///
+/// Built with [`TaskSpec::new`] and the chained setters; all fields are public for direct use.
 #[derive(Debug)]
 pub struct TaskSpec<P> {
+    /// The work itself, handed to the executor unchanged.
     pub payload: Arc<P>,
+    /// Free-form category; duration statistics are learned per `(pool, kind)`.
     pub kind: Arc<str>,
+    /// Pool that runs the task (default `"default"`).
     pub pool: Arc<str>,
+    /// Priority class.
     pub priority: Priority,
+    /// Optional unique key: deduplicates submissions while the task is live or retained, and
+    /// lets dependents refer to it by name.
     pub key: Option<Arc<str>>,
+    /// Soft deadline for completion; urgency rises as its latest start time approaches.
     pub deadline: Option<Time>,
+    /// Start at (or close to) a given time, with capacity reserved in advance.
     pub fixed_start: Option<FixedStart>,
+    /// Expected runtime; when absent the engine uses learned statistics.
     pub duration_hint: Option<Duration>,
+    /// Per-attempt timeout.
     pub timeout: Option<Duration>,
     /// `None` uses the pool default.
     pub retry: Option<RetryPolicy>,
+    /// Tasks that must finish first (see [`Dep`]).
     pub deps: Vec<Dep>,
+    /// Shared resources needed while running: `(resource name, amount)`.
     pub resources: SmallVec<[(Arc<str>, u32); 2]>,
+    /// Labels passed through to executors (e.g. `traceparent`, tenant).
     pub tags: Vec<(Arc<str>, Arc<str>)>,
 }
 
@@ -270,9 +322,11 @@ impl<P> TaskSpec<P> {
         }
     }
 
+    /// A `Normal` task in the `"default"` pool.
     pub fn new(payload: P) -> Self {
         Self::from_arc(Arc::new(payload))
     }
+    /// Like [`TaskSpec::new`] with an already shared payload.
     pub fn from_arc(payload: Arc<P>) -> Self {
         TaskSpec {
             payload,
@@ -290,53 +344,66 @@ impl<P> TaskSpec<P> {
             tags: Vec::new(),
         }
     }
+    /// Set the kind.
     pub fn kind(mut self, k: impl Into<Arc<str>>) -> Self {
         self.kind = k.into();
         self
     }
+    /// Set the pool.
     pub fn pool(mut self, p: impl Into<Arc<str>>) -> Self {
         self.pool = p.into();
         self
     }
+    /// Set the priority class.
     pub fn priority(mut self, p: Priority) -> Self {
         self.priority = p;
         self
     }
+    /// Set the unique key.
     pub fn key(mut self, k: impl Into<Arc<str>>) -> Self {
         self.key = Some(k.into());
         self
     }
+    /// Set the deadline.
     pub fn deadline(mut self, t: Time) -> Self {
         self.deadline = Some(t);
         self
     }
+    /// Set a fixed start.
     pub fn fixed_start(mut self, f: FixedStart) -> Self {
         self.fixed_start = Some(f);
         self
     }
+    /// Set the expected runtime.
     pub fn duration_hint(mut self, d: Duration) -> Self {
         self.duration_hint = Some(d);
         self
     }
+    /// Set the per-attempt timeout.
     pub fn timeout(mut self, d: Duration) -> Self {
         self.timeout = Some(d);
         self
     }
+    /// Set the retry policy.
     pub fn retry(mut self, r: RetryPolicy) -> Self {
         self.retry = Some(r);
         self
     }
+    /// Add a dependency.
     pub fn dep(mut self, d: Dep) -> Self {
         self.deps.push(d);
         self
     }
+    /// Run after `target` succeeds.
     pub fn after(self, target: impl Into<TaskRef>) -> Self {
         self.dep(Dep::on_success(target))
     }
+    /// Require `amount` units of a resource while running.
     pub fn resource(mut self, name: impl Into<Arc<str>>, amount: u32) -> Self {
         self.resources.push((name.into(), amount));
         self
     }
+    /// Add a label.
     pub fn tag(mut self, k: impl Into<Arc<str>>, v: impl Into<Arc<str>>) -> Self {
         self.tags.push((k.into(), v.into()));
         self

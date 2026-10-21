@@ -12,6 +12,7 @@ pub struct Ewma {
 }
 
 impl Ewma {
+    /// Add a sample with weight `alpha` (the first sample initializes the average).
     #[inline]
     pub fn update(&mut self, x: f64, alpha: f64) {
         if self.init {
@@ -21,6 +22,7 @@ impl Ewma {
             self.init = true;
         }
     }
+    /// Current average, or `None` before the first sample.
     #[inline]
     pub fn get(&self) -> Option<f64> {
         self.init.then_some(self.value)
@@ -36,9 +38,11 @@ pub struct QuantileEst {
 }
 
 impl QuantileEst {
+    /// Estimator for quantile `p` (e.g. `0.9`).
     pub fn new(p: f64) -> Self {
         QuantileEst { q: 0.0, p, n: 0 }
     }
+    /// Add a sample; `scale` is the typical magnitude of the data (sets the step size).
     #[inline]
     pub fn update(&mut self, x: f64, scale: f64) {
         self.n += 1;
@@ -62,6 +66,7 @@ impl QuantileEst {
             self.q = 0.0;
         }
     }
+    /// Current estimate, or `None` before the first sample.
     #[inline]
     pub fn get(&self) -> Option<f64> {
         (self.n > 0).then_some(self.q)
@@ -71,9 +76,13 @@ impl QuantileEst {
 /// Observed runtimes for a `(pool, kind)` (seconds).
 #[derive(Copy, Clone, Debug)]
 pub struct DurStats {
+    /// Exponentially weighted mean runtime.
     pub mean: Ewma,
+    /// Streaming median estimate.
     pub p50: QuantileEst,
+    /// Streaming 90th-percentile estimate.
     pub p90: QuantileEst,
+    /// Number of samples observed.
     pub count: u64,
 }
 
@@ -89,6 +98,7 @@ impl Default for DurStats {
 }
 
 impl DurStats {
+    /// Record one runtime, in seconds.
     pub fn observe(&mut self, secs: f64) {
         self.count += 1;
         self.mean.update(secs, 0.1);
@@ -96,17 +106,55 @@ impl DurStats {
         self.p50.update(secs, scale);
         self.p90.update(secs, scale);
     }
+    /// Typical runtime: the median once there are a few samples, the mean before that.
     pub fn estimate(&self) -> Option<Duration> {
         if self.count < 3 {
             return self.mean.get().map(Duration::from_secs_f64);
         }
         self.p50.get().map(Duration::from_secs_f64)
     }
+    /// 90th-percentile runtime (the mean while there are fewer than three samples).
     pub fn p90(&self) -> Option<Duration> {
         if self.count < 3 {
             return self.mean.get().map(Duration::from_secs_f64);
         }
         self.p90.get().map(Duration::from_secs_f64)
+    }
+}
+
+/// Lightweight runtime tracker when only a p90 is needed (the hold lead for fixed starts).
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct P90Stats {
+    mean: Ewma,
+    p90: QuantileEst,
+    count: u64,
+}
+
+impl Default for P90Stats {
+    fn default() -> Self {
+        P90Stats {
+            mean: Ewma::default(),
+            p90: QuantileEst::new(0.9),
+            count: 0,
+        }
+    }
+}
+
+impl P90Stats {
+    #[inline]
+    pub(crate) fn observe(&mut self, secs: f64) {
+        self.count += 1;
+        self.mean.update(secs, 0.1);
+        let scale = self.mean.get().unwrap_or(secs);
+        self.p90.update(secs, scale);
+    }
+    pub(crate) fn p90(&self) -> Option<Duration> {
+        let v = if self.count < 3 {
+            self.mean.get()
+        } else {
+            self.p90.get()
+        };
+        v.map(Duration::from_secs_f64)
     }
 }
 
@@ -140,8 +188,11 @@ impl Histogram {
         }
         let msb = idx / SUB + 2;
         let sub = idx % SUB;
-        ((SUB + sub) as u64) << (msb - 3)
+        // Saturates past the last bucket, whose upper bound is beyond u64.
+        let v = ((SUB + sub) as u128) << (msb - 3);
+        v.min(u64::MAX as u128) as u64
     }
+    /// Record one duration.
     pub fn record(&mut self, d: Duration) {
         let ns = d.as_nanos().min(u64::MAX as u128) as u64;
         if self.counts.is_empty() {
@@ -151,6 +202,7 @@ impl Histogram {
         self.total += 1;
         self.sum_ns += ns as u128;
     }
+    /// Add all samples of `other`.
     pub fn merge(&mut self, other: &Histogram) {
         if other.total == 0 {
             return;
@@ -164,15 +216,18 @@ impl Histogram {
         self.total += other.total;
         self.sum_ns += other.sum_ns;
     }
+    /// Number of samples.
     pub fn count(&self) -> u64 {
         self.total
     }
+    /// Exact mean of the samples (zero when empty).
     pub fn mean(&self) -> Duration {
         if self.total == 0 {
             return Duration::ZERO;
         }
         Duration::from_nanos((self.sum_ns / self.total as u128) as u64)
     }
+    /// Approximate quantile `q` in `[0, 1]` (bucket midpoint; zero when empty).
     pub fn quantile(&self, q: f64) -> Duration {
         if self.total == 0 {
             return Duration::ZERO;
@@ -183,12 +238,13 @@ impl Histogram {
             acc += c;
             if acc >= target {
                 let lo = Self::lower_bound(i);
-                let hi = Self::lower_bound(i + 1);
+                let hi = Self::lower_bound(i + 1).max(lo);
                 return Duration::from_nanos(lo + (hi - lo) / 2);
             }
         }
         Duration::ZERO
     }
+    /// Remove all samples (keeps the allocation).
     pub fn clear(&mut self) {
         if self.total > 0 {
             self.counts.iter_mut().for_each(|c| *c = 0);

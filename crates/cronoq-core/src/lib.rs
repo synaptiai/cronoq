@@ -16,6 +16,7 @@
 //! core.complete(Time::from_secs_f64(0.5), d.lease, Outcome::Success);
 //! ```
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod autoscale;
 mod config;

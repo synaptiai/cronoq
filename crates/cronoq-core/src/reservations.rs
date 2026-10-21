@@ -9,8 +9,9 @@ use crate::time::Time;
 pub struct Reservations {
     /// (start, task) -> end
     by_start: BTreeMap<(Time, TaskId), Time>,
-    /// Longest interval ever inserted; bounds the backwards scan.
-    max_len: u64,
+    /// Multiset of interval lengths; the largest bounds the backwards scan in `max_overlap`
+    /// and shrinks again when long reservations are removed.
+    lengths: BTreeMap<u64, u32>,
 }
 
 impl Reservations {
@@ -19,17 +20,39 @@ impl Reservations {
     }
 
     pub fn insert(&mut self, id: TaskId, start: Time, end: Time) {
-        self.max_len = self.max_len.max(end.0.saturating_sub(start.0));
-        self.by_start.insert((start, id), end);
+        if let Some(old) = self.by_start.insert((start, id), end) {
+            self.forget_len(old.0.saturating_sub(start.0));
+        }
+        *self
+            .lengths
+            .entry(end.0.saturating_sub(start.0))
+            .or_default() += 1;
     }
 
     pub fn remove(&mut self, id: TaskId, start: Time) {
-        self.by_start.remove(&(start, id));
+        if let Some(end) = self.by_start.remove(&(start, id)) {
+            self.forget_len(end.0.saturating_sub(start.0));
+        }
+    }
+
+    /// Whether a reservation for `id` starting at `start` exists.
+    pub fn contains(&self, id: TaskId, start: Time) -> bool {
+        self.by_start.contains_key(&(start, id))
+    }
+
+    fn forget_len(&mut self, len: u64) {
+        if let Some(n) = self.lengths.get_mut(&len) {
+            *n -= 1;
+            if *n == 0 {
+                self.lengths.remove(&len);
+            }
+        }
     }
 
     /// Maximum number of existing reservations simultaneously active within `[s, e)`.
     pub fn max_overlap(&self, s: Time, e: Time) -> u32 {
-        let from = Time(s.0.saturating_sub(self.max_len));
+        let max_len = self.lengths.last_key_value().map_or(0, |(l, _)| *l);
+        let from = Time(s.0.saturating_sub(max_len));
         let mut events: Vec<(Time, i32)> = Vec::new();
         for (&(start, _), &end) in self.by_start.range((from, TaskId(0))..) {
             if start >= e {
