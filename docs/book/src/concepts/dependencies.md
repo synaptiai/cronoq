@@ -33,6 +33,10 @@ A task with unmet dependencies is `Blocked` and does not enter any queue. When a
 If the parent had already finished when the child was submitted, the edge is resolved
 immediately from the retained status.
 
+After a restart with a durable store, a parent that finished so long ago that its status is
+no longer retained counts as satisfied: it was accepted, and only work that has not finished is
+recovered.
+
 ## Unknown parents
 
 A dependency on a key that does not exist yet is handled per pool:
@@ -41,6 +45,10 @@ A dependency on a key that does not exist yet is handled per pool:
 |---|---|
 | `UnknownDependency::Reject` (default) | Submission fails with `UnknownDependency`. |
 | `UnknownDependency::Await { timeout }` | The child waits for a task with that key; if none appears within `timeout`, it is `Skipped`. |
+
+In Python: `Pool(unknown_dependency="await", await_timeout=...)`; on the server:
+`await_unknown_dependencies_s` on the pool. Waiting children are tracked per key and cleaned up
+when they are cancelled, time out or are resolved, so abandoned awaits do not accumulate.
 
 A dependency on an **id** that does not exist is always rejected.
 

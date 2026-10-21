@@ -60,3 +60,27 @@ A server pool's capacity is its connected workers' slots. Check `cronoq_workers_
 ### Is there a UI?
 
 Not yet. Use `/v1/snapshot`, the `Admin` service, Prometheus/Grafana and status events.
+
+### What happens when the database is unavailable?
+
+The scheduler keeps running in memory and retries the commit with backoff for up to
+`max_store_outage` (5 minutes by default). Meanwhile, calls that need durability (submissions,
+cancellations, schedule changes) wait, and no new attempts start. If the outage lasts longer,
+the scheduler stops and those callers get a store error (`UNAVAILABLE` / 503 on the server);
+another replica takes over once the database is back. See
+[Durability and HA](concepts/durability.md#store-failures).
+
+### Can several teams share one server?
+
+Within one trust domain, yes: give each team tokens scoped to its pools
+(`pools = [...]`), so it can only submit into, serve, watch and look up its own pools. Keys and
+resources are shared across pools, so teams that must not learn about each other's work need
+separate servers. See [Security hardening](guides/security.md).
+
+### How do I upgrade a cluster with Postgres?
+
+The new version applies its schema migrations when it connects, and an older build refuses to
+start against a newer schema, so upgrades roll forward only. When a release adds no migration,
+replace the standbys first and the leader last; accepted work survives the leader change and
+workers reconnect on their own. When the changelog lists a migration, follow its upgrade notes
+(or stop all replicas, then start the new version).

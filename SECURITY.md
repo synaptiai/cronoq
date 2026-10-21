@@ -34,35 +34,61 @@ before any public disclosure.
 ## Threat model
 
 `cronoq-server` is designed to run inside a trusted network perimeter (a VPC or cluster), shared
-by services and workers that belong to the same organization.
+by services and workers that belong to the same organization. One server serves one tenant (a
+team or trust domain); run separate servers for mutually untrusted tenants.
 
-**Trust boundaries**
+### Trust boundaries
 
 | Party | Trust |
 |---|---|
-| Holder of a `client` token | May submit tasks to any pool, read the status and output of any task it can reference by id or key, cancel tasks, and watch status events. |
-| Holder of a `worker` token | May register for any remote pool and receives the payloads of that pool's tasks. May report outcomes only for leases assigned to its own stream. |
-| Holder of an `admin` token | Full control, including recurring schedules and snapshots. |
-| Unauthenticated network peers | May call `/healthz`, `/readyz` and `/metrics` (pool names and counters). |
-| PostgreSQL | Fully trusted; it stores payloads, outputs and schedules. |
+| `client` credentials | Submit tasks, and read, wait for, cancel and watch tasks, in the pools the credentials allow (all pools when unscoped). |
+| `worker` credentials | Register for the pools the credentials allow, receive those pools' payloads, and report outcomes only for leases assigned to their own stream. |
+| `metrics` credentials | Read snapshots (`Admin.Snapshot`, `/v1/snapshot`) and `/metrics`: pool names, counters and quality signals, no payloads. |
+| `admin` credentials | Everything, including recurring schedules. |
+| Unauthenticated network peers | `/healthz` and `/readyz`; `/metrics` only on the optional `server.metrics_addr` listener. |
+| PostgreSQL | Fully trusted: it stores payloads, outputs and schedules. |
 
-**What the server protects**
+Credentials are bearer tokens (`[[auth.tokens]]`) or client certificates mapped to a role by DNS
+subject alternative name (`[[auth.certs]]`, which requires `server.tls.client_ca`). Both can be
+limited to a list of pools.
 
-- Authentication and role checks on every gRPC call and every `/v1` HTTP route when tokens are
-  configured.
-- Confidentiality and integrity in transit when TLS is configured; client identity with mTLS
-  (`client_ca`).
-- Split-brain protection: only the current leader epoch can write to the store.
-- Input validation: durations, enumerations, references and resource requests are validated
-  before they reach the engine; bounded queues limit memory growth when configured.
+### What the server protects
 
-**What it does not protect**
+- **Authentication and authorization** on every gRPC call and every `/v1` and `/metrics` HTTP
+  route. Tokens must be at least 16 characters (a warning is logged below 32) and unique; they
+  are kept only as SHA-256 digests, compared in constant time, and never logged.
+- **Pool scoping.** Scoped credentials cannot submit into, serve, watch or look up tasks of other
+  pools; such tasks are reported as not found rather than forbidden, so ids do not leak.
+- **Safe defaults.** Both listeners bind to `127.0.0.1` by default. Without any configured
+  credentials, authentication is off and the server refuses to listen on a non-loopback address
+  unless started with `--insecure-no-auth`.
+- **Transport security.** `[server.tls]` enables TLS on the gRPC and HTTP listeners alike;
+  with `client_ca` every client must present a certificate signed by that CA (mTLS).
+- **Resource limits.** `[limits]` bounds batch sizes, queue lengths (per pool and in total),
+  message and body sizes, string and collection lengths, waits, request time, concurrent
+  connections and HTTP/2 streams, and worker slots. Slow TLS handshakes and request headers time
+  out after 10 seconds; HTTP/2 keepalive pings detect dead peers.
+- **Input validation.** Durations, enumerations, references, resource requests and strings
+  (including NUL characters, which PostgreSQL cannot store) are validated before they reach the
+  engine; unknown JSON fields are rejected. Messages from workers are sanitized before they are
+  stored or logged.
+- **Error hygiene.** Database errors are logged, not returned to clients.
+- **Split-brain protection.** Only the current leader epoch can write to the store; a fenced
+  instance stops serving.
+- **Container.** The image is distroless, runs as a non-root user and has no shell.
 
-- Authentication is **disabled** if no tokens are configured (a warning is logged at startup).
-- Tokens are not scoped to pools or tenants; any client can see any task's output if it knows the
-  id or key. Run separate servers for mutually untrusted tenants.
-- Payloads are not encrypted at rest; encrypt sensitive payloads in your application or rely on
-  database encryption.
-- `/metrics` is unauthenticated; restrict the HTTP port at the network level.
-- Denial of service from authenticated clients is limited only by the bounds you configure
-  (`max_pending`) and by gRPC message size limits.
+### What it does not protect
+
+- **Keys are shared across pools.** Pool scoping isolates access by id and by the lookup
+  routes, but keys form one namespace: a scoped client that submits a key already used in
+  another pool is answered as a duplicate of that task (its id, and with `wait` its result), and
+  can name it as a dependency. Do not rely on pool scoping to separate parties that could guess
+  each other's keys; use separate servers for that.
+- **Payloads and outputs are not encrypted at rest.** Encrypt sensitive payloads in your
+  application or rely on database encryption.
+- **The `metrics_addr` listener** has neither TLS nor authentication; bind it to an internal
+  interface.
+- **Authenticated denial of service** is limited only by the configured `[limits]` and pool
+  `max_pending` values.
+- **Workers are trusted with the payloads** of the pools they serve and with the outputs they
+  report.

@@ -11,11 +11,30 @@ engine's state transitions:
 
 - task submissions (full spec and payload), status changes (running, retrying, terminal, with
   attempt number and message), outputs of successful tasks;
-- recurring schedules and their next occurrence.
+- cancellations;
+- recurring schedules, their next occurrence and the last task each one created.
 
 Persisted mutations are **group-committed**: everything produced in one engine step is written
-in one transaction. A submission is acknowledged only after its commit succeeds, so an
-acknowledged task survives a crash.
+in one transaction, so durability costs one round trip per step, not per task.
+
+### Durable acknowledgements
+
+With a persistent store, a call returns only after its effect is committed:
+
+| Operation | Returns after |
+|---|---|
+| `submit`, `enqueue`, `submit_batch` (gRPC `Submit`, HTTP `POST /v1/tasks`) | The task is stored. |
+| `cancel` | The cancellation is stored. |
+| `add_recurring`, `remove_recurring` | The schedule change is stored. |
+
+The engine also dispatches an attempt only after the mutations that led to it are durable, so a
+worker never runs a task that a crash could "unsubmit".
+
+### Time
+
+Engine time is Unix time in nanoseconds, so persisted timestamps (fixed starts, deadlines,
+retry times, next cron occurrences) mean the same thing to every replica and survive restarts
+without translation.
 
 ## Recovery
 
@@ -23,56 +42,95 @@ When a scheduler starts with a durable store it:
 
 1. becomes leader (see below) and obtains a new **fencing epoch**;
 2. loads non-terminal tasks, terminal tasks within the store's retention window (for
-   dependencies and key deduplication), and recurring schedules;
+   dependencies and key deduplication), terminal tasks that live tasks depend on, and recurring
+   schedules;
 3. re-inserts tasks with their original ids, submission order and attempt counts.
 
 Tasks that were **running** when the previous leader died count that attempt as used: they are
 retried after a backoff, or dead-lettered if no attempts remain. Fixed-start tasks whose start
-has already passed apply their miss policy. This is what makes execution **at-least-once**.
+has already passed apply their miss policy. A dependency on a parent that finished before the
+retention window counts as satisfied. Recurring schedules keep their overlap guard: an
+occurrence still running from before the failover is not overlapped by the next one. This is
+what makes execution **at-least-once**.
+
+## Store failures
+
+The driver distinguishes three kinds of store errors:
+
+| Error | Behaviour |
+|---|---|
+| `Unavailable` (connection lost, timeout, database restarting) | Retried with capped backoff for up to `max_store_outage` (default 5 minutes). The engine keeps running in memory meanwhile; acknowledgements and dispatches that need durability wait. If the outage lasts longer, the scheduler stops with `Error::Store`. |
+| `Other` | Retried 5 times, then the scheduler stops. |
+| `Fenced` | Another instance is leader: the scheduler stops immediately. |
+
+A commit that takes longer than `commit_timeout` (default 30 s) counts as `Unavailable`. Callers
+whose operation could not be made durable get `Error::Store` (Python `SchedulerError`, server
+`UNAVAILABLE` / 503); retry them, ideally with a key so the retry is idempotent.
 
 ## Leader election and fencing (Postgres)
 
-Several `cronoq-server` replicas can point at the same database:
+Several `cronoq-server` replicas (or embedding processes) can point at the same database:
 
-- Each replica tries to take a Postgres **advisory lock** on a dedicated connection. The holder
-  is the leader; it increments the epoch in `cronoq_leader` and serves. The others wait and
-  report `GET /readyz` = 503.
+- Each replica tries to take a Postgres **advisory lock** on a dedicated session, every
+  `lock_poll` (0.5 s). The holder is the leader; it increments the epoch and serves. The others
+  wait and report `GET /readyz` = 503.
 - Every commit checks the epoch in the same transaction. A leader that lost its lock (for
   example after a network partition) can no longer write: its commit fails with `Fenced` and it
   stops.
-- The leader's lock session is checked every second; on loss the server stops serving
-  immediately.
-- When the leader stops, a standby acquires the lock, recovers, and starts serving. Task ids
-  carry the epoch in their upper bits, so ids from different leaders never collide.
+- The leader checks its lock session every `keepalive` (1 s) and steps down if the session is
+  unresponsive for `session_timeout` (10 s); the same timeout configures TCP keepalives on the
+  database side, so Postgres releases the lock of a vanished leader promptly.
+- When the leader stops, a standby acquires the lock, recovers and starts serving. Task ids
+  carry the epoch in their upper bits, and the store keeps a high-water mark of issued ids, so
+  ids are never reused, even after old rows are pruned.
 
-Clients and workers reach the leader through a load balancer that uses `/readyz`, and workers
-reconnect automatically (both official clients do).
+Clients and workers reach the leader through a load balancer that routes on `/readyz`, and
+workers reconnect automatically (both official worker clients do).
 
 ```text
-            ┌─────────────┐   advisory lock   ┌──────────────┐
- clients ──▶│ replica A    │◀────────────────▶│              │
- workers ──▶│ (leader)     │   commits+epoch   │  PostgreSQL  │
-            └─────────────┘                    │              │
-            ┌─────────────┐   waiting for lock │              │
-            │ replica B    │◀────────────────▶│              │
-            │ (standby,503)│                   └──────────────┘
-            └─────────────┘
+            ┌──────────────┐   advisory lock    ┌──────────────┐
+ clients ──▶│ replica A    │◀──────────────────▶│              │
+ workers ──▶│ (leader)     │   commits + epoch  │  PostgreSQL  │
+            └──────────────┘                    │              │
+            ┌──────────────┐  waiting for lock  │              │
+            │ replica B    │◀──────────────────▶│              │
+            │ (standby,503)│                    └──────────────┘
+            └──────────────┘
 ```
+
+## Schema and migrations
+
+- Tables live in one PostgreSQL schema, `public` by default (`PgStoreConfig::schema` when you
+  embed the store; the server uses `public`). Instances configured with the same schema form one
+  cluster; different schemas are fully independent, so one database can host several clusters.
+- Migrations are versioned in `cronoq_schema_version` and applied automatically on connect,
+  under a lock, by whichever instance starts first. An older build refuses to run against a
+  newer schema instead of corrupting it.
+- PostgreSQL text cannot hold NUL characters. The APIs reject them in keys, kinds, tags and
+  names; NUL in messages reported by executors or workers is stored as U+FFFD.
+- A row that cannot be decoded during recovery (for example after manual edits) is
+  quarantined: marked failed with an explanatory message, instead of preventing the leader from
+  starting.
 
 ## Guarantees and limits
 
 | Property | Guarantee |
 |---|---|
-| Acknowledged submissions | Durable. |
+| Acknowledged submissions, cancellations, schedule changes | Durable. |
 | Execution | At least once; a task may run again if its worker or the leader fails mid-attempt. |
 | Order after failover | Submission order and priorities are preserved. |
 | Split brain | Prevented by fencing: only the current epoch can commit. |
 | Outputs | Persisted for successful tasks; `Wait` returns them after a failover. |
+| Ids | Unique across leaders and restarts. |
 
-Retention: finished rows are pruned after `keep_finished_s` (7 days by default). Recovery loads
-finished tasks from the last hour for dependency resolution and key deduplication.
+Retention: the server prunes finished rows after `keep_finished_s` (7 days by default). Recovery
+loads finished tasks from the last `retention` (1 hour by default) for dependency resolution and
+key deduplication.
 
 ## Custom stores
 
-Implement `cronoq::Store<P, O>` (`acquire_leadership`, `commit`, `recover`) to persist to
-another database. Return `StoreError::Fenced` from `commit` when the caller's epoch is stale.
+Implement `cronoq::Store<P, O>` (`acquire_leadership`, `commit`, `recover`, optionally
+`release_leadership` and `load_output`) to persist to another database. Return
+`StoreError::Unavailable` for transient failures and `StoreError::Fenced` from `commit` when the
+caller's epoch is stale. Apply the `TimeBase` you are given when converting timestamps; the
+runtime always passes Unix-epoch time (`unix_nanos_at_zero = 0`).

@@ -56,3 +56,16 @@ retries, timeouts, cancellation, resources and per-pool configuration.
 | `ElasticPriorityScheduler(initial_workers, max_workers)` | `Scheduler([Pool("default", run, min=1, initial=i, max=m)])` |
 | `get_metrics()` | `await sched.snapshot()` (per pool: `priority_adherence`, `fixed_start_hit_rate`, `utilization`, wait percentiles, `cost`) |
 | `get_cost()` | `snapshot().pool("default").cost` (set `cost_per_worker_second` in `AutoscaleConfig`) |
+
+## What you get
+
+- **A one-line migration.** Existing code keeps its API, threads and call sites; the scheduling
+  decisions move to the cronoq engine.
+- **Correct semantics where the prototype was approximate.** Dependencies are tracked exactly,
+  deadline urgency is monotonic, and fixed starts are admitted against real capacity instead of
+  conflicting whenever two of them overlap.
+- **No polling.** Dispatch is event-driven: a task starts as soon as a worker is free instead of
+  on the next 100 ms poll, and an idle scheduler uses no CPU.
+- **A path forward.** Once on the native API, the same code gains real executors, results,
+  retries, timeouts, cancellation, shared rate limits, cron schedules, status events and, with
+  `cronoq-server`, durable state and remote workers.

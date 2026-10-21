@@ -538,7 +538,7 @@ Kubernetes operator.
 - Reservable fraction of max workers for fixed tasks: **0.5** (per pool, configurable)
 - Default overflow policy: library **Wait**, server **Reject** (gRPC `RESOURCE_EXHAUSTED` / HTTP 429)
 - Default retry: **3 attempts**, exponential backoff 1 s ×2 up to 60 s, full jitter; `retry_after` hints honoured
-- Server auth: **bearer tokens with roles** (client / worker / admin) + optional **mTLS**
+- Server auth: **bearer tokens or mapped client certificates with roles** (client / worker / metrics / admin), optionally limited to pools, + optional **mTLS**
 - Terminal status retention: **1 h / 1 M entries**
 
 ## 21. Implementation notes (v0.1)
@@ -589,7 +589,8 @@ Differences from, and clarifications of, the sections above:
   `max_store_outage` (default 5 min). `Other` errors are retried up to 5 times; `Fenced` is
   fatal at once. On a fatal error the scheduler stops and every waiting caller receives
   `Error::Store(..)`. Panics in executors, scalers and stores are caught and reported
-  instead of killing the driver.
+  instead of killing the driver; an executor panic fails its task permanently (a panic in a
+  `run_worker` handler is reported to the server as a retryable failure).
 - **Shutdown.** Dropping every `Scheduler` handle shuts down with `drop_grace` (default
   5 s). `shutdown` may be called from several handles; all see the same result.
 - **Outputs of earlier tasks.** Handles to tasks that already succeeded (duplicates,

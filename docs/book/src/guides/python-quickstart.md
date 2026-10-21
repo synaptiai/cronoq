@@ -19,7 +19,7 @@ import asyncio
 import cronoq
 
 async def summarize(ctx: cronoq.TaskContext, text: str) -> str:
-    # ctx.id, ctx.attempt, ctx.kind, ctx.key, ctx.pool, ctx.tags, ctx.timeout
+    # ctx.id, ctx.attempt, ctx.kind, ctx.key, ctx.pool, ctx.tags, ctx.timeout, ctx.deadline
     await asyncio.sleep(0.1)          # call a model, an API, a database...
     return text[:20]
 
@@ -37,8 +37,9 @@ asyncio.run(main())
 - Executors are `async def` functions run on the event loop that started the scheduler. Plain
   functions are accepted too; they run in the loop's default thread pool, so blocking calls do
   not stall the loop.
-- `async with Scheduler(...)` starts the scheduler and shuts it down (with a 5 s grace period) on
-  exit. Call `await sched.shutdown(grace=...)` to choose a different grace period.
+- `async with Scheduler(...)` starts the scheduler and shuts it down on exit (see
+  [Lifecycle](#lifecycle)).
+- Tasks without `pool=` go to the default pool: the one named `"default"`, or the first.
 
 ## Scheduling options
 
@@ -73,7 +74,8 @@ async def call_api(ctx, payload):
 
 Any other exception is treated as retryable. Awaiting a task that did not succeed raises
 `cronoq.TaskFailed` with `.status` (`failed`, `dead_lettered`, `cancelled`, `skipped`,
-`missed`, `shed`, or `shutdown`) and `.message`.
+`missed`, `shed`, or `shutdown`), `.message` and `.task_id`. All cronoq exceptions can be
+pickled, so they cross `multiprocessing` boundaries.
 
 ## Batches and dependencies
 
@@ -89,6 +91,33 @@ handles = await sched.submit_batch([
 A batch is admitted atomically: if any task is rejected (for example because of a cycle), none
 are.
 
+## Status events
+
+`sched.events()` streams status changes, for logs, metrics or notifying users:
+
+```python
+async with sched.events() as events:
+    async for e in events:            # cronoq.StatusEvent
+        print(e.id, e.key, e.status, e.attempt, e.message)
+```
+
+By default only terminal statuses (`succeeded`, `failed`, `dead_lettered`, ...) are delivered;
+create the scheduler with `emit_transitions=True` to also see `ready`, `running`, `retrying`
+and the rest. Each stream buffers `event_capacity` events (default 1024); a consumer that falls
+behind loses the oldest ones (counted in `events.lagged`), or gets `cronoq.EventsLagged` with
+`sched.events(on_lag="raise")`.
+
+## Lifecycle
+
+- A scheduler belongs to the event loop that starts it. Use `async with cronoq.Scheduler(...)`,
+  or `await sched.start()` and `await sched.shutdown()`, inside that loop.
+- Leaving `async with` waits up to `shutdown_grace` seconds (default 5) for running attempts,
+  then cancels them. Queued tasks are not started.
+- If the loop closes without a shutdown, the scheduler stops and later calls raise
+  `cronoq.SchedulerError`.
+- Cancelling a task, a timeout or a lost lease cancels the executor's asyncio task. An executor
+  that swallows `CancelledError` keeps running and may overlap with its retry.
+
 ## Coming from `ElasticPriorityScheduler`
 
 `cronoq.compat.ElasticPriorityScheduler` is a synchronous, thread-safe drop-in with the original
@@ -101,16 +130,19 @@ With the `client` extra, `cronoq.client.Client` submits work to a `cronoq-server
 `cronoq.client.Worker` serves a pool:
 
 ```python
+import os
 from cronoq.client import Client, Worker
 
-async with Client("localhost:7070", token="client-token") as c:
+async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
     sub = await c.submit({"prompt": "hi"}, pool="llm", priority="high", wait=True)
     print(sub.result.json())
 
 async def handle(lease):
     return {"answer": lease.json()}
 
-await Worker("localhost:7070", "llm", handle, slots=8, token="worker-token").run()
+await Worker("localhost:7070", "llm", handle, slots=8,
+             token=os.environ["CRONOQ_WORKER_TOKEN"]).run()
 ```
 
-See [Writing executors and workers](workers.md) and the [Python API reference](../reference/python.md).
+See [Writing executors and workers](workers.md), the [server quickstart](server-quickstart.md)
+and the [Python API reference](../reference/python.md).

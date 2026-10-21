@@ -10,9 +10,11 @@ for a retry). Bounds limit pending tasks:
 
 | Bound | Rust | Python | Server |
 |---|---|---|---|
-| Per pool | `PoolConfig::bounds.max_pending` | `Pool(max_pending=...)` | `max_pending` |
+| Per pool | `PoolConfig::bounds.max_pending` | `Pool(max_pending=...)` | `[[pools]] max_pending` (default `limits.max_pending_per_pool`, 100 000) |
 | Per pool and class | `PoolConfig::bounds.max_pending_per_class` | | |
-| Global | `CoreConfig::global_bounds` | | |
+| Global | `CoreConfig::global_bounds` | | `limits.max_pending_total` (1 000 000) |
+
+The library leaves queues unbounded unless you set a bound; the server always bounds them.
 
 ## Overflow policies
 
@@ -25,10 +27,19 @@ What happens when a submission would exceed a bound is set per pool:
 | `ShedLowest` | Evict the newest queued task of the lowest class strictly below the incoming one (status `Shed`); reject if there is none. | |
 | `ShedOldest` | Evict the oldest queued `Low` task; reject if there is none. | |
 
-Shedding only happens when evicting the victim actually makes room: a bound on the incoming
-task's own class is never relieved by evicting tasks of other classes, so such submissions are
-rejected without shedding. Fixed-start tasks are never shed. Batch submissions do not shed; a
-batch that does not fit is rejected (or waits, with `Wait`).
+Shedding rules:
+
+- **Victims** are tasks waiting to run: queued tasks, including those parked waiting for a
+  shared resource. Running tasks are never shed.
+- **Fixed-start tasks are never shed**: their capacity was promised when they were admitted.
+- **Only when it helps.** A bound on the incoming task's own class is never relieved by evicting
+  tasks of other classes, so such submissions are rejected without shedding.
+- **Only for admissible tasks.** All other admission checks (unknown pool or dependency, cycle,
+  reservation conflict) run first, so a submission that would be rejected anyway never evicts
+  anything.
+- **Not for batches.** A batch that does not fit is rejected (or waits, with `Wait`).
+- A shed task ends with status `Shed`; its dependents are resolved like for any other terminal
+  status.
 
 ## Choosing a policy
 

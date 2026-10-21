@@ -41,7 +41,8 @@ All three share one engine, so behaviour, configuration and metrics are the same
 
 ## How to read this book
 
-- New to cronoq? Read [Why cronoq](why.md), then the quickstart for your language.
+- New to cronoq? Read [Why cronoq](why.md) and [Benefits at a glance](benefits.md), then the
+  quickstart for your language.
 - Evaluating it for a problem? The [use cases](use-cases/index.md) show complete setups and
   the concrete benefit each feature brings.
 - Designing a system on it? The [concepts](concepts/tasks.md) chapters explain every scheduling

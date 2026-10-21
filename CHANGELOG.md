@@ -13,27 +13,111 @@ First public release.
 
 ### Added
 
-- **Engine (`cronoq-core`)**: sans-IO scheduling engine with four priority classes and aging,
-  deadline urgency with earliest-deadline-first ordering, fixed-start reservations with worker
-  holds and miss policies, cron schedules with time zones, DAG dependencies with
-  success/failure/completion edges, idempotent keys, atomic batches, leases, heartbeats,
-  timeouts, retries with backoff and `retry_after`, dead-lettering, cancellation, semaphores and
-  token buckets, bounded queues with wait/reject/shed policies, queue-pressure autoscaling with
-  stabilization and cost tracking, duration learning, windowed quality metrics, and recovery
-  from a durable store.
-- **Runtime (`cronoq`)**: tokio driver with an async API (`Scheduler`, `TaskHandle`), executors
-  from closures, pluggable scalers and stores, durable acknowledgements, OpenTelemetry metrics
-  and trace propagation (`otel` feature), and a blocking facade.
-- **Postgres store (`cronoq-store-postgres`)**: durable state, advisory-lock leader election,
-  epoch fencing, recovery, output storage and pruning.
-- **Server (`cronoq-server`)**: gRPC (`Tasks`, `Workers`, `Admin`) and HTTP/JSON APIs, remote
-  workers over bidirectional streams, bearer-token roles, optional mTLS, webhook and external
-  scalers, Prometheus metrics, health and readiness endpoints, active-passive HA, and a Rust
-  worker client.
-- **Python (`cronoq` on PyPI)**: asyncio-native bindings, `cronoq.compat.ElasticPriorityScheduler`
-  drop-in, and `cronoq.client` (gRPC client and remote worker).
-- Documentation book, examples, Docker image, CI with deterministic simulation and benchmark
-  gates, and a release pipeline for crates.io, PyPI, GitHub releases and GHCR.
+#### Scheduling engine (`cronoq-core`)
+
+- Sans-IO, deterministic engine: every input carries the current time, so the whole scheduler
+  runs under virtual time in tests and simulations. Engine time is Unix time in nanoseconds.
+- Four priority classes (critical, high, normal, low), FIFO within a class, and aging so that no
+  class starves. Constant-time dispatch regardless of backlog size.
+- Deadlines with a monotonic urgency curve and earliest-deadline-first ordering within a class.
+- Fixed-start tasks: capacity reservations at admission (`ReservationConflict` when a pool's
+  reservable share is full), worker holds with a lead time learned from the pool's run times
+  (re-evaluated as the start approaches), zero-tolerance starts, and miss policies (`RunLate`,
+  `Skip`, `Fail`).
+- Cron schedules with seconds, time zones and daylight-saving handling, whole-second
+  occurrences, overlap policies (`Skip`, `Allow`), and at most one late run after downtime.
+- Dependencies by id or key with `on_success`, `on_failure` and `on_complete` edges, awaiting
+  unknown keys with a timeout, cycle detection, atomic batches and idempotent keys.
+- Leases with heartbeats, per-attempt timeouts, retries with exponential backoff, jitter and
+  `retry_after`, dead-lettering and cancellation.
+- Shared semaphores and token buckets, with tasks waiting for a resource parked without holding
+  a worker.
+- Bounded queues per pool, per class and globally, with `Wait`, `Reject`, `ShedLowest` and
+  `ShedOldest` overflow policies. Shedding considers parked tasks, never sheds fixed-start
+  tasks, and only happens for submissions that pass every other admission check.
+- Queue-pressure autoscaling per pool (arrival rate, backlog, wait-time objectives, upcoming
+  reservations) with stabilization, cooldown, step limits and cost tracking.
+- Windowed quality metrics: utilization, schedule efficiency, wait and run percentiles,
+  priority adherence and fixed-start hit rate.
+- Recovery from a durable store, including dependencies on parents that left retention and the
+  recurring overlap guard. `CoreConfig::validate` reports configuration errors up front.
+
+#### Runtime (`cronoq`)
+
+- Tokio driver with an async API (`Scheduler`, `TaskHandle`, `submit`, `enqueue`,
+  `enqueue_many`, `submit_batch`, `cancel`, `status`, `snapshot`, `events`) and a blocking
+  facade (`BlockingScheduler`).
+- Executors from closures or the `Executor` trait, with cancellation tokens, heartbeats and
+  `TaskContext::for_test` for unit tests. Executor panics are isolated.
+- Pluggable scalers (in-process slots, external) and stores.
+- Durable acknowledgements: with a persistent store, submissions, cancellations and schedule
+  changes return only after they are committed, and work is dispatched only once durable.
+- Store error handling: transient outages are ridden out for up to `max_store_outage`
+  (default 5 minutes), other errors are retried, fencing stops the scheduler immediately.
+- Graceful shutdown with a grace period, `drop_grace` for dropped schedulers, a bounded output
+  cache with `TaskFailure::OutputUnavailable`, and a configurable status-event buffer.
+- OpenTelemetry metrics and W3C trace propagation (`otel` feature, on by default).
+
+#### Postgres store (`cronoq-store-postgres`)
+
+- Durable state with group commit, advisory-lock leader election, epoch fencing, session
+  liveness checks with a configurable timeout, commit timeouts, output storage, lookups and
+  pruning.
+- Versioned migrations (`cronoq_schema_version`), a configurable schema per cluster, an id
+  high-water mark so ids are never reused after pruning, NUL-safe text storage, and quarantine of
+  undecodable rows instead of failed recoveries.
+
+#### Server (`cronoq-server`)
+
+- gRPC (`Tasks`, `Workers`, `Admin`) and HTTP/JSON APIs. HTTP returns ids as strings, has
+  separate routes for ids and keys, and rejects unknown fields.
+- Remote workers over bidirectional streams, worker protocol version 2: granted slots, lease
+  metadata, `Nack` hand-backs, `Cancelled` reports and `Shutdown` notices for restarts and
+  leadership changes.
+- `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
+  results; waits bounded by `limits.max_wait_s`.
+- Webhook and external scalers, Prometheus metrics, health and readiness endpoints, and
+  active-passive HA with Postgres.
+- Rust worker client (`worker::run_worker`) with slot enforcement, heartbeats, panic isolation,
+  reconnect with backoff, TLS/mTLS and graceful drain.
+- `--check` to validate configuration, `--print-proto` to print the API.
+
+#### Python (`cronoq` on PyPI)
+
+- Asyncio-native bindings for the engine with Python payloads (never serialized), sync and
+  async executors, typed stubs and picklable exceptions.
+- Status events (`Scheduler.events()`) with a bounded buffer, lag reporting and
+  `on_lag="raise"`.
+- `cronoq.compat.ElasticPriorityScheduler`, a synchronous drop-in for code written against the
+  original API.
+- `cronoq.client`: gRPC client and remote worker speaking worker protocol version 2.
+- Wheels for CPython 3.9+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
+
+#### Project
+
+- Documentation book with concepts, use cases, guides, a benefits and decision guide, and
+  complete configuration, HTTP, gRPC, metrics, Python, Rust and error references.
+- Examples, a distroless container image, CI with deterministic simulation, fuzzing and
+  benchmark gates, wheel tests on every platform, and a release pipeline for crates.io, PyPI,
+  GitHub releases and GHCR.
+
+### Security
+
+- Roles `client`, `worker`, `metrics` and `admin` for bearer tokens and for client
+  certificates mapped by DNS name (`[[auth.certs]]`), optionally limited to pools. Tasks of other
+  pools are reported as not found.
+- Tokens must be at least 16 characters and unique; they are stored as SHA-256 digests,
+  compared in constant time and never logged.
+- Listeners bind to `127.0.0.1` by default; the server refuses to listen elsewhere without
+  credentials unless `--insecure-no-auth` is given.
+- TLS on both the gRPC and HTTP listeners, with optional mTLS (`client_ca`).
+- `/metrics` and `/v1/snapshot` require the metrics role; an optional unauthenticated
+  `metrics_addr` listener serves scrapers on an internal network.
+- `[limits]` bound batch sizes, queue lengths, message and body sizes, strings and collections,
+  waits, request time, concurrent connections and streams, and worker slots; slow TLS
+  handshakes and headers time out.
+- Database errors are logged rather than returned to clients; messages from workers are
+  sanitized; the server warns about database URLs without `sslmode=verify-full`.
 
 [Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.1.0

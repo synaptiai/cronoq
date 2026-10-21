@@ -49,6 +49,9 @@ Plain queues treat every job the same. Real workloads do not:
 It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, with
 dispatch cost independent of backlog size.
 
+Not sure it fits your system? [Benefits at a glance](https://synaptiai.github.io/cronoq/benefits.html)
+maps common symptoms to features, shows where to start, and lists the trade-offs.
+
 ## Quickstart
 
 ### Rust
@@ -200,6 +203,10 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 
 - 📘 **Book**: [synaptiai.github.io/cronoq](https://synaptiai.github.io/cronoq/) (source in
   [`docs/book`](docs/book)): concepts, use cases, guides and reference.
+- 🎯 **Benefits and decision guide**: [Benefits at a glance](https://synaptiai.github.io/cronoq/benefits.html)
+- ⚙️ **Server**: [configuration](https://synaptiai.github.io/cronoq/reference/configuration.html),
+  [HTTP API](https://synaptiai.github.io/cronoq/reference/http.html),
+  [security hardening](https://synaptiai.github.io/cronoq/guides/security.html)
 - 🦀 **Rust API**: [docs.rs/cronoq](https://docs.rs/cronoq)
 - 🐍 **Python**: [`crates/cronoq-py`](crates/cronoq-py/README.md)
 - 🔌 **gRPC API**: [`cronoq.proto`](crates/cronoq-proto/proto/cronoq/v1/cronoq.proto)
