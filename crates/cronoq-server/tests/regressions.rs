@@ -1210,3 +1210,69 @@ fn example_config_is_valid() {
     let cfg = Config::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(cfg.pools.len(), 2);
 }
+
+#[tokio::test]
+async fn pool_scoped_tokens_cannot_reach_other_pools_through_keys_or_deps() {
+    let s = TestServer::start(SCOPED).await;
+    let mut admin = s.tasks(ADMIN).await;
+    let mut in_b = spec(b"secret");
+    in_b.pool = "b".into();
+    in_b.key = "kb".into();
+    let b_id = admin
+        .submit(submit(in_b, false))
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+
+    let mut a = s.tasks(CLIENT_A).await;
+    // Reusing another pool's key must not return its id or result.
+    for wait in [false, true] {
+        let mut reuse = spec(b"mine");
+        reuse.pool = "a".into();
+        reuse.key = "kb".into();
+        let e = a.submit(submit(reuse, wait)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::AlreadyExists, "wait={wait}");
+        assert!(!e.message().contains(&b_id.to_string()));
+    }
+    let mut reuse = spec(b"mine");
+    reuse.pool = "a".into();
+    reuse.key = "kb".into();
+    let e = a
+        .submit_batch(pb::SubmitBatchRequest { tasks: vec![reuse] })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::AlreadyExists);
+
+    // Depending on another pool's task (by key or id) would expose its outcome.
+    for target in [by_key("kb"), by_id(b_id)] {
+        let mut child = spec(b"child");
+        child.pool = "a".into();
+        child.deps.push(pb::Dep {
+            target,
+            cond: pb::EdgeCond::OnComplete as i32,
+        });
+        let e = a.submit(submit(child, false)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::NotFound);
+    }
+
+    // Dependencies inside the caller's own batch and pool still work.
+    let mut first = spec(b"1");
+    first.pool = "a".into();
+    first.key = "a-first".into();
+    let mut second = spec(b"2");
+    second.pool = "a".into();
+    second.deps.push(pb::Dep {
+        target: by_key("a-first"),
+        cond: pb::EdgeCond::OnSuccess as i32,
+    });
+    let r = a
+        .submit_batch(pb::SubmitBatchRequest {
+            tasks: vec![first, second],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(r.tasks.len(), 2);
+    s.stop().await;
+}

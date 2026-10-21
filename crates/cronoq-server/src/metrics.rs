@@ -184,9 +184,9 @@ pub fn render(s: &pb::SnapshotResponse) -> String {
     );
     o.per_pool(
         s,
-        "cronoq_pool_dispatched_total",
-        "counter",
-        "Attempts dispatched",
+        "cronoq_pool_dispatched_window",
+        "gauge",
+        "Attempts dispatched within the metrics window (a windowed count, not a counter)",
         |p| p.dispatched as f64,
     );
     o.family(

@@ -250,6 +250,53 @@ fn record_submit(app: &AppState, id: TaskId, spec: &pb::TaskSpec) {
     );
 }
 
+/// For pool-restricted callers, refuse task keys and dependencies that belong to tasks of
+/// other pools: a duplicate key would otherwise hand back that task's id and result, and a
+/// dependency would expose its outcome. Keys defined in the same batch (`batch_keys`) and
+/// dependencies on keys that do not exist yet are allowed.
+async fn check_cross_pool(
+    app: &AppState,
+    principal: &Principal,
+    spec: &pb::TaskSpec,
+    batch_keys: &[&str],
+) -> Result<(), Status> {
+    if principal.pools.is_none() {
+        return Ok(());
+    }
+    if !spec.key.is_empty() && !batch_keys.contains(&spec.key.as_str()) {
+        let key = TaskRef::Key(spec.key.as_str().into());
+        if let Some(id) = resolve_id(app, &key).await? {
+            check_duplicate(app, principal, id).await?;
+        }
+    }
+    for d in &spec.deps {
+        let target = convert::task_ref(d.target.clone(), &app.limits)?;
+        if let TaskRef::Key(k) = &target {
+            if batch_keys.contains(&&**k) {
+                continue;
+            }
+        }
+        if let Some(id) = resolve_id(app, &target).await? {
+            match app.pool_of(id).await {
+                Some(pool) if principal.may_use_pool(&pool) => {}
+                _ => return Err(Status::not_found("unknown dependency")),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A duplicate submission must not reveal a task of a pool the caller may not use.
+async fn check_duplicate(app: &AppState, principal: &Principal, id: TaskId) -> Result<(), Status> {
+    if principal.pools.is_none() {
+        return Ok(());
+    }
+    match app.pool_of(id).await {
+        Some(pool) if principal.may_use_pool(&pool) => Ok(()),
+        _ => Err(Status::already_exists("task key is already in use")),
+    }
+}
+
 /// Validate and submit one task, optionally waiting (bounded by `wait_timeout`) for its result.
 pub async fn submit_one(
     app: &AppState,
@@ -259,6 +306,7 @@ pub async fn submit_one(
     stop: &CancellationToken,
 ) -> Result<pb::SubmitResponse, Status> {
     check_pool(principal, convert::spec_pool(&spec))?;
+    check_cross_pool(app, principal, &spec, &[]).await?;
     let meta = pb::TaskSpec {
         payload: Vec::new(),
         ..spec.clone()
@@ -268,7 +316,10 @@ pub async fn submit_one(
         Some(timeout) => {
             let h = app.sched.submit(task).await.map_err(convert::error)?;
             let (id, duplicate) = (h.id(), h.is_duplicate());
-            if !duplicate {
+            if duplicate {
+                // The key may have been taken in another pool since the check above.
+                check_duplicate(app, principal, id).await?;
+            } else {
                 record_submit(app, id, &meta);
             }
             let result = await_handle(app, h, timeout, stop).await?;
@@ -280,7 +331,9 @@ pub async fn submit_one(
         }
         None => {
             let s = app.sched.enqueue(task).await.map_err(convert::error)?;
-            if !s.duplicate {
+            if s.duplicate {
+                check_duplicate(app, principal, s.id).await?;
+            } else {
                 record_submit(app, s.id, &meta);
             }
             Ok(pb::SubmitResponse {
@@ -304,10 +357,19 @@ pub async fn submit_batch(
             "at most {max} tasks per batch"
         )));
     }
+    let batch_keys: Vec<String> = specs
+        .iter()
+        .filter(|s| !s.key.is_empty())
+        .map(|s| s.key.clone())
+        .collect();
+    let batch_keys: Vec<&str> = batch_keys.iter().map(String::as_str).collect();
+    for spec in &specs {
+        check_pool(principal, convert::spec_pool(spec))?;
+        check_cross_pool(app, principal, spec, &batch_keys).await?;
+    }
     let mut metas = Vec::with_capacity(specs.len());
     let mut tasks = Vec::with_capacity(specs.len());
     for spec in specs {
-        check_pool(principal, convert::spec_pool(&spec))?;
         metas.push(pb::TaskSpec {
             payload: Vec::new(),
             ..spec.clone()
@@ -320,7 +382,9 @@ pub async fn submit_batch(
         .await
         .map_err(convert::error)?;
     for (h, m) in hs.iter().zip(&metas) {
-        if !h.is_duplicate() {
+        if h.is_duplicate() {
+            check_duplicate(app, principal, h.id()).await?;
+        } else {
             record_submit(app, h.id(), m);
         }
     }

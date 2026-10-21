@@ -37,7 +37,7 @@ Label values are escaped per the exposition format (`\\`, `\"`, `\n`).
 | `cronoq_pool_schedule_efficiency` | gauge | Windowed completed work seconds ÷ capacity slot-seconds (0–1). |
 | `cronoq_pool_wait_seconds` | gauge | Windowed time from submission to first start, by `quantile` (`0.5`, `0.9`, `0.99`). |
 | `cronoq_pool_cost_total` | counter | Worker cost since the leader started (`cost_per_worker_second` × worker-seconds). |
-| `cronoq_pool_dispatched_total` | counter | Attempts dispatched within the current metrics window. |
+| `cronoq_pool_dispatched_window` | gauge | Attempts dispatched within the current metrics window (default 60 s). It is a windowed count that can go down; for a lifetime rate use `rate(cronoq_attempts_dispatched_total[5m])`. |
 
 ### Server-wide
 

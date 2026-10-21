@@ -79,11 +79,11 @@ limited to a list of pools.
 
 ### What it does not protect
 
-- **Keys are shared across pools.** Pool scoping isolates access by id and by the lookup
-  routes, but keys form one namespace: a scoped client that submits a key already used in
-  another pool is answered as a duplicate of that task (its id, and with `wait` its result), and
-  can name it as a dependency. Do not rely on pool scoping to separate parties that could guess
-  each other's keys; use separate servers for that.
+- **Keys are shared across pools.** Keys form one namespace. A pool-scoped client that submits
+  a key already used in another pool gets `ALREADY_EXISTS` (no id or result), and dependencies
+  on tasks of other pools are refused as unknown. That still reveals that the key exists, so do
+  not rely on pool scoping to separate parties that could guess each other's keys; use separate
+  servers for that.
 - **Payloads and outputs are not encrypted at rest.** Encrypt sensitive payloads in your
   application or rely on database encryption.
 - **The `metrics_addr` listener** has neither TLS nor authentication; bind it to an internal

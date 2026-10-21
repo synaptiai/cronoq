@@ -76,7 +76,7 @@ pools = ["llm"]            # optional
 | `token` | string | The bearer token. Prefer `token_env`. |
 | `token_env` | string | Read the token from this environment variable (it must be set at startup). |
 | `role` | `client` \| `worker` \| `metrics` \| `admin` | What the token may do. |
-| `pools` | list of pool names, optional | Restrict a `client` or `worker` token to these pools. Tasks in other pools behave as if they did not exist (`NOT_FOUND`), `Watch` filters them out, and workers may only register for these pools. |
+| `pools` | list of pool names, optional | Restrict a `client` or `worker` token to these pools. Tasks in other pools behave as if they did not exist (`NOT_FOUND`), `Watch` filters them out, and workers may only register for these pools. Submitting a key already used in another pool fails with `ALREADY_EXISTS`, and dependencies on tasks of other pools are refused. |
 
 Exactly one of `token` / `token_env` is required. Tokens must be at least **16** characters
 (the server warns below 32; use 32+ random characters, e.g. `openssl rand -hex 24`) and
