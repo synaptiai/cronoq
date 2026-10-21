@@ -51,9 +51,13 @@ class Server:
 
     def __init__(self, binary: Path) -> None:
         self.binary = binary
-        self.grpc_port, self.http_port = _free_port(), _free_port()
         self.dir = tempfile.TemporaryDirectory()
         self.config = Path(self.dir.name) / "cronoq.toml"
+        self._new_ports()
+        self.proc: Optional[subprocess.Popen] = None
+
+    def _new_ports(self) -> None:
+        self.grpc_port, self.http_port = _free_port(), _free_port()
         self.config.write_text(
             f"""
 [server]
@@ -78,23 +82,34 @@ lease_ttl_s = 1.0
 retry = {{ max_attempts = 3, initial_backoff_s = 0.05, jitter = false }}
 """
         )
-        self.proc: Optional[subprocess.Popen] = None
 
     @property
     def target(self) -> str:
         return f"127.0.0.1:{self.grpc_port}"
 
-    def start(self) -> None:
+    def start(self, attempts: int = 3) -> None:
+        """Start the server. Free ports can be taken by another process between probing and
+        binding, so a failed first start retries on fresh ports (restarts reuse the ports)."""
+        for attempt in range(attempts):
+            try:
+                return self._start_once()
+            except RuntimeError:
+                if attempt == attempts - 1:
+                    raise
+                self._new_ports()
+
+    def _start_once(self) -> None:
+        log = Path(self.dir.name) / "server.log"
         self.proc = subprocess.Popen(
             [str(self.binary), "--config", str(self.config)],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=log.open("wb"),
             env={**os.environ, "RUST_LOG": "warn"},
         )
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
-                raise RuntimeError("cronoq-server exited during startup")
+                raise RuntimeError(f"cronoq-server exited during startup: {log.read_text()[-2000:]}")
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{self.http_port}/readyz", timeout=1) as r:
                     if r.status == 200:
@@ -409,7 +424,7 @@ async def test_worker_reconnects_after_server_restart(server: Server) -> None:
         assert w.connections == 1
         server.stop()
         await asyncio.sleep(0.3)
-        server.start()
+        server.start(attempts=1)  # restart in place: keep the same ports
         await asyncio.wait_for(w.wait_registered(), 15)
         for _ in range(200):
             if w.connections >= 2 and w._registered.is_set():  # type: ignore[attr-defined]
