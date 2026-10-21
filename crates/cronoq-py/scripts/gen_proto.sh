@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the Python protobuf/gRPC stubs for cronoq.client.
-# Requires: pip install grpcio-tools   (set PYTHON to choose the interpreter)
+# Requires: pip install 'grpcio-tools==1.66.2'   (set PYTHON to choose the interpreter)
+# That version emits protobuf 5.27 gencode, which runs on protobuf 5.27-7.x and Python 3.9+.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 proto_root="$here/../cronoq-proto/proto"
@@ -14,7 +15,8 @@ mkdir -p "$out"
 # flatten the files and use a relative import instead.
 mv "$out/cronoq/v1/"cronoq_pb2* "$out/"
 rm -rf "$out/cronoq"
-sed -i 's/^from cronoq\.v1 import cronoq_pb2 as /from . import cronoq_pb2 as /' "$out/cronoq_pb2_grpc.py"
+sed -i.bak 's/^from cronoq\.v1 import cronoq_pb2 as /from . import cronoq_pb2 as /' "$out/cronoq_pb2_grpc.py"
+rm -f "$out/cronoq_pb2_grpc.py.bak"
 cat > "$out/__init__.py" <<'PY'
 """Generated protobuf and gRPC stubs for the cronoq server API (cronoq.v1).
 

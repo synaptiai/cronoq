@@ -5,7 +5,7 @@ import warnings
 
 from . import cronoq_pb2 as cronoq_dot_v1_dot_cronoq__pb2
 
-GRPC_GENERATED_VERSION = '1.84.0'
+GRPC_GENERATED_VERSION = '1.66.2'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,14 +18,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in cronoq/v1/cronoq_pb2_grpc.py depends on'
+        + f' but the generated code in cronoq/v1/cronoq_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class TasksStub:
+class TasksStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -66,7 +66,7 @@ class TasksStub:
                 _registered_method=True)
 
 
-class TasksServicer:
+class TasksServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Submit(self, request, context):
@@ -146,7 +146,7 @@ def add_TasksServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class Tasks:
+class Tasks(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -312,7 +312,7 @@ class Tasks:
             _registered_method=True)
 
 
-class WorkersStub:
+class WorkersStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -328,7 +328,7 @@ class WorkersStub:
                 _registered_method=True)
 
 
-class WorkersServicer:
+class WorkersServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Work(self, request_iterator, context):
@@ -353,7 +353,7 @@ def add_WorkersServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class Workers:
+class Workers(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -384,7 +384,7 @@ class Workers:
             _registered_method=True)
 
 
-class AdminStub:
+class AdminStub(object):
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -410,7 +410,7 @@ class AdminStub:
                 _registered_method=True)
 
 
-class AdminServicer:
+class AdminServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Snapshot(self, request, context):
@@ -457,7 +457,7 @@ def add_AdminServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class Admin:
+class Admin(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

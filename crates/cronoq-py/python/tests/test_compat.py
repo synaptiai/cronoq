@@ -158,21 +158,21 @@ def test_integration_elastic_scaling():
 
 
 def test_integration_priority_ordering():
-    scheduler = ElasticPriorityScheduler(initial_workers=1, max_workers=2)
+    # One worker, kept busy while the rest queue up, so the order is decided by priority alone.
+    scheduler = ElasticPriorityScheduler(initial_workers=1, max_workers=1)
     tasks = [
-        Task(id="low-1", duration=0.3, priority=Priority.LOW),
-        Task(id="low-2", duration=0.3, priority=Priority.LOW),
-        Task(id="critical", duration=0.2, priority=Priority.CRITICAL),
+        Task(id="blocker", duration=0.5, priority=Priority.NORMAL),
+        Task(id="low-1", duration=0.1, priority=Priority.LOW),
+        Task(id="low-2", duration=0.1, priority=Priority.LOW),
+        Task(id="critical", duration=0.1, priority=Priority.CRITICAL),
     ]
     scheduler.start()
     for task in tasks:
         scheduler.submit(task)
-        time.sleep(0.05)
     wait_for(scheduler, len(tasks), 10)
     scheduler.stop()
     assert scheduler.completed_count == len(tasks), "Not all tasks completed"
-    order = start_order(scheduler)
-    assert order.index("critical") < order.index("low-2"), order
+    assert start_order(scheduler) == ["blocker", "critical", "low-1", "low-2"]
 
 
 def test_dependencies_wait_for_later_submissions():

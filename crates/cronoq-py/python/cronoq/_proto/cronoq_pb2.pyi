@@ -2,8 +2,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
-from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -95,7 +94,7 @@ class RetryPolicy(_message.Message):
     multiplier: float
     max_backoff_s: float
     jitter: bool
-    def __init__(self, max_attempts: _Optional[int] = ..., initial_backoff_s: _Optional[float] = ..., multiplier: _Optional[float] = ..., max_backoff_s: _Optional[float] = ..., jitter: _Optional[bool] = ...) -> None: ...
+    def __init__(self, max_attempts: _Optional[int] = ..., initial_backoff_s: _Optional[float] = ..., multiplier: _Optional[float] = ..., max_backoff_s: _Optional[float] = ..., jitter: bool = ...) -> None: ...
 
 class TaskSpec(_message.Message):
     __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags")
@@ -157,7 +156,7 @@ class SubmitRequest(_message.Message):
     WAIT_FIELD_NUMBER: _ClassVar[int]
     task: TaskSpec
     wait: bool
-    def __init__(self, task: _Optional[_Union[TaskSpec, _Mapping]] = ..., wait: _Optional[bool] = ...) -> None: ...
+    def __init__(self, task: _Optional[_Union[TaskSpec, _Mapping]] = ..., wait: bool = ...) -> None: ...
 
 class SubmitResponse(_message.Message):
     __slots__ = ("id", "duplicate", "result")
@@ -167,7 +166,7 @@ class SubmitResponse(_message.Message):
     id: int
     duplicate: bool
     result: TaskResult
-    def __init__(self, id: _Optional[int] = ..., duplicate: _Optional[bool] = ..., result: _Optional[_Union[TaskResult, _Mapping]] = ...) -> None: ...
+    def __init__(self, id: _Optional[int] = ..., duplicate: bool = ..., result: _Optional[_Union[TaskResult, _Mapping]] = ...) -> None: ...
 
 class SubmitBatchRequest(_message.Message):
     __slots__ = ("tasks",)
@@ -185,7 +184,7 @@ class CancelResponse(_message.Message):
     __slots__ = ("cancelled",)
     CANCELLED_FIELD_NUMBER: _ClassVar[int]
     cancelled: bool
-    def __init__(self, cancelled: _Optional[bool] = ...) -> None: ...
+    def __init__(self, cancelled: bool = ...) -> None: ...
 
 class TaskInfo(_message.Message):
     __slots__ = ("id", "status", "found")
@@ -195,7 +194,7 @@ class TaskInfo(_message.Message):
     id: int
     status: TaskStatus
     found: bool
-    def __init__(self, id: _Optional[int] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., found: _Optional[bool] = ...) -> None: ...
+    def __init__(self, id: _Optional[int] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., found: bool = ...) -> None: ...
 
 class TaskResult(_message.Message):
     __slots__ = ("id", "status", "output", "message")
@@ -275,7 +274,7 @@ class Fail(_message.Message):
     message: str
     permanent: bool
     retry_after_s: float
-    def __init__(self, lease: _Optional[int] = ..., message: _Optional[str] = ..., permanent: _Optional[bool] = ..., retry_after_s: _Optional[float] = ...) -> None: ...
+    def __init__(self, lease: _Optional[int] = ..., message: _Optional[str] = ..., permanent: bool = ..., retry_after_s: _Optional[float] = ...) -> None: ...
 
 class SetSlots(_message.Message):
     __slots__ = ("slots",)
@@ -422,7 +421,7 @@ class RecurringRequest(_message.Message):
     tz: str
     template: TaskSpec
     allow_overlap: bool
-    def __init__(self, name: _Optional[str] = ..., cron: _Optional[str] = ..., tz: _Optional[str] = ..., template: _Optional[_Union[TaskSpec, _Mapping]] = ..., allow_overlap: _Optional[bool] = ...) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., cron: _Optional[str] = ..., tz: _Optional[str] = ..., template: _Optional[_Union[TaskSpec, _Mapping]] = ..., allow_overlap: bool = ...) -> None: ...
 
 class RemoveRecurringRequest(_message.Message):
     __slots__ = ("name",)
@@ -434,4 +433,4 @@ class RemoveRecurringResponse(_message.Message):
     __slots__ = ("removed",)
     REMOVED_FIELD_NUMBER: _ClassVar[int]
     removed: bool
-    def __init__(self, removed: _Optional[bool] = ...) -> None: ...
+    def __init__(self, removed: bool = ...) -> None: ...
