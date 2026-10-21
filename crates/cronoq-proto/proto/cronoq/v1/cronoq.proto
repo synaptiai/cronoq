@@ -1,0 +1,279 @@
+// cronoq server API.
+//
+// Times are either relative seconds (`*_in_s`) or absolute Unix nanoseconds (`*_unix_ns`).
+// Authentication: `authorization: Bearer <token>` metadata; tokens carry a role
+// (client, worker or admin).
+syntax = "proto3";
+
+package cronoq.v1;
+
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0; // treated as NORMAL
+  PRIORITY_CRITICAL = 1;
+  PRIORITY_HIGH = 2;
+  PRIORITY_NORMAL = 3;
+  PRIORITY_LOW = 4;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_BLOCKED = 1;
+  TASK_STATUS_SCHEDULED = 2;
+  TASK_STATUS_READY = 3;
+  TASK_STATUS_RUNNING = 4;
+  TASK_STATUS_RETRYING = 5;
+  TASK_STATUS_SUCCEEDED = 6;
+  TASK_STATUS_FAILED = 7;
+  TASK_STATUS_DEAD_LETTERED = 8;
+  TASK_STATUS_CANCELLED = 9;
+  TASK_STATUS_SKIPPED = 10;
+  TASK_STATUS_MISSED = 11;
+  TASK_STATUS_SHED = 12;
+}
+
+enum EdgeCond {
+  EDGE_COND_ON_SUCCESS = 0;
+  EDGE_COND_ON_COMPLETE = 1;
+  EDGE_COND_ON_FAILURE = 2;
+}
+
+enum MissPolicy {
+  MISS_POLICY_RUN_LATE = 0;
+  MISS_POLICY_SKIP = 1;
+  MISS_POLICY_FAIL = 2;
+}
+
+message TaskRef {
+  oneof target {
+    uint64 id = 1;
+    string key = 2;
+  }
+}
+
+message Dep {
+  TaskRef target = 1;
+  EdgeCond cond = 2;
+}
+
+message RetryPolicy {
+  uint32 max_attempts = 1;
+  double initial_backoff_s = 2;
+  double multiplier = 3;
+  double max_backoff_s = 4;
+  bool jitter = 5;
+}
+
+message TaskSpec {
+  bytes payload = 1;
+  string content_type = 2;
+  string kind = 3;          // default "default"
+  string pool = 4;          // default "default"
+  Priority priority = 5;
+  string key = 6;           // optional unique key
+  optional double deadline_in_s = 7;
+  optional int64 deadline_unix_ns = 8;
+  optional double start_in_s = 9;
+  optional int64 start_unix_ns = 10;
+  optional double tolerance_s = 11; // default 1s
+  MissPolicy on_miss = 12;
+  optional double duration_hint_s = 13;
+  optional double timeout_s = 14;
+  RetryPolicy retry = 15;   // unset = pool default
+  repeated Dep deps = 16;
+  map<string, uint32> resources = 17;
+  map<string, string> tags = 18;
+}
+
+message SubmitRequest {
+  TaskSpec task = 1;
+  // Block until the task finishes and return its result.
+  bool wait = 2;
+}
+
+message SubmitResponse {
+  uint64 id = 1;
+  bool duplicate = 2;
+  TaskResult result = 3; // set when wait = true
+}
+
+message SubmitBatchRequest {
+  repeated TaskSpec tasks = 1; // admitted atomically; may reference each other's keys
+}
+
+message SubmitBatchResponse {
+  repeated SubmitResponse tasks = 1;
+}
+
+message CancelResponse {
+  bool cancelled = 1;
+}
+
+message TaskInfo {
+  uint64 id = 1;
+  TaskStatus status = 2;
+  bool found = 3;
+}
+
+message TaskResult {
+  uint64 id = 1;
+  TaskStatus status = 2;
+  optional bytes output = 3;
+  string message = 4;
+}
+
+message WaitRequest {
+  TaskRef task = 1;
+  optional double timeout_s = 2;
+}
+
+message WatchRequest {
+  repeated string pools = 1;    // empty = all
+}
+
+message StatusEvent {
+  uint64 id = 1;
+  string pool = 2;
+  string key = 3;
+  TaskStatus status = 4;
+  uint32 attempt = 5;
+  int64 at_unix_ns = 6;
+  string message = 7;
+}
+
+service Tasks {
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+  rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
+  rpc Cancel(TaskRef) returns (CancelResponse);
+  rpc Get(TaskRef) returns (TaskInfo);
+  rpc Wait(WaitRequest) returns (TaskResult);
+  rpc Watch(WatchRequest) returns (stream StatusEvent);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Remote workers open one bidirectional stream, register for a pool with a number of slots,
+// then receive leases and report heartbeats and outcomes.
+
+message Register {
+  string pool = 1;
+  uint32 slots = 2;
+  string worker_name = 3;
+}
+
+message Heartbeat {
+  uint64 lease = 1;
+}
+
+message Complete {
+  uint64 lease = 1;
+  bytes output = 2;
+}
+
+message Fail {
+  uint64 lease = 1;
+  string message = 2;
+  bool permanent = 3;
+  optional double retry_after_s = 4;
+}
+
+message SetSlots {
+  uint32 slots = 1;
+}
+
+message WorkerMessage {
+  oneof msg {
+    Register register = 1;
+    Heartbeat heartbeat = 2;
+    Complete complete = 3;
+    Fail fail = 4;
+    SetSlots set_slots = 5;
+  }
+}
+
+message Registered {
+  uint64 worker_id = 1;
+  optional double lease_ttl_s = 2; // heartbeat at least this often (per lease)
+}
+
+message Lease {
+  uint64 lease = 1;
+  uint64 task_id = 2;
+  uint32 attempt = 3;
+  bytes payload = 4;
+  string content_type = 5;
+  string kind = 6;
+  string key = 7;
+  map<string, string> tags = 8;
+  optional double timeout_s = 9;
+  optional int64 deadline_unix_ns = 10;
+}
+
+message Abort {
+  uint64 lease = 1;
+  string reason = 2;
+}
+
+message ServerMessage {
+  oneof msg {
+    Registered registered = 1;
+    Lease lease = 2;
+    Abort abort = 3;
+  }
+}
+
+service Workers {
+  rpc Work(stream WorkerMessage) returns (stream ServerMessage);
+}
+
+// ---------------------------------------------------------------------------------------------
+
+message Empty {}
+
+message PoolSnapshot {
+  string name = 1;
+  uint32 capacity = 2;
+  uint32 busy = 3;
+  uint32 held = 4;
+  uint32 desired = 5;
+  repeated uint64 pending_by_class = 6; // critical, high, normal, low
+  uint64 reservations = 7;
+  uint64 dispatched = 8;
+  uint64 succeeded = 9;
+  uint64 failed = 10;
+  double priority_adherence = 11;
+  double fixed_start_hit_rate = 12;
+  double utilization = 13;
+  double schedule_efficiency = 14;
+  double wait_p50_s = 15;
+  double wait_p90_s = 16;
+  double wait_p99_s = 17;
+  double cost = 18;
+}
+
+message SnapshotResponse {
+  repeated PoolSnapshot pools = 1;
+  uint64 live_tasks = 2;
+  uint64 running = 3;
+  uint64 pending = 4;
+}
+
+message RecurringRequest {
+  string name = 1;
+  string cron = 2;
+  string tz = 3;
+  TaskSpec template = 4;
+  bool allow_overlap = 5;
+}
+
+message RemoveRecurringRequest {
+  string name = 1;
+}
+
+message RemoveRecurringResponse {
+  bool removed = 1;
+}
+
+service Admin {
+  rpc Snapshot(Empty) returns (SnapshotResponse);
+  rpc AddRecurring(RecurringRequest) returns (Empty);
+  rpc RemoveRecurring(RemoveRecurringRequest) returns (RemoveRecurringResponse);
+}

@@ -980,8 +980,24 @@ impl<P> Core<P> {
             return;
         }
         if attempt > 0 && unmet == 0 && self.entry(key).fixed.is_none() {
-            // Recovered task that already ran: back off like a retry.
-            self.schedule_retry(now, key, None);
+            // Recovered task whose last attempt was lost: it counts against the retry budget.
+            let max = {
+                let e = self.entry(key);
+                e.retry
+                    .as_deref()
+                    .copied()
+                    .unwrap_or(self.pools[pool as usize].cfg.retry)
+                    .max_attempts
+            };
+            if attempt >= max {
+                self.finish(
+                    key,
+                    TaskStatus::DeadLettered,
+                    Some("attempt lost in failover; retries exhausted".into()),
+                );
+            } else {
+                self.schedule_retry(now, key, None);
+            }
             return;
         }
         self.emit(key, TaskStatus::Blocked, None);

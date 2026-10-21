@@ -769,3 +769,52 @@ fn recovers_from_mutation_log() {
     let fresh = s2.submit(job(1.0));
     assert!(fresh.0 > c.0, "ids continue after recovery");
 }
+
+#[test]
+fn recovered_running_task_respects_retry_budget() {
+    let cfg = CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 1)],
+        ..Default::default()
+    };
+    let mut s = Sim::new(cfg);
+    let spec = |n| {
+        job(1.0).retry(RetryPolicy {
+            max_attempts: n,
+            ..Default::default()
+        })
+    };
+    let rec = Recovered {
+        tasks: vec![
+            RecoveredTask {
+                id: TaskId(1),
+                seq: 0,
+                arrival: Time::ZERO,
+                spec: spec(2),
+                attempt: 2,
+            },
+            RecoveredTask {
+                id: TaskId(2),
+                seq: 1,
+                arrival: Time::ZERO,
+                spec: spec(3),
+                attempt: 2,
+            },
+        ],
+        terminal: vec![],
+        recurring: vec![],
+        next_id: 3,
+    };
+    s.core.recover(s.now, rec);
+    s.drain();
+    s.run_to_completion(60.0);
+    assert_eq!(s.status(TaskId(1)), Some(TaskStatus::DeadLettered));
+    assert_eq!(s.status(TaskId(2)), Some(TaskStatus::Succeeded));
+    assert_eq!(
+        s.started
+            .iter()
+            .filter(|x| x.id == TaskId(2))
+            .map(|x| x.attempt)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+}

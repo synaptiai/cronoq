@@ -401,6 +401,12 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         &self.inner.clock
     }
 
+    /// Resolves when the scheduler has stopped (shutdown, or a fatal store error such as
+    /// lost leadership).
+    pub async fn stopped(&self) {
+        self.inner.tx.closed().await
+    }
+
     /// Stop accepting work, let running attempts finish for up to `grace`, then abort them.
     /// Queued tasks remain in the store (if any) for the next leader.
     pub async fn shutdown(&self, grace: Duration) -> Result<(), Error> {

@@ -1,0 +1,18 @@
+[package]
+name = "cronoq-proto"
+description = "Protocol buffer definitions and generated gRPC code for cronoq"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+prost = "0.14"
+tonic = { version = "0.14", default-features = false, features = ["codegen", "transport"] }
+tonic-prost = "0.14"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+protoc-bin-vendored = "3"
