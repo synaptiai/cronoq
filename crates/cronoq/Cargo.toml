@@ -1,0 +1,37 @@
+[package]
+name = "cronoq"
+description = "Elastic, priority-aware task scheduler: aging, deadlines, fixed starts, DAGs, retries and autoscaling"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["scheduler", "queue", "priority", "autoscaling", "tasks"]
+categories = ["asynchronous", "concurrency"]
+
+[features]
+default = ["otel"]
+otel = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
+
+[dependencies]
+cronoq-core.workspace = true
+async-trait = "0.1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rustc-hash.workspace = true
+thiserror = "2"
+tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio-util = "0.7"
+tracing = "0.1"
+opentelemetry = { version = "0.33", features = ["metrics", "trace"], optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33", features = ["metrics", "testing"] }
+tokio = { version = "1.47", features = ["full", "test-util"] }
+criterion = { version = "0.5", default-features = false, features = ["async_tokio"] }
+
+[[bench]]
+name = "runtime"
+harness = false

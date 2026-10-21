@@ -205,6 +205,7 @@ impl<P> Clone for Dispatch<P> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusEvent {
     pub id: TaskId,
+    pub pool: PoolId,
     pub key: Option<Arc<str>>,
     pub status: TaskStatus,
     pub attempt: u32,
@@ -276,6 +277,43 @@ pub enum Mutation<P> {
         name: Arc<str>,
         next: Option<Time>,
     },
+}
+
+impl<P> Clone for Mutation<P> {
+    fn clone(&self) -> Self {
+        match self {
+            Mutation::Submitted {
+                id,
+                seq,
+                arrival,
+                spec,
+            } => Mutation::Submitted {
+                id: *id,
+                seq: *seq,
+                arrival: *arrival,
+                spec: spec.clone(),
+            },
+            Mutation::Status {
+                id,
+                status,
+                attempt,
+                at,
+                message,
+            } => Mutation::Status {
+                id: *id,
+                status: *status,
+                attempt: *attempt,
+                at: *at,
+                message: message.clone(),
+            },
+            Mutation::RecurringUpsert { spec } => Mutation::RecurringUpsert { spec: spec.clone() },
+            Mutation::RecurringRemove { name } => Mutation::RecurringRemove { name: name.clone() },
+            Mutation::RecurringNext { name, next } => Mutation::RecurringNext {
+                name: name.clone(),
+                next: *next,
+            },
+        }
+    }
 }
 
 /// Something the driver must do.

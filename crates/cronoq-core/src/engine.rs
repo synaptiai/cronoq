@@ -423,6 +423,17 @@ impl<P> Core<P> {
 
     /// Submit one task.
     pub fn submit(&mut self, now: Time, spec: TaskSpec<P>) -> Result<Submitted, SubmitError> {
+        self.try_submit(now, spec).map_err(|(e, _)| e)
+    }
+
+    /// Like [`Core::submit`], but hands the spec back on rejection (e.g. to retry after
+    /// `SubmitError::Full`).
+    #[allow(clippy::result_large_err)] // returning the spec by value avoids an allocation
+    pub fn try_submit(
+        &mut self,
+        now: Time,
+        spec: TaskSpec<P>,
+    ) -> Result<Submitted, (SubmitError, TaskSpec<P>)> {
         self.advance(now);
         if let Some(id) = self.existing_key(spec.key.as_deref()) {
             return Ok(Submitted {
@@ -430,14 +441,19 @@ impl<P> Core<P> {
                 duplicate: true,
             });
         }
-        let pool = self.validate(&spec, &FxHashSet::default())?;
-        self.check_bounds(pool, spec.priority, 1, true)?;
+        let pool = match self.validate(&spec, &FxHashSet::default()) {
+            Ok(p) => p,
+            Err(e) => return Err((e, spec)),
+        };
+        if let Err(e) = self.check_bounds(pool, spec.priority, 1, true) {
+            return Err((e, spec));
+        }
         if let Some(f) = &spec.fixed_start {
             let (s, e) = self.reservation_interval(pool, &spec, f);
             if self.pools[pool as usize].reservations.max_overlap(s, e)
                 >= self.pools[pool as usize].cfg.reservation_limit()
             {
-                return Err(SubmitError::ReservationConflict);
+                return Err((SubmitError::ReservationConflict, spec));
             }
         }
         let id = self.alloc_id();
@@ -1079,8 +1095,8 @@ impl<P> Core<P> {
         if retryable && attempt < max {
             self.schedule_retry(now, key, retry_after);
             let e = self.entry(key);
-            let (id, k, at) = (e.id, e.key.clone(), e.attempt);
-            self.push_status(id, k, TaskStatus::Retrying, at, Some(message), true);
+            let (id, pool, k, at) = (e.id, e.pool, e.key.clone(), e.attempt);
+            self.push_status(id, pool, k, TaskStatus::Retrying, at, Some(message), true);
         } else if retryable {
             self.finish(key, TaskStatus::DeadLettered, Some(message));
         } else {
@@ -1678,7 +1694,15 @@ impl<P> Core<P> {
                 }
             }
             self.retain(e.id, e.key.clone(), status, self.now);
-            self.push_status(e.id, e.key.clone(), status, e.attempt, message, true);
+            self.push_status(
+                e.id,
+                e.pool,
+                e.key.clone(),
+                status,
+                e.attempt,
+                message,
+                true,
+            );
             for (cid, cond) in e.dependents {
                 let Some(ck) = self.index.get(&cid).copied() else {
                     continue;
@@ -1730,8 +1754,8 @@ impl<P> Core<P> {
         let e = self.entry_mut(k);
         e.status = status;
         if emit {
-            let (id, key, at) = (e.id, e.key.clone(), e.attempt);
-            self.push_status(id, key, status, at, None, false);
+            let (id, pool, key, at) = (e.id, e.pool, e.key.clone(), e.attempt);
+            self.push_status(id, pool, key, status, at, None, false);
         }
     }
 
@@ -1739,15 +1763,17 @@ impl<P> Core<P> {
         let emit = self.emit_transitions;
         let e = self.entry_mut(k);
         e.status = status;
-        let (id, key, at) = (e.id, e.key.clone(), e.attempt);
+        let (id, pool, key, at) = (e.id, e.pool, e.key.clone(), e.attempt);
         if emit {
-            self.push_status(id, key, status, at, message, false);
+            self.push_status(id, pool, key, status, at, message, false);
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_status(
         &mut self,
         id: TaskId,
+        pool: u16,
         key: Option<Arc<str>>,
         status: TaskStatus,
         attempt: u32,
@@ -1770,6 +1796,7 @@ impl<P> Core<P> {
         if important || self.emit_transitions {
             self.actions.push_back(Action::Status(StatusEvent {
                 id,
+                pool: PoolId(pool),
                 key,
                 status,
                 attempt,
@@ -2095,7 +2122,7 @@ impl<P> Core<P> {
         };
         let key = e.key.clone();
         self.actions.push_back(Action::Dispatch(d));
-        self.push_status(id, key, TaskStatus::Running, attempt, None, false);
+        self.push_status(id, pool, key, TaskStatus::Running, attempt, None, false);
     }
 
     // -----------------------------------------------------------------------------------------

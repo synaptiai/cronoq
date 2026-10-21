@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cronoq-core"]
+members = ["crates/cronoq","crates/cronoq-core"]
 
 [workspace.package]
 version = "0.1.0"
