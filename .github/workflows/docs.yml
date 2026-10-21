@@ -42,8 +42,10 @@ jobs:
         with:
           path: docs/book/book
 
+  # Deploys only once GitHub Pages is enabled (Settings → Pages → Source: GitHub Actions) and
+  # the repository variable DEPLOY_DOCS is set to "true".
   deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEPLOY_DOCS == 'true'
     needs: build
     runs-on: ubuntu-24.04
     permissions:

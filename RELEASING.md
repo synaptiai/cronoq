@@ -25,6 +25,10 @@ then verifies the tag, builds and tests everything, and publishes:
    `cronoq` package public under *Packages* if desired.
 5. **Repository visibility.** ARM runners (`ubuntu-24.04-arm`, `windows-11-arm`) used by the
    release workflow are available to public repositories.
+6. **Documentation site.** Enable GitHub Pages with *Settings → Pages → Source: GitHub Actions*,
+   then set the repository variable `DEPLOY_DOCS` to `true` (*Settings → Secrets and variables →
+   Actions → Variables*). Until then the Docs workflow builds and link-checks the book but skips
+   the deploy.
 
 ## Cutting a release
 
