@@ -21,15 +21,19 @@ import cronoq  # noqa: E402
 from cronoq.client import Client, ClientError, Lease, Worker, task  # noqa: E402
 
 CLIENT, WORKER, ADMIN = "client-token", "worker-token", "admin-token"
-REPO = Path(__file__).resolve().parents[4]
+# The source checkout, when the tests run from it (wheel tests run from a copy elsewhere).
+_HERE = Path(__file__).resolve()
+REPO: Optional[Path] = _HERE.parents[4] if len(_HERE.parents) > 4 else None
 
 
 def _server_binary() -> Optional[Path]:
     env = os.environ.get("CRONOQ_SERVER_BIN")
     if env:
         return Path(env)
+    if REPO is None or not (REPO / "Cargo.toml").exists():
+        return None
     target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "target"))
-    binary = target / "debug" / "cronoq-server"
+    binary = target / "debug" / ("cronoq-server.exe" if os.name == "nt" else "cronoq-server")
     if not binary.exists():
         try:
             subprocess.run(
@@ -134,6 +138,8 @@ retry = {{ max_attempts = 3, initial_backoff_s = 0.05, jitter = false }}
 def server_binary() -> Path:
     binary = _server_binary()
     if binary is None:
+        if os.environ.get("CRONOQ_REQUIRE_SERVER"):
+            pytest.fail("cronoq-server binary not available and CRONOQ_REQUIRE_SERVER is set")
         pytest.skip("cronoq-server binary not available (cargo build failed)")
     return binary
 
