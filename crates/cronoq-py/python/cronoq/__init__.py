@@ -60,3 +60,12 @@ __all__ = [
     "TaskHandle",
     "__version__",
 ]
+
+
+def __getattr__(name: str):
+    # `cronoq.client` needs the optional grpc dependencies; import it only on demand.
+    if name == "client":
+        import importlib
+
+        return importlib.import_module(".client", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

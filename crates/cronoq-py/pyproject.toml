@@ -16,7 +16,10 @@ classifiers = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-test = ["pytest>=7", "pytest-asyncio>=0.23"]
+# gRPC client and remote worker for cronoq-server (`cronoq.client`). The generated stubs need
+# runtimes at least as new as the generator (see scripts/gen_proto.sh).
+client = ["grpcio>=1.84", "protobuf>=7.36,<8"]
+test = ["pytest>=7", "pytest-asyncio>=0.23", "grpcio>=1.84", "protobuf>=7.36,<8"]
 
 [tool.maturin]
 python-source = "python"
