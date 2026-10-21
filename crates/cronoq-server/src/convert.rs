@@ -227,6 +227,7 @@ pub fn error(e: Error) -> Status {
         Error::Shutdown => Status::unavailable("scheduler is shutting down"),
         Error::Config(m) => Status::invalid_argument(m),
         Error::Store(e) => Status::unavailable(format!("store: {e}")),
+        e => Status::internal(e.to_string()),
     }
 }
 

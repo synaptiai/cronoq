@@ -161,6 +161,11 @@ impl Pool {
         self.capacity.saturating_sub(self.busy + self.held)
     }
     fn account(&mut self, now: Time) {
+        if self.last_acct == Time::ZERO {
+            // First observation: engine time may start anywhere (e.g. Unix nanoseconds).
+            self.last_acct = now;
+            return;
+        }
         let dt = now.diff_secs(self.last_acct);
         if dt <= 0.0 {
             return;
@@ -2373,7 +2378,11 @@ impl<P> Core<P> {
         self.schedule(now + cfg.interval, Timer::Autoscale(pool));
         let p = &mut self.pools[pool as usize];
         p.account(now);
-        let dt = now.diff_secs(p.last_eval);
+        let dt = if p.last_eval == Time::ZERO {
+            0.0
+        } else {
+            now.diff_secs(p.last_eval)
+        };
         p.last_eval = now;
         let mut backlog = [0u64; Priority::COUNT];
         for (c, b) in backlog.iter_mut().enumerate() {

@@ -64,11 +64,17 @@ pub async fn await_handle(
                 output: None,
                 message: message.to_string(),
             },
-            Err(TaskFailure::Shutdown) => pb::TaskResult {
+            Err(TaskFailure::OutputUnavailable { .. }) => pb::TaskResult {
+                id: id.0,
+                status: pb::TaskStatus::Succeeded as i32,
+                output: state.output(id).await.map(|b| b.to_vec()),
+                message: String::new(),
+            },
+            Err(e) => pb::TaskResult {
                 id: id.0,
                 status: pb::TaskStatus::Unspecified as i32,
                 output: None,
-                message: "scheduler shut down".into(),
+                message: e.to_string(),
             },
         }
     };

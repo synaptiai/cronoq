@@ -15,7 +15,12 @@ pub(crate) fn current_traceparent() -> Option<String> {
     {
         use std::collections::HashMap;
         use tracing_opentelemetry::OpenTelemetrySpanExt;
-        let cx = tracing::Span::current().context();
+        let span = tracing::Span::current();
+        if span.is_disabled() {
+            // No subscriber or no active span: there is no trace context to propagate.
+            return None;
+        }
+        let cx = span.context();
         let mut carrier: HashMap<String, String> = HashMap::new();
         opentelemetry::global::get_text_map_propagator(|p| p.inject_context(&cx, &mut carrier));
         carrier.remove("traceparent")
@@ -168,7 +173,7 @@ mod otel {
             .with_description(desc)
             .with_callback(move |obs| {
                 for (pool, g) in &gauges.lock().unwrap().pools {
-                    obs.observe(f(g), &[KeyValue::new("pool", pool.to_string())]);
+                    obs.observe(f(g), &[KeyValue::new("pool", pool.clone())]);
                 }
             })
             .build()
@@ -187,7 +192,7 @@ mod otel {
                             obs.observe(
                                 g.pending[c.index()],
                                 &[
-                                    KeyValue::new("pool", pool.to_string()),
+                                    KeyValue::new("pool", pool.clone()),
                                     KeyValue::new("class", c.name()),
                                 ],
                             );
@@ -201,7 +206,7 @@ mod otel {
                 .with_description("Accumulated worker cost")
                 .with_callback(move |obs| {
                     for (pool, g) in &cost_g.lock().unwrap().pools {
-                        obs.observe(g.cost, &[KeyValue::new("pool", pool.to_string())]);
+                        obs.observe(g.cost, &[KeyValue::new("pool", pool.clone())]);
                     }
                 })
                 .build();
@@ -257,23 +262,23 @@ mod otel {
                 _cost: cost,
             }
         }
-        pub fn submitted(&self, pool: &str) {
+        pub fn submitted(&self, pool: &Arc<str>) {
             self.submitted
-                .add(1, &[KeyValue::new("pool", pool.to_string())]);
+                .add(1, &[KeyValue::new("pool", pool.clone())]);
         }
-        pub fn finished(&self, pool: &str, status: TaskStatus) {
+        pub fn finished(&self, pool: &Arc<str>, status: TaskStatus) {
             self.finished.add(
                 1,
                 &[
-                    KeyValue::new("pool", pool.to_string()),
+                    KeyValue::new("pool", pool.clone()),
                     KeyValue::new("status", status.name()),
                 ],
             );
         }
-        pub fn attempt(&self, pool: &str, kind: &str, secs: f64, ok: bool) {
+        pub fn attempt(&self, pool: &Arc<str>, kind: &Arc<str>, secs: f64, ok: bool) {
             let attrs = [
-                KeyValue::new("pool", pool.to_string()),
-                KeyValue::new("kind", kind.to_string()),
+                KeyValue::new("pool", pool.clone()),
+                KeyValue::new("kind", kind.clone()),
                 KeyValue::new("outcome", if ok { "ok" } else { "error" }),
             ];
             self.attempts.add(1, &attrs);

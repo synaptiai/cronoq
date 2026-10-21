@@ -28,6 +28,8 @@
 //! # Ok(()) }
 //! ```
 
+#![warn(missing_docs)]
+
 mod blocking;
 mod clock;
 mod driver;

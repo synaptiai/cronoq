@@ -54,6 +54,10 @@ pub(crate) fn failure_to_pyerr(py: Python<'_>, f: &TaskFailure, id: u64) -> PyEr
         TaskFailure::Shutdown => {
             py_error(py, "TaskFailed", ("shutdown", "scheduler shut down", id))
         }
+        TaskFailure::OutputUnavailable { .. } => {
+            py_error(py, "TaskFailed", ("succeeded", f.to_string(), id))
+        }
+        other => py_error(py, "TaskFailed", ("unknown", other.to_string(), id)),
     }
 }
 
