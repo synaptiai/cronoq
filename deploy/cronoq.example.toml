@@ -1,0 +1,57 @@
+# Example cronoq-server configuration.
+
+[server]
+grpc_addr = "0.0.0.0:7070"   # cronoq.v1 Tasks / Workers / Admin
+http_addr = "0.0.0.0:7071"   # /v1/* JSON API, /metrics, /healthz, /readyz
+shutdown_grace_s = 10
+# [server.tls]
+# cert = "/etc/cronoq/tls/server.pem"
+# key = "/etc/cronoq/tls/server.key"
+# client_ca = "/etc/cronoq/tls/ca.pem"     # require client certificates (mTLS)
+
+# Bearer tokens. Without any, authentication is disabled (local development only).
+[[auth.tokens]]
+token_env = "CRONOQ_CLIENT_TOKEN"
+role = "client"   # submit, cancel, get, wait, watch
+[[auth.tokens]]
+token_env = "CRONOQ_WORKER_TOKEN"
+role = "worker"   # Workers.Work stream
+[[auth.tokens]]
+token_env = "CRONOQ_ADMIN_TOKEN"
+role = "admin"    # everything, plus Admin service
+
+# Durable state and active-passive HA: run several replicas against the same database;
+# one leads, the others report /readyz = 503 and take over on failure.
+# [store]
+# kind = "postgres"
+# url_env = "DATABASE_URL"
+# keep_finished_s = 604800
+
+[[pools]]
+name = "default"
+max = 50
+lease_ttl_s = 30           # workers heartbeat each lease within this
+overflow = "reject"        # wait | reject | shed_lowest | shed_oldest
+# max_pending = 100000
+# retry = { max_attempts = 3, initial_backoff_s = 1, multiplier = 2, max_backoff_s = 60 }
+# Capacity is the slots of connected workers; desired capacity is exported as
+# cronoq_pool_desired_workers (for KEDA/HPA) or pushed to a webhook:
+# scaler = { kind = "webhook", url = "http://autoscaler.internal/scale", token_env = "SCALER_TOKEN" }
+
+[[pools]]
+name = "llm"
+max = 200
+lease_ttl_s = 120
+await_unknown_dependencies_s = 600
+
+# Shared rate limits / concurrency caps (tasks request them by name).
+[[resources]]
+kind = "token_bucket"
+name = "openai"
+rate = 50     # per second
+burst = 100
+
+[[resources]]
+kind = "semaphore"
+name = "gpu"
+permits = 8

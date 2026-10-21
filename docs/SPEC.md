@@ -529,3 +529,32 @@ Kubernetes operator.
 - Default retry: **3 attempts**, exponential backoff 1 s ×2 up to 60 s, full jitter; `retry_after` hints honoured
 - Server auth: **bearer tokens with roles** (client / worker / admin) + optional **mTLS**
 - Terminal status retention: **1 h / 1 M entries**
+
+## 21. Implementation notes (v0.1)
+Differences from, and clarifications of, the sections above:
+- **Lanes** are sorted `VecDeque`s keyed by submission sequence. Fresh tasks append in O(1);
+  retries and resource wake-ups use binary insertion. Deadline queues are `BTreeMap`s keyed
+  by latest start time.
+- **Aging is measured from submission.** A task released by its dependencies, or retried,
+  keeps its original place in its class.
+- **Hold lead time** is computed when a fixed task is submitted, from the duration
+  statistics known at that point (pool p90 or `default_duration`). Recurring occurrences are
+  materialized one at a time, `hold lead + tolerance` (capped by `max_hold`) before they
+  start.
+- **Recovery.** A task that was running when the leader died counts that attempt. If its
+  retry budget is then exhausted, it is dead-lettered.
+- **Worker RPC.** The worker stream RPC is `Workers.Work` (`Connect` collided with the
+  generated client constructor).
+- **Server pools** are always served by remote workers. Capacity is the total slots of the
+  connected workers. The default scaler is `External` (desired count exported as a metric);
+  `webhook` posts `{pool, desired}`.
+- **Outputs** are cached in memory (bounded by count and bytes) and persisted in Postgres
+  when it is configured. `Wait` on a finished task reads from the cache, then from the
+  database.
+- **`/metrics`** is rendered from the scheduler snapshot in Prometheus text format and is
+  unauthenticated. OpenTelemetry instruments use the globally installed meter provider.
+- **Benchmarks.** The wall-clock targets in §1 are checked by `.github/workflows/bench.yml`
+  with 30% headroom for CI noise. For profiling, use instruction counts (callgrind) on the
+  `prof` example.
+- **Python.** Executors run on the event loop that called `start()`. Plain functions run in
+  the loop's default executor. Event subscription is not yet exposed in Python.

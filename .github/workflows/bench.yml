@@ -1,0 +1,25 @@
+name: Benchmarks
+
+# Wall-clock targets from SPEC §1, checked on a dedicated runner. Shared CI machines are too
+# noisy for tight thresholds, so this gates on the absolute targets with headroom and records
+# the criterion reports as artifacts.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench -p cronoq-core --bench core -- --noplot | tee core.txt
+      - run: cargo bench -p cronoq --bench runtime -- --noplot | tee runtime.txt
+      - name: Check targets
+        run: python3 .github/scripts/check_bench.py core.txt runtime.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: criterion
+          path: target/criterion
