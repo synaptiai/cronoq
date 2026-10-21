@@ -1,3 +1,5 @@
+//! `cronoq-server` binary.
+
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -9,6 +11,12 @@ struct Args {
     /// Path to the TOML configuration file.
     #[arg(short, long, env = "CRONOQ_CONFIG")]
     config: Option<PathBuf>,
+    /// Allow running without authentication on non-loopback addresses (trusted networks only).
+    #[arg(long)]
+    insecure_no_auth: bool,
+    /// Validate the configuration and exit.
+    #[arg(long)]
+    check: bool,
     /// Print the protobuf API definition and exit.
     #[arg(long)]
     print_proto: bool,
@@ -27,20 +35,32 @@ async fn main() -> anyhow::Result<()> {
         print!("{}", cronoq_proto::PROTO);
         return Ok(());
     }
-    let cfg = match &args.config {
+    let mut cfg = match &args.config {
         Some(p) => cronoq_server::Config::load(p)?,
         None => cronoq_server::Config::default(),
     };
+    if args.insecure_no_auth {
+        cfg.server.insecure_no_auth = true;
+    }
+    if args.check {
+        cfg.validate()?;
+        println!("configuration is valid");
+        return Ok(());
+    }
     let shutdown = async {
         let ctrl_c = tokio::signal::ctrl_c();
         #[cfg(unix)]
         {
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("signal handler");
-            tokio::select! {
-                _ = ctrl_c => {}
-                _ = term.recv() => {}
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut term) => {
+                    tokio::select! {
+                        _ = ctrl_c => {}
+                        _ = term.recv() => {}
+                    }
+                }
+                Err(_) => {
+                    let _ = ctrl_c.await;
+                }
             }
         }
         #[cfg(not(unix))]
@@ -50,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     cronoq_server::run(
         cfg,
         shutdown,
-        |b| tracing::info!(grpc = %b.grpc, http = %b.http, "listening"),
+        |b| tracing::info!(grpc = %b.grpc, http = %b.http, metrics = ?b.metrics, "listening"),
     )
     .await
 }

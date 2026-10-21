@@ -12,15 +12,19 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CDLA-Permissive-2.0",
-    "MPL-2.0",
 ]
 confidence-threshold = 0.9
+unused-allowed-license = "deny"
 
 [bans]
 multiple-versions = "warn"
+# Every dependency must name a version (path dependencies inside the workspace excepted).
+wildcards = "deny"
+allow-wildcard-paths = true
 
 [advisories]
-yanked = "warn"
+yanked = "deny"
+unmaintained = "workspace"
 
 [sources]
 unknown-registry = "deny"

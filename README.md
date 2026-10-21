@@ -111,25 +111,30 @@ asyncio.run(main())
 ### Server with remote workers
 
 ```sh
+# One random token per role (at least 16 characters; 32+ recommended).
+for role in CLIENT WORKER METRICS ADMIN; do export CRONOQ_${role}_TOKEN=$(openssl rand -hex 24); done
 docker build -t cronoq . && docker run -p 7070:7070 -p 7071:7071 \
-  -e CRONOQ_CLIENT_TOKEN=client-token -e CRONOQ_WORKER_TOKEN=worker-token -e CRONOQ_ADMIN_TOKEN=admin-token cronoq
+  -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN cronoq
 ```
 
 A worker (Python, `pip install "cronoq[client]"`):
 
 ```python
+import os
 from cronoq.client import Worker
 
 async def handle(lease):
     return {"echo": lease.json()}
 
-await Worker("localhost:7070", "default", handle, slots=4, token="worker-token").run()
+await Worker("localhost:7070", "default", handle, slots=4,
+             token=os.environ["CRONOQ_WORKER_TOKEN"]).run()
 ```
 
 Submit from anywhere:
 
 ```sh
-curl -X POST localhost:7071/v1/tasks -H 'authorization: Bearer client-token' \
+curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TOKEN" \
+     -H 'content-type: application/json' \
      -d '{"payload": {"hello": "world"}, "priority": "high", "wait": true}'
 ```
 

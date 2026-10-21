@@ -1,31 +1,86 @@
-# Example cronoq-server configuration.
+# Example cronoq-server configuration (used by the container image).
+#
+# Validate with `cronoq-server --config cronoq.toml --check`. Every option is optional; the
+# defaults bind to 127.0.0.1 only. This file binds to all interfaces, which requires auth
+# tokens (or `--insecure-no-auth` on a trusted network).
+#
+# The server serves one tenant (team or trust domain). Tokens can be limited to pools, which
+# scopes submissions, lookups, watches and worker registration; task keys and resources are
+# shared across pools.
 
 [server]
 grpc_addr = "0.0.0.0:7070"   # cronoq.v1 Tasks / Workers / Admin
 http_addr = "0.0.0.0:7071"   # /v1/* JSON API, /metrics, /healthz, /readyz
-shutdown_grace_s = 10
+# metrics_addr = "0.0.0.0:9090"  # optional unauthenticated /metrics (+ health) for scrapers
+shutdown_grace_s = 10        # running attempts get this long to finish on shutdown
+
+# TLS applies to both listeners. With client_ca, clients must present a certificate signed by
+# it (mTLS); map certificate DNS names to roles under [[auth.certs]].
 # [server.tls]
 # cert = "/etc/cronoq/tls/server.pem"
 # key = "/etc/cronoq/tls/server.key"
-# client_ca = "/etc/cronoq/tls/ca.pem"     # require client certificates (mTLS)
+# client_ca = "/etc/cronoq/tls/ca.pem"
 
-# Bearer tokens. Without any, authentication is disabled (local development only).
+# Bearer tokens (at least 16 characters; use 32+ random characters). Read them from the
+# environment rather than writing them here. Without tokens or certificate mappings,
+# authentication is disabled (only allowed on loopback addresses).
 [[auth.tokens]]
 token_env = "CRONOQ_CLIENT_TOKEN"
-role = "client"   # submit, cancel, get, wait, watch
+role = "client"    # Tasks: submit, cancel, get, wait, watch
 [[auth.tokens]]
 token_env = "CRONOQ_WORKER_TOKEN"
-role = "worker"   # Workers.Work stream
+role = "worker"    # Workers.Work stream
+[[auth.tokens]]
+token_env = "CRONOQ_METRICS_TOKEN"
+role = "metrics"   # Admin.Snapshot, /v1/snapshot, /metrics
 [[auth.tokens]]
 token_env = "CRONOQ_ADMIN_TOKEN"
-role = "admin"    # everything, plus Admin service
+role = "admin"     # everything, plus recurring schedules
+# A token limited to some pools:
+# [[auth.tokens]]
+# token_env = "CRONOQ_LLM_WORKER_TOKEN"
+# role = "worker"
+# pools = ["llm"]
+
+# Client certificates (requires server.tls.client_ca), matched by DNS subject alt name:
+# [[auth.certs]]
+# dns_name = "worker.internal.example.com"
+# role = "worker"
+# pools = ["default"]
 
 # Durable state and active-passive HA: run several replicas against the same database;
 # one leads, the others report /readyz = 503 and take over on failure.
 # [store]
 # kind = "postgres"
-# url_env = "DATABASE_URL"
+# url_env = "DATABASE_URL"   # use sslmode=verify-full for a remote database
 # keep_finished_s = 604800
+
+# Request limits. The defaults are shown; they bound memory and time per request.
+# [limits]
+# max_tasks_per_batch = 1000
+# max_pending_total = 1000000      # across all pools
+# max_pending_per_pool = 100000    # default for pools without max_pending
+# max_message_bytes = 16777216     # gRPC messages (payloads, outputs)
+# max_http_body_bytes = 16777216
+# max_key_len = 256
+# max_kind_len = 128
+# max_tags = 32
+# max_tag_len = 1024
+# max_deps = 256
+# max_resources = 16
+# max_wait_s = 300                 # longest Wait / submit-and-wait
+# request_timeout_s = 30
+# max_concurrent_requests = 4096
+# max_concurrent_streams = 1024    # per HTTP/2 connection
+# max_slots_per_worker = 1024
+# keepalive_interval_s = 20        # HTTP/2 pings detect dead connections (and workers)
+# keepalive_timeout_s = 20
+
+# Recent outputs and task details kept in memory for Wait/Get after completion.
+# [outputs]
+# cache_entries = 10000
+# cache_bytes = 67108864
+# info_entries = 100000
 
 [[pools]]
 name = "default"
@@ -33,10 +88,11 @@ max = 50
 lease_ttl_s = 30           # workers heartbeat each lease within this
 overflow = "reject"        # wait | reject | shed_lowest | shed_oldest
 # max_pending = 100000
+# max_slots_per_worker = 64
 # retry = { max_attempts = 3, initial_backoff_s = 1, multiplier = 2, max_backoff_s = 60 }
 # Capacity is the slots of connected workers; desired capacity is exported as
 # cronoq_pool_desired_workers (for KEDA/HPA) or pushed to a webhook:
-# scaler = { kind = "webhook", url = "http://autoscaler.internal/scale", token_env = "SCALER_TOKEN" }
+# scaler = { kind = "webhook", url = "https://autoscaler.internal/scale", token_env = "SCALER_TOKEN" }
 
 [[pools]]
 name = "llm"

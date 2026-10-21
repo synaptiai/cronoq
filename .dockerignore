@@ -1,4 +1,9 @@
 target
+.git
+.github
 .claude
 **/.venv
 **/__pycache__
+**/*.pem
+**/*.key
+**/.env
