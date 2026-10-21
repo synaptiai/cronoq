@@ -140,6 +140,20 @@ fn now_unix() -> i64 {
         .as_nanos() as i64
 }
 
+/// `SCHEMA` split into statements. Comment lines are dropped first; the schema has no
+/// function bodies or string literals containing semicolons.
+fn schema_statements() -> Vec<String> {
+    let code: String = SCHEMA
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    code.split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 impl PgStore {
     /// Connect with default settings and apply the schema.
     pub async fn connect(url: &str) -> Result<PgStore, StoreError> {
@@ -174,7 +188,11 @@ impl PgStore {
             .execute(&mut *tx)
             .await
             .map_err(db)?;
-        sqlx::raw_sql(SCHEMA).execute(&mut *tx).await.map_err(db)?;
+        // One statement at a time: `raw_sql` on a connection yields a future that callers cannot
+        // prove `Send` (sqlx higher-ranked lifetime issue), which breaks `tokio::spawn`.
+        for stmt in schema_statements() {
+            sqlx::query(&stmt).execute(&mut *tx).await.map_err(db)?;
+        }
         tx.commit().await.map_err(db)
     }
 

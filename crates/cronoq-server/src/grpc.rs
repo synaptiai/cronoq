@@ -55,7 +55,7 @@ pub async fn await_handle(
             }) => pb::TaskResult {
                 id: id.0,
                 status: pb::TaskStatus::Succeeded as i32,
-                output: state.outputs.get(id).map(|b| b.to_vec()),
+                output: state.output(id).await.map(|b| b.to_vec()),
                 message: String::new(),
             },
             Err(TaskFailure::Ended { status, message }) => pb::TaskResult {

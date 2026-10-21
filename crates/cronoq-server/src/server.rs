@@ -26,10 +26,15 @@ pub struct Bound {
     pub http: std::net::SocketAddr,
 }
 
-async fn open_store(cfg: &StoreConfig) -> anyhow::Result<Arc<dyn Store<Bytes, Bytes>>> {
+type OpenedStore = (
+    Arc<dyn Store<Bytes, Bytes>>,
+    Option<cronoq_store_postgres::PgStore>,
+);
+
+async fn open_store(cfg: &StoreConfig) -> anyhow::Result<OpenedStore> {
     match cfg {
-        StoreConfig::Memory => Ok(Arc::new(MemoryStore)),
-        StoreConfig::Postgres { url, url_env } => {
+        StoreConfig::Memory => Ok((Arc::new(MemoryStore), None)),
+        StoreConfig::Postgres { url, url_env, .. } => {
             let url = match (url, url_env) {
                 (Some(u), _) => u.clone(),
                 (None, env) => {
@@ -37,7 +42,8 @@ async fn open_store(cfg: &StoreConfig) -> anyhow::Result<Arc<dyn Store<Bytes, By
                     std::env::var(var).map_err(|_| anyhow::anyhow!("{var} is not set"))?
                 }
             };
-            crate::pg::open(&url).await
+            let (store, pg) = crate::pg::open(&url).await?;
+            Ok((store, Some(pg)))
         }
     }
 }
@@ -78,7 +84,7 @@ pub async fn run(
         })
     };
 
-    let store = open_store(&cfg.store).await?;
+    let (store, pg) = open_store(&cfg.store).await?;
     let registry = WorkerRegistry::new();
     let outputs = OutputCache::new(cfg.outputs.cache_entries, cfg.outputs.cache_bytes);
     let mut builder = Scheduler::<Bytes, Bytes>::builder().store_arc(store);
@@ -117,6 +123,19 @@ pub async fn run(
     };
     registry.attach(sched.clone());
     tracing::info!("leader: serving");
+    let pruner = match (&pg, &cfg.store) {
+        (
+            Some(pg),
+            StoreConfig::Postgres {
+                keep_finished_s, ..
+            },
+        ) => Some(crate::pg::spawn_pruner(
+            pg.clone(),
+            Duration::from_secs_f64(keep_finished_s.unwrap_or(7.0 * 86400.0)),
+            Duration::from_secs(3600),
+        )),
+        _ => None,
+    };
 
     let state = Arc::new(AppState {
         sched: sched.clone(),
@@ -126,6 +145,7 @@ pub async fn run(
         remote_pools,
         lease_ttl,
         ready: ready.clone(),
+        pg: pg.clone(),
     });
 
     // Phase 2: full API. Restart the HTTP listener with the API routes.
@@ -173,7 +193,11 @@ pub async fn run(
     let lost_leadership = tokio::select! {
         _ = shutdown => false,
         _ = sched.stopped() => true,
+        _ = crate::pg::leadership_lost(pg.clone()) => true,
     };
+    if let Some(p) = pruner {
+        p.abort();
+    }
     ready.store(false, Ordering::SeqCst);
     let grace = Duration::from_secs_f64(cfg.server.shutdown_grace_s.max(0.0));
     let result = sched.shutdown(grace).await;
@@ -181,7 +205,7 @@ pub async fn run(
     let _ = http.await;
     let _ = grpc.await;
     if lost_leadership {
-        anyhow::bail!("scheduler stopped: {:?}", result.err());
+        anyhow::bail!("lost leadership or scheduler failed: {:?}", result.err());
     }
     Ok(())
 }

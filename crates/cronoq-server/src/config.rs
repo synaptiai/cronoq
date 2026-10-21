@@ -142,6 +142,8 @@ pub enum StoreConfig {
         url: Option<String>,
         /// Read the URL from this environment variable (default `DATABASE_URL`).
         url_env: Option<String>,
+        /// Delete finished tasks older than this (default 7 days).
+        keep_finished_s: Option<f64>,
     },
 }
 
