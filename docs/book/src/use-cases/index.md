@@ -1,7 +1,8 @@
 # Use cases
 
 Each page in this section starts from a concrete problem, shows a complete cronoq setup, and
-lists the specific benefits you get compared with a plain queue.
+lists the specific benefits you get compared with a plain queue. Not sure which one applies?
+Start with [Benefits at a glance](../benefits.md), which maps symptoms to pages.
 
 | Use case | Typical problem | Key cronoq features |
 |---|---|---|

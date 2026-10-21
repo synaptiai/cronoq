@@ -14,7 +14,7 @@ Each dispatch starts an **attempt** identified by a **lease**. An attempt ends w
 | Retryable with delay | `TaskError::retry_after(msg, d)` | `raise cronoq.Retryable(msg, retry_after=s)` | retry no earlier than `d` |
 | Permanent failure | `TaskError::permanent(msg)` | `raise cronoq.Permanent(msg)` | `Failed` |
 | Cancelled | `TaskError::Cancelled` | (task cancelled) | `Cancelled` |
-| Panic (Rust) | | | treated as permanent failure |
+| Panic (Rust executor) | | | permanent failure (`Failed`); the scheduler and other attempts keep running |
 
 ## Retry policy
 
@@ -61,6 +61,22 @@ ends.
 - a running attempt is aborted (the cancellation token fires and the future is dropped; remote
   workers get `Abort`);
 - dependents whose edge requires success are `Skipped`.
+
+## Shutdown and dropped schedulers
+
+`shutdown(grace)` stops admitting work, lets running attempts finish for `grace`, then aborts the
+rest; queued tasks are not started (with a durable store they stay queued for the next leader).
+If every `Scheduler` handle is dropped without `shutdown`, the runtime shuts down by itself with
+`drop_grace` (default 5 s). Handles awaiting unfinished tasks then resolve with
+`TaskFailure::Shutdown` (Python `TaskFailed(status="shutdown")`).
+
+## Outputs
+
+A `TaskHandle` resolves with the executor's output. Handles attached after the task finished
+(`handle(key)`, a duplicate submission) get the output from a bounded cache of recent outputs
+(`output_cache`, 1024 by default) or from the store. If neither still holds it, the handle
+resolves with `TaskFailure::OutputUnavailable` (Python: `TaskFailed` with status `succeeded`;
+server: `output_available = false`): the task did succeed, but its result is gone.
 
 ## Dead letters
 

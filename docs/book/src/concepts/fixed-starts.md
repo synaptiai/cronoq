@@ -26,14 +26,19 @@ fraction below 1 guarantees ad-hoc work always has part of the pool.
 
 ## 2. Holding a worker
 
-At `start − hold_lead`, the task asks for a **hold**:
+Shortly before the start, the task asks for a **hold**: the next free slot of its pool is kept
+idle for it instead of taking regular work. How early depends on the pool's own behaviour:
 
 ```text
-hold_lead = clamp(max(tolerance, p90 run time of the pool), ≤ max_hold)     max_hold = 5 min
+hold_lead = min(max(tolerance, p90 run time of regular tasks in the pool), max_hold)
 ```
 
-The next free slot becomes held for the task. Held slots are not used for regular work. If no
-slot is free, the first one to free up is held, before any queued task can take it.
+The idea is to hold a slot just early enough for the regular work that would otherwise take it
+to finish. The lead is computed from the run times of the pool's tasks without a fixed start,
+and it is re-evaluated as the start approaches (the first check happens at `start − max_hold`,
+`max_hold` = 5 minutes by default), so a pool whose tasks get slower starts holding earlier
+without any configuration. If no slot is free when the hold is requested, the first one to free
+up is held, before any queued task can take it.
 
 Reservations starting within the autoscaler's horizon also add to the pool's desired capacity,
 so an autoscaled pool grows before the hold is needed.
@@ -43,6 +48,9 @@ so an autoscaled pool grows before the hold is needed.
 At the start time (and once its dependencies are satisfied) the task runs on its held slot. The
 recorded start time is the actual dispatch time; the pool's `fixed_start_hit_rate` counts the
 task as a hit if `|actual − start| ≤ tolerance`.
+
+A tolerance of zero is allowed: the task must start exactly at its time (in practice, on the
+first scheduling step at or after it), and anything later is a miss.
 
 ## 4. Missing the start
 
@@ -64,6 +72,8 @@ workers (server mode with no connected workers), or a dependency finished late.
 - **Resources**: a fixed-start task also needs its resources; if they are not available at the
   start time it waits for them while keeping its slot.
 - **Retries**: a retried attempt is dispatched like regular work.
+- **Overload**: fixed-start tasks are never shed by the `shed_lowest` / `shed_oldest` overflow
+  policies; their capacity was promised at admission.
 - **Recurring schedules** create fixed-start tasks; see [Recurring schedules](recurring.md).
 
 ## Configuration

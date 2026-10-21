@@ -38,20 +38,23 @@ A producer in any language, over HTTP:
 
 ```sh
 curl -X POST https://cronoq.internal/v1/tasks -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
   -d '{"pool":"gpu","payload":{"image":"s3://..."},"priority":"high","timeout_s":120}'
 ```
 
 ## The worker protocol
 
-1. The worker opens `Workers/Work` and sends `Register{pool, slots}`.
-2. The server answers `Registered{worker_id, lease_ttl_s}`. The pool's capacity grows by
-   `slots`.
+1. The worker opens `Workers/Work` and sends `Register{pool, slots, protocol_version}`.
+2. The server answers `Registered{worker_id, lease_ttl_s, slots}`. The pool's capacity grows
+   by the granted `slots`.
 3. The server sends `Lease` messages, at most `slots` at a time.
-4. For each lease the worker sends `Heartbeat` at least every `lease_ttl_s` (clients send them
-   every third of the TTL), then `Complete{output}` or `Fail{message, permanent, retry_after_s}`.
-5. The server may send `Abort{lease}` (timeout, cancellation, lease expiry). The worker should
-   stop that attempt.
+4. For each lease the worker sends `Heartbeat` well within `lease_ttl_s` (the bundled clients
+   send one every third of the TTL), then `Complete{output}`, `Fail{message, permanent,
+   retry_after_s}`, or `Nack` to hand the lease to another worker.
+5. The server may send `Abort{lease}` (timeout, cancellation, lease expiry). The worker stops
+   that attempt.
 6. When the stream closes, its in-flight leases are retried elsewhere and capacity shrinks.
+   When the server restarts or leadership moves, it sends `Shutdown` and workers reconnect.
 
 See [Writing executors and workers](../guides/workers.md#any-language-over-grpc) for a full
 description and the [gRPC reference](../reference/grpc.md).

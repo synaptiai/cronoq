@@ -2,23 +2,34 @@
 
 ## Container image
 
-The repository's `Dockerfile` builds a small Debian-based image running as an unprivileged
-user. Release builds publish multi-architecture images to `ghcr.io/synaptiai/cronoq`.
+Releases publish a multi-architecture image (`linux/amd64`, `linux/arm64`) to
+`ghcr.io/synaptiai/cronoq`, tagged with the version (`0.1.0`) and the minor series (`0.1`).
+The image is distroless: it contains the `cronoq-server` binary and the example configuration,
+runs as a non-root user, and has no shell or curl. Build it yourself with:
 
 ```sh
 docker build -t cronoq .
 docker run -p 7070:7070 -p 7071:7071 \
   -v $PWD/cronoq.toml:/etc/cronoq/cronoq.toml:ro \
-  -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_ADMIN_TOKEN \
+  -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
   cronoq
 ```
 
 The configuration path comes from `--config` or `CRONOQ_CONFIG` (the image sets
-`/etc/cronoq/cronoq.toml`). Log verbosity follows `RUST_LOG` (default `info`).
+`/etc/cronoq/cronoq.toml`). Every `token_env` the configuration names must be set, or the
+server refuses to start. Log verbosity follows `RUST_LOG` (default `info`). The server stops
+gracefully on `SIGTERM` or `SIGINT`: it stops admitting work, gives running attempts
+`shutdown_grace_s` (default 10 s) to finish, then tells workers to reconnect elsewhere.
+
+Validate configuration changes before rolling them out:
+
+```sh
+docker run --rm -v $PWD/cronoq.toml:/c.toml:ro cronoq --config /c.toml --check
+```
 
 ## Kubernetes
 
-A single-replica deployment with in-memory state:
+A single replica with in-memory state:
 
 ```yaml
 apiVersion: apps/v1
@@ -30,17 +41,24 @@ spec:
   template:
     metadata: { labels: { app: cronoq } }
     spec:
+      terminationGracePeriodSeconds: 30     # > shutdown_grace_s
       containers:
         - name: cronoq
           image: ghcr.io/synaptiai/cronoq:0.1
           ports:
             - { name: grpc, containerPort: 7070 }
             - { name: http, containerPort: 7071 }
+            - { name: metrics, containerPort: 9090 }
           envFrom: [{ secretRef: { name: cronoq-tokens } }]
           volumeMounts: [{ name: config, mountPath: /etc/cronoq }]
           readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 2 }
           livenessProbe:  { httpGet: { path: /healthz, port: http }, periodSeconds: 10 }
           resources: { requests: { cpu: 250m, memory: 256Mi } }
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
       volumes: [{ name: config, configMap: { name: cronoq-config } }]
 ---
 apiVersion: v1
@@ -53,17 +71,22 @@ spec:
     - { name: http, port: 7071, targetPort: http }
 ```
 
-gRPC streams are long-lived; if you put an ingress or L7 load balancer in front, enable HTTP/2
-(gRPC) and raise idle timeouts above your longest task.
+The configuration must bind to all interfaces inside the pod (`grpc_addr = "0.0.0.0:7070"`,
+`http_addr = "0.0.0.0:7071"`), which requires credentials. If HTTPS is enabled
+(`[server.tls]`), set `scheme: HTTPS` on the probes.
+
+gRPC streams are long-lived. If an ingress or L7 load balancer sits in front, enable HTTP/2
+(gRPC) and raise idle timeouts above your longest wait; the server sends HTTP/2 keepalive pings
+every 20 s (`limits.keepalive_interval_s`).
 
 ### High availability with Postgres
 
-Add a store section and run two or more replicas:
+Add a store and run two or more replicas:
 
 ```toml
 [store]
 kind = "postgres"
-url_env = "DATABASE_URL"
+url_env = "DATABASE_URL"   # postgres://...?sslmode=verify-full
 keep_finished_s = 604800   # prune finished tasks after 7 days
 ```
 
@@ -72,20 +95,20 @@ spec:
   replicas: 2
 ```
 
-Only the leader becomes ready, so the Service routes traffic only to it. When the leader's
-database session ends (process exit, pod deletion, or a connection terminated by Postgres), a
-standby acquires the lock within its polling interval (0.5 s), recovers all accepted work and
-becomes ready; clients and workers reconnect. A leader that is merely partitioned keeps its
-session until TCP keepalives or Postgres time it out; tune `tcp_keepalives_*` (or
-`idle_session_timeout`) on the server if you need faster takeover in that case. See
-[Durability and HA](../concepts/durability.md).
+Only the leader becomes ready, so the Service routes traffic to it alone. Standbys poll for the
+leader lock every 0.5 s. The leader checks its lock session every second and steps down if the
+session stays unresponsive for 10 s; when its session ends (process exit, pod deletion, a
+connection terminated by Postgres, or that timeout), a standby takes the lock, recovers all
+accepted work and becomes ready. Clients retry on `UNAVAILABLE` / 503; workers receive
+`Shutdown{not_leader}` and reconnect. See [Durability and HA](../concepts/durability.md).
 
-The database user needs permission to create tables on first start (the schema is applied
-automatically and idempotently).
+The database role needs permission to create tables in the `public` schema on first start.
+Migrations are versioned and applied automatically, under a lock, by whichever replica starts
+first; replicas of an older version refuse to run against a newer schema.
 
 ### Autoscaling workers with KEDA
 
-Run workers as their own Deployment (one worker process per pod, or several slots per pod) and
+Run workers as their own Deployment (one worker process per pod, with several slots each) and
 scale it from the server's desired-capacity metric:
 
 ```yaml
@@ -106,22 +129,30 @@ spec:
         threshold: "1"
 ```
 
-Alternatively, set `scaler = { kind = "webhook", url = "..." }` on the pool and have your own
+`cronoq_pool_desired_workers` already accounts for queue pressure, wait-time objectives and
+upcoming fixed-start reservations, and is smoothed against flapping. Alternatively, set
+`scaler = { kind = "webhook", url = "...", token_env = "..." }` on the pool and have your own
 service create workers when it receives `{"pool": ..., "desired": n}`.
+
+Give worker pods a `terminationGracePeriodSeconds` longer than their drain timeout, so running
+leases finish before the pod is killed.
 
 ## Sizing
 
 The scheduler itself is light: one core comfortably handles hundreds of thousands of task
 transitions per second. Memory is dominated by pending tasks (a few hundred bytes plus the
-payload each) and by the output cache (`[outputs]`, 64 MiB by default). Database load with
-Postgres is roughly one small transaction per engine step, with all mutations of that step
-batched together.
+payload each), the output cache (`[outputs]`, 64 MiB by default) and the task-info cache. With
+Postgres, the leader writes one small transaction per engine step, with all mutations of that
+step batched together; replies wait for that commit.
 
 ## Checklist
 
-- [ ] Tokens for each role, delivered through secrets (`token_env`), not inline in the config.
-- [ ] TLS on the gRPC listener (or a service mesh), and mTLS for workers if required.
-- [ ] `/readyz` used for readiness; only the leader serves.
-- [ ] Prometheus scraping `/metrics`; alerts on dead letters and wait times.
-- [ ] `max_pending` set on every pool that receives traffic from untrusted producers.
-- [ ] Workers configured with reconnect and a graceful drain on shutdown.
+- [ ] One token per role and consumer, delivered through secrets (`token_env`), scoped to pools.
+- [ ] TLS on both listeners (or a service mesh), and mTLS for workers if required.
+- [ ] `/readyz` for readiness, `/healthz` for liveness; only the leader serves.
+- [ ] Prometheus scraping `/metrics` with a metrics token or on `metrics_addr`; alerts on dead
+      letters, wait times and missing workers.
+- [ ] `max_pending` and `overflow` set on pools fed by untrusted producers.
+- [ ] `sslmode=verify-full` in the database URL.
+- [ ] Workers drain on shutdown, with a termination grace period to match.
+- [ ] `cronoq-server --check` in CI for configuration changes.

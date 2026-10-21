@@ -164,7 +164,7 @@ await worker.run()                  # reconnects with backoff; `await worker.sto
   waits at `limits.max_wait_s`), as does `Client.submit(..., call_timeout=...)`.
 - `Client.snapshot()` (metrics or admin token) returns per-pool figures, `totals` and
   `workers_connected`.
-* `Client` and `Worker` can be created outside a running loop; they connect on first use.
+- `Client` and `Worker` can be created outside a running loop; they connect on first use.
   `Worker.stop()` can be called more than once (callers wait for the same drain), and a stopped
   worker can be run again. A handler that swallows `CancelledError` keeps running after an
   abort and may overlap with the retry of the same task.

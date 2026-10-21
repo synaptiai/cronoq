@@ -2,6 +2,7 @@
 
 [Introduction](introduction.md)
 [Why cronoq](why.md)
+[Benefits at a glance](benefits.md)
 
 # Getting started
 

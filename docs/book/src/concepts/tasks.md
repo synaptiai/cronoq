@@ -78,4 +78,6 @@ Handles are not required: `enqueue` submits without one, which is cheaper.
 
 Every terminal transition is published as a `StatusEvent { id, pool, key, status, attempt, at,
 message }`. With `emit_transitions` enabled, every intermediate transition is published as well.
-Subscribe with `Scheduler::events()` in Rust or `Tasks/Watch` over gRPC.
+Subscribe with `Scheduler::events()` in Rust, `sched.events()` in Python, or `Tasks/Watch` over
+gRPC (with `all_transitions` for intermediate ones). Slow subscribers lose the oldest events
+rather than slowing the scheduler down.

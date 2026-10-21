@@ -1,35 +1,75 @@
 # Security hardening
 
-## Trust model
+This guide is the checklist for running `cronoq-server` outside a laptop. The threat model
+(what the server protects and what it does not) is in
+[SECURITY.md](https://github.com/synaptiai/cronoq/blob/main/SECURITY.md).
 
-| Party | Can | Cannot |
+## Roles
+
+| Role | Can | Cannot |
 |---|---|---|
-| `client` token | Submit, batch, cancel, get, wait, watch | Run worker streams, use `Admin` |
-| `worker` token | Open `Workers/Work` streams, receive payloads of its pool, report outcomes for its own leases | Submit or read other tasks |
-| `admin` token | Everything, including `Admin` (snapshots, recurring schedules) | — |
-| Network peer without a token | `/healthz`, `/readyz`, `/metrics` | Anything else (when auth is enabled) |
+| `client` | Submit, batch, cancel, get, wait, watch (`Tasks`, `/v1/tasks*`) | Serve pools, read metrics, manage schedules |
+| `worker` | Open `Workers/Work` streams and receive leases of its pools; report outcomes for its own leases | Submit or read tasks |
+| `metrics` | `Admin.Snapshot`, `/v1/snapshot`, `/metrics` | Anything that touches tasks |
+| `admin` | Everything, including `Admin.AddRecurring` / `RemoveRecurring` | – |
+| no credentials | `/healthz`, `/readyz`, and `/metrics` on `metrics_addr` | Anything else |
 
-Payloads are opaque to the server: it stores and forwards them, never interprets them. Anyone
-holding a client token can see the outputs of tasks they can reference by id or key.
+Every token or certificate mapping can be limited to `pools = [...]`. Scoped credentials cannot
+submit into, serve, watch or look up tasks of other pools; those tasks look like they do not
+exist. Keys, however, are one namespace across pools (see the threat model).
 
 ## Checklist
 
-1. **Enable authentication.** Without `[[auth.tokens]]` the server accepts every request and logs
-   a warning at startup. Configure one token per role and per consumer.
-2. **Keep tokens out of config files.** Use `token_env` and inject secrets from your platform.
-   Use long random tokens (32+ bytes).
-3. **Encrypt traffic.** Configure `[server.tls]` (`cert`, `key`) or terminate TLS in a service
-   mesh. Bearer tokens over plaintext are only acceptable on a trusted local network.
-4. **Use mTLS for workers** where possible: `client_ca` requires every gRPC client to present a
-   certificate signed by that CA, in addition to its token.
-5. **Restrict the HTTP port.** `/metrics` exposes pool names and counters without
-   authentication; serve it only to monitoring.
-6. **Bound queues.** Set `max_pending` on pools that receive work from less trusted producers,
-   so a misbehaving client cannot exhaust memory.
-7. **Run as non-root.** The provided image runs as UID 10001 with no shell tools beyond the base
-   image.
-8. **Database credentials** come from `url_env` (default `DATABASE_URL`); grant the server only
-   the privileges it needs on its own schema.
+1. **Configure credentials.** Without `[[auth.tokens]]` or `[[auth.certs]]`, authentication is
+   off: the server then refuses non-loopback addresses unless you pass `--insecure-no-auth`.
+   Create one token per role and per consumer, scoped to the pools it needs:
+
+   ```toml
+   [[auth.tokens]]
+   token_env = "CRONOQ_LLM_WORKER_TOKEN"
+   role = "worker"
+   pools = ["llm"]
+   ```
+
+2. **Keep tokens out of files.** Use `token_env` and inject secrets from your platform. Tokens
+   need at least 16 characters and must be unique; use 32+ random characters
+   (`openssl rand -hex 16`). The server keeps only SHA-256 digests and never logs tokens.
+3. **Encrypt traffic.** Configure `[server.tls]` with `cert` and `key`; it covers both the gRPC
+   and the HTTP listener. Bearer tokens over plaintext are acceptable only on a trusted local
+   network or inside a service mesh that encrypts.
+4. **Use mTLS where you can.** With `client_ca`, every client must present a certificate signed
+   by that CA. Map certificates to roles by DNS subject alternative name, so workers need no
+   bearer token at all:
+
+   ```toml
+   [server.tls]
+   cert = "/etc/cronoq/tls/server.pem"
+   key = "/etc/cronoq/tls/server.key"
+   client_ca = "/etc/cronoq/tls/ca.pem"
+
+   [[auth.certs]]
+   dns_name = "llm-worker.internal.example.com"
+   role = "worker"
+   pools = ["llm"]
+   ```
+
+   A bearer token, when present, takes precedence over the certificate's mapping.
+5. **Keep metrics internal.** `/metrics` on `http_addr` requires the metrics role. If your
+   scraper cannot send a token, set `metrics_addr` and bind it to an internal interface: that
+   listener has no TLS and no authentication.
+6. **Bind deliberately.** The defaults are `127.0.0.1:7070` and `127.0.0.1:7071`. Listen on
+   `0.0.0.0` only behind a firewall, security group or network policy.
+7. **Bound everything.** Keep the `[limits]` defaults or lower them, and set `max_pending` and
+   `overflow` on pools fed by less trusted producers, so one client cannot exhaust memory.
+   `max_slots_per_worker` caps how many leases a single worker can hold.
+8. **Protect the database.** Read the URL from `url_env` (default `DATABASE_URL`), use
+   `sslmode=verify-full` for a remote database, and grant the server's role privileges on its
+   own schema only. PostgreSQL holds payloads and outputs in clear text: use encryption at rest
+   or encrypt sensitive payloads in your application.
+9. **Run the provided image.** It is distroless, runs as a non-root user and has no shell.
+   Validate configuration changes in CI with `cronoq-server --config cronoq.toml --check`.
+10. **Treat workers as trusted with their pools.** A worker sees every payload of the pools it
+    serves and decides their outputs. Give each worker fleet credentials for its own pools only.
 
 ## Reporting vulnerabilities
 

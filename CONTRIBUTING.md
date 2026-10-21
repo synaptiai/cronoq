@@ -60,20 +60,35 @@ CRONOQ_SIM_SEEDS=500 cargo test --release -p cronoq-core --test sim
 ```
 
 If you fix a bug, add a test that fails without the fix. Engine regressions go in
-`crates/cronoq-core/tests/regressions.rs`.
+`crates/cronoq-core/tests/regressions.rs`; daylight-saving and other calendar cases sit with the
+recurring-schedule tests. Engine changes must keep `Core::check_invariants()` passing in the
+simulation and fuzz tests.
 
 ### Python
 
 ```sh
 cd crates/cronoq-py
 python3 -m venv .venv && . .venv/bin/activate
-pip install maturin pytest pytest-asyncio grpcio protobuf
+pip install -r ../../.github/requirements/ci.txt mypy   # pinned maturin, pytest, grpcio, ...
 maturin develop
 pytest -q python/tests
+python -m mypy.stubtest cronoq._cronoq             # type stubs match the extension
 ```
 
-The client tests build and start `cronoq-server` automatically (or use `CRONOQ_SERVER_BIN`).
-After changing the `.proto`, regenerate the Python stubs with `scripts/gen_proto.sh`.
+The client tests build and start `cronoq-server` automatically (or use `CRONOQ_SERVER_BIN`; set
+`CRONOQ_REQUIRE_SERVER=1` to fail instead of skipping when it cannot start). After changing the
+`.proto`, regenerate the Python stubs with `scripts/gen_proto.sh`.
+
+To test a built wheel the way users install it (outside the source tree, in a fresh
+virtualenv), as CI does on Linux, macOS and Windows:
+
+```sh
+maturin build --release -o dist
+bash ../../.github/scripts/test_wheel.sh dist   # run from the repository root, or adjust paths
+```
+
+When you change the Python API, update the stubs in `python/cronoq/_cronoq.pyi`, the docstrings,
+and the [Python reference](docs/book/src/reference/python.md).
 
 ### Benchmarks
 
@@ -90,8 +105,23 @@ Shared machines are noisy; for engine optimizations compare instruction counts w
 ```sh
 cargo install mdbook --locked
 mdbook serve docs/book          # http://localhost:3000
+mdbook build docs/book          # must finish without warnings
 python3 .github/scripts/check_doc_links.py docs/book/src README.md
 ```
+
+Documentation is part of the change, not a follow-up. Where to document what:
+
+| You changed | Update |
+|---|---|
+| Scheduling behaviour | The matching page under `docs/book/src/concepts/`, and `docs/SPEC.md`. |
+| A server option | `docs/book/src/reference/configuration.md` (every key, type, default and constraint) and, if relevant, `deploy/cronoq.example.toml`. |
+| An HTTP route, gRPC message or status code | `reference/http.md`, `reference/grpc.md`, `reference/errors.md`. |
+| A metric | `reference/metrics.md`. |
+| A Rust or Python API | rustdoc / docstrings and stubs, `reference/rust.md` / `reference/python.md`. |
+| Anything security-relevant | `SECURITY.md` (threat model) and `guides/security.md`. |
+
+Write in plain, direct English: short sentences, active voice, concrete examples that compile
+or run. Use tables for reference material, and state defaults and units explicitly.
 
 ## Pull requests
 
@@ -100,7 +130,8 @@ python3 .github/scripts/check_doc_links.py docs/book/src README.md
 3. Add or update tests and documentation (book pages, rustdoc, Python docstrings and stubs).
 4. Add an entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
 5. Make sure `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` and the Python
-   tests pass. CI also checks MSRV, rustdoc warnings, packaging, licenses and wheels on Linux,
+   tests pass. CI also checks MSRV, rustdoc warnings, packaging, licenses and advisories
+   (`cargo deny`), the documentation build and links, and installs and tests wheels on Linux,
    macOS and Windows.
 6. Write commit messages in the imperative mood with a short subject line (≤ 72 characters) and
    a body explaining *why*.
@@ -121,7 +152,16 @@ with an issue or discussion describing the problem and the proposed behaviour. U
   changelog.
 - The protobuf API is versioned by package (`cronoq.v1`). Only add fields with new numbers; never
   reuse or renumber fields.
-- Store schema changes must be backward compatible or come with a migration.
+- The worker protocol has its own version (`PROTOCOL_VERSION`, sent in `Register` and
+  `Registered`). New worker or server messages must keep older workers working; bump the
+  version and document the change in `reference/grpc.md`.
+- Store schema changes go in a new numbered migration in `cronoq-store-postgres`; never edit an
+  existing one. Builds refuse to run against a schema newer than they know.
+
+## Releasing
+
+Maintainers cut releases by pushing a `vX.Y.Z` tag; the release workflow publishes crates,
+wheels, binaries and the container image. See [RELEASING.md](RELEASING.md).
 
 ## Licensing
 
