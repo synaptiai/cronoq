@@ -345,7 +345,7 @@ async fn cancel_and_recurring_wait_for_durability() {
     );
     store.hold.store(false, Ordering::SeqCst);
     store.gate.notify_waiters();
-    assert_eq!(cancel.await.unwrap().unwrap(), true);
+    assert!(cancel.await.unwrap().unwrap());
     add.await.unwrap().unwrap();
 }
 

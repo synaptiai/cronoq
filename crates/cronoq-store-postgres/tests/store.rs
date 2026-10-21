@@ -320,13 +320,14 @@ async fn second_instance_waits_for_lock_and_fences_the_first() {
     assert!(matches!(r, Err(StoreError::Fenced)));
 }
 
-async fn terminate_lock_holder(url: &str, key: i64) -> usize {
+async fn terminate_lock_holder(url: &str, (k1, k2): (i32, i32)) -> usize {
     let admin = PgStore::connect(url).await.unwrap();
     let pids: Vec<i32> = sqlx::query_scalar(
-        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted \
-         AND ((classid::bigint << 32) | objid::bigint) = $1",
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 2 \
+         AND classid = ($1::bigint & 4294967295)::oid AND objid = ($2::bigint & 4294967295)::oid",
     )
-    .bind(key)
+    .bind(k1 as i64)
+    .bind(k2 as i64)
     .fetch_all(admin.pool())
     .await
     .unwrap();
@@ -350,7 +351,7 @@ async fn terminated_lock_session_triggers_failover() {
     let waiting = tokio::spawn(async move { b2.acquire_leadership().await });
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    assert_eq!(terminate_lock_holder(&pg.url, fast_cfg().lock_key).await, 1);
+    assert_eq!(terminate_lock_holder(&pg.url, a.leader_lock()).await, 1);
     tokio::time::timeout(Duration::from_secs(5), a.leadership_lost())
         .await
         .expect("loss detected");
@@ -491,7 +492,10 @@ async fn standby_takes_over_when_leader_session_dies() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!standby.is_finished());
 
-    assert_eq!(terminate_lock_holder(&pg.url, fast_cfg().lock_key).await, 1);
+    assert_eq!(
+        terminate_lock_holder(&pg.url, store1.leader_lock()).await,
+        1
+    );
     tokio::time::timeout(Duration::from_secs(5), store1.leadership_lost())
         .await
         .expect("old leader notices");

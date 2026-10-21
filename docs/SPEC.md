@@ -543,6 +543,37 @@ Differences from, and clarifications of, the sections above:
   start.
 - **Recovery.** A task that was running when the leader died counts that attempt. If its
   retry budget is then exhausted, it is dead-lettered.
+- **Time base.** Engine time is Unix-epoch nanoseconds (`epoch_unix_nanos = 0`), so stored
+  timestamps are absolute and need no rebasing on recovery: a fixed start or recurring
+  occurrence missed while no leader ran is handled by its miss policy. Instants beyond what
+  the platform clock can represent saturate (they never fire "now"). A wall-clock step
+  (NTP) shifts timers by the step, since the runtime reads a monotonic clock anchored to
+  the system clock at start-up.
+- **Durable acknowledgements.** `submit`, `enqueue`, `cancel`, `add_recurring` and
+  `remove_recurring` reply only after the batch holding their mutation is committed;
+  dispatches and status replies are also released after the commit. Aborts and capacity
+  changes take effect immediately.
+- **Store errors.** `StoreError::Unavailable` is transient: the commit is retried with
+  capped exponential backoff while the engine keeps serving reads, for up to
+  `max_store_outage` (default 5 min). `Other` errors are retried up to 5 times; `Fenced` is
+  fatal at once. On a fatal error the scheduler stops and every waiting caller receives
+  `Error::Store(..)`. Panics in executors, scalers and stores are caught and reported
+  instead of killing the driver.
+- **Shutdown.** Dropping every `Scheduler` handle shuts down with `drop_grace` (default
+  5 s). `shutdown` may be called from several handles; all see the same result.
+- **Outputs of earlier tasks.** Handles to tasks that already succeeded (duplicates,
+  `Scheduler::handle`) read the output from a bounded in-memory cache (`output_cache`,
+  default 1024) and then from `Store::load_output`; if neither has it the handle resolves to
+  `TaskFailure::OutputUnavailable`.
+- **Postgres store.** Each cluster lives in its own schema (`PgStoreConfig::schema`); the
+  leader lock is the two-key advisory lock (namespace, schema OID), migrations take a
+  separate lock and are versioned in `cronoq_schema_version`. Commits apply transitions of
+  existing tasks before inserting new ones (a key released and reused in one batch is
+  valid) and fold a new task's transitions into its insert. A task's message persists until
+  a later transition replaces it. Issued ids are tracked by a high-water mark, so pruning
+  never causes reuse. Recovery always loads finished tasks that live tasks depend on, and
+  pruning keeps them. Undecodable rows are marked failed (quarantined); undecodable
+  schedules are skipped with an error log. NUL characters in strings are stored as U+FFFD.
 - **Worker RPC.** The worker stream RPC is `Workers.Work` (`Connect` collided with the
   generated client constructor).
 - **Server pools** are always served by remote workers. Capacity is the total slots of the
@@ -560,9 +591,8 @@ Differences from, and clarifications of, the sections above:
   the loop's default executor. Event subscription is not yet exposed in Python.
 
 ### Known limitations (tracked for v0.2)
-- `cancel`, `add_recurring` and `remove_recurring` reply before their mutation is durable.
-  Submissions already wait for the commit. After a failover, a cancel acknowledged just before
-  the crash may be lost (the task then runs).
+- Recurring templates cannot carry a deadline, fixed start, key or dependencies (a relative
+  deadline per occurrence needs engine support); `add_recurring` rejects them.
 - `awaits` entries for keys that never appear are kept after their waiters time out or are
   cancelled. Memory grows only with distinct abandoned keys.
 - Shedding considers ready tasks in lanes and deadline queues only. Parked (resource-blocked)

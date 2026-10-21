@@ -1,4 +1,4 @@
--- cronoq schema (idempotent). Times are wall-clock Unix nanoseconds.
+-- cronoq schema v1 (idempotent). Times are wall-clock Unix nanoseconds.
 
 CREATE TABLE IF NOT EXISTS cronoq_leader (
     id      SMALLINT PRIMARY KEY CHECK (id = 1),
