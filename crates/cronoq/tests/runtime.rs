@@ -720,3 +720,28 @@ async fn executor_is_told_about_aborts_synchronously() {
     );
     assert_eq!(*aborted.lock().unwrap(), vec![LeaseId(1)]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn waiting_on_a_full_pool_does_not_block_other_pools() {
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("stuck", 0)
+                .executor_fn(|_c, x: Arc<u64>| async move { Ok(*x) })
+                .configure(|c| c.bounds.max_pending = Some(1)),
+        )
+        .pool(Pool::fixed("free", 1).executor_fn(|_c, x: Arc<u64>| async move { Ok(*x) }))
+        .build()
+        .await
+        .unwrap();
+    s.enqueue(Task::new(1).pool("stuck")).await.unwrap();
+    // This submitter waits forever: "stuck" has no workers and is full.
+    let s2 = s.clone();
+    let waiting = tokio::spawn(async move { s2.enqueue(Task::new(2).pool("stuck")).await });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let h = tokio::time::timeout(Duration::from_secs(5), s.submit(Task::new(3).pool("free"))).await;
+    assert_eq!(
+        *h.expect("other pool not blocked").unwrap().await.unwrap(),
+        3
+    );
+    assert!(!waiting.is_finished());
+}

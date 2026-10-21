@@ -300,8 +300,8 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             } => {
                 if self.shutdown.is_some() {
                     let _ = reply.send(Err(Error::Shutdown));
-                } else if !self.blocked.is_empty() {
-                    // Preserve FIFO admission behind submitters waiting for space.
+                } else if self.blocked.iter().any(|b| b.spec.pool == spec.pool) {
+                    // Preserve FIFO admission behind submitters waiting for the same pool.
                     self.blocked.push_back(Blocked {
                         spec,
                         reply,
@@ -428,9 +428,17 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
     /// Admit parked submitters in order while there is space.
     fn retry_blocked(&mut self) {
         let now = self.clock.now();
+        let mut still_blocked = VecDeque::new();
+        // Pools found full in this pass: later submitters for them keep their place in line,
+        // while other pools' submitters are not held up.
+        let mut full: Vec<Arc<str>> = Vec::new();
         while let Some(b) = self.blocked.pop_front() {
             if b.reply.is_closed() {
                 continue; // the caller gave up
+            }
+            if full.contains(&b.spec.pool) {
+                still_blocked.push_back(b);
+                continue;
             }
             let pool = b.spec.pool.clone();
             match self.core.try_submit(now, b.spec) {
@@ -445,18 +453,19 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     });
                 }
                 Err((SubmitError::Full, spec)) => {
-                    self.blocked.push_front(Blocked {
+                    full.push(pool);
+                    still_blocked.push_back(Blocked {
                         spec,
                         reply: b.reply,
                         handle: b.handle,
                     });
-                    break;
                 }
                 Err((e, _)) => {
                     let _ = b.reply.send(Err(Error::Submit(e)));
                 }
             }
         }
+        self.blocked = still_blocked;
     }
 
     /// Register a result waiter; resolves immediately for already-terminal tasks.

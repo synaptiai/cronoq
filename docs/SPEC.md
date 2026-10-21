@@ -558,3 +558,18 @@ Differences from, and clarifications of, the sections above:
   `prof` example.
 - **Python.** Executors run on the event loop that called `start()`. Plain functions run in
   the loop's default executor. Event subscription is not yet exposed in Python.
+
+### Known limitations (tracked for v0.2)
+- `cancel`, `add_recurring` and `remove_recurring` reply before their mutation is durable.
+  Submissions already wait for the commit. After a failover, a cancel acknowledged just before
+  the crash may be lost (the task then runs).
+- `awaits` entries for keys that never appear are kept after their waiters time out or are
+  cancelled. Memory grows only with distinct abandoned keys.
+- Shedding considers ready tasks in lanes and deadline queues only. Parked (resource-blocked)
+  and due fixed-start tasks are never shed.
+- A submission can shed victims and then still be rejected with `ReservationConflict`,
+  because bounds are checked before reservations.
+- Recurring occurrences recovered after a failover lose their overlap guard for the
+  occurrence that was in flight.
+- Hold lead time is fixed when a task is submitted (see above). Very long tasks submitted
+  before any duration statistics exist may start late.
