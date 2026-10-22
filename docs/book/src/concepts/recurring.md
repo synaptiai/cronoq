@@ -46,6 +46,11 @@ Use UTC for schedules that must run at exact intervals.
 - Each occurrence is a normal [fixed-start](fixed-starts.md) task: it goes through reservation,
   holding and the miss policy, carries the tag `cronoq.recurring = <name>`, and appears in
   metrics and status events like any other task.
+- The template is checked when the schedule is added, like a task submission: its pool and
+  resources must exist, resource amounts must fit their capacity, and `max_attempts` must be at
+  least 1. A schedule recovered from the store whose template the configuration no longer
+  supports (a removed pool or resource) is not armed; the `recurring_invalid` counter records it,
+  and it runs again once the configuration supports it.
 - If an occurrence cannot be reserved (the pool's reservable capacity is full at that time), it
   is not created; the snapshot's `recurring_conflicts` counter records it.
 

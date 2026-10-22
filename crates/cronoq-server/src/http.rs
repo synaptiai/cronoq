@@ -130,6 +130,13 @@ fn app(st: &Shared) -> Result<&Arc<AppState>, ApiError> {
 /// Authenticates (before the body is read), checks readiness, bounds the request time and
 /// hands the [`Principal`] to the handler.
 async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next) -> Response {
+    if st.loopback_hosts_only && !loopback_host(&req) {
+        return ApiError(
+            StatusCode::FORBIDDEN,
+            "without auth the API only answers requests for a loopback host".into(),
+        )
+        .into_response();
+    }
     let header = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -165,6 +172,30 @@ async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next
         Ok(r) => r,
         Err(_) => ApiError(StatusCode::GATEWAY_TIMEOUT, "request timed out".into()).into_response(),
     }
+}
+
+/// Whether the request's host (the `Host` header, or the HTTP/2 authority) is `localhost`, a
+/// `*.localhost` name or a loopback address.
+fn loopback_host(req: &Request) -> bool {
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().authority().map(|a| a.as_str()));
+    let Some(host) = host else { return false };
+    let name = match host.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((ip, _)) => ip,
+            None => return false,
+        },
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn gated(router: Router<St>, st: &St, role: Role) -> Router<St> {
@@ -664,7 +695,7 @@ async fn submit_batch(
 
 async fn get_task(st: &Shared, p: &Principal, target: TaskRef) -> Result<Json<Value>, ApiError> {
     let app = app(st)?;
-    grpc::authorize_task(app, p, &target).await?;
+    let target = grpc::authorize_task(app, p, target).await?;
     Ok(Json(info_json(&grpc::task_info(app, target).await?)))
 }
 
@@ -687,7 +718,7 @@ async fn get_by_key(
 
 async fn cancel_task(st: &Shared, p: &Principal, target: TaskRef) -> Result<Json<Value>, ApiError> {
     let app = app(st)?;
-    grpc::authorize_task(app, p, &target).await?;
+    let target = grpc::authorize_task(app, p, target).await?;
     Ok(Json(
         json!({ "cancelled": grpc::cancel(app, target).await? }),
     ))
@@ -724,7 +755,7 @@ async fn wait_task(
 ) -> Result<Json<Value>, ApiError> {
     let app = app(st)?;
     let timeout = grpc::wait_bound(q.timeout_s, &app.limits)?;
-    grpc::authorize_task(app, p, &target).await?;
+    let target = grpc::authorize_task(app, p, target).await?;
     Ok(Json(result_json(
         &grpc::wait_result(app, target, timeout, &st.stop).await?,
     )))

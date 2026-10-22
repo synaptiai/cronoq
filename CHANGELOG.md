@@ -109,7 +109,18 @@ First public release.
 - Tokens must be at least 16 characters and unique; they are stored as SHA-256 digests,
   compared in constant time and never logged.
 - Listeners bind to `127.0.0.1` by default; the server refuses to listen elsewhere without
-  credentials unless `--insecure-no-auth` is given.
+  credentials unless `--insecure-no-auth` is given. Without credentials the HTTP API answers
+  only requests for a loopback host, which stops DNS-rebinding web pages.
+- Pool-scoped clients cannot reach tasks of other pools through batch submissions that reuse
+  their keys, and lookups by key act on the task that was authorized.
+- Recurring templates are checked against the configured pools and resources when added, so a
+  bad template cannot crash the scheduler when it fires or after a restart.
+- Task keys, kinds and schedule names are hashed with a randomly seeded hasher, so crafted keys
+  cannot degrade the engine.
+- The PostgreSQL store refuses existing cronoq tables owned by another role, and
+  `store.schema` puts the server's tables in a dedicated schema.
+- Workers refuse TLS settings with an `http://` endpoint instead of connecting in plaintext,
+  and mark their bearer token as sensitive.
 - TLS on both the gRPC and HTTP listeners, with optional mTLS (`client_ca`).
 - `/metrics` and `/v1/snapshot` require the metrics role; an optional unauthenticated
   `metrics_addr` listener serves scrapers on an internal network.

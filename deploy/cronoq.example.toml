@@ -54,6 +54,7 @@ role = "admin"     # everything, plus recurring schedules
 # kind = "postgres"
 # url_env = "DATABASE_URL"   # use sslmode=verify-full for a remote database
 # keep_finished_s = 604800
+# schema = "cronoq"          # a schema only the server's role can create objects in
 
 # Request limits. The defaults are shown; they bound memory and time per request.
 # [limits]

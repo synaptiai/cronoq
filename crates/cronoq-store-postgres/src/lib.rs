@@ -297,6 +297,29 @@ impl PgStore {
             .await
             .map_err(db)?;
         }
+        // Tables that already exist are used as they are, and their owner controls their
+        // triggers, which run as this role. Refuse ones another role could have planted: only
+        // this role or a superuser may own them (`pg_has_role` would accept anything for a
+        // superuser connection, the case where a planted trigger gains the most).
+        let foreign: Vec<String> = sqlx::query_scalar(
+            "SELECT c.relname::text FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_roles o ON o.oid = c.relowner \
+             WHERE n.nspname = $1 AND c.relname LIKE 'cronoq\\_%' \
+             AND o.rolname <> current_user AND NOT o.rolsuper \
+             ORDER BY 1",
+        )
+        .bind(schema)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        if !foreign.is_empty() {
+            return Err(StoreError::Other(format!(
+                "schema \"{schema}\" holds cronoq tables owned by another role ({}); refusing to \
+                 use them (they must belong to the connecting role or a superuser)",
+                foreign.join(", ")
+            )));
+        }
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS cronoq_schema_version \
              (id SMALLINT PRIMARY KEY CHECK (id = 1), version INT NOT NULL)",

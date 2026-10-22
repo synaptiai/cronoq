@@ -39,7 +39,8 @@ pub struct TaskMeta {
 #[derive(Default)]
 struct Inner {
     map: FxHashMap<u64, TaskMeta>,
-    by_key: FxHashMap<Arc<str>, u64>,
+    // Keys come from callers: std's seeded SipHash, not FxHash, so they cannot be made to collide.
+    by_key: std::collections::HashMap<Arc<str>, u64>,
     order: VecDeque<u64>,
 }
 

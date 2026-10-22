@@ -72,7 +72,9 @@ limited to a list of pools.
   pools; such tasks are reported as not found rather than forbidden, so ids do not leak.
 - **Safe defaults.** Both listeners bind to `127.0.0.1` by default. Without any configured
   credentials, authentication is off and the server refuses to listen on a non-loopback address
-  unless started with `--insecure-no-auth`.
+  unless started with `--insecure-no-auth`. In that loopback-only mode the HTTP API answers only
+  requests for a loopback host (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`), so a web page
+  cannot reach it by rebinding its own name to `127.0.0.1`.
 - **Transport security.** `[server.tls]` enables TLS on the gRPC and HTTP listeners alike;
   with `client_ca` every client must present a certificate signed by that CA (mTLS).
 - **Resource limits.** `[limits]` bounds batch sizes, queue lengths (per pool and in total),
@@ -83,6 +85,13 @@ limited to a list of pools.
   (including NUL characters, which PostgreSQL cannot store) are validated before they reach the
   engine; unknown JSON fields are rejected. Messages from workers are sanitized before they are
   stored or logged.
+- **Collision-resistant hashing.** Task keys, kinds and schedule names are hashed with a
+  randomly seeded hasher, so crafted keys cannot all land in the same bucket and stall the
+  engine.
+- **Database objects.** The server refuses to use existing cronoq tables owned by a role other
+  than the connecting one (or a superuser), so another database role cannot plant them with
+  triggers that would run with the server's privileges. `store.schema` keeps the tables in a
+  dedicated schema.
 - **Error hygiene.** Database errors are logged, not returned to clients.
 - **Split-brain protection.** Only the current leader epoch can write to the store; a fenced
   instance stops serving.

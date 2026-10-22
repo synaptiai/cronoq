@@ -19,6 +19,9 @@ pub struct Shared {
     pub auth: Auth,
     /// Request limits.
     pub limits: LimitsConfig,
+    /// Running without auth on loopback: HTTP requests must name a loopback host, so a web
+    /// page cannot reach the API by rebinding its own name to 127.0.0.1.
+    pub loopback_hosts_only: bool,
     /// True while this instance is the leader and serving.
     pub ready: Arc<AtomicBool>,
     /// Set once leadership is acquired and the scheduler is running.

@@ -118,9 +118,11 @@ keep_finished_s = 604800
 | `url` | string | – | Connection URL. Prefer `url_env`; the server warns about inline URLs and about URLs without `sslmode=verify-full`/`require`. |
 | `url_env` | string | `DATABASE_URL` | Read the URL from this environment variable. Set `url` or `url_env`, not both. |
 | `keep_finished_s` | float ≥ 60 | `604800` (7 days) | Finished tasks older than this are pruned hourly (in batches; tasks that live tasks depend on are kept). |
+| `schema` | string | `public` | PostgreSQL schema for the server's tables (letters, digits and `_`; created if missing). Servers sharing a schema form one cluster; different schemas are independent. |
 
-The server stores its tables in the `public` schema. To run several independent clusters in one
-database, give each its own database or use the library API (`PgStoreConfig::schema`).
+The server refuses to start if the schema already holds cronoq tables owned by a role other than
+the one it connects as (or a superuser). Prefer a dedicated schema that only the server's role
+can create objects in (see [Security hardening](../guides/security.md)).
 
 ## `[limits]`
 

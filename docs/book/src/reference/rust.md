@@ -191,7 +191,7 @@ run_worker(opts, |lease| async move { Ok(lease.payload) }, shutdown_signal).awai
 | `slots` | 1 | Concurrent leases requested (the server may grant fewer). |
 | `token` | none | Bearer token with the worker role. |
 | `name` | empty | Shown in server logs. |
-| `tls` | none | `WorkerTls { ca_pem, identity, domain }` for TLS and mTLS. |
+| `tls` | none | `WorkerTls { ca_pem, identity, domain }` for TLS and mTLS. Needs an `https://` endpoint; with `http://` the worker returns an error. |
 | `reconnect` | `true` | Reconnect with backoff when the connection drops or the server steps down. |
 | `initial_backoff`, `max_backoff` | 200 ms, 10 s | Reconnect backoff bounds. |
 | `drain_timeout` | 30 s | How long running handlers may finish after `shutdown` resolves. |

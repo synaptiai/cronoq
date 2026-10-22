@@ -600,3 +600,40 @@ async fn release_through_the_trait_lets_a_standby_lead() {
         .expect("lock released")
         .unwrap();
 }
+
+// --- Existing cronoq tables were adopted whatever their owner, so another database role could
+//     plant them (with triggers that then ran as cronoq's role) before the first start.
+#[tokio::test]
+async fn tables_owned_by_another_role_are_refused() {
+    let pg = pg_or_skip!();
+    let admin = sqlx::PgPool::connect(&pg.url).await.unwrap();
+    for stmt in [
+        "CREATE ROLE mallory LOGIN",
+        "CREATE ROLE app LOGIN",
+        "GRANT CREATE ON DATABASE postgres TO app",
+        "CREATE SCHEMA planted",
+        "GRANT ALL ON SCHEMA planted TO mallory, app",
+        "CREATE TABLE planted.cronoq_schema_version \
+         (id SMALLINT PRIMARY KEY CHECK (id = 1), version INT NOT NULL)",
+        "INSERT INTO planted.cronoq_schema_version VALUES (1, 2)",
+        "GRANT ALL ON planted.cronoq_schema_version TO PUBLIC",
+        "ALTER TABLE planted.cronoq_schema_version OWNER TO mallory",
+    ] {
+        sqlx::query(stmt).execute(&admin).await.unwrap();
+    }
+    let app_url = pg.url.replace("postgres@", "app@");
+    for url in [&app_url, &pg.url] {
+        let err = PgStore::connect_with(url, in_schema("planted"))
+            .await
+            .err()
+            .expect("planted tables must be refused");
+        assert!(err.to_string().contains("owned by another role"), "{err}");
+    }
+    // The role's own tables, created on first connect, are accepted on every later one.
+    PgStore::connect_with(&app_url, in_schema("own"))
+        .await
+        .unwrap();
+    PgStore::connect_with(&app_url, in_schema("own"))
+        .await
+        .unwrap();
+}

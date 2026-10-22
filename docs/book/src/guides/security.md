@@ -21,7 +21,9 @@ exist. Keys, however, are one namespace across pools (see the threat model).
 ## Checklist
 
 1. **Configure credentials.** Without `[[auth.tokens]]` or `[[auth.certs]]`, authentication is
-   off: the server then refuses non-loopback addresses unless you pass `--insecure-no-auth`.
+   off: the server then refuses non-loopback addresses unless you pass `--insecure-no-auth`,
+   and its HTTP API answers only requests whose host is `localhost`, `*.localhost`, `127.0.0.1`
+   or `[::1]`, which stops web pages that rebind their name to `127.0.0.1`.
    Create one token per role and per consumer, scoped to the pools it needs:
 
    ```toml
@@ -36,7 +38,8 @@ exist. Keys, however, are one namespace across pools (see the threat model).
    (`openssl rand -hex 16`). The server keeps only SHA-256 digests and never logs tokens.
 3. **Encrypt traffic.** Configure `[server.tls]` with `cert` and `key`; it covers both the gRPC
    and the HTTP listener. Bearer tokens over plaintext are acceptable only on a trusted local
-   network or inside a service mesh that encrypts.
+   network or inside a service mesh that encrypts. Workers given TLS settings must use an
+   `https://` endpoint; they refuse an `http://` one instead of connecting in plaintext.
 4. **Use mTLS where you can.** With `client_ca`, every client must present a certificate signed
    by that CA. Map certificates to roles by DNS subject alternative name, so workers need no
    bearer token at all:
@@ -64,8 +67,11 @@ exist. Keys, however, are one namespace across pools (see the threat model).
    `max_slots_per_worker` caps how many leases a single worker can hold.
 8. **Protect the database.** Read the URL from `url_env` (default `DATABASE_URL`), use
    `sslmode=verify-full` for a remote database, and grant the server's role privileges on its
-   own schema only. PostgreSQL holds payloads and outputs in clear text: use encryption at rest
-   or encrypt sensitive payloads in your application.
+   own schema only. Put the tables in a dedicated schema (`store.schema`) that only the
+   server's role can create objects in; if you keep `public` on a database created before
+   PostgreSQL 15, run `REVOKE CREATE ON SCHEMA public FROM PUBLIC`. The server refuses existing
+   cronoq tables owned by another role. PostgreSQL holds payloads and outputs in clear text: use
+   encryption at rest or encrypt sensitive payloads in your application.
 9. **Run the provided image.** It is distroless, runs as a non-root user and has no shell.
    Validate configuration changes in CI with `cronoq-server --config cronoq.toml --check`.
 10. **Treat workers as trusted with their pools.** A worker sees every payload of the pools it

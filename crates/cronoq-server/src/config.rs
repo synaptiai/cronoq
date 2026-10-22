@@ -238,6 +238,7 @@ impl Config {
             keep_finished_s,
             url,
             url_env,
+            ..
         } = &self.store
         {
             opt_secs("store.keep_finished_s", *keep_finished_s, 60.0)?;
@@ -417,6 +418,10 @@ pub enum StoreConfig {
         url_env: Option<String>,
         /// Delete finished tasks older than this (default 7 days).
         keep_finished_s: Option<f64>,
+        /// PostgreSQL schema for cronoq's tables (default `public`). Instances sharing a schema
+        /// form one cluster. A dedicated schema that only cronoq's role can create objects in
+        /// keeps other database roles away from its tables.
+        schema: Option<String>,
     },
 }
 
@@ -428,11 +433,13 @@ impl fmt::Debug for StoreConfig {
                 url,
                 url_env,
                 keep_finished_s,
+                schema,
             } => f
                 .debug_struct("Postgres")
                 .field("url", &url.as_ref().map(|_| "<redacted>"))
                 .field("url_env", url_env)
                 .field("keep_finished_s", keep_finished_s)
+                .field("schema", schema)
                 .finish(),
         }
     }
