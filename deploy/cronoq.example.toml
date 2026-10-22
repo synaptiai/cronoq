@@ -80,6 +80,7 @@ role = "admin"     # everything, plus recurring schedules
 # max_slots_per_worker = 1024
 # keepalive_interval_s = 20        # HTTP/2 pings detect dead connections (and workers)
 # keepalive_timeout_s = 20
+# max_list = 1000                  # most tasks in one ListTasks / GET /v1/tasks page
 
 # Recent outputs and task details kept in memory for Wait/Get after completion.
 # [outputs]

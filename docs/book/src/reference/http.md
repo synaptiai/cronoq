@@ -36,6 +36,7 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
 | Method and path | Role | Description |
 |---|---|---|
 | `POST /v1/tasks` | client | Submit one task; optionally wait for its result. |
+| `GET /v1/tasks` | client | List tasks, live and finished, one page at a time. |
 | `POST /v1/tasks:batch` | client | Submit up to `max_tasks_per_batch` tasks atomically. |
 | `GET /v1/tasks/{id}` | client | Task details by numeric id. |
 | `DELETE /v1/tasks/{id}` | client | Cancel a task by id. |
@@ -44,6 +45,8 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
 | `DELETE /v1/tasks/by-key/{key}` | client | Cancel a task by key. |
 | `GET /v1/tasks/by-key/{key}/result` | client | Wait for a task's result by key. |
 | `GET /v1/snapshot` | metrics | Per-pool state, quality signals and totals. |
+| `GET /v1/workers` | metrics | Connected remote workers. |
+| `GET /v1/recurring` | metrics | Recurring schedules. |
 | `GET /metrics` | metrics | Prometheus text exposition ([metrics reference](metrics.md)). |
 | `GET /healthz` | none | `200 ok` while the process runs (liveness). |
 | `GET /readyz` | none | `200 ready` on the leader, `503 standby` otherwise (readiness). |
@@ -148,13 +151,62 @@ order. Results are in request order. At most `limits.max_tasks_per_batch` tasks 
 | `attempt` | always | Current or last attempt number (0 before the first dispatch). |
 | `output_available` | always | `true` when the task succeeded and its output is still retained. |
 | `key`, `kind` | when set | Task key and kind. |
+| `tenant` | when set | Tenant the task was submitted for. |
+| `priority` | when known | `"critical"`, `"high"`, `"normal"` or `"low"`. |
 | `max_attempts` | when known | Attempt budget from the task's or the pool's retry policy. |
 | `created_unix_ns`, `started_unix_ns`, `finished_unix_ns` | when known | Lifecycle timestamps (strings). |
 | `message` | when set | Last error or status message. |
 
 `id` and `status` are authoritative; the other fields are best effort and come from the serving
-leader's bounded info cache (`outputs.info_entries`) or, with Postgres, from the stored task.
-Unknown tasks, tasks past retention, and tasks in pools the caller may not use return 404.
+leader's bounded info cache (`outputs.info_entries`) or, with a durable store, from the stored
+task. Unknown tasks, tasks past retention, and tasks in pools the caller may not use return 404.
+
+## `GET /v1/tasks`
+
+Lists tasks in id order, oldest first, as task objects like those of `GET /v1/tasks/{id}`:
+
+```
+GET /v1/tasks?pool=default,reports&status=running,failed&limit=50
+```
+
+```json
+{"tasks": [{"id": "17", "status": "running", "pool": "default", "attempt": 1, ...}],
+ "next_after": "17"}
+```
+
+| Query parameter | Default | Description |
+|---|---|---|
+| `pool` | every pool the caller may use | Comma-separated pool names. Unknown pools return 404, pools the caller may not use 403. |
+| `status` | any | Comma-separated [statuses](#statuses). |
+| `after` | – | Only tasks with a larger id: pass the previous page's `next_after`. |
+| `limit` | `100` | Page size, at most `limits.max_list`. |
+
+`next_after` is present when more tasks follow. Live tasks come from the scheduler. Finished
+tasks come from the store, or, without one, from the bounded info cache, so only the most
+recent ones are listed. A page is not an atomic snapshot: a task that finishes while the page is
+built can be missing from it.
+
+## `GET /v1/workers`
+
+```json
+{"workers": [{"id": "3", "name": "gpu-1", "pool": "default", "labels": {"gpu": "a100"},
+              "slots": 4, "busy": 1, "connected_unix_ns": "1760000000000000000"}]}
+```
+
+Connected remote workers of the pools the caller may use, in connection order. `id` is assigned
+by the server per connection; `name` is what the worker registered with.
+
+## `GET /v1/recurring`
+
+```json
+{"schedules": [{"name": "nightly", "cron": "0 0 3 * * *", "tz": "Europe/Berlin",
+                "pool": "default", "kind": "report", "overlap": "queue",
+                "next_unix_ns": "1760061600000000000", "last_task_id": "41"}]}
+```
+
+Recurring schedules of the pools the caller may use, by name. `tz` is absent for UTC,
+`next_unix_ns` when the schedule has no further occurrence, and `last_task_id` before the first
+occurrence.
 
 ## `DELETE /v1/tasks/{id}` and `DELETE /v1/tasks/by-key/{key}`
 

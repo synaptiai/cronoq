@@ -198,11 +198,15 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | `await submit_batch(specs)` | `list[Submitted]` | Atomic batch of specs built with `task(...)`. |
 | `await cancel(ref)` | `bool` | By id or key. |
 | `await get(ref)` | `TaskInfo` | Raises `ClientError` with code `not_found` for unknown tasks. |
+| `await list_tasks(*, pools=(), statuses=(), after=0, limit=0)` | `TaskPage(tasks, next_after)` | One page of tasks, live and finished, in id order. `statuses` are names such as `"running"`; `limit` defaults to 100, capped by the server's `limits.max_list`. Pass `next_after` as `after` for the next page (`None` on the last one). |
+| `iter_tasks(*, pools=(), statuses=(), page_size=0)` | async iterator of `TaskInfo` | Every matching task, fetched one page at a time. |
 | `await wait(ref, timeout=None)` | `Result` | Raises `TimeoutError` if still running after `timeout` (or the server's `max_wait_s`). |
 | `watch(pools=None, *, ids=None, keys=None, all_transitions=False)` | async iterator of `Event` | Terminal events by default; every transition with `all_transitions=True`. |
 | `await snapshot()` | `Snapshot` | Requires a metrics or admin token. |
 | `await add_recurring(name, cron, payload=None, *, tz=None, overlap="skip", **options)` | | Requires an admin token. `payload` may also be a prebuilt `task(...)` spec. `overlap`, `key` and `deadline_in` work as for the native scheduler. |
 | `await remove_recurring(name)` | `bool` | Requires an admin token. |
+| `await list_workers()` | `list[WorkerInfo]` | Connected remote workers. Requires a metrics or admin token. |
+| `await list_recurring()` | `list[RecurringInfo]` | Recurring schedules, by name. Requires a metrics or admin token. |
 
 Result types (frozen dataclasses):
 
@@ -210,7 +214,10 @@ Result types (frozen dataclasses):
 |---|---|
 | `Submitted` | `id`, `duplicate`, `result` |
 | `Result` | `id`, `status` (terminal), `output` (bytes or `None`), `message`, `output_available`; `.ok`, `.json()`, `.text()` |
-| `TaskInfo` | `id`, `status`, `pool`, `key`, `kind`, `attempt`, `max_attempts`, `created_at`, `started_at`, `finished_at` (Unix seconds or `None`), `message`, `output_available`; `.done` |
+| `TaskInfo` | `id`, `status`, `pool`, `key`, `kind`, `attempt`, `max_attempts`, `created_at`, `started_at`, `finished_at` (Unix seconds or `None`), `message`, `output_available`, `tenant`, `priority` (name or `None`); `.done` |
+| `TaskPage` | `tasks` (tuple of `TaskInfo`), `next_after` (`int` or `None`) |
+| `WorkerInfo` | `id`, `name`, `pool`, `labels`, `slots`, `busy`, `connected_at` (Unix seconds) |
+| `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message` |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`; `.pool(name)` |
 | `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`; `.pending` |
@@ -225,7 +232,8 @@ reconnect and reconcile with `get` or `wait`.
 Builds a `TaskSpec` for `submit_batch` and `add_recurring`. Options: `pool`, `kind`,
 `priority`, `key`, `deadline_in` / `deadline_at`, `start_in` / `start_at`, `tolerance`,
 `on_miss`, `duration_hint`, `timeout`, `retry` (a `RetryPolicy` or a dict), `after`, `deps`
-(`(ref, "on_success")` tuples or dicts), `resources`, `tags`, `content_type`.
+(`(ref, "on_success")` tuples or dicts), `resources`, `tags`, `labels` (worker labels the
+task requires), `tenant`, `content_type`.
 
 Payloads: `bytes` are sent as-is, `str` as UTF-8 text, other values as JSON
 (`application/json`). Worker outputs are encoded the same way.

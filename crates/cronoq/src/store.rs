@@ -66,6 +66,8 @@ pub struct TaskRecord<O> {
     pub kind: String,
     /// Priority.
     pub priority: Priority,
+    /// Tenant the task was submitted for, if any.
+    pub tenant: Option<String>,
     /// `None` while queued: stores do not track blocked/scheduled/ready separately.
     pub status: Option<TaskStatus>,
     /// Number of attempts started.
@@ -87,6 +89,15 @@ pub trait StoreQueries<O>: Send + Sync + 'static {
     /// Delete finished tasks older than `older_than` that no live task depends on; returns
     /// how many were deleted.
     async fn prune(&self, older_than: Duration) -> Result<u64, StoreError>;
+    /// Finished tasks in id order: those in one of `pools` (any if empty) with one of
+    /// `statuses` (any finished status if empty) and ids above `after`, at most `limit`.
+    async fn list_finished(
+        &self,
+        pools: &[&str],
+        statuses: &[TaskStatus],
+        after: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<TaskRecord<O>>, StoreError>;
     /// Whether this instance currently holds leadership.
     fn is_leader(&self) -> bool;
     /// Resolves once leadership held by this instance is lost.

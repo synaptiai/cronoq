@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use cronoq::{StatusEvent, TaskStatus};
+use cronoq::{Priority, StatusEvent, TaskStatus};
 use rustc_hash::FxHashMap;
 
 /// What is known about one task.
@@ -34,6 +34,10 @@ pub struct TaskMeta {
     pub finished_ns: Option<i64>,
     /// Last error or status message.
     pub message: Option<Arc<str>>,
+    /// Tenant, if submitted through this server.
+    pub tenant: Option<Arc<str>>,
+    /// Priority, if submitted through this server.
+    pub priority: Option<Priority>,
 }
 
 #[derive(Default)]
@@ -145,6 +149,35 @@ impl TaskInfoCache {
         self.inner.lock().unwrap().map.get(&id).cloned()
     }
 
+    /// Finished tasks in id order: those in one of `pools` (any if empty) with one of
+    /// `statuses` (any finished status if empty) and ids above `after`, at most `limit`.
+    pub fn list_finished(
+        &self,
+        pools: &[&str],
+        statuses: &[TaskStatus],
+        after: u64,
+        limit: usize,
+    ) -> Vec<(u64, TaskMeta)> {
+        let st = self.inner.lock().unwrap();
+        let mut ids: Vec<u64> = st
+            .map
+            .iter()
+            .filter(|(id, m)| {
+                **id > after
+                    && m.status.is_some_and(|s| {
+                        s.is_terminal() && (statuses.is_empty() || statuses.contains(&s))
+                    })
+                    && (pools.is_empty() || pools.contains(&&*m.pool))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids.truncate(limit);
+        ids.into_iter()
+            .map(|id| (id, st.map[&id].clone()))
+            .collect()
+    }
+
     /// Latest task id seen for `key`.
     pub fn id_for_key(&self, key: &str) -> Option<u64> {
         self.inner.lock().unwrap().by_key.get(key).copied()
@@ -204,5 +237,32 @@ mod tests {
             c.get(1).is_none() && c.id_for_key("k1").is_none(),
             "oldest evicted"
         );
+    }
+
+    #[test]
+    fn lists_finished_tasks_by_pool_status_and_page() {
+        let c = TaskInfoCache::new(10);
+        let ev = |id, status| StatusEvent {
+            id: cronoq::TaskId(id),
+            pool: cronoq::PoolId(0),
+            key: None,
+            status,
+            attempt: 1,
+            at: cronoq::Time(0),
+            message: None,
+        };
+        let (a, b): (Arc<str>, Arc<str>) = ("a".into(), "b".into());
+        c.on_event(&ev(4, TaskStatus::Succeeded), &a, 1);
+        c.on_event(&ev(1, TaskStatus::Failed), &a, 1);
+        c.on_event(&ev(2, TaskStatus::Running), &a, 1);
+        c.on_event(&ev(3, TaskStatus::Succeeded), &b, 1);
+        let ids = |v: Vec<(u64, TaskMeta)>| v.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(ids(c.list_finished(&[], &[], 0, 10)), [1, 3, 4]);
+        assert_eq!(ids(c.list_finished(&["a"], &[], 0, 10)), [1, 4]);
+        assert_eq!(
+            ids(c.list_finished(&[], &[TaskStatus::Succeeded], 0, 10)),
+            [3, 4]
+        );
+        assert_eq!(ids(c.list_finished(&[], &[], 1, 1)), [3]);
     }
 }

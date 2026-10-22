@@ -396,43 +396,45 @@ impl PgStore {
 
     /// Look up a task by id or key (the most recent task with that key).
     pub async fn get_task(&self, target: &TaskRef) -> Result<Option<TaskRecord>, StoreError> {
-        macro_rules! select {
-            ($rest:literal) => {
-                concat!(
-                    "SELECT id, key, pool, kind, priority, status, attempt, message, output, \
-                     updated_unix_ns FROM cronoq_tasks ",
-                    $rest
-                )
-            };
-        }
         let row = match target {
-            TaskRef::Id(id) => sqlx::query(select!("WHERE id = $1"))
+            TaskRef::Id(id) => sqlx::query(select_record!("WHERE id = $1"))
                 .bind(id.0 as i64)
                 .fetch_optional(&self.inner.pool)
                 .await
                 .map_err(db)?,
-            TaskRef::Key(k) => sqlx::query(select!("WHERE key = $1 ORDER BY id DESC LIMIT 1"))
-                .bind(clean(k))
-                .fetch_optional(&self.inner.pool)
-                .await
-                .map_err(db)?,
+            TaskRef::Key(k) => {
+                sqlx::query(select_record!("WHERE key = $1 ORDER BY id DESC LIMIT 1"))
+                    .bind(clean(k))
+                    .fetch_optional(&self.inner.pool)
+                    .await
+                    .map_err(db)?
+            }
         };
-        let Some(r) = row else { return Ok(None) };
-        let status: String = r.get("status");
-        let updated: i64 = r.get("updated_unix_ns");
-        Ok(Some(TaskRecord {
-            id: TaskId(r.get::<i64, _>("id") as u64),
-            key: r.get("key"),
-            pool: r.get("pool"),
-            kind: r.get("kind"),
-            priority: Priority::from_index(r.get::<i16, _>("priority") as usize)
-                .unwrap_or_default(),
-            status: TaskStatus::from_name(&status),
-            attempt: r.get::<i32, _>("attempt").max(0) as u32,
-            message: r.get("message"),
-            output: r.get::<Option<Vec<u8>>, _>("output").map(Bytes::from),
-            updated: UNIX_EPOCH + Duration::from_nanos(updated.max(0) as u64),
-        }))
+        Ok(row.as_ref().map(record))
+    }
+
+    /// Finished tasks in id order: those in one of `pools` (any if empty) with one of
+    /// `statuses` (any finished status if empty) and ids above `after`, at most `limit`.
+    pub async fn list_finished(
+        &self,
+        pools: &[&str],
+        statuses: &[TaskStatus],
+        after: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<TaskRecord>, StoreError> {
+        let names: Vec<&str> = statuses.iter().map(|s| s.name()).collect();
+        let rows = sqlx::query(select_record!(
+            "WHERE terminal AND (cardinality($1::text[]) = 0 OR pool = ANY($1)) AND id > $2 \
+             AND (cardinality($3::text[]) = 0 OR status = ANY($3)) ORDER BY id LIMIT $4"
+        ))
+        .bind(pools)
+        .bind(after.map_or(-1, |a| a.0.min(i64::MAX as u64) as i64))
+        .bind(names)
+        .bind(limit.min(i64::MAX as usize) as i64)
+        .fetch_all(&self.inner.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.iter().map(record).collect())
     }
 
     /// Delete finished tasks last updated more than `older_than` ago, except those that live
@@ -764,6 +766,36 @@ fn terminal_from(base: TimeBase, r: &sqlx::postgres::PgRow) -> Option<RecoveredT
     })
 }
 
+/// Selects the columns [`record`] reads, followed by `$rest`.
+macro_rules! select_record {
+    ($rest:literal) => {
+        concat!(
+            "SELECT id, key, pool, kind, priority, tenant, status, attempt, message, output, \
+             updated_unix_ns FROM cronoq_tasks ",
+            $rest
+        )
+    };
+}
+use select_record;
+
+fn record(r: &sqlx::postgres::PgRow) -> TaskRecord {
+    let status: String = r.get("status");
+    let updated: i64 = r.get("updated_unix_ns");
+    TaskRecord {
+        id: TaskId(r.get::<i64, _>("id") as u64),
+        key: r.get("key"),
+        pool: r.get("pool"),
+        kind: r.get("kind"),
+        priority: Priority::from_index(r.get::<i16, _>("priority") as usize).unwrap_or_default(),
+        tenant: r.get("tenant"),
+        status: TaskStatus::from_name(&status),
+        attempt: r.get::<i32, _>("attempt").max(0) as u32,
+        message: r.get("message"),
+        output: r.get::<Option<Vec<u8>>, _>("output").map(Bytes::from),
+        updated: UNIX_EPOCH + Duration::from_nanos(updated.max(0) as u64),
+    }
+}
+
 #[async_trait]
 impl StoreQueries<Bytes> for PgStore {
     async fn get_task(&self, target: &TaskRef) -> Result<Option<TaskRecord>, StoreError> {
@@ -771,6 +803,15 @@ impl StoreQueries<Bytes> for PgStore {
     }
     async fn prune(&self, older_than: Duration) -> Result<u64, StoreError> {
         PgStore::prune(self, older_than).await
+    }
+    async fn list_finished(
+        &self,
+        pools: &[&str],
+        statuses: &[TaskStatus],
+        after: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<TaskRecord>, StoreError> {
+        PgStore::list_finished(self, pools, statuses, after, limit).await
     }
     fn is_leader(&self) -> bool {
         PgStore::is_leader(self)

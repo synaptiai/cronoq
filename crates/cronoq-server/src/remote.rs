@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use cronoq::{BoxFuture, Executor, Labels, Scheduler, TaskContext, TaskError, TaskId};
@@ -41,6 +41,26 @@ struct WorkerConn {
     busy: u32,
     /// Cancelled to cut the stream immediately (unhealthy worker, forced stop).
     cut: CancellationToken,
+    connected: SystemTime,
+}
+
+/// A connected worker, as [`WorkerRegistry::list`] reports it.
+#[derive(Clone, Debug)]
+pub struct WorkerSummary {
+    /// Connection id.
+    pub id: u64,
+    /// Name the worker registered with.
+    pub name: String,
+    /// Pool it serves.
+    pub pool: Arc<str>,
+    /// Its labels, sorted.
+    pub labels: Labels,
+    /// Slots it offers.
+    pub slots: u32,
+    /// Slots in use.
+    pub busy: u32,
+    /// When it registered.
+    pub connected: SystemTime,
 }
 
 struct PendingLease {
@@ -143,6 +163,7 @@ impl WorkerRegistry {
                 slots,
                 busy: 0,
                 cut,
+                connected: SystemTime::now(),
             },
         );
         Self::publish_capacity(&self.capacity_tx, &st, &pool, &labels);
@@ -495,6 +516,25 @@ impl WorkerRegistry {
     /// Connected workers.
     pub fn worker_count(&self) -> usize {
         self.state.lock().unwrap().workers.len()
+    }
+
+    /// Connected workers in connection order.
+    pub fn list(&self) -> Vec<WorkerSummary> {
+        self.state
+            .lock()
+            .unwrap()
+            .workers
+            .iter()
+            .map(|(id, w)| WorkerSummary {
+                id: *id,
+                name: w.name.clone(),
+                pool: w.pool.clone(),
+                labels: w.labels.clone(),
+                slots: w.slots,
+                busy: w.busy,
+                connected: w.connected,
+            })
+            .collect()
     }
 
     /// Connected workers of `pool`.

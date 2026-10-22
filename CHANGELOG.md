@@ -100,6 +100,10 @@ First public release.
   (`labels = ["name=value", ...]`).
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
   results; waits bounded by `limits.max_wait_s`.
+- Listing: `ListTasks` / `GET /v1/tasks` pages through live and finished tasks by pool and
+  status (pages capped by `limits.max_list`), and `ListWorkers` / `GET /v1/workers` and
+  `ListRecurring` / `GET /v1/recurring` show connected workers and schedules. Each lists only
+  the pools the caller's credentials allow.
 - `limits.key_retention_s` and `key_retention_max` set how long finished keys deduplicate
   submissions; the same window bounds what a new leader recovers.
 - Webhook and external scalers, Prometheus metrics, health and readiness endpoints, and
@@ -120,7 +124,7 @@ First public release.
   encoded with a codec (JSON by default, which never runs code when read back); several
   processes can share the file, with one leading and the others standing by.
 - `cronoq.client`: gRPC client and remote worker speaking worker protocol version 3, with
-  worker labels.
+  worker labels, and listing of tasks (`list_tasks`, `iter_tasks`), workers and schedules.
 - Wheels for CPython 3.14+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
 
 #### Project

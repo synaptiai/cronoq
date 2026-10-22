@@ -229,7 +229,7 @@ class GetRequest(_message.Message):
     def __init__(self, task: _Optional[_Union[TaskRef, _Mapping]] = ...) -> None: ...
 
 class TaskInfo(_message.Message):
-    __slots__ = ("id", "status", "pool", "key", "kind", "attempt", "max_attempts", "created_unix_ns", "started_unix_ns", "finished_unix_ns", "message", "output_available")
+    __slots__ = ("id", "status", "pool", "key", "kind", "attempt", "max_attempts", "created_unix_ns", "started_unix_ns", "finished_unix_ns", "message", "output_available", "tenant", "priority")
     ID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     POOL_FIELD_NUMBER: _ClassVar[int]
@@ -242,6 +242,8 @@ class TaskInfo(_message.Message):
     FINISHED_UNIX_NS_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_AVAILABLE_FIELD_NUMBER: _ClassVar[int]
+    TENANT_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
     id: int
     status: TaskStatus
     pool: str
@@ -254,7 +256,29 @@ class TaskInfo(_message.Message):
     finished_unix_ns: int
     message: str
     output_available: bool
-    def __init__(self, id: _Optional[int] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., pool: _Optional[str] = ..., key: _Optional[str] = ..., kind: _Optional[str] = ..., attempt: _Optional[int] = ..., max_attempts: _Optional[int] = ..., created_unix_ns: _Optional[int] = ..., started_unix_ns: _Optional[int] = ..., finished_unix_ns: _Optional[int] = ..., message: _Optional[str] = ..., output_available: bool = ...) -> None: ...
+    tenant: str
+    priority: Priority
+    def __init__(self, id: _Optional[int] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., pool: _Optional[str] = ..., key: _Optional[str] = ..., kind: _Optional[str] = ..., attempt: _Optional[int] = ..., max_attempts: _Optional[int] = ..., created_unix_ns: _Optional[int] = ..., started_unix_ns: _Optional[int] = ..., finished_unix_ns: _Optional[int] = ..., message: _Optional[str] = ..., output_available: bool = ..., tenant: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ...) -> None: ...
+
+class ListTasksRequest(_message.Message):
+    __slots__ = ("pools", "statuses", "after", "limit")
+    POOLS_FIELD_NUMBER: _ClassVar[int]
+    STATUSES_FIELD_NUMBER: _ClassVar[int]
+    AFTER_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    pools: _containers.RepeatedScalarFieldContainer[str]
+    statuses: _containers.RepeatedScalarFieldContainer[TaskStatus]
+    after: int
+    limit: int
+    def __init__(self, pools: _Optional[_Iterable[str]] = ..., statuses: _Optional[_Iterable[_Union[TaskStatus, str]]] = ..., after: _Optional[int] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class ListTasksResponse(_message.Message):
+    __slots__ = ("tasks", "next_after")
+    TASKS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_AFTER_FIELD_NUMBER: _ClassVar[int]
+    tasks: _containers.RepeatedCompositeFieldContainer[TaskInfo]
+    next_after: int
+    def __init__(self, tasks: _Optional[_Iterable[_Union[TaskInfo, _Mapping]]] = ..., next_after: _Optional[int] = ...) -> None: ...
 
 class TaskResult(_message.Message):
     __slots__ = ("id", "status", "output", "message", "output_available")
@@ -610,3 +634,60 @@ class RemoveRecurringResponse(_message.Message):
     REMOVED_FIELD_NUMBER: _ClassVar[int]
     removed: bool
     def __init__(self, removed: bool = ...) -> None: ...
+
+class WorkerInfo(_message.Message):
+    __slots__ = ("id", "name", "pool", "labels", "slots", "busy", "connected_unix_ns")
+    class LabelsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    LABELS_FIELD_NUMBER: _ClassVar[int]
+    SLOTS_FIELD_NUMBER: _ClassVar[int]
+    BUSY_FIELD_NUMBER: _ClassVar[int]
+    CONNECTED_UNIX_NS_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    name: str
+    pool: str
+    labels: _containers.ScalarMap[str, str]
+    slots: int
+    busy: int
+    connected_unix_ns: int
+    def __init__(self, id: _Optional[int] = ..., name: _Optional[str] = ..., pool: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., slots: _Optional[int] = ..., busy: _Optional[int] = ..., connected_unix_ns: _Optional[int] = ...) -> None: ...
+
+class ListWorkersResponse(_message.Message):
+    __slots__ = ("workers",)
+    WORKERS_FIELD_NUMBER: _ClassVar[int]
+    workers: _containers.RepeatedCompositeFieldContainer[WorkerInfo]
+    def __init__(self, workers: _Optional[_Iterable[_Union[WorkerInfo, _Mapping]]] = ...) -> None: ...
+
+class RecurringInfo(_message.Message):
+    __slots__ = ("name", "cron", "tz", "pool", "kind", "overlap", "next_unix_ns", "last_task_id")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    CRON_FIELD_NUMBER: _ClassVar[int]
+    TZ_FIELD_NUMBER: _ClassVar[int]
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    OVERLAP_FIELD_NUMBER: _ClassVar[int]
+    NEXT_UNIX_NS_FIELD_NUMBER: _ClassVar[int]
+    LAST_TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    cron: str
+    tz: str
+    pool: str
+    kind: str
+    overlap: Overlap
+    next_unix_ns: int
+    last_task_id: int
+    def __init__(self, name: _Optional[str] = ..., cron: _Optional[str] = ..., tz: _Optional[str] = ..., pool: _Optional[str] = ..., kind: _Optional[str] = ..., overlap: _Optional[_Union[Overlap, str]] = ..., next_unix_ns: _Optional[int] = ..., last_task_id: _Optional[int] = ...) -> None: ...
+
+class ListRecurringResponse(_message.Message):
+    __slots__ = ("schedules",)
+    SCHEDULES_FIELD_NUMBER: _ClassVar[int]
+    schedules: _containers.RepeatedCompositeFieldContainer[RecurringInfo]
+    def __init__(self, schedules: _Optional[_Iterable[_Union[RecurringInfo, _Mapping]]] = ...) -> None: ...

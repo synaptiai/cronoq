@@ -62,6 +62,8 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`.
 | `handle(target)` | `Option<TaskHandle<O>>` | Attach to an existing task by id or key. |
 | `cancel(target)` | `bool` | `false` if the task already finished. |
 | `status(target)` | `Option<TaskStatus>` | `None` for unknown tasks. |
+| `list_tasks(pools, statuses, after, limit)` | `Vec<TaskSummary>` | Live tasks in id order, filtered by pool (any if empty) and status (any if empty), with ids above `after`. Finished tasks are listed by a durable store (`StoreQueries::list_finished`). |
+| `list_recurring()` | `Vec<RecurringInfo>` | Recurring schedules with their next occurrence and latest task. |
 | `snapshot()` | `Snapshot` | Metrics and quality signals. |
 | `set_capacity(pool, n)` | `()` | Report capacity for pools with an `ExternalScaler`. |
 | `set_group_capacity(pool, labels, n)` | `()` | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
@@ -155,9 +157,9 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `Core::new(CoreConfig)` | Create; `CoreConfig::validate()` reports problems without panicking. |
 | `submit`, `try_submit`, `submit_batch` | Admission. |
 | `complete(now, lease, Outcome)`, `heartbeat(now, lease)` | Attempt feedback. |
-| `cancel`, `status`, `resolve`, `live_tasks`, `totals` | Lookups and cancellation. |
+| `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
 | `set_capacity(now, pool, n)` | Capacity changes. |
-| `add_recurring`, `remove_recurring`, `recurring_names` | Cron schedules. |
+| `add_recurring`, `remove_recurring`, `recurring_names`, `list_recurring` | Cron schedules. |
 | `tick(now)`, `next_wakeup()` | Timers. |
 | `poll_action()`, `drain_actions()`, `has_actions()` | `Action::{Dispatch, Abort, ScaleTo, Status, Persist, SpaceAvailable}` for the driver. |
 | `snapshot(now)` | Metrics. |
@@ -175,7 +177,8 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `PgStore::connect(url)` / `connect_with(url, PgStoreConfig)` | Connect and migrate. |
 | `PgStoreConfig` | `schema` (default `public`), `retention`, `lock_poll`, `keepalive`, `session_timeout`, `commit_timeout`, `max_connections`. |
 | `migrate()` | Apply pending schema migrations (versioned in `cronoq_schema_version`). |
-| `get_task(target)` | Read a stored task (`TaskRecord`). Also available through the `cronoq::StoreQueries` trait, with `prune`, `is_leader` and `leadership_lost`. |
+| `get_task(target)` | Read a stored task (`TaskRecord`). Also available through the `cronoq::StoreQueries` trait, with `prune`, `list_finished`, `is_leader` and `leadership_lost`. |
+| `list_finished(pools, statuses, after, limit)` | Finished tasks in id order, filtered by pool and status (any if empty), with ids above `after`. |
 | `prune(older_than)` | Delete finished tasks older than the given age. |
 | `is_leader()`, `epoch()`, `leadership_lost().await`, `release_leadership().await` | Leadership state. |
 
@@ -185,7 +188,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 |---|---|
 | `SqliteStore::open(path)` / `open_with(path, SqliteStoreConfig)` | Open (creating if needed) and migrate. |
 | `SqliteStoreConfig` | `retention`, `lease_ttl` (10 s), `lease_renew` (2 s), `lock_poll`, `busy_timeout`, `commit_timeout`, `full_sync` (default on), `max_connections`. |
-| `get_task`, `prune`, `is_leader()`, `epoch()`, `leadership_lost().await`, `release_leadership().await` | As for the Postgres store. |
+| `get_task`, `prune`, `list_finished`, `is_leader()`, `epoch()`, `leadership_lost().await`, `release_leadership().await` | As for the Postgres store. |
 
 See [Durability and high availability](../concepts/durability.md).
 

@@ -457,6 +457,34 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         self.call(|reply| Cmd::Status { target, reply }).await
     }
 
+    /// Live tasks in id order: those in one of `pools` (any if empty) with one of `statuses`
+    /// (any if empty) and ids above `after`, at most `limit`. Finished tasks are not included;
+    /// a durable store lists those
+    /// ([`StoreQueries::list_finished`](crate::StoreQueries::list_finished)).
+    pub async fn list_tasks(
+        &self,
+        pools: &[&str],
+        statuses: &[TaskStatus],
+        after: Option<TaskId>,
+        limit: usize,
+    ) -> Result<Vec<crate::TaskSummary>, Error> {
+        let pools = pools.iter().map(|p| Arc::from(*p)).collect();
+        let statuses = statuses.to_vec();
+        self.call(|reply| Cmd::ListTasks {
+            pools,
+            statuses,
+            after,
+            limit,
+            reply,
+        })
+        .await
+    }
+
+    /// All recurring schedules, by name. Times are engine time (Unix nanoseconds).
+    pub async fn list_recurring(&self) -> Result<Vec<crate::RecurringInfo>, Error> {
+        self.call(|reply| Cmd::ListRecurring { reply }).await
+    }
+
     /// Quality metrics over the metrics window, per pool.
     pub async fn snapshot(&self) -> Result<Snapshot, Error> {
         self.call(|reply| Cmd::Snapshot { reply }).await
