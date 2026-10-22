@@ -80,6 +80,7 @@ The body of `POST /v1/tasks` and each element of a batch's `tasks`. Every field 
 | `deps` | array | `[]` | `{"key": "..."}` or `{"id": "..."}`, with optional `"cond"`: `"on_success"` (default), `"on_complete"`, `"on_failure"`. |
 | `resources` | object | `{}` | `{"<resource>": units}` acquired for each attempt. At most `max_resources` entries. |
 | `tags` | object | `{}` | String labels passed to the worker. At most `max_tags`, each value at most `max_tag_len`. |
+| `tenant` | string | – | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
 | `labels` | object | `{}` | Worker labels the task requires: it runs only on workers that registered with all of them ([Worker labels](../concepts/labels.md)). Same limits as `tags`. |
 | `wait` | bool | `false` | `POST /v1/tasks` only: respond when the task has finished. Rejected in batches. |
 | `wait_timeout_s` | number | `limits.max_wait_s` | Upper bound for `wait`, capped at `limits.max_wait_s`. |

@@ -429,6 +429,7 @@ def task(
     resources: Mapping[str, int] | None = None,
     tags: Mapping[str, str] | None = None,
     labels: Mapping[str, str] | None = None,
+    tenant: str | None = None,
     content_type: str | None = None,
 ) -> pb.TaskSpec:
     """Build a wire task spec (for :meth:`Client.submit_batch` and :meth:`Client.add_recurring`).
@@ -452,6 +453,7 @@ def task(
         # Protobuf enum fields accept their integer values; the generated stubs only list names.
         priority=cast(Any, _priority(priority)),
         key=key or "",
+        tenant=tenant or "",
     )
     if deadline_in is not None:
         spec.deadline_in_s = float(deadline_in)

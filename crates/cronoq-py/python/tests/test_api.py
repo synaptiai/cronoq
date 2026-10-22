@@ -346,3 +346,24 @@ async def test_tasks_with_labels_run_in_matching_groups():
         await (await s.submit("plain"))
     assert ("gpu", {"gpu": "a100"}) in groups
     assert ("plain", {}) in groups
+
+
+async def test_fair_pools_share_by_tenant_weight():
+    order = []
+    queued = asyncio.Event()
+
+    async def run(ctx, payload):
+        await queued.wait()  # the first task holds the only slot until everything is queued
+        order.append(payload)
+
+    p = pool(run, max=1, autoscale=False, tenant_weights={"acme": 3.0})
+    async with Scheduler([p]) as s:
+        handles = [await s.submit("globex", tenant="globex") for _ in range(20)]
+        handles += [await s.submit("acme", tenant="acme") for _ in range(20)]
+        queued.set()
+        for h in handles:
+            await h
+    first = order[:20]
+    assert 13 <= first.count("acme") <= 16, first
+    with pytest.raises(ValueError, match="tenant weights"):
+        Pool("x", run, tenant_weights={"acme": 0.0})

@@ -96,6 +96,8 @@ message TaskSpec {
   map<string, string> tags = 18;
   // Worker labels this task requires: it runs only on workers that registered with all of them.
   map<string, string> labels = 19;
+  // Tenant, for pools that share capacity fairly between tenants.
+  string tenant = 20;
 }
 
 message SubmitRequest {

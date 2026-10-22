@@ -27,6 +27,8 @@ pub struct Principal {
     /// Worker labels a worker with these credentials may claim, as `name=value` pairs
     /// (`None` = any).
     pub labels: Option<cronoq::Labels>,
+    /// Tenant these credentials submit for (`None` = the caller names it).
+    pub tenant: Option<Arc<str>>,
 }
 
 impl Principal {
@@ -36,6 +38,7 @@ impl Principal {
             role: Role::Admin,
             pools: None,
             labels: None,
+            tenant: None,
         }
     }
 
@@ -144,6 +147,7 @@ impl Auth {
                     role: t.role,
                     pools: pools(&t.pools),
                     labels: labels(&t.labels)?,
+                    tenant: t.tenant.as_deref().map(Arc::from),
                 },
             });
         }
@@ -157,6 +161,7 @@ impl Auth {
                         role: c.role,
                         pools: pools(&c.pools),
                         labels: labels(&c.labels)?,
+                        tenant: c.tenant.as_deref().map(Arc::from),
                     },
                 })
             })
@@ -306,6 +311,7 @@ mod tests {
             role,
             pools: pools.map(|p| p.into_iter().map(String::from).collect()),
             labels: None,
+            tenant: None,
         }
     }
 

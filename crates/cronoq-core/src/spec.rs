@@ -283,6 +283,9 @@ pub struct TaskSpec<P> {
     /// Worker labels this task requires: it runs only on a worker group whose labels include
     /// every `(name, value)` pair (see [`Core::set_group_capacity`](crate::Core::set_group_capacity)).
     pub labels: Vec<(Arc<str>, Arc<str>)>,
+    /// Tenant the task belongs to, for weighted fair sharing of pools with
+    /// [`PoolConfig::fairness`](crate::PoolConfig::fairness).
+    pub tenant: Option<Arc<str>>,
 }
 
 impl<P> Clone for TaskSpec<P> {
@@ -302,6 +305,7 @@ impl<P> Clone for TaskSpec<P> {
             resources: self.resources.clone(),
             tags: self.tags.clone(),
             labels: self.labels.clone(),
+            tenant: self.tenant.clone(),
         }
     }
 }
@@ -324,6 +328,7 @@ impl<P> TaskSpec<P> {
             resources: self.resources,
             tags: self.tags,
             labels: self.labels,
+            tenant: self.tenant,
         }
     }
 
@@ -348,6 +353,7 @@ impl<P> TaskSpec<P> {
             resources: SmallVec::new(),
             tags: Vec::new(),
             labels: Vec::new(),
+            tenant: None,
         }
     }
     /// Set the kind.
@@ -412,6 +418,11 @@ impl<P> TaskSpec<P> {
     /// Add a label.
     pub fn tag(mut self, k: impl Into<Arc<str>>, v: impl Into<Arc<str>>) -> Self {
         self.tags.push((k.into(), v.into()));
+        self
+    }
+    /// The tenant the task belongs to (for fair sharing).
+    pub fn tenant(mut self, tenant: impl Into<Arc<str>>) -> Self {
+        self.tenant = Some(tenant.into());
         self
     }
     /// Require a worker label (`name = value`) to run.

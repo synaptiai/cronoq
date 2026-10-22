@@ -47,7 +47,7 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 | `executor(impl Executor)`, `executor_arc(..)`, `executor_fn(async fn)` | How attempts run. |
 | `scaler(impl Scaler)`, `scaler_arc(..)` | Capacity backend (default `SlotScaler`: in-process slots). |
 | `autoscale(AutoscaleConfig)`, `no_autoscale()` | Autoscaling policy. |
-| `configure(FnOnce(&mut PoolConfig))` | Every other pool setting (bounds, overflow, retry, lease TTL, max hold, ...). |
+| `configure(FnOnce(&mut PoolConfig))` | Every other pool setting (bounds, overflow, retry, lease TTL, max hold, tenant `fairness`, ...). |
 
 ### `Scheduler<P, O>`
 
@@ -82,11 +82,14 @@ With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `add_rec
 `Task<P>`: `Task::new(payload)` (or `from_arc`), then `priority`, `pool`, `kind`, `key`,
 `deadline_in` / `deadline_at`, `start_in` / `start_at`, `start_tolerance`, `on_miss`,
 `duration_hint`, `timeout`, `retry`, `no_retry`, `after(target)`, `dep(Dep)`,
-`resource(name, units)`, `tag(key, value)`. Builder order does not matter. Strings must not
-contain NUL characters.
+`resource(name, units)`, `tag(key, value)`, `label(name, value)` (a required
+[worker label](../concepts/labels.md)), `tenant(name)` ([fair sharing](../concepts/fairness.md)).
+Builder order does not matter. Strings must not contain NUL characters.
 
-`Recurring<P>`: `Recurring::new(name, cron, template)`, then `tz`, `overlap(OverlapPolicy)`,
-`tolerance`, `on_miss`. The template may not set a deadline, fixed start, key or dependencies.
+`Recurring<P>`: `Recurring::new(name, cron, template)`, then `tz`, `overlap(OverlapPolicy)`
+(`Skip`, `Allow`, `Queue`, `QueueOnSuccess`), `tolerance`, `on_miss`. The template's
+`deadline_in` applies per occurrence and its key is a prefix (`<key>@<start>`); it may not set an
+absolute deadline, a fixed start or dependencies.
 
 ### Executors
 

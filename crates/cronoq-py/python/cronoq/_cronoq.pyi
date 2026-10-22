@@ -133,6 +133,8 @@ class Pool:
         await_timeout: float | None = None,
         default_duration: float = 1.0,
         reservable_fraction: float = 0.5,
+        tenant_weights: Mapping[str, float] | None = None,
+        fair_share: bool = False,
     ) -> Self: ...
 
 @final
@@ -161,6 +163,7 @@ class Task:
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
+        tenant: str | None = None,
     ) -> Self: ...
 
 @final
@@ -303,6 +306,7 @@ class Scheduler:
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
+        tenant: str | None = None,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
@@ -326,6 +330,7 @@ class Scheduler:
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
+        tenant: str | None = None,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
@@ -357,6 +362,7 @@ class Scheduler:
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
+        tenant: str | None = None,
     ) -> Awaitable[None]: ...
     def remove_recurring(self, name: str) -> Awaitable[bool]: ...
     def events(self, on_lag: Literal["skip", "raise"] = "skip") -> EventStream: ...

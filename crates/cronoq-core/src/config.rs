@@ -163,6 +163,42 @@ pub struct PoolConfig {
     pub lease_ttl: Option<Duration>,
     /// Handling of dependencies on unknown keys.
     pub unknown_dependency: UnknownDependency,
+    /// Weighted fair sharing between tenants (`None`: tasks of a class run in submission
+    /// order whatever their tenant).
+    pub fairness: Option<Fairness>,
+}
+
+/// Weighted fair sharing of a pool between tenants ([`TaskSpec::tenant`](crate::TaskSpec::tenant)).
+///
+/// Within each priority class, tasks without a deadline are ordered so that each tenant with
+/// waiting work gets dispatches in proportion to its weight. Higher classes still run first,
+/// and tasks with deadlines keep their earliest-deadline order. A tenant that had no waiting
+/// work does not bank credit for later.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fairness {
+    /// Weights by tenant name.
+    pub weights: Vec<(Arc<str>, f64)>,
+    /// Weight of tenants not listed (and of tasks without a tenant).
+    pub default_weight: f64,
+}
+
+impl Default for Fairness {
+    fn default() -> Self {
+        Fairness {
+            weights: Vec::new(),
+            default_weight: 1.0,
+        }
+    }
+}
+
+impl Fairness {
+    /// Equal shares, with `weights` for the listed tenants.
+    pub fn weights<K: Into<Arc<str>>>(weights: impl IntoIterator<Item = (K, f64)>) -> Self {
+        Fairness {
+            weights: weights.into_iter().map(|(k, w)| (k.into(), w)).collect(),
+            ..Default::default()
+        }
+    }
 }
 
 impl PoolConfig {
@@ -182,6 +218,7 @@ impl PoolConfig {
             max_hold: Duration::from_secs(300),
             lease_ttl: None,
             unknown_dependency: UnknownDependency::Reject,
+            fairness: None,
         }
     }
     /// Fixed worker count, no autoscaling.
@@ -323,6 +360,15 @@ impl CoreConfig {
                     "pool '{}': retry.max_attempts must be >= 1",
                     p.name
                 ));
+            }
+            if let Some(f) = &p.fairness {
+                let ok = |w: f64| w.is_finite() && w > 0.0;
+                if !ok(f.default_weight) || f.weights.iter().any(|(_, w)| !ok(*w)) {
+                    return Err(format!(
+                        "pool '{}': tenant weights must be finite and > 0",
+                        p.name
+                    ));
+                }
             }
             if let Some(a) = &p.autoscale {
                 if a.interval.is_zero() {

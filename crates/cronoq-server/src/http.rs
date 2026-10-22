@@ -400,6 +400,8 @@ pub struct TaskJson {
     /// Worker labels the task requires.
     #[serde(default)]
     labels: HashMap<String, String>,
+    /// Tenant, for pools that share capacity fairly between tenants.
+    tenant: Option<String>,
     /// Wait for the result (single submissions only).
     #[serde(default)]
     wait: bool,
@@ -550,6 +552,7 @@ impl TaskJson {
             resources: self.resources,
             tags: self.tags,
             labels: self.labels,
+            tenant: self.tenant.unwrap_or_default(),
         };
         Ok((spec, self.wait, self.wait_timeout_s))
     }

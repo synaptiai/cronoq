@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS cronoq_tasks (
     tags                TEXT NOT NULL,
     -- Worker labels the task requires.
     labels              TEXT NOT NULL DEFAULT '[]',
+    -- Tenant, for fair sharing.
+    tenant              TEXT,
     status              TEXT NOT NULL,
     terminal            INTEGER NOT NULL DEFAULT 0,
     attempt             INTEGER NOT NULL DEFAULT 0,

@@ -114,7 +114,7 @@ class RetryPolicy(_message.Message):
     def __init__(self, max_attempts: _Optional[int] = ..., initial_backoff_s: _Optional[float] = ..., multiplier: _Optional[float] = ..., max_backoff_s: _Optional[float] = ..., jitter: bool = ...) -> None: ...
 
 class TaskSpec(_message.Message):
-    __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags", "labels")
+    __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags", "labels", "tenant")
     class ResourcesEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -155,6 +155,7 @@ class TaskSpec(_message.Message):
     RESOURCES_FIELD_NUMBER: _ClassVar[int]
     TAGS_FIELD_NUMBER: _ClassVar[int]
     LABELS_FIELD_NUMBER: _ClassVar[int]
+    TENANT_FIELD_NUMBER: _ClassVar[int]
     payload: bytes
     content_type: str
     kind: str
@@ -174,7 +175,8 @@ class TaskSpec(_message.Message):
     resources: _containers.ScalarMap[str, int]
     tags: _containers.ScalarMap[str, str]
     labels: _containers.ScalarMap[str, str]
-    def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    tenant: str
+    def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., tenant: _Optional[str] = ...) -> None: ...
 
 class SubmitRequest(_message.Message):
     __slots__ = ("task", "wait", "wait_timeout_s")

@@ -38,6 +38,10 @@ First public release.
   retention window.
 - Shared semaphores and token buckets, with tasks waiting for a resource parked without holding
   a worker.
+- Weighted fair sharing between tenants (`PoolConfig::fairness`, `TaskSpec::tenant`): within a
+  priority class, tenants with waiting work get dispatches in proportion to their weights, with
+  no banked credit for idle tenants (start-time fair queuing). Server pools take
+  `tenant_weights` / `fair_share`, and tokens can pin a tenant.
 - Worker labels: a pool's workers form groups by label set, a task can require labels and runs
   only in a matching group, waiting without blocking the pool while none is free; tasks without
   requirements prefer the least specialized group.

@@ -35,6 +35,7 @@
 - [Retries, timeouts and leases](concepts/reliability.md)
 - [Resources: semaphores and rate limits](concepts/resources.md)
 - [Worker labels](concepts/labels.md)
+- [Fair sharing between tenants](concepts/fairness.md)
 - [Pools and autoscaling](concepts/autoscaling.md)
 - [Backpressure](concepts/backpressure.md)
 - [Metrics and quality signals](concepts/metrics.md)
