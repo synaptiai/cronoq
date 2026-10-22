@@ -63,12 +63,11 @@ impl TaskInfoCache {
             let Some(id) = st.order.pop_front() else {
                 break;
             };
-            if let Some(m) = st.map.remove(&id) {
-                if let Some(k) = m.key {
-                    if st.by_key.get(&k) == Some(&id) {
-                        st.by_key.remove(&k);
-                    }
-                }
+            if let Some(m) = st.map.remove(&id)
+                && let Some(k) = m.key
+                && st.by_key.get(&k) == Some(&id)
+            {
+                st.by_key.remove(&k);
             }
         }
     }

@@ -543,11 +543,11 @@ impl<P> Core<P> {
         // Keys defined in the batch.
         let mut batch_keys: FxHashMap<Arc<str>, usize> = FxHashMap::default();
         for (i, s) in specs.iter().enumerate() {
-            if let Some(k) = &s.key {
-                if self.existing_key(Some(k)).is_none() && batch_keys.insert(k.clone(), i).is_some()
-                {
-                    return Err((i, SubmitError::DuplicateKeyInBatch(k.clone())));
-                }
+            if let Some(k) = &s.key
+                && self.existing_key(Some(k)).is_none()
+                && batch_keys.insert(k.clone(), i).is_some()
+            {
+                return Err((i, SubmitError::DuplicateKeyInBatch(k.clone())));
             }
         }
         let key_set: FxHashSet<Arc<str>> = batch_keys.keys().cloned().collect();
@@ -568,14 +568,14 @@ impl<P> Core<P> {
                 continue;
             }
             for d in &s.deps {
-                if let TaskRef::Key(k) = &d.target {
-                    if let Some(&j) = batch_keys.get(k) {
-                        if self.keys.contains_key(k) || self.retained_keys.contains_key(k) {
-                            continue;
-                        }
-                        indeg[i] += 1;
-                        children[j].push(i);
+                if let TaskRef::Key(k) = &d.target
+                    && let Some(&j) = batch_keys.get(k)
+                {
+                    if self.keys.contains_key(k) || self.retained_keys.contains_key(k) {
+                        continue;
                     }
+                    indeg[i] += 1;
+                    children[j].push(i);
                 }
             }
         }
@@ -705,23 +705,23 @@ impl<P> Core<P> {
             match node {
                 N::B(j) => {
                     out.extend(batch_children[j].iter().map(|&i| N::B(i)));
-                    if let Some(k) = &specs[j].key {
-                        if let Some(w) = self.awaits.get(k) {
-                            out.extend(
-                                w.iter()
-                                    .filter(|(id, _)| self.index.contains_key(id))
-                                    .map(|(id, _)| N::L(*id)),
-                            );
-                        }
+                    if let Some(k) = &specs[j].key
+                        && let Some(w) = self.awaits.get(k)
+                    {
+                        out.extend(
+                            w.iter()
+                                .filter(|(id, _)| self.index.contains_key(id))
+                                .map(|(id, _)| N::L(*id)),
+                        );
                     }
                 }
                 N::L(id) => {
                     if let Some(e) = self.entry_by_id(id) {
                         out.extend(e.dependents.iter().map(|d| N::L(d.0)));
-                        if let Some(k) = &e.key {
-                            if let Some(w) = self.awaits.get(k) {
-                                out.extend(w.iter().map(|(id, _)| N::L(*id)));
-                            }
+                        if let Some(k) = &e.key
+                            && let Some(w) = self.awaits.get(k)
+                        {
+                            out.extend(w.iter().map(|(id, _)| N::L(*id)));
                         }
                     }
                     if let Some(c) = live_children.get(&id) {
@@ -809,10 +809,10 @@ impl<P> Core<P> {
                 return Err(SubmitError::Invalid("resource amount must be > 0"));
             }
         }
-        if let Some(r) = &spec.retry {
-            if r.max_attempts == 0 {
-                return Err(SubmitError::Invalid("retry.max_attempts must be >= 1"));
-            }
+        if let Some(r) = &spec.retry
+            && r.max_attempts == 0
+        {
+            return Err(SubmitError::Invalid("retry.max_attempts must be >= 1"));
         }
         let await_ok = matches!(
             self.pools[pool as usize].cfg.unknown_dependency,
@@ -844,14 +844,12 @@ impl<P> Core<P> {
             }
         }
         // A cycle needs this task's key to be awaited by a descendant of one of its parents.
-        if let Some(k) = &spec.key {
-            if let Some(waiting) = self.awaits.get(k) {
-                if !live_parents.is_empty()
-                    && self.reaches_any(waiting.iter().map(|w| w.0), &live_parents)
-                {
-                    return Err(SubmitError::Cycle);
-                }
-            }
+        if let Some(k) = &spec.key
+            && let Some(waiting) = self.awaits.get(k)
+            && !live_parents.is_empty()
+            && self.reaches_any(waiting.iter().map(|w| w.0), &live_parents)
+        {
+            return Err(SubmitError::Cycle);
         }
         Ok(pool)
     }
@@ -872,10 +870,10 @@ impl<P> Core<P> {
             }
             if let Some(e) = self.entry_by_id(id) {
                 stack.extend(e.dependents.iter().map(|d| d.0));
-                if let Some(k) = &e.key {
-                    if let Some(w) = self.awaits.get(k) {
-                        stack.extend(w.iter().map(|d| d.0));
-                    }
+                if let Some(k) = &e.key
+                    && let Some(w) = self.awaits.get(k)
+                {
+                    stack.extend(w.iter().map(|d| d.0));
                 }
             }
         }
@@ -1221,16 +1219,16 @@ impl<P> Core<P> {
             }
         }
         // Tasks awaiting this key become our dependents.
-        if let Some(k) = &spec.key {
-            if let Some(waiting) = self.awaits.remove(k) {
-                for (cid, _) in &waiting {
-                    if let Some(ck) = self.index.get(cid).copied() {
-                        let c = self.entry_mut(ck);
-                        c.awaiting = c.awaiting.saturating_sub(1);
-                    }
+        if let Some(k) = &spec.key
+            && let Some(waiting) = self.awaits.remove(k)
+        {
+            for (cid, _) in &waiting {
+                if let Some(ck) = self.index.get(cid).copied() {
+                    let c = self.entry_mut(ck);
+                    c.awaiting = c.awaiting.saturating_sub(1);
                 }
-                self.entry_mut(key).dependents.extend(waiting);
             }
+            self.entry_mut(key).dependents.extend(waiting);
         }
         {
             let e = self.entry_mut(key);
@@ -1241,10 +1239,10 @@ impl<P> Core<P> {
                 self.awaited_by.insert(id, keys.into_boxed_slice());
             }
         }
-        if awaiting > 0 {
-            if let Some(t) = await_timeout {
-                self.schedule(now + t, Timer::AwaitTimeout(id));
-            }
+        if awaiting > 0
+            && let Some(t) = await_timeout
+        {
+            self.schedule(now + t, Timer::AwaitTimeout(id));
         }
         if let Some(f) = spec.fixed_start {
             // The hold lead is re-evaluated when this timer fires (see `Timer::HoldAt`), so it
@@ -1486,15 +1484,15 @@ impl<P> Core<P> {
         let Some(key) = self.lookup(target) else {
             return false;
         };
-        if let Some(lease) = self.entry(key).lease {
-            if let Some(l) = self.leases.remove(&lease) {
-                self.end_attempt(&l);
-                self.actions.push_back(Action::Abort {
-                    lease,
-                    id: l.id,
-                    reason: AbortReason::Cancelled,
-                });
-            }
+        if let Some(lease) = self.entry(key).lease
+            && let Some(l) = self.leases.remove(&lease)
+        {
+            self.end_attempt(&l);
+            self.actions.push_back(Action::Abort {
+                lease,
+                id: l.id,
+                reason: AbortReason::Cancelled,
+            });
         }
         self.finish(key, TaskStatus::Cancelled, Some("cancelled".into()));
         self.pump();
@@ -1614,10 +1612,10 @@ impl<P> Core<P> {
             Some(n) => Some(n),
             None => self.next_occurrence(&r, now),
         };
-        if let (Some(n), Some(m)) = (next, materialized) {
-            if n <= m {
-                next = self.next_occurrence(&r, m);
-            }
+        if let (Some(n), Some(m)) = (next, materialized)
+            && n <= m
+        {
+            next = self.next_occurrence(&r, m);
         }
         r.next = next;
         self.recurring.insert(name.clone(), r);
@@ -1912,10 +1910,10 @@ impl<P> Core<P> {
                 }
             }
             Timer::StartAt(id) => {
-                if let Some(k) = self.index.get(&id).copied() {
-                    if self.entry(k).status == TaskStatus::Scheduled {
-                        self.make_eligible(k);
-                    }
+                if let Some(k) = self.index.get(&id).copied()
+                    && self.entry(k).status == TaskStatus::Scheduled
+                {
+                    self.make_eligible(k);
                 }
             }
             Timer::MissAt(id) => {
@@ -1924,14 +1922,15 @@ impl<P> Core<P> {
                 }
             }
             Timer::AwaitTimeout(id) => {
-                if let Some(k) = self.index.get(&id).copied() {
-                    if self.entry(k).awaiting > 0 && self.entry(k).status == TaskStatus::Blocked {
-                        self.finish(
-                            k,
-                            TaskStatus::Skipped,
-                            Some("timed out awaiting unknown dependency".into()),
-                        );
-                    }
+                if let Some(k) = self.index.get(&id).copied()
+                    && self.entry(k).awaiting > 0
+                    && self.entry(k).status == TaskStatus::Blocked
+                {
+                    self.finish(
+                        k,
+                        TaskStatus::Skipped,
+                        Some("timed out awaiting unknown dependency".into()),
+                    );
                 }
             }
             Timer::AttemptTimeout(lease) => {
@@ -2151,14 +2150,14 @@ impl<P> Core<P> {
                 _ => {}
             }
             let e = self.slab_remove(k);
-            if e.has_awaits {
-                if let Some(keys) = self.awaited_by.remove(&e.id) {
-                    for key in keys.iter() {
-                        if let Some(list) = self.awaits.get_mut(key) {
-                            list.retain(|(cid, _)| *cid != e.id);
-                            if list.is_empty() {
-                                self.awaits.remove(key);
-                            }
+            if e.has_awaits
+                && let Some(keys) = self.awaited_by.remove(&e.id)
+            {
+                for key in keys.iter() {
+                    if let Some(list) = self.awaits.get_mut(key) {
+                        list.retain(|(cid, _)| *cid != e.id);
+                        if list.is_empty() {
+                            self.awaits.remove(key);
                         }
                     }
                 }
@@ -2168,10 +2167,10 @@ impl<P> Core<P> {
                 self.wake_waiters(r.0);
             }
             self.index.remove(&e.id);
-            if let Some(key) = &e.key {
-                if self.keys.get(key) == Some(&e.id) {
-                    self.keys.remove(key);
-                }
+            if let Some(key) = &e.key
+                && self.keys.get(key) == Some(&e.id)
+            {
+                self.keys.remove(key);
             }
             self.retain(e.id, e.key.clone(), status, self.now);
             self.push_status(
@@ -2221,10 +2220,10 @@ impl<P> Core<P> {
             }
             let (_, id, key) = self.retention_q.pop_front().unwrap();
             self.retained.remove(&id);
-            if let Some(k) = key {
-                if self.retained_keys.get(&k) == Some(&id) {
-                    self.retained_keys.remove(&k);
-                }
+            if let Some(k) = key
+                && self.retained_keys.get(&k) == Some(&id)
+            {
+                self.retained_keys.remove(&k);
             }
         }
     }
@@ -2383,29 +2382,29 @@ impl<P> Core<P> {
             let f = e.fixed.as_ref().unwrap();
             (f.held, f.skip_if_live, f.at, e.seq)
         };
-        if let Some(prev) = skip_if {
-            if self.index.contains_key(&prev) {
-                // The schedule's guard moves back to the occurrence that is still running, so
-                // the next occurrence is checked against it rather than this skipped one.
-                let e = self.entry(k);
-                let id = e.id;
-                let name = e
-                    .tags
-                    .as_ref()
-                    .and_then(|t| t.iter().find(|(k, _)| &**k == "cronoq.recurring"))
-                    .map(|(_, v)| v.clone());
-                if let Some(r) = name.and_then(|n| self.recurring.get_mut(&n)) {
-                    if r.last_task == Some(id) {
-                        r.last_task = Some(prev);
-                    }
-                }
-                self.finish(
-                    k,
-                    TaskStatus::Skipped,
-                    Some("previous occurrence still running".into()),
-                );
-                return;
+        if let Some(prev) = skip_if
+            && self.index.contains_key(&prev)
+        {
+            // The schedule's guard moves back to the occurrence that is still running, so
+            // the next occurrence is checked against it rather than this skipped one.
+            let e = self.entry(k);
+            let id = e.id;
+            let name = e
+                .tags
+                .as_ref()
+                .and_then(|t| t.iter().find(|(k, _)| &**k == "cronoq.recurring"))
+                .map(|(_, v)| v.clone());
+            if let Some(r) = name.and_then(|n| self.recurring.get_mut(&n))
+                && r.last_task == Some(id)
+            {
+                r.last_task = Some(prev);
             }
+            self.finish(
+                k,
+                TaskStatus::Skipped,
+                Some("previous occurrence still running".into()),
+            );
+            return;
         }
         if !held && self.pools[pool as usize].free() == 0 {
             return;
@@ -2875,10 +2874,10 @@ impl<P> Core<P> {
                 assert!(e.pending, "non-running task {id} not counted as pending");
                 pending[e.pool as usize] += 1;
             }
-            if let Some(f) = &e.fixed {
-                if f.held {
-                    held[e.pool as usize] += 1;
-                }
+            if let Some(f) = &e.fixed
+                && f.held
+            {
+                held[e.pool as usize] += 1;
             }
             let p = &self.pools[e.pool as usize];
             match e.loc {

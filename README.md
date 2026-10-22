@@ -10,7 +10,7 @@
   <a href="https://crates.io/crates/cronoq"><img alt="crates.io" src="https://img.shields.io/crates/v/cronoq.svg"></a>
   <a href="https://docs.rs/cronoq"><img alt="docs.rs" src="https://img.shields.io/docsrs/cronoq"></a>
   <a href="https://pypi.org/project/cronoq/"><img alt="PyPI" src="https://img.shields.io/pypi/v/cronoq.svg"></a>
-  <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85-blue">
+  <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.94-blue">
   <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
 </p>
 

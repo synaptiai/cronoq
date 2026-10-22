@@ -36,11 +36,11 @@ impl<K: Copy + PartialEq> Lane<K> {
     }
     #[inline]
     pub fn remove(&mut self, seq: u64) -> Option<K> {
-        if let Some(&(s, k)) = self.q.front() {
-            if s == seq {
-                self.q.pop_front();
-                return Some(k);
-            }
+        if let Some(&(s, k)) = self.q.front()
+            && s == seq
+        {
+            self.q.pop_front();
+            return Some(k);
         }
         let i = self.q.partition_point(|&(s, _)| s < seq);
         match self.q.get(i) {

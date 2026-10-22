@@ -412,10 +412,10 @@ impl CoreConfig {
             }
         }
         for r in &mut self.resources {
-            if let ResourceKind::TokenBucket { rate, .. } = &mut r.kind {
-                if rate.is_nan() || *rate < 0.0 {
-                    *rate = 0.0;
-                }
+            if let ResourceKind::TokenBucket { rate, .. } = &mut r.kind
+                && (rate.is_nan() || *rate < 0.0)
+            {
+                *rate = 0.0;
             }
         }
         self.metrics_window = self.metrics_window.max(MIN_INTERVAL);

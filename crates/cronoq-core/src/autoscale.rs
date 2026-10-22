@@ -60,11 +60,10 @@ impl AutoscaleState {
         let mut ahead = 0u64;
         for c in 0..Priority::COUNT {
             ahead += s.backlog[c];
-            if let Some(slo) = cfg.slo[c] {
-                if s.backlog[c] > 0 {
-                    slo_need =
-                        slo_need.max((ahead as f64 * svc / slo.as_secs_f64().max(1e-3)).ceil());
-                }
+            if let Some(slo) = cfg.slo[c]
+                && s.backlog[c] > 0
+            {
+                slo_need = slo_need.max((ahead as f64 * svc / slo.as_secs_f64().max(1e-3)).ceil());
             }
         }
         let need = (base + drain).max(slo_need).max(s.busy as f64) + s.reserved as f64;

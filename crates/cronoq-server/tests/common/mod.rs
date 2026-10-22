@@ -98,6 +98,8 @@ impl TestServer {
     }
 
     pub async fn start_cfg(cfg: Config) -> TestServer {
+        // reqwest is built without a bundled crypto provider; the tests use ring like the server.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let (bound_tx, bound_rx) = oneshot::channel();
         let join = tokio::spawn(cronoq_server::run(

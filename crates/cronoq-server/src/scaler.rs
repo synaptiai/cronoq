@@ -38,6 +38,9 @@ impl WebhookScaler {
             }
             s => anyhow::bail!("scaler webhook url must be http or https, not {s}"),
         }
+        // reqwest is built without a bundled crypto provider; use ring, like the listeners. An
+        // error means a provider is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())

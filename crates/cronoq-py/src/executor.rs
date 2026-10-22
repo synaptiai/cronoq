@@ -199,11 +199,11 @@ impl TaskContext {
         *slot = Some((event_loop, task));
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        if let Ok(slot) = self.slot.try_lock() {
-            if let Some((lp, task)) = &*slot {
-                visit.call(lp)?;
-                visit.call(task)?;
-            }
+        if let Ok(slot) = self.slot.try_lock()
+            && let Some((lp, task)) = &*slot
+        {
+            visit.call(lp)?;
+            visit.call(task)?;
         }
         Ok(())
     }

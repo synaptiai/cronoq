@@ -199,10 +199,10 @@ impl<P> Task<P> {
                 f.on_miss = p;
             }
         }
-        if self.spec.tags.iter().all(|(k, _)| &**k != "traceparent") {
-            if let Some(tp) = crate::telemetry::current_traceparent() {
-                self.spec.tags.push(("traceparent".into(), tp.into()));
-            }
+        if self.spec.tags.iter().all(|(k, _)| &**k != "traceparent")
+            && let Some(tp) = crate::telemetry::current_traceparent()
+        {
+            self.spec.tags.push(("traceparent".into(), tp.into()));
         }
         Ok(self.spec)
     }
@@ -232,10 +232,10 @@ pub(crate) fn validate<P>(s: &TaskSpec<P>) -> Result<(), Error> {
     {
         return Err(invalid("dependency keys must not contain NUL characters"));
     }
-    if let Some(r) = &s.retry {
-        if !r.multiplier.is_finite() || r.multiplier < 0.0 {
-            return Err(invalid("retry multiplier must be finite and non-negative"));
-        }
+    if let Some(r) = &s.retry
+        && (!r.multiplier.is_finite() || r.multiplier < 0.0)
+    {
+        return Err(invalid("retry multiplier must be finite and non-negative"));
     }
     Ok(())
 }
