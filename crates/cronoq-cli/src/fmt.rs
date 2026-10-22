@@ -82,6 +82,25 @@ pub fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX)
 }
 
+/// `s` with control characters (escape sequences, carriage returns, ...) shown as `\u{1b}`
+/// escapes, so that text from other clients cannot drive the terminal. `keep_lines` keeps
+/// newlines and tabs.
+pub fn clean(s: &str, keep_lines: bool) -> std::borrow::Cow<'_, str> {
+    let bad = |c: char| c.is_control() && !(keep_lines && (c == '\n' || c == '\t'));
+    if !s.chars().any(bad) {
+        return s.into();
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if bad(c) {
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out.into()
+}
+
 /// Labels as `k=v,k=v`, sorted.
 pub fn labels(l: &std::collections::HashMap<String, String>) -> String {
     let mut v: Vec<String> = l.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -91,6 +110,11 @@ pub fn labels(l: &std::collections::HashMap<String, String>) -> String {
 
 /// Left-aligned columns separated by two spaces; the last column is not padded.
 pub fn table(header: &[&str], rows: &[Vec<String>]) -> String {
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| clean(c, false).into_owned()).collect())
+        .collect();
+    let rows = &rows;
     let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for r in rows {
         for (i, c) in r.iter().enumerate() {
@@ -179,11 +203,11 @@ pub fn task_details(i: &pb::TaskInfo) -> String {
     let mut lines = vec![
         format!("id:        {}", i.id),
         format!("status:    {}", status(i.status)),
-        format!("pool:      {}", i.pool),
+        format!("pool:      {}", clean(&i.pool, false)),
     ];
     let mut opt = |name: &str, v: String| {
         if !v.is_empty() {
-            lines.push(format!("{:<10} {v}", format!("{name}:")));
+            lines.push(format!("{:<10} {}", format!("{name}:"), clean(&v, false)));
         }
     };
     opt("key", i.key.clone());
@@ -303,6 +327,23 @@ mod tests {
             &[vec!["1".into(), "a".into()], vec!["123".into(), "".into()]],
         );
         assert_eq!(t, "ID   NAME\n1    a\n123");
+        // Control characters in cells are shown, not sent to the terminal.
+        let t = table(&["KEY", "N"], &[vec!["\x1b[2Kx\ny".into(), "1".into()]]);
+        assert_eq!(t, "KEY               N\n\\u{1b}[2Kx\\u{a}y  1");
+    }
+
+    #[test]
+    fn control_characters_are_escaped() {
+        assert_eq!(clean("plain", false), "plain");
+        assert_eq!(clean("a\x1b]52;c;x\x07b", false), "a\\u{1b}]52;c;x\\u{7}b");
+        assert_eq!(clean("a\r\u{9b}b", false), "a\\u{d}\\u{9b}b");
+        assert_eq!(clean("line\n\tx\x1b", true), "line\n\tx\\u{1b}");
+        let details = task_details(&pb::TaskInfo {
+            key: "\x1b[1Afake".into(),
+            message: "boom\x1b[0m".into(),
+            ..Default::default()
+        });
+        assert!(!details.contains('\x1b'), "{details}");
     }
 
     #[test]

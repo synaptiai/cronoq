@@ -315,16 +315,22 @@ fn print_result(r: &pb::TaskResult, out: Output) -> ExitCode {
         Output::Text => {
             if let Some(o) = &r.output {
                 let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(o);
-                if std::io::stdout().is_terminal() && !o.ends_with(b"\n") {
-                    let _ = stdout.write_all(b"\n");
+                if std::io::stdout().is_terminal() {
+                    // Shown on a terminal: escape control characters. Redirected: unchanged.
+                    let text = String::from_utf8_lossy(o);
+                    let _ = stdout.write_all(fmt::clean(&text, true).as_bytes());
+                    if !o.ends_with(b"\n") {
+                        let _ = stdout.write_all(b"\n");
+                    }
+                } else {
+                    let _ = stdout.write_all(o);
                 }
             }
             if !ok {
                 let msg = if r.message.is_empty() {
                     String::new()
                 } else {
-                    format!(": {}", r.message)
+                    format!(": {}", fmt::clean(&r.message, false))
                 };
                 eprintln!("task {} {}{msg}", r.id, fmt::status(r.status));
             } else if r.output.is_none() && !r.output_available {
@@ -606,7 +612,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         if !ev.message.is_empty() {
                             line.push_str(&format!("  {}", ev.message));
                         }
-                        println!("{line}");
+                        println!("{}", fmt::clean(&line, false));
                     }
                 }
             }
@@ -632,7 +638,7 @@ fn main() -> ExitCode {
     match rt.block_on(run(cli)) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("error: {}", fmt::clean(&format!("{e:#}"), true));
             ExitCode::from(2)
         }
     }

@@ -159,6 +159,21 @@ async fn tasks_can_be_submitted_inspected_listed_and_cancelled() {
         stderr(&o)
     );
 
+    // Another client's key with an escape sequence is shown, not sent to the terminal.
+    let o = s
+        .cli(CLIENT, &["submit", "x", "--key", "evil\x1b[2Kkey"])
+        .await;
+    let evil = stdout(&o).trim().to_string();
+    for args in [vec!["tasks"], vec!["get", evil.as_str()]] {
+        let o = s.cli(ADMIN, &args).await;
+        assert!(!o.stdout.contains(&0x1b), "{args:?}: {}", stdout(&o));
+        assert!(
+            stdout(&o).contains("evil\\u{1b}[2Kkey"),
+            "{args:?}: {}",
+            stderr(&o)
+        );
+    }
+
     let o = s.cli(CLIENT, &["cancel", &id]).await;
     assert_eq!(stdout(&o).trim(), "cancelled");
     // Waiting on a task that did not succeed exits with 1.

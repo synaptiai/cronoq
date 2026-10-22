@@ -49,8 +49,10 @@ cronoq watch --pool llm --all               # every transition, until Ctrl-C
 `--file PATH` or `-` (stdin) as bytes; `--content-type` overrides the type the worker sees.
 `--after TASK` (repeatable, an id or a key) makes the task wait for another to succeed.
 
-`wait` and `submit --wait` write the task's output to standard output unchanged, so it can be
-redirected to a file.
+`wait` and `submit --wait` write the task's output to standard output unchanged when it is
+redirected to a file or a pipe. Keys, messages and other text come from other clients of the
+server, so on a terminal, control characters in them (and in outputs) are shown as escapes such
+as `\u{1b}` instead of being sent to the terminal.
 
 `-o json` prints JSON shaped like the [HTTP API](../reference/http.md), with ids and
 nanosecond times as strings so that tools reading numbers as doubles do not round them.
