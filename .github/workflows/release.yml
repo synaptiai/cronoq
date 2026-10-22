@@ -161,7 +161,7 @@ jobs:
             cp "target/${{ matrix.target }}/release/cronoq-server" "$name/"
             tar czf "$name.tar.gz" "$name"
           fi
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.PUBLISH == 'true'
         with:
           subject-path: cronoq-server-*.*
@@ -184,7 +184,7 @@ jobs:
           pattern: "{wheels-*,sdist}"
           merge-multiple: true
           path: dist
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
@@ -253,7 +253,7 @@ jobs:
           push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.PUBLISH == 'true'
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/cronoq
