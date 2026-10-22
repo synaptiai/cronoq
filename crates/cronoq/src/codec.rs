@@ -82,6 +82,26 @@ pub fn miss_name(p: MissPolicy) -> &'static str {
     }
 }
 
+/// Stored name of an overlap policy.
+pub fn overlap_name(p: OverlapPolicy) -> &'static str {
+    match p {
+        OverlapPolicy::Skip => "skip",
+        OverlapPolicy::Allow => "allow",
+        OverlapPolicy::Queue => "queue",
+        OverlapPolicy::QueueOnSuccess => "queue_on_success",
+    }
+}
+
+/// Overlap policy from its stored name (unknown names skip).
+pub fn overlap_from(s: &str) -> OverlapPolicy {
+    match s {
+        "allow" => OverlapPolicy::Allow,
+        "queue" => OverlapPolicy::Queue,
+        "queue_on_success" => OverlapPolicy::QueueOnSuccess,
+        _ => OverlapPolicy::Skip,
+    }
+}
+
 /// Miss policy from its stored name (unknown names run late).
 pub fn miss_from(s: &str) -> MissPolicy {
     match s {
@@ -240,6 +260,8 @@ struct RecurringJ {
     overlap: String,
     tolerance_ns: u128,
     on_miss: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deadline_after_ns: Option<u128>,
     template: TemplateJ,
 }
 
@@ -269,12 +291,10 @@ pub fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String {
     let j = RecurringJ {
         cron: cleaned(&r.cron),
         tz: r.tz.as_deref().map(cleaned),
-        overlap: match r.overlap {
-            OverlapPolicy::Skip => "skip".into(),
-            OverlapPolicy::Allow => "allow".into(),
-        },
+        overlap: overlap_name(r.overlap).into(),
         tolerance_ns: dur_ns128(r.tolerance),
         on_miss: miss_name(r.on_miss).into(),
+        deadline_after_ns: r.deadline_after.map(dur_ns128),
         template: TemplateJ {
             kind: cleaned(&t.kind),
             pool: cleaned(&t.pool),
@@ -330,13 +350,10 @@ pub fn recurring_from(
         cron: j.cron.into(),
         tz: j.tz.map(Into::into),
         template,
-        overlap: if j.overlap == "allow" {
-            OverlapPolicy::Allow
-        } else {
-            OverlapPolicy::Skip
-        },
+        overlap: overlap_from(&j.overlap),
         tolerance: ns128_dur(j.tolerance_ns),
         on_miss: miss_from(&j.on_miss),
+        deadline_after: j.deadline_after_ns.map(ns128_dur),
     })
 }
 

@@ -82,6 +82,9 @@ limited to a list of pools.
   message and body sizes, string and collection lengths, waits, request time, concurrent
   connections and HTTP/2 streams, and worker slots. Slow TLS handshakes and request headers time
   out after 10 seconds; HTTP/2 keepalive pings detect dead peers.
+- **Reserved occurrence keys.** Client keys of the form `<prefix>@<UTC time>` are refused, and a
+  recurring occurrence adopts an existing task only if it is that schedule's own occurrence, so a
+  client cannot stand in for a scheduled run by taking its key first.
 - **Input validation.** Durations, enumerations, references, resource requests and strings
   (including NUL characters, which PostgreSQL cannot store) are validated before they reach the
   engine; unknown JSON fields are rejected. Messages from workers are sanitized before they are

@@ -104,6 +104,7 @@ fn recovered_recurring_does_not_replay_missed_occurrences() {
         cron: "* * * * * *".into(),
         tz: None,
         template: job(0.1).kind("tick"),
+        deadline_after: None,
         overlap: OverlapPolicy::Allow,
         tolerance: secs(1.0),
         on_miss: MissPolicy::Skip,
@@ -113,7 +114,11 @@ fn recovered_recurring_does_not_replay_missed_occurrences() {
         Recovered {
             tasks: vec![],
             terminal: vec![],
-            recurring: vec![(spec, Some(t(1.0)))],
+            recurring: vec![RecoveredRecurring {
+                spec,
+                next: Some(t(1.0)),
+                last: None,
+            }],
             next_id: 1,
         },
     );
@@ -188,6 +193,7 @@ fn re_adding_recurring_does_not_duplicate_occurrence() {
         cron: "0 * * * * *".into(), // every minute at :00
         tz: None,
         template: job(1.0).kind("tick"),
+        deadline_after: None,
         overlap: OverlapPolicy::Skip,
         tolerance: secs(5.0),
         on_miss: MissPolicy::RunLate,
@@ -293,6 +299,7 @@ fn every_minute(template: TaskSpec<Job>) -> RecurringSpec<Job> {
         cron: "0 * * * * *".into(),
         tz: None,
         template,
+        deadline_after: None,
         overlap: OverlapPolicy::Allow,
         tolerance: Duration::from_secs(1),
         on_miss: MissPolicy::Skip,
@@ -333,10 +340,11 @@ fn recovered_schedule_with_removed_resource_is_not_armed() {
     let rec = Recovered {
         tasks: vec![],
         terminal: vec![],
-        recurring: vec![(
-            every_minute(TaskSpec::new(Job::ok(1.0)).resource("removed", 1)),
-            None,
-        )],
+        recurring: vec![RecoveredRecurring {
+            spec: every_minute(TaskSpec::new(Job::ok(1.0)).resource("removed", 1)),
+            next: None,
+            last: None,
+        }],
         next_id: 1,
     };
     s.core.recover(s.now, rec);

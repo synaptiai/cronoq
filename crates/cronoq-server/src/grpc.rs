@@ -826,11 +826,14 @@ impl pb::admin_server::Admin for AdminService {
             return Err(Status::invalid_argument("recurring schedule needs a name"));
         }
         let template = convert::task(r.template.unwrap_or_default(), &app.limits)?;
-        let mut rec = Recurring::new(r.name, r.cron, template).overlap(if r.allow_overlap {
-            OverlapPolicy::Allow
-        } else {
-            OverlapPolicy::Skip
-        });
+        let overlap = match pb::Overlap::try_from(r.overlap) {
+            Ok(pb::Overlap::Unspecified | pb::Overlap::Skip) => OverlapPolicy::Skip,
+            Ok(pb::Overlap::Allow) => OverlapPolicy::Allow,
+            Ok(pb::Overlap::Queue) => OverlapPolicy::Queue,
+            Ok(pb::Overlap::QueueOnSuccess) => OverlapPolicy::QueueOnSuccess,
+            Err(_) => return Err(Status::invalid_argument("unknown overlap policy")),
+        };
+        let mut rec = Recurring::new(r.name, r.cron, template).overlap(overlap);
         if !r.tz.is_empty() {
             rec = rec.tz(r.tz);
         }

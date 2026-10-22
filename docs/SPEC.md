@@ -236,9 +236,14 @@ Upcoming reservations also feed the autoscaler (§10), so capacity is pre-warmed
 - The fixed-start hit rate is `|actual − at| ≤ tolerance`.
 
 ### 6.4 Recurring (cron)
-`Scheduler::schedule_recurring(name, cron_expr, tz, template, overlap: Skip|Allow|Queue)`.
-Each occurrence is materialized as a fixed-start task when the previous one fires
-(look-ahead of 1 occurrence). Cron definitions are persisted.
+`Scheduler::add_recurring(Recurring::new(name, cron_expr, template).tz(..).overlap(..))`, with
+`overlap: Skip | Allow | Queue | QueueOnSuccess`. Each occurrence is materialized as a
+fixed-start task when the previous one fires (look-ahead of 1 occurrence). The template's
+relative deadline applies from each occurrence's start, and its key is a prefix
+(`<key>@<start in UTC, RFC 3339>`). `Queue` and `QueueOnSuccess` make each occurrence depend on
+the previous one (`on_complete` / `on_success`); the predecessor's task id is persisted with the
+schedule (`RecurringNext.last`), and adding the schedule again starts a new chain. Cron
+definitions are persisted.
 
 ---
 
@@ -659,7 +664,3 @@ Differences from, and clarifications of, the sections above:
 - **Python.** Executors run on the event loop that called `start()`. Plain functions run in
   the loop's default executor. `Scheduler.events()` streams status events (terminal ones by
   default, every transition with `emit_transitions=True`).
-
-### Known limitations (tracked for v0.2)
-- Recurring templates cannot carry a deadline, fixed start, key or dependencies (a relative
-  deadline per occurrence needs engine support); `add_recurring` rejects them.

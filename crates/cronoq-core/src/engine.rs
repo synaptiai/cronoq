@@ -213,6 +213,9 @@ struct Recurring<P> {
     last_task: Option<TaskId>,
     /// Latest occurrence already turned into a task.
     materialized: Option<Time>,
+    /// Task the next occurrence of a queued schedule depends on; reset when the schedule is
+    /// added again.
+    chain_last: Option<TaskId>,
 }
 
 enum Parent {
@@ -1590,16 +1593,18 @@ impl<P> Core<P> {
     /// Add or replace a recurring (cron) schedule.
     pub fn add_recurring(&mut self, now: Time, spec: RecurringSpec<P>) -> Result<(), String> {
         self.advance(now);
-        self.add_recurring_inner(now, spec, None)?;
+        self.add_recurring_inner(now, spec, None, None)?;
         self.pump();
         Ok(())
     }
 
+    /// `next` and `chain_last` are the stored state of a recovered schedule.
     fn add_recurring_inner(
         &mut self,
         now: Time,
         spec: RecurringSpec<P>,
         next: Option<Time>,
+        chain_last: Option<TaskId>,
     ) -> Result<(), String> {
         let cron = croner::parser::CronParser::builder()
             .seconds(croner::parser::Seconds::Optional)
@@ -1634,6 +1639,7 @@ impl<P> Core<P> {
             next: None,
             last_task,
             materialized,
+            chain_last,
         };
         let mut next = match next {
             Some(n) => Some(n),
@@ -1648,6 +1654,19 @@ impl<P> Core<P> {
         self.recurring.insert(name.clone(), r);
         self.arm_recurring(now, &name);
         Ok(())
+    }
+
+    /// Whether live task `id` is an occurrence of schedule `name` in `pool`.
+    fn is_occurrence_of(&self, id: TaskId, pool: u16, name: &str) -> bool {
+        let Some(&k) = self.index.get(&id) else {
+            return false;
+        };
+        let e = self.entry(k);
+        e.pool == pool
+            && e.tags.as_ref().is_some_and(|t| {
+                t.iter()
+                    .any(|(k, v)| &**k == "cronoq.recurring" && &**v == name)
+            })
     }
 
     /// Remove a recurring schedule. An occurrence already materialized still runs.
@@ -1718,11 +1737,13 @@ impl<P> Core<P> {
             let next = self.next_occurrence(r, now);
             let r = self.recurring.get_mut(&name).unwrap();
             r.next = next;
+            let last = r.chain_last;
             if self.cfg.persist {
                 self.actions
                     .push_back(Action::Persist(Box::new(Mutation::RecurringNext {
                         name: name.clone(),
                         next,
+                        last,
                     })));
             }
             self.arm_recurring(now, &name);
@@ -1735,17 +1756,44 @@ impl<P> Core<P> {
             tolerance: r.spec.tolerance,
             on_miss: r.spec.on_miss,
         });
-        spec.key = None;
+        spec.key = r
+            .spec
+            .template
+            .key
+            .as_ref()
+            .map(|k| occurrence_key(k, self.cfg.epoch_unix_nanos, at));
+        spec.deadline = r.spec.deadline_after.map(|d| at + d);
         spec.deps.clear();
+        let chain = match r.spec.overlap {
+            OverlapPolicy::Queue => Some(EdgeCond::OnComplete),
+            OverlapPolicy::QueueOnSuccess => Some(EdgeCond::OnSuccess),
+            OverlapPolicy::Skip | OverlapPolicy::Allow => None,
+        };
+        if let (Some(cond), Some(prev)) = (chain, r.chain_last) {
+            // A predecessor that left retention counts as succeeded (see `insert`).
+            spec.deps.push(Dep {
+                target: TaskRef::Id(prev),
+                cond,
+            });
+        }
         let prev = match r.spec.overlap {
             OverlapPolicy::Skip => r.last_task,
-            OverlapPolicy::Allow => None,
+            _ => None,
         };
         let (s, e) = self.reservation_interval(pool, &spec, spec.fixed_start.as_ref().unwrap());
         let fits = self.pools[pool as usize].reservations.max_overlap(s, e)
             < self.pools[pool as usize].cfg.reservation_limit();
         let mut task = None;
-        if fits {
+        let existing = self.existing_key(spec.key.as_deref());
+        if let Some(id) = existing.filter(|id| self.is_occurrence_of(*id, pool, &name)) {
+            // Already created (e.g. before a failover): the occurrence is that task.
+            task = Some(id);
+        } else if fits {
+            if existing.is_some() {
+                // Another task holds the key: run the occurrence without it rather than let that
+                // task stand in for the schedule.
+                spec.key = None;
+            }
             let id = self.alloc_id();
             let seq = self.alloc_seq();
             spec.tags.push(("cronoq.recurring".into(), name.clone()));
@@ -1759,14 +1807,17 @@ impl<P> Core<P> {
         let r = self.recurring.get_mut(&name).unwrap();
         if task.is_some() {
             r.last_task = task;
+            r.chain_last = task;
         }
         r.materialized = Some(at);
         r.next = next;
+        let last = r.chain_last;
         if self.cfg.persist {
             self.actions
                 .push_back(Action::Persist(Box::new(Mutation::RecurringNext {
                     name: name.clone(),
                     next,
+                    last,
                 })));
         }
         // At most one materialized occurrence ahead: the next one waits until this one is due.
@@ -1847,14 +1898,17 @@ impl<P> Core<P> {
                 }
             }
         }
-        for (spec, next) in rec.recurring {
-            let name = spec.name.clone();
+        for r in rec.recurring {
+            let name = r.spec.name.clone();
             if let Some(&(id, at)) = latest.get(&name) {
                 self.recurring_history.insert(name, (Some(id), Some(at)));
             }
             // A schedule the configuration no longer supports (removed pool or resource) is not
             // armed; it stays stored and comes back once the configuration supports it again.
-            if self.add_recurring_inner(now, spec, next).is_err() {
+            if self
+                .add_recurring_inner(now, r.spec, r.next, r.last)
+                .is_err()
+            {
                 self.totals.recurring_invalid += 1;
             }
         }
@@ -3077,5 +3131,15 @@ fn edge_satisfied(cond: EdgeCond, parent: TaskStatus) -> bool {
         EdgeCond::OnSuccess => parent == TaskStatus::Succeeded,
         EdgeCond::OnComplete => parent.is_terminal(),
         EdgeCond::OnFailure => matches!(parent, TaskStatus::Failed | TaskStatus::DeadLettered),
+    }
+}
+
+/// Key of a recurring occurrence: the template's key, `@`, and the start in UTC (RFC 3339).
+fn occurrence_key(prefix: &str, epoch_unix_nanos: i64, at: Time) -> Arc<str> {
+    let wall = epoch_unix_nanos as i128 + at.0 as i128;
+    let secs = wall.div_euclid(1_000_000_000) as i64;
+    match chrono::DateTime::from_timestamp(secs, 0) {
+        Some(t) => format!("{prefix}@{}", t.format("%Y-%m-%dT%H:%M:%SZ")).into(),
+        None => format!("{prefix}@{secs}").into(),
     }
 }

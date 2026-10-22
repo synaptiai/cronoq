@@ -25,7 +25,9 @@ First public release.
   (re-evaluated as the start approaches), zero-tolerance starts, and miss policies (`RunLate`,
   `Skip`, `Fail`).
 - Cron schedules with seconds, time zones and daylight-saving handling, whole-second
-  occurrences, overlap policies (`Skip`, `Allow`), and at most one late run after downtime.
+  occurrences, overlap policies (`Skip`, `Allow`, and `Queue` / `QueueOnSuccess` to run
+  occurrences one after another), deadlines relative to each occurrence, per-occurrence keys
+  (`<key>@<start>`), and at most one late run after downtime.
 - Dependencies by id or key with `on_success`, `on_failure` and `on_complete` edges, awaiting
   unknown keys with a timeout, cycle detection, atomic batches and idempotent keys.
 - Leases with heartbeats, per-attempt timeouts, retries with exponential backoff, jitter and

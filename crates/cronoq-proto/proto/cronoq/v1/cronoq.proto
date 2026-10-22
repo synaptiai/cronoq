@@ -351,12 +351,29 @@ message SnapshotResponse {
   uint64 workers_connected = 6;
 }
 
+// What a recurring occurrence does while the previous one is still live.
+enum Overlap {
+  OVERLAP_UNSPECIFIED = 0; // skip
+  OVERLAP_SKIP = 1;
+  OVERLAP_ALLOW = 2;
+  // Wait for the previous occurrence to finish, whatever its outcome.
+  OVERLAP_QUEUE = 3;
+  // Wait for the previous occurrence and run only if it succeeded; otherwise skip this and the
+  // following occurrences until the schedule is added again.
+  OVERLAP_QUEUE_ON_SUCCESS = 4;
+}
+
+// A cron schedule. The template's `deadline_in_s` is relative to each occurrence's start, its
+// `key` is a prefix (each occurrence's key is `<key>@<start in UTC, RFC 3339>`), and its
+// `tolerance_s` and `on_miss` apply to each occurrence. Absolute deadlines, start times and
+// dependencies are rejected.
 message RecurringRequest {
   string name = 1;
   string cron = 2;
   string tz = 3;
   TaskSpec template = 4;
-  bool allow_overlap = 5;
+  reserved 5;
+  Overlap overlap = 6;
 }
 
 message RemoveRecurringRequest {

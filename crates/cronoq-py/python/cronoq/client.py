@@ -762,24 +762,30 @@ class Client:
         *,
         tz: str | None = None,
         overlap: str = "skip",
-        allow_overlap: bool | None = None,
         **opts: Any,
     ) -> None:
         """Add a cron schedule (requires an admin token).
 
         Like the native ``Scheduler.add_recurring``: ``payload`` plus :func:`task` options, or a
-        prebuilt spec from :func:`task`. ``overlap`` is ``"skip"`` (default) or ``"allow"``;
-        ``allow_overlap`` is accepted as an older spelling."""
+        prebuilt spec from :func:`task`. ``overlap`` is ``"skip"`` (default), ``"allow"``,
+        ``"queue"`` or ``"queue_on_success"``. ``deadline_in`` is relative to each
+        occurrence's start; ``key`` is a prefix (each occurrence's key is
+        ``"<key>@<start in UTC>"``)."""
         if isinstance(payload, pb.TaskSpec):
             if opts:
                 raise TypeError("task options cannot be combined with a prebuilt TaskSpec")
             template = payload
         else:
             template = task(payload, **opts)
-        if overlap not in ("skip", "allow"):
-            raise ValueError("overlap must be 'skip' or 'allow'")
-        allow = (overlap == "allow") if allow_overlap is None else bool(allow_overlap)
-        req = pb.RecurringRequest(name=name, cron=cron, tz=tz or "", template=template, allow_overlap=allow)
+        policies = {
+            "skip": pb.OVERLAP_SKIP,
+            "allow": pb.OVERLAP_ALLOW,
+            "queue": pb.OVERLAP_QUEUE,
+            "queue_on_success": pb.OVERLAP_QUEUE_ON_SUCCESS,
+        }
+        if overlap not in policies:
+            raise ValueError(f"overlap must be one of {', '.join(policies)}")
+        req = pb.RecurringRequest(name=name, cron=cron, tz=tz or "", template=template, overlap=policies[overlap])
         await self._call(self._admin.AddRecurring, req)
 
     async def remove_recurring(self, name: str) -> bool:

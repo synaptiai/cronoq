@@ -210,6 +210,27 @@ async def test_recurring_schedule():
     assert set(ticks) == {"every-second"}
 
 
+async def test_queued_recurring_occurrences_have_keys_and_deadlines():
+    seen = []
+
+    async def run(ctx, payload):
+        seen.append((ctx.key, ctx.deadline))
+        await asyncio.sleep(1.5)  # longer than the interval: occurrences queue up
+
+    async with Scheduler([pool(run)]) as s:
+        await s.add_recurring("q", "* * * * * *", "tick", overlap="queue", key="q", deadline_in=30)
+        await asyncio.sleep(3.6)
+        assert await s.remove_recurring("q")
+        snap = await s.snapshot()
+        assert snap.totals["skipped"] == 0
+        with pytest.raises(ValueError, match="queue_on_success"):
+            await s.add_recurring("bad", "* * * * * *", "x", overlap="sometimes")
+    assert len(seen) >= 2
+    for key, deadline in seen:
+        assert key.startswith("q@") and key.endswith("Z")
+        assert deadline is not None
+
+
 async def test_backpressure_wait_reject_and_shed():
     async def slow(ctx, payload):
         await asyncio.sleep(0.05)

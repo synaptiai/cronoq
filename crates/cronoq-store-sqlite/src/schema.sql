@@ -49,5 +49,7 @@ CREATE TABLE IF NOT EXISTS cronoq_recurring (
     name              TEXT PRIMARY KEY,
     spec              TEXT NOT NULL,
     template_payload  BLOB NOT NULL,
-    next_unix_ns      INTEGER
+    next_unix_ns      INTEGER,
+    -- The occurrence a queued schedule chains to.
+    last_task_id      INTEGER
 );

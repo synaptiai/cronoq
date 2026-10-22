@@ -121,26 +121,32 @@ async fn huge_deadline_is_reported_in_the_future() {
     assert!(d > SystemTime::now(), "deadline reported as {d:?}");
 }
 
-// --- Recurring templates with one-shot fields are rejected instead of silently dropped.
+// --- Recurring templates with one-shot fields are rejected instead of silently dropped; a
+//     relative deadline applies to each occurrence.
 #[tokio::test]
-async fn recurring_template_with_deadline_is_rejected() {
+async fn recurring_template_with_absolute_deadline_is_rejected() {
     let s: Sched = Scheduler::builder()
         .pool(echo_pool(1))
         .build()
         .await
         .unwrap();
+    let at = SystemTime::now() + Duration::from_secs(60);
     let r = s
         .add_recurring(Recurring::new(
             "r",
             "* * * * * *",
-            Task::new(1).deadline_in(Duration::from_secs(10)),
+            Task::new(1).deadline_at(at),
         ))
         .await;
-    assert!(matches!(r, Err(Error::Config(m)) if m.contains("deadline")));
+    assert!(matches!(r, Err(Error::Config(m)) if m.contains("absolute deadline")));
     assert!(
-        s.add_recurring(Recurring::new("ok", "* * * * * *", Task::new(1)))
-            .await
-            .is_ok()
+        s.add_recurring(Recurring::new(
+            "ok",
+            "* * * * * *",
+            Task::new(1).deadline_in(Duration::from_secs(10))
+        ))
+        .await
+        .is_ok()
     );
 }
 
