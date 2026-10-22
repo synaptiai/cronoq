@@ -568,10 +568,10 @@ Differences from, and clarifications of, the sections above:
   recovered occurrence tagged `cronoq.recurring=<name>`.
 - **Engine time** makes no assumption about its epoch. Rates and accounting are anchored on
   the first `advance` call, so `Time` may be Unix nanoseconds.
-- **Cron occurrences** are computed at whole-second resolution. At a DST fall-back, croner
-  fires a daily job once. For an hourly job, croner skips the repeated wall-clock hour
-  rather than running it twice. We accept this behaviour; it is documented by tests in
-  `crates/cronoq-core/tests/review2.rs`.
+- **Cron occurrences** are computed at whole-second resolution. At a DST fall-back, a job
+  at a fixed time inside the repeated hour runs once, and an hourly job runs every real hour,
+  including both occurrences of the repeated local hour. Tests in
+  `crates/cronoq-core/tests/review2.rs` pin this behaviour.
 - **Recovery.** A task that was running when the leader died counts that attempt. If its
   retry budget is then exhausted, it is dead-lettered.
 - **Time base.** Engine time is Unix-epoch nanoseconds (`epoch_unix_nanos = 0`), so stored
