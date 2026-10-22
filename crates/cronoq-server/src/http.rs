@@ -642,16 +642,20 @@ async fn submit_batch(
     if body.tasks.len() > max {
         return Err(bad(format!("at most {max} tasks per batch")));
     }
-    let mut specs = Vec::with_capacity(body.tasks.len());
-    for (i, t) in body.tasks.into_iter().enumerate() {
-        let (spec, wait, _) = t.into_proto()?;
-        if wait {
-            return Err(bad(format!(
-                "tasks[{i}]: `wait` is not supported in batches; wait on each id"
-            )));
-        }
-        specs.push(spec);
-    }
+    let specs = body
+        .tasks
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let (spec, wait, _) = t.into_proto()?;
+            if wait {
+                return Err(bad(format!(
+                    "tasks[{i}]: `wait` is not supported in batches; wait on each id"
+                )));
+            }
+            Ok(spec)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
     let r = grpc::submit_batch(app, &p, specs).await?;
     Ok(Json(json!({
         "tasks": r.tasks.iter().map(|t| json!({"id": t.id.to_string(), "duplicate": t.duplicate})).collect::<Vec<_>>()
