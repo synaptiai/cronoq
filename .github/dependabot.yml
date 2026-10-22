@@ -14,6 +14,15 @@ updates:
     schedule:
       interval: weekly
 
+  # Pinned Python tooling used by CI.
+  - package-ecosystem: pip
+    directory: /.github/requirements
+    schedule:
+      interval: weekly
+    groups:
+      ci-python:
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

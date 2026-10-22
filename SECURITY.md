@@ -31,6 +31,17 @@ within 30 days, depending on severity and complexity. We will credit reporters i
 notes unless they prefer to remain anonymous. Please give us a reasonable time to release a fix
 before any public disclosure.
 
+## Ongoing checks
+
+- **Dependencies.** Every pull request and push runs `cargo deny` (RustSec advisories, yanked
+  crates, licenses and sources). The advisory check also runs daily on `main`. Dependabot opens
+  weekly update pull requests for Rust crates, Python packages, GitHub Actions and the container
+  base image, and security update pull requests as soon as an advisory is published.
+- **Code.** CodeQL scans the Rust, Python and GitHub Actions code on every pull request and
+  weekly. Secret scanning with push protection blocks committed credentials.
+- **Supply chain.** Actions are pinned to commit SHAs. Releases are built and published from
+  CI, never from a developer machine, and carry build provenance attestations.
+
 ## Threat model
 
 `cronoq-server` is designed to run inside a trusted network perimeter (a VPC or cluster), shared
