@@ -69,11 +69,12 @@ __all__ = [
     "TaskInfo",
     "Totals",
     "Worker",
+    "WorkerGroup",
     "task",
 ]
 
 #: Worker protocol version this client speaks.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 log = logging.getLogger("cronoq.client")
 
@@ -259,6 +260,15 @@ class Event:
 
 
 @dataclass(frozen=True)
+class WorkerGroup:
+    """Workers of a pool that share one label set."""
+
+    labels: Mapping[str, str]
+    capacity: int
+    busy: int
+
+
+@dataclass(frozen=True)
 class PoolSnapshot:
     name: str
     capacity: int
@@ -279,6 +289,7 @@ class PoolSnapshot:
     wait_p99: float
     cost: float
     workers_connected: int = 0
+    groups: tuple[WorkerGroup, ...] = ()
 
     @property
     def pending(self) -> int:
@@ -417,6 +428,7 @@ def task(
     deps: Iterable[tuple[TaskRef, str] | Mapping[str, Any]] = (),
     resources: Mapping[str, int] | None = None,
     tags: Mapping[str, str] | None = None,
+    labels: Mapping[str, str] | None = None,
     content_type: str | None = None,
 ) -> pb.TaskSpec:
     """Build a wire task spec (for :meth:`Client.submit_batch` and :meth:`Client.add_recurring`).
@@ -425,7 +437,7 @@ def task(
     timezone-aware ``datetime``); give at most one of each pair. ``after`` is a key, an id or a
     list of them (each must succeed first). ``deps`` entries are ``(ref, cond)`` tuples or
     ``{"ref": ..., "cond": ...}`` with ``cond`` in ``success``/``complete``/``failure`` (or the
-    ``on_``-prefixed spellings).
+    ``on_``-prefixed spellings). ``labels`` are worker labels the task requires.
     """
     if deadline_in is not None and deadline_at is not None:
         raise ValueError("use either deadline_in or deadline_at")
@@ -483,6 +495,8 @@ def task(
         spec.resources[name] = int(amount)
     for k, v in (tags or {}).items():
         spec.tags[k] = str(v)
+    for k, v in (labels or {}).items():
+        spec.labels[k] = str(v)
     return spec
 
 
@@ -730,6 +744,10 @@ class Client:
                     wait_p99=p.wait_p99_s,
                     cost=p.cost,
                     workers_connected=p.workers_connected,
+                    groups=tuple(
+                        WorkerGroup(labels=dict(g.labels), capacity=g.capacity, busy=g.busy)
+                        for g in p.groups
+                    ),
                 )
                 for p in r.pools
             ),
@@ -882,11 +900,13 @@ class Worker:
         backoff: tuple[float, float] = (0.1, 5.0),
         grace: float = 10.0,
         options: Sequence[tuple[str, Any]] | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> None:
         if slots < 1:
             raise ValueError("slots must be >= 1")
         self.pool = pool
         self.slots = slots
+        self.labels = {str(k): str(v) for k, v in (labels or {}).items()}
         self.name = name
         self.handler = handler
         self.reconnect = reconnect
@@ -1053,6 +1073,7 @@ class Worker:
                     slots=self.slots,
                     worker_name=self.name,
                     protocol_version=PROTOCOL_VERSION,
+                    labels=self.labels,
                 )
             )
         )

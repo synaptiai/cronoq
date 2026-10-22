@@ -218,7 +218,13 @@ pub struct Dispatch<P> {
     pub deadline: Option<Time>,
     /// Task tags.
     pub tags: crate::spec::Tags,
+    /// Labels of the worker group chosen for this attempt (empty for the unlabeled group);
+    /// a driver with several groups must run the attempt on a worker of this group.
+    pub group: Labels,
 }
+
+/// Sorted `(name, value)` labels of a worker group.
+pub type Labels = Arc<[(Arc<str>, Arc<str>)]>;
 
 impl<P> Clone for Dispatch<P> {
     fn clone(&self) -> Self {
@@ -233,6 +239,7 @@ impl<P> Clone for Dispatch<P> {
             timeout: self.timeout,
             deadline: self.deadline,
             tags: self.tags.clone(),
+            group: self.group.clone(),
         }
     }
 }

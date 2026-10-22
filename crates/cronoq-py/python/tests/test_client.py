@@ -247,6 +247,25 @@ async def test_json_payload_round_trip(server: Server, client: Client) -> None:
         assert sub.result.json() == {"sum": 5, "kind": "adder", "tags": {"team": "x"}}
 
 
+async def test_labeled_tasks_go_to_labeled_workers(server: Server, client: Client) -> None:
+    async def gpu(lease: Lease) -> Any:
+        return "gpu"
+
+    async def plain(lease: Lease) -> Any:
+        return "plain"
+
+    async with Running() as r:
+        await r.add(server, plain)
+        await r.add(server, gpu, labels={"gpu": "a100"})
+        await wait_capacity(client, 2)
+        for _ in range(3):
+            sub = await client.submit("x", labels={"gpu": "a100"}, wait=True)
+            assert sub.result.text() == "gpu"
+        async with Client(client.target, token=ADMIN) as admin:
+            groups = (await admin.snapshot()).pool("default").groups
+        assert [dict(g.labels) for g in groups] == [{}, {"gpu": "a100"}]
+
+
 async def test_failure_mapping(server: Server, client: Client) -> None:
     async def handler(lease: Lease) -> Any:
         text = lease.text()
@@ -683,7 +702,7 @@ async def test_server_grants_capped_slots(server: Server, client: Client) -> Non
     async with Running() as r:
         w = await r.add(server, held, slots=MAX_SLOTS_PER_WORKER + 6)
         assert w.granted_slots == MAX_SLOTS_PER_WORKER
-        assert w.server_protocol == 2 and w.max_message_bytes == MAX_MESSAGE_BYTES
+        assert w.server_protocol == 3 and w.max_message_bytes == MAX_MESSAGE_BYTES
         await wait_capacity(client, MAX_SLOTS_PER_WORKER)
         subs = [await client.submit(i) for i in range(MAX_SLOTS_PER_WORKER + 2)]
         for _ in range(200):

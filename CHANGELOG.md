@@ -38,6 +38,9 @@ First public release.
   retention window.
 - Shared semaphores and token buckets, with tasks waiting for a resource parked without holding
   a worker.
+- Worker labels: a pool's workers form groups by label set, a task can require labels and runs
+  only in a matching group, waiting without blocking the pool while none is free; tasks without
+  requirements prefer the least specialized group.
 - Bounded queues per pool, per class and globally, with `Wait`, `Reject`, `ShedLowest` and
   `ShedOldest` overflow policies. Shedding considers parked tasks, never sheds fixed-start
   tasks, and only happens for submissions that pass every other admission check.
@@ -86,9 +89,11 @@ First public release.
 
 - gRPC (`Tasks`, `Workers`, `Admin`) and HTTP/JSON APIs. HTTP returns ids as strings, has
   separate routes for ids and keys, and rejects unknown fields.
-- Remote workers over bidirectional streams, worker protocol version 2: granted slots, lease
-  metadata, `Nack` hand-backs, `Cancelled` reports and `Shutdown` notices for restarts and
-  leadership changes.
+- Remote workers over bidirectional streams, worker protocol version 3: granted slots, lease
+  metadata, `Nack` hand-backs, `Cancelled` reports, `Shutdown` notices for restarts and
+  leadership changes, and worker labels. Workers that speak an older version are refused.
+- Worker tokens and certificate mappings can restrict which labels a worker may claim
+  (`labels = ["name=value", ...]`).
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
   results; waits bounded by `limits.max_wait_s`.
 - `limits.key_retention_s` and `key_retention_max` set how long finished keys deduplicate
@@ -110,7 +115,8 @@ First public release.
 - Durable state with `Scheduler(..., store=SqliteStore(path))`: payloads and results are
   encoded with a codec (JSON by default, which never runs code when read back); several
   processes can share the file, with one leading and the others standing by.
-- `cronoq.client`: gRPC client and remote worker speaking worker protocol version 2.
+- `cronoq.client`: gRPC client and remote worker speaking worker protocol version 3, with
+  worker labels.
 - Wheels for CPython 3.14+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
 
 #### Project

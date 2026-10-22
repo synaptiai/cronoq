@@ -70,6 +70,8 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE cronoq_leader ADD COLUMN IF NOT EXISTS max_id BIGINT NOT NULL DEFAULT 0",
     // v3: the occurrence a queued recurring schedule chains to.
     "ALTER TABLE cronoq_recurring ADD COLUMN IF NOT EXISTS last_task_id BIGINT",
+    // v4: worker labels a task requires.
+    "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '[]'::jsonb",
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -739,6 +741,7 @@ fn decode_task(base: TimeBase, r: &sqlx::postgres::PgRow) -> Result<RecoveredTas
         .into_iter()
         .collect();
     spec.tags = tags_from(&r.get::<String, _>("tags"))?;
+    spec.labels = tags_from(&r.get::<String, _>("labels"))?;
     Ok(RecoveredTask {
         id: TaskId(r.get::<i64, _>("id") as u64),
         seq: r.get::<i64, _>("seq") as u64,
@@ -856,7 +859,8 @@ impl Store<Bytes, Bytes> for PgStore {
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
              fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
              retry::text AS retry, deps::text AS deps, resources::text AS resources, \
-             tags::text AS tags, attempt FROM cronoq_tasks WHERE NOT terminal ORDER BY id",
+             tags::text AS tags, labels::text AS labels, attempt FROM cronoq_tasks WHERE NOT terminal \
+             ORDER BY id",
         )
         .fetch_all(pool)
         .await
@@ -1004,6 +1008,7 @@ struct Inserts {
     deps: Vec<String>,
     resources: Vec<String>,
     tags: Vec<String>,
+    labels: Vec<String>,
     status: Vec<&'static str>,
     terminal: Vec<bool>,
     attempt: Vec<i32>,
@@ -1040,6 +1045,7 @@ impl Inserts {
         self.deps.push(deps_json(&s.deps));
         self.resources.push(resources_json(s));
         self.tags.push(tags_json(s));
+        self.labels.push(labels_json(s));
         self.status.push(QUEUED);
         self.terminal.push(false);
         self.attempt.push(0);
@@ -1065,16 +1071,16 @@ impl Inserts {
         sqlx::query(
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
-             retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message) \
+             retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, labels) \
              SELECT u.id, u.seq, u.arrival, u.pool, u.kind, u.priority, u.key, u.payload, u.deadline, u.fixed_at, \
              u.fixed_tol, u.fixed_miss, u.hint, u.timeout, u.retry::jsonb, u.deps::jsonb, u.resources::jsonb, \
-             u.tags::jsonb, u.status, u.terminal, u.attempt, u.updated, u.message \
+             u.tags::jsonb, u.status, u.terminal, u.attempt, u.updated, u.message, u.labels::jsonb \
              FROM UNNEST($1::bigint[], $2::bigint[], $3::bigint[], $4::text[], $5::text[], $6::smallint[], \
              $7::text[], $8::bytea[], $9::bigint[], $10::bigint[], $11::bigint[], $12::text[], $13::bigint[], \
              $14::bigint[], $15::text[], $16::text[], $17::text[], $18::text[], $19::text[], $20::bool[], \
-             $21::int[], $22::bigint[], $23::text[]) \
+             $21::int[], $22::bigint[], $23::text[], $24::text[]) \
              AS u(id, seq, arrival, pool, kind, priority, key, payload, deadline, fixed_at, fixed_tol, fixed_miss, \
-             hint, timeout, retry, deps, resources, tags, status, terminal, attempt, updated, message) \
+             hint, timeout, retry, deps, resources, tags, status, terminal, attempt, updated, message, labels) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
@@ -1100,6 +1106,7 @@ impl Inserts {
         .bind(self.attempt)
         .bind(self.updated)
         .bind(self.message)
+        .bind(self.labels)
         .execute(&mut **tx)
         .await
         .map_err(db)?;

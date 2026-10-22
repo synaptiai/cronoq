@@ -78,6 +78,11 @@ pub(crate) enum Cmd<P, O> {
         pool: PoolId,
         capacity: u32,
     },
+    SetGroupCapacity {
+        pool: PoolId,
+        labels: Vec<(Arc<str>, Arc<str>)>,
+        capacity: u32,
+    },
     AddRecurring {
         spec: RecurringSpec<P>,
         reply: Reply<Result<(), Error>>,
@@ -644,6 +649,15 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     self.core.set_capacity(now, pool, capacity);
                 }
             }
+            Cmd::SetGroupCapacity {
+                pool,
+                labels,
+                capacity,
+            } => {
+                if !closed {
+                    self.core.set_group_capacity(now, pool, &labels, capacity);
+                }
+            }
             Cmd::AddRecurring { spec, reply } => match self.core.add_recurring(now, spec) {
                 Ok(()) => self.defer(move |e| {
                     let _ = reply.send(match e {
@@ -1127,6 +1141,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     deadline: d.deadline.map(|t| self.clock.to_system(t)),
                     timeout: d.timeout,
                     tags: d.tags.clone(),
+                    group: d.group.clone(),
                     cancel: cancel.clone(),
                     heartbeat: self.heartbeat.clone(),
                     heartbeat_pending: Arc::new(AtomicBool::new(false)),

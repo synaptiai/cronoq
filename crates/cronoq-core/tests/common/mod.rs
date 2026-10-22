@@ -42,6 +42,7 @@ impl Job {
 pub struct Started {
     pub id: TaskId,
     pub at: Time,
+    pub group: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)>,
     pub pool: PoolId,
     pub attempt: u32,
     pub kind: String,
@@ -119,6 +120,7 @@ impl Sim {
                     self.started.push(Started {
                         id: d.id,
                         at: self.now,
+                        group: d.group.to_vec(),
                         pool: d.pool,
                         attempt: d.attempt,
                         kind: d.kind.to_string(),
@@ -210,6 +212,18 @@ impl Sim {
 
     pub fn running_count(&self) -> usize {
         self.running.len()
+    }
+
+    /// Worker group of the latest start of `id`.
+    pub fn dispatched_group(
+        &self,
+        id: TaskId,
+    ) -> Option<Vec<(std::sync::Arc<str>, std::sync::Arc<str>)>> {
+        self.started
+            .iter()
+            .rev()
+            .find(|s| s.id == id)
+            .map(|s| s.group.clone())
     }
 
     pub fn running_leases(&self) -> Vec<LeaseId> {

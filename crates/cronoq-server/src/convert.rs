@@ -224,6 +224,12 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
             limits.max_tags
         )));
     }
+    if spec.labels.len() > limits.max_tags {
+        return Err(Status::invalid_argument(format!(
+            "at most {} labels are allowed",
+            limits.max_tags
+        )));
+    }
     if spec.deps.len() > limits.max_deps {
         return Err(Status::invalid_argument(format!(
             "at most {} dependencies are allowed",
@@ -314,10 +320,49 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
         }
         t = t.tag(k, v);
     }
+    let mut labels: Vec<_> = spec.labels.into_iter().collect();
+    labels.sort();
+    for (k, v) in labels {
+        check_label(&k, &v, limits)?;
+        t = t.label(k, v);
+    }
     if !spec.content_type.is_empty() {
         t = t.tag(CONTENT_TYPE_TAG, spec.content_type);
     }
     Ok(t)
+}
+
+/// Check one worker label: a non-empty name and a value within the tag length limits.
+pub fn check_label(name: &str, value: &str, limits: &LimitsConfig) -> Result<(), Status> {
+    check_str("label name", name, limits.max_tag_len)?;
+    check_str("label value", value, limits.max_tag_len)?;
+    if name.is_empty() {
+        return Err(Status::invalid_argument("label names must not be empty"));
+    }
+    Ok(())
+}
+
+/// Worker labels from the wire, checked and sorted.
+pub fn worker_labels(
+    labels: std::collections::HashMap<String, String>,
+    limits: &LimitsConfig,
+) -> Result<cronoq::Labels, Status> {
+    if labels.len() > limits.max_tags {
+        return Err(Status::invalid_argument(format!(
+            "at most {} labels are allowed",
+            limits.max_tags
+        )));
+    }
+    let mut v = Vec::with_capacity(labels.len());
+    for (k, val) in labels {
+        check_label(&k, &val, limits)?;
+        v.push((
+            std::sync::Arc::<str>::from(k),
+            std::sync::Arc::<str>::from(val),
+        ));
+    }
+    v.sort();
+    Ok(v.into())
 }
 
 /// Map an engine status to the wire.
@@ -380,6 +425,19 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             wait_p99_s: p.wait_p99.as_secs_f64(),
             cost: p.cost,
             workers_connected: workers(&p.name) as u64,
+            groups: p
+                .groups
+                .iter()
+                .map(|g| pb::WorkerGroup {
+                    labels: g
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                    capacity: g.capacity,
+                    busy: g.busy,
+                })
+                .collect(),
         })
         .collect();
     pb::SnapshotResponse {

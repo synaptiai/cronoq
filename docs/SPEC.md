@@ -30,7 +30,8 @@ is needed; *where* work runs is pluggable.
 
 ### Non-goals (v0.1)
 - Active-active multi-leader scheduling (we provide active-passive HA).
-- Label/constraint bin-packing (we provide pools + counted resources).
+- General constraint solving or bin-packing. We provide pools, counted resources, and worker
+  labels: a task can require labels, and runs only in a group of workers that has them.
 - Exactly-once execution of arbitrary code. We provide at-least-once with leases, plus what
   effectively-once side effects need: attempt numbers that never repeat for a task (a fencing
   token), lease ids unique across leaders, stale reports ignored and counted, and key
@@ -557,8 +558,7 @@ overrides.
    hardening before going public.
 
 ## 19. Deferred (post v0.1)
-Multi-tenant weighted fairness,
-label/constraint matching, Go/TS SDKs, active-active sharding,
+Multi-tenant weighted fairness, Go/TS SDKs, active-active sharding,
 Kubernetes operator.
 
 ## 20. Resolved defaults

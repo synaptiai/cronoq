@@ -80,6 +80,7 @@ The body of `POST /v1/tasks` and each element of a batch's `tasks`. Every field 
 | `deps` | array | `[]` | `{"key": "..."}` or `{"id": "..."}`, with optional `"cond"`: `"on_success"` (default), `"on_complete"`, `"on_failure"`. |
 | `resources` | object | `{}` | `{"<resource>": units}` acquired for each attempt. At most `max_resources` entries. |
 | `tags` | object | `{}` | String labels passed to the worker. At most `max_tags`, each value at most `max_tag_len`. |
+| `labels` | object | `{}` | Worker labels the task requires: it runs only on workers that registered with all of them ([Worker labels](../concepts/labels.md)). Same limits as `tags`. |
 | `wait` | bool | `false` | `POST /v1/tasks` only: respond when the task has finished. Rejected in batches. |
 | `wait_timeout_s` | number | `limits.max_wait_s` | Upper bound for `wait`, capped at `limits.max_wait_s`. |
 
@@ -203,7 +204,9 @@ still holds them.
             "priority_adherence": 1.0, "fixed_start_hit_rate": 1.0,
             "utilization": 0.83, "schedule_efficiency": 0.80,
             "wait_p50_s": 0.2, "wait_p90_s": 1.4, "wait_p99_s": 2.9, "cost": 0.0,
-            "workers_connected": 2}],
+            "workers_connected": 2,
+            "groups": [{"labels": {}, "capacity": 3, "busy": 3},
+                       {"labels": {"gpu": "a100"}, "capacity": 1, "busy": 1}]}],
  "totals": {"submitted": 130, "dispatched": 124, "succeeded": 118, "failed": 1,
             "dead_lettered": 0, "cancelled": 2, "skipped": 0, "missed": 0, "shed": 0,
             "retries": 4, "timeouts": 1, "lease_expiries": 0,
@@ -222,6 +225,7 @@ still holds them.
 | `pools[].priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency` | Quality signals in `[0, 1]` over the metrics window. |
 | `pools[].wait_p50_s`, `wait_p90_s`, `wait_p99_s` | Time from submission to first start, over the metrics window. |
 | `pools[].cost` | Cost since start (`cost_per_worker_second` × worker-seconds). |
+| `pools[].groups` | Worker groups (workers with the same labels), unlabeled first: labels, slots and busy slots. |
 | `totals` | Lifetime counters of this leader since it started. |
 
 Field meanings: [Metrics and quality signals](../concepts/metrics.md).

@@ -161,6 +161,15 @@ impl TaskContext {
         }
         Ok(d)
     }
+    /// Labels of the worker group this attempt was assigned to (empty for unlabeled workers).
+    #[getter]
+    fn group<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (k, v) in self.inner.group.iter() {
+            d.set_item(&**k, &**v)?;
+        }
+        Ok(d)
+    }
     /// Seconds allowed for this attempt, if a timeout was set.
     #[getter]
     fn timeout(&self) -> Option<f64> {

@@ -397,6 +397,9 @@ pub struct TaskJson {
     resources: HashMap<String, u32>,
     #[serde(default)]
     tags: HashMap<String, String>,
+    /// Worker labels the task requires.
+    #[serde(default)]
+    labels: HashMap<String, String>,
     /// Wait for the result (single submissions only).
     #[serde(default)]
     wait: bool,
@@ -546,6 +549,7 @@ impl TaskJson {
             deps,
             resources: self.resources,
             tags: self.tags,
+            labels: self.labels,
         };
         Ok((spec, self.wait, self.wait_timeout_s))
     }
@@ -801,6 +805,9 @@ async fn snapshot(State(st): State<St>) -> Result<Json<Value>, ApiError> {
                 "utilization": p.utilization, "schedule_efficiency": p.schedule_efficiency,
                 "wait_p50_s": p.wait_p50_s, "wait_p90_s": p.wait_p90_s, "wait_p99_s": p.wait_p99_s,
                 "cost": p.cost, "workers_connected": p.workers_connected,
+                "groups": p.groups.iter().map(|g| json!({
+                    "labels": g.labels, "capacity": g.capacity, "busy": g.busy,
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();

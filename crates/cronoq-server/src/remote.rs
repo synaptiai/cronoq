@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
-use cronoq::{BoxFuture, Executor, Scheduler, TaskContext, TaskError, TaskId};
+use cronoq::{BoxFuture, Executor, Labels, Scheduler, TaskContext, TaskError, TaskId};
 use cronoq_proto::v1 as pb;
 use rustc_hash::FxHashMap;
 use tokio::sync::mpsc::error::TrySendError;
@@ -33,6 +33,8 @@ pub fn channel_capacity(slot_cap: u32) -> usize {
 
 struct WorkerConn {
     pool: Arc<str>,
+    /// Sorted labels (the worker's group).
+    labels: Labels,
     name: String,
     tx: WorkerTx,
     slots: u32,
@@ -62,12 +64,15 @@ struct State {
     closed: bool,
 }
 
+/// Where capacity changes go: `(pool, group labels, slots)`.
+type CapacityTx = OnceLock<mpsc::UnboundedSender<(Arc<str>, Labels, u32)>>;
+
 /// Connected workers and their leases, shared by all remote pools.
 #[derive(Default)]
 pub struct WorkerRegistry {
     state: Mutex<State>,
     /// Capacity totals, applied to the scheduler in the order they were computed.
-    capacity_tx: OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
+    capacity_tx: CapacityTx,
     /// Reports for leases the reporting worker does not hold (late, duplicate, aborted).
     stale_reports: std::sync::atomic::AtomicU64,
 }
@@ -92,13 +97,14 @@ impl WorkerRegistry {
 
     /// Start publishing capacity changes to `sched`.
     pub fn attach(&self, sched: Scheduler<Bytes, Bytes>) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<(Arc<str>, u32)>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<(Arc<str>, Labels, u32)>();
         if self.capacity_tx.set(tx).is_err() {
             return;
         }
         tokio::spawn(async move {
-            while let Some((pool, total)) = rx.recv().await {
-                let _ = sched.set_capacity(&pool, total).await;
+            while let Some((pool, labels, total)) = rx.recv().await {
+                let labels: Vec<(&str, &str)> = labels.iter().map(|(k, v)| (&**k, &**v)).collect();
+                let _ = sched.set_group_capacity(&pool, &labels, total).await;
             }
         });
     }
@@ -112,10 +118,12 @@ impl WorkerRegistry {
     }
 
     /// Add a worker. Returns `false` if the registry is already closed (shutting down).
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &self,
         id: u64,
         pool: Arc<str>,
+        labels: Labels,
         name: String,
         slots: u32,
         tx: WorkerTx,
@@ -129,6 +137,7 @@ impl WorkerRegistry {
             id,
             WorkerConn {
                 pool: pool.clone(),
+                labels: labels.clone(),
                 name,
                 tx,
                 slots,
@@ -136,7 +145,7 @@ impl WorkerRegistry {
                 cut,
             },
         );
-        Self::publish_capacity(&self.capacity_tx, &st, &pool);
+        Self::publish_capacity(&self.capacity_tx, &st, &pool, &labels);
         true
     }
 
@@ -147,8 +156,8 @@ impl WorkerRegistry {
             return;
         };
         w.slots = slots;
-        let pool = w.pool.clone();
-        Self::publish_capacity(&self.capacity_tx, &st, &pool);
+        let (pool, labels) = (w.pool.clone(), w.labels.clone());
+        Self::publish_capacity(&self.capacity_tx, &st, &pool, &labels);
     }
 
     /// Remove a worker; its in-flight leases fail as retryable.
@@ -181,11 +190,7 @@ impl WorkerRegistry {
         }
     }
 
-    fn remove_locked(
-        capacity_tx: &OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
-        st: &mut State,
-        worker: u64,
-    ) -> Vec<PendingLease> {
+    fn remove_locked(capacity_tx: &CapacityTx, st: &mut State, worker: u64) -> Vec<PendingLease> {
         let Some(w) = st.workers.remove(&worker) else {
             return Vec::new();
         };
@@ -199,13 +204,13 @@ impl WorkerRegistry {
             .into_iter()
             .filter_map(|l| st.pending.remove(&l))
             .collect();
-        Self::publish_capacity(capacity_tx, st, &w.pool);
+        Self::publish_capacity(capacity_tx, st, &w.pool, &w.labels);
         lost
     }
 
     /// Disconnect a worker that stopped reading its stream.
     fn evict_locked(
-        capacity_tx: &OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
+        capacity_tx: &CapacityTx,
         st: &mut State,
         worker: u64,
         lost: &mut Vec<PendingLease>,
@@ -217,21 +222,18 @@ impl WorkerRegistry {
         lost.extend(Self::remove_locked(capacity_tx, st, worker));
     }
 
-    /// Queue the pool's new total. Called with the state lock held, so updates are applied in
-    /// the same order as the membership changes that caused them.
-    fn publish_capacity(
-        capacity_tx: &OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
-        st: &State,
-        pool: &Arc<str>,
-    ) {
+    /// Queue the new total of the pool's group with `labels`. Called with the state lock held,
+    /// so updates are applied in the same order as the membership changes that caused them.
+    fn publish_capacity(capacity_tx: &CapacityTx, st: &State, pool: &Arc<str>, labels: &Labels) {
         let total: u64 = st
             .workers
             .values()
-            .filter(|w| &w.pool == pool)
+            .filter(|w| &w.pool == pool && &w.labels == labels)
             .map(|w| w.slots as u64)
             .sum();
         if let Some(tx) = capacity_tx.get() {
-            let _ = tx.send((pool.clone(), total.min(u32::MAX as u64) as u32));
+            let total = total.min(u32::MAX as u64) as u32;
+            let _ = tx.send((pool.clone(), labels.clone(), total));
         }
     }
 
@@ -294,10 +296,12 @@ impl WorkerRegistry {
                 .get(&worker)
                 .map(|w| w.pool.clone())
                 .unwrap_or_else(|| p.ctx.pool.clone());
+            let group = p.ctx.group.clone();
             match Self::offer_locked(
                 &self.capacity_tx,
                 &mut st,
                 &pool,
+                &group,
                 &p.msg,
                 &p.refused,
                 &mut lost,
@@ -325,9 +329,10 @@ impl WorkerRegistry {
     /// Send `msg` to a worker of `pool` with a free slot, skipping `exclude`. Workers whose
     /// channel is full are disconnected and the next worker is tried.
     fn offer_locked(
-        capacity_tx: &OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
+        capacity_tx: &CapacityTx,
         st: &mut State,
         pool: &Arc<str>,
+        group: &Labels,
         msg: &pb::Lease,
         exclude: &[u64],
         lost: &mut Vec<PendingLease>,
@@ -338,7 +343,12 @@ impl WorkerRegistry {
                 .workers
                 .range(start + 1..)
                 .chain(st.workers.range(..=start))
-                .find(|(id, w)| &w.pool == pool && w.busy < w.slots && !exclude.contains(id))
+                .find(|(id, w)| {
+                    &w.pool == pool
+                        && &w.labels == group
+                        && w.busy < w.slots
+                        && !exclude.contains(id)
+                })
                 .map(|(id, w)| (*id, w.tx.clone()));
             let Some((worker, tx)) = pick else {
                 return Offer::NoWorker;
@@ -375,7 +385,16 @@ impl WorkerRegistry {
             if st.closed {
                 return Err(TaskError::retryable("server is shutting down"));
             }
-            match Self::offer_locked(&self.capacity_tx, &mut st, pool, &msg, &[], &mut lost) {
+            let group = ctx.group.clone();
+            match Self::offer_locked(
+                &self.capacity_tx,
+                &mut st,
+                pool,
+                &group,
+                &msg,
+                &[],
+                &mut lost,
+            ) {
                 Offer::Sent(worker) => {
                     st.pending.insert(
                         lease,

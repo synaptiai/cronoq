@@ -22,7 +22,7 @@ use crate::io::*;
 use crate::lane::Lane;
 use crate::reservations::Reservations;
 use crate::rng::Rng;
-use crate::snapshot::{PoolSnapshot, Snapshot};
+use crate::snapshot::{GroupSnapshot, PoolSnapshot, Snapshot};
 use crate::spec::*;
 use crate::stats::{DurStats, P90Stats, Window};
 use crate::time::{Time, secs};
@@ -44,6 +44,8 @@ enum Loc {
     Edf,
     Due,
     Parked(ResourceId),
+    /// Waiting for a free slot in a worker group with the labels it requires.
+    LabelWait,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +91,8 @@ struct Entry<P> {
     resources: Option<Box<[(ResourceId, u32)]>>,
     tags: Option<Tags>,
     fixed: Option<Box<FixedInfo>>,
+    /// Required worker labels, interned in `Core::constraints` (0 = none).
+    constraint: u32,
 }
 
 struct Slot<P> {
@@ -101,6 +105,8 @@ struct Lease {
     key: Key,
     id: TaskId,
     pool: u16,
+    /// Worker group of the attempt.
+    group: u16,
     started: Time,
     expires: Time,
 }
@@ -143,9 +149,15 @@ impl Resource {
 
 struct Pool {
     cfg: PoolConfig,
+    /// Sum of the groups' capacity.
     capacity: u32,
+    /// Sum of the groups' busy slots.
     busy: u32,
     held: u32,
+    /// Worker groups by label set; group 0 is the unlabeled one.
+    groups: Vec<Group>,
+    /// Tasks waiting for a free slot in a group with the labels they require, by constraint.
+    label_waiters: BTreeMap<u32, VecDeque<Key>>,
     lanes: [Lane<Key>; Priority::COUNT],
     edf: [BTreeMap<(Time, u64), Key>; Priority::COUNT],
     due: BTreeMap<(Time, u64), Key>,
@@ -170,6 +182,33 @@ struct Pool {
     worker_secs: f64,
     cost: f64,
     dirty: bool,
+}
+
+/// Workers of a pool that share one label set.
+struct Group {
+    labels: Labels,
+    capacity: u32,
+    busy: u32,
+}
+
+impl Group {
+    #[inline]
+    fn free(&self) -> u32 {
+        self.capacity.saturating_sub(self.busy)
+    }
+}
+
+/// Whether sorted `group` labels include every pair of sorted `need`.
+fn satisfies(group: &[(Arc<str>, Arc<str>)], need: &[(Arc<str>, Arc<str>)]) -> bool {
+    need.iter().all(|n| group.binary_search(n).is_ok())
+}
+
+/// Labels sorted and without duplicates.
+fn normalize(labels: &[(Arc<str>, Arc<str>)]) -> Labels {
+    let mut v = labels.to_vec();
+    v.sort();
+    v.dedup();
+    v.into()
 }
 
 impl Pool {
@@ -285,6 +324,9 @@ pub struct Core<P> {
     timer_seq: u64,
     kinds: Vec<Arc<str>>,
     kind_index: StrMap<u32>,
+    /// Interned label requirements of tasks; index 0 is "none".
+    constraints: Vec<Labels>,
+    constraint_index: std::collections::HashMap<Labels, u32>,
     dur: FxHashMap<(u16, u32), DurStats>,
     recurring: BTreeMap<Arc<str>, Recurring<P>>,
     actions: VecDeque<Action<P>>,
@@ -344,6 +386,12 @@ impl<P> Core<P> {
                 capacity: initial,
                 busy: 0,
                 held: 0,
+                groups: vec![Group {
+                    labels: Arc::from(Vec::new()),
+                    capacity: initial,
+                    busy: 0,
+                }],
+                label_waiters: BTreeMap::new(),
                 lanes: Default::default(),
                 edf: Default::default(),
                 due: BTreeMap::new(),
@@ -414,6 +462,8 @@ impl<P> Core<P> {
             timer_seq,
             kinds: Vec::new(),
             kind_index: StrMap::default(),
+            constraints: vec![Arc::from(Vec::new())],
+            constraint_index: std::collections::HashMap::new(),
             dur: FxHashMap::default(),
             recurring: BTreeMap::new(),
             actions: VecDeque::new(),
@@ -988,7 +1038,18 @@ impl<P> Core<P> {
         } else {
             parked.min_by_key(|k| seq(k))
         };
-        let candidates = [lane, edf.copied(), parked.copied()].into_iter().flatten();
+        let waiting = p.label_waiters.values().flatten().filter(|k| {
+            self.slot_entry(**k)
+                .is_some_and(|e| e.loc == Loc::LabelWait && e.class as usize == class)
+        });
+        let waiting = if newest {
+            waiting.max_by_key(|k| seq(k))
+        } else {
+            waiting.min_by_key(|k| seq(k))
+        };
+        let candidates = [lane, edf.copied(), parked.copied(), waiting.copied()]
+            .into_iter()
+            .flatten();
         if newest {
             candidates.max_by_key(|k| seq(k))
         } else {
@@ -1051,6 +1112,143 @@ impl<P> Core<P> {
         (f.at - f.tolerance, f.at + d + f.tolerance)
     }
 
+    fn intern_constraint(&mut self, labels: &[(Arc<str>, Arc<str>)]) -> u32 {
+        if labels.is_empty() {
+            return 0;
+        }
+        let labels = normalize(labels);
+        if let Some(&c) = self.constraint_index.get(&labels) {
+            return c;
+        }
+        let c = self.constraints.len() as u32;
+        self.constraints.push(labels.clone());
+        self.constraint_index.insert(labels, c);
+        c
+    }
+
+    /// A group of `pool` with a free slot whose labels satisfy `constraint`: the least
+    /// specialized one (fewest labels), then the one with the most free slots, so groups with
+    /// rare labels stay available for tasks that need them.
+    fn select_group(&self, pool: u16, constraint: u32) -> Option<u16> {
+        let p = &self.pools[pool as usize];
+        if p.groups.len() == 1 {
+            let g = &p.groups[0];
+            return (g.free() > 0 && constraint == 0).then_some(0);
+        }
+        let need = &self.constraints[constraint as usize];
+        p.groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.free() > 0 && satisfies(&g.labels, need))
+            .min_by_key(|(_, g)| (g.labels.len(), std::cmp::Reverse(g.free())))
+            .map(|(i, _)| i as u16)
+    }
+
+    /// Park a ready task until a group with its labels has a free slot.
+    fn park_label(&mut self, k: Key) {
+        let (pool, c) = {
+            let e = self.entry(k);
+            (e.pool as usize, e.constraint)
+        };
+        self.entry_mut(k).loc = Loc::LabelWait;
+        self.pools[pool]
+            .label_waiters
+            .entry(c)
+            .or_default()
+            .push_back(k);
+    }
+
+    /// Move tasks waiting for labels that `group` satisfies back to their queues, oldest
+    /// first, up to the group's free slots.
+    fn wake_labels(&mut self, pool: u16, group: u16) {
+        let p = &self.pools[pool as usize];
+        if p.label_waiters.is_empty() {
+            return;
+        }
+        let labels = p.groups[group as usize].labels.clone();
+        let mut budget = p.groups[group as usize].free();
+        let matching: Vec<u32> = p
+            .label_waiters
+            .keys()
+            .copied()
+            .filter(|c| satisfies(&labels, &self.constraints[*c as usize]))
+            .collect();
+        while budget > 0 {
+            // The oldest head among the matching queues (dropping stale entries).
+            let mut best: Option<(u64, u32)> = None;
+            for &c in &matching {
+                loop {
+                    let front = self.pools[pool as usize]
+                        .label_waiters
+                        .get(&c)
+                        .and_then(|q| q.front().copied());
+                    match front {
+                        Some(k) if !self.slots_live(k, Loc::LabelWait) => {
+                            let q = self.pools[pool as usize].label_waiters.get_mut(&c);
+                            q.unwrap().pop_front();
+                        }
+                        _ => break,
+                    }
+                }
+                if let Some(&k) = self.pools[pool as usize]
+                    .label_waiters
+                    .get(&c)
+                    .and_then(|q| q.front())
+                {
+                    let seq = self.entry(k).seq;
+                    if best.is_none_or(|(s, _)| seq < s) {
+                        best = Some((seq, c));
+                    }
+                }
+            }
+            let Some((_, c)) = best else { break };
+            let q = self.pools[pool as usize].label_waiters.get_mut(&c).unwrap();
+            let k = q.pop_front().unwrap();
+            if q.is_empty() {
+                self.pools[pool as usize].label_waiters.remove(&c);
+            }
+            self.requeue_ready(k);
+            budget -= 1;
+        }
+        for c in matching {
+            if self.pools[pool as usize]
+                .label_waiters
+                .get(&c)
+                .is_some_and(|q| q.is_empty())
+            {
+                self.pools[pool as usize].label_waiters.remove(&c);
+            }
+        }
+    }
+
+    /// Whether `k` is a live entry currently at `loc`.
+    fn slots_live(&self, k: Key, loc: Loc) -> bool {
+        self.slot_entry(k).is_some_and(|e| e.loc == loc)
+    }
+
+    /// Put a ready task that was parked back into its lane or deadline queue.
+    fn requeue_ready(&mut self, k: Key) {
+        let (pool, class, seq, has_deadline, lst) = {
+            let e = self.entry(k);
+            (
+                e.pool,
+                e.class as usize,
+                e.seq,
+                e.deadline != Time::MAX,
+                e.lst,
+            )
+        };
+        let p = &mut self.pools[pool as usize];
+        if has_deadline {
+            p.edf[class].insert((lst, seq), k);
+            self.entry_mut(k).loc = Loc::Edf;
+        } else {
+            p.lanes[class].insert(seq, k);
+            self.entry_mut(k).loc = Loc::Lane;
+        }
+        self.mark_dirty(pool);
+    }
+
     fn intern_kind(&mut self, k: &Arc<str>) -> u32 {
         if let Some(&i) = self.kind_index.get(k) {
             return i;
@@ -1103,6 +1301,7 @@ impl<P> Core<P> {
                 })));
         }
         let kind = self.intern_kind(&spec.kind);
+        let constraint = self.intern_constraint(&spec.labels);
         let hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
         let resources = if spec.resources.is_empty() {
             None
@@ -1208,6 +1407,7 @@ impl<P> Core<P> {
                 Some(spec.tags.into())
             },
             fixed,
+            constraint,
         };
         let key = self.slab_insert(entry);
         self.index.insert(id, key);
@@ -1391,8 +1591,11 @@ impl<P> Core<P> {
         let pool = &mut self.pools[l.pool as usize];
         pool.account(now);
         pool.busy -= 1;
+        let g = &mut pool.groups[l.group as usize];
+        g.busy = g.busy.saturating_sub(1);
         pool.dirty = true;
         self.dirty.push(l.pool);
+        self.wake_labels(l.pool, l.group);
         let e = self.entry_mut(l.key);
         e.lease = None;
         let res = e.resources.clone();
@@ -1530,14 +1733,42 @@ impl<P> Core<P> {
         true
     }
 
-    /// Report the capacity actually available in a pool.
+    /// Report the capacity actually available in a pool (its unlabeled workers).
     pub fn set_capacity(&mut self, now: Time, pool: PoolId, capacity: u32) {
+        self.set_group_capacity(now, pool, &[], capacity);
+    }
+
+    /// Report the capacity of the workers of `pool` that carry exactly `labels`. Tasks that
+    /// require labels run only in groups whose labels include them; tasks without
+    /// requirements run in any group, preferring the least specialized. The pool's capacity is
+    /// the sum over its groups.
+    pub fn set_group_capacity(
+        &mut self,
+        now: Time,
+        pool: PoolId,
+        labels: &[(Arc<str>, Arc<str>)],
+        capacity: u32,
+    ) {
         self.advance(now);
+        let labels = normalize(labels);
         let p = &mut self.pools[pool.0 as usize];
         p.account(now);
-        p.capacity = capacity;
+        let g = match p.groups.iter().position(|g| g.labels == labels) {
+            Some(g) => g,
+            None => {
+                p.groups.push(Group {
+                    labels,
+                    capacity: 0,
+                    busy: 0,
+                });
+                p.groups.len() - 1
+            }
+        };
+        p.groups[g].capacity = capacity;
+        p.capacity = p.groups.iter().map(|g| g.capacity).sum();
         p.dirty = true;
         self.dirty.push(pool.0);
+        self.wake_labels(pool.0, g as u16);
         self.pump();
     }
 
@@ -2189,7 +2420,8 @@ impl<P> Core<P> {
         };
         let p = &mut self.pools[pool];
         match loc {
-            Loc::None | Loc::Parked(_) => {}
+            // Waiter queues are cleaned lazily.
+            Loc::None | Loc::Parked(_) | Loc::LabelWait => {}
             Loc::Lane => {
                 p.lanes[class].remove(seq);
             }
@@ -2456,11 +2688,17 @@ impl<P> Core<P> {
                 break;
             };
             self.unqueue(k);
+            // Unconstrained tasks always find a group here (free slots exist); a task that
+            // needs labels no free group has waits without blocking the rest of the pool.
+            let Some(group) = self.select_group(pool, self.entry(k).constraint) else {
+                self.park_label(k);
+                continue;
+            };
             if !self.try_acquire(k) {
                 self.park(k);
                 continue;
             }
-            self.dispatch(now, pool, k);
+            self.dispatch(now, pool, k, group);
         }
     }
 
@@ -2498,6 +2736,11 @@ impl<P> Core<P> {
         if !held && self.pools[pool as usize].free() == 0 {
             return;
         }
+        // A held slot is counted in a group's free slots; it stays due (and is retried when
+        // slots change) while no group with the required labels is free.
+        let Some(group) = self.select_group(pool, self.entry(k).constraint) else {
+            return;
+        };
         if !self.try_acquire(k) {
             self.schedule_refills(k);
             return;
@@ -2506,7 +2749,7 @@ impl<P> Core<P> {
         self.entry_mut(k).loc = Loc::None;
         // Frees the held slot for this dispatch and drops any hold still pending.
         self.release_hold(k);
-        self.dispatch(now, pool, k);
+        self.dispatch(now, pool, k, group);
     }
 
     fn score(&self, e: &Entry<P>, now: Time) -> f64 {
@@ -2658,7 +2901,7 @@ impl<P> Core<P> {
         }
     }
 
-    fn dispatch(&mut self, now: Time, pool: u16, k: Key) {
+    fn dispatch(&mut self, now: Time, pool: u16, k: Key, group: u16) {
         let lease = LeaseId(self.next_lease);
         self.next_lease += 1;
         self.remove_pending(k);
@@ -2688,6 +2931,7 @@ impl<P> Core<P> {
             let p = &mut self.pools[pool as usize];
             p.account(now);
             p.busy += 1;
+            p.groups[group as usize].busy += 1;
             let b = p.window.at(now);
             b.dispatched += 1;
             if higher_waiting {
@@ -2713,6 +2957,7 @@ impl<P> Core<P> {
                 key: k,
                 id,
                 pool,
+                group,
                 started: now,
                 expires,
             },
@@ -2738,6 +2983,9 @@ impl<P> Core<P> {
             timeout: (timeout_ns > 0).then(|| Duration::from_nanos(timeout_ns)),
             deadline: (e.deadline != Time::MAX).then_some(e.deadline),
             tags: e.tags.clone().unwrap_or_else(|| self.empty_tags.clone()),
+            group: self.pools[pool as usize].groups[group as usize]
+                .labels
+                .clone(),
         };
         let key = e.key.clone();
         self.actions.push_back(Action::Dispatch(d));
@@ -2851,6 +3099,15 @@ impl<P> Core<P> {
                 run_p99: w.run.quantile(0.99),
                 worker_seconds: p.worker_secs,
                 cost: p.cost,
+                groups: p
+                    .groups
+                    .iter()
+                    .map(|g| GroupSnapshot {
+                        labels: g.labels.to_vec(),
+                        capacity: g.capacity,
+                        busy: g.busy,
+                    })
+                    .collect(),
             });
         }
         Snapshot {
@@ -2927,11 +3184,26 @@ impl<P> Core<P> {
     #[doc(hidden)]
     pub fn check_invariants(&self) {
         let mut busy = vec![0u32; self.pools.len()];
+        let mut group_busy: Vec<Vec<u32>> =
+            self.pools.iter().map(|p| vec![0; p.groups.len()]).collect();
         for (lid, l) in &self.leases {
             let e = self.slot_entry(l.key).expect("lease points to live task");
             assert_eq!(e.status, TaskStatus::Running);
             assert_eq!(e.lease, Some(*lid));
             busy[l.pool as usize] += 1;
+            group_busy[l.pool as usize][l.group as usize] += 1;
+        }
+        for (i, p) in self.pools.iter().enumerate() {
+            assert_eq!(
+                p.capacity,
+                p.groups.iter().map(|g| g.capacity).sum::<u32>(),
+                "pool capacity is the sum of its groups"
+            );
+            let gb: Vec<u32> = p.groups.iter().map(|g| g.busy).collect();
+            assert_eq!(
+                gb, group_busy[i],
+                "group busy counts match running attempts"
+            );
         }
         let mut held = vec![0u32; self.pools.len()];
         let mut pending = vec![0usize; self.pools.len()];
@@ -2982,9 +3254,18 @@ impl<P> Core<P> {
                     assert_eq!(p.due.get(&(e.fixed.as_ref().unwrap().at, e.seq)), Some(k));
                     queued[e.pool as usize] += 1;
                 }
+                Loc::LabelWait => assert!(
+                    p.label_waiters
+                        .get(&e.constraint)
+                        .is_some_and(|q| q.contains(k)),
+                    "task {id} waiting for labels is missing from its waiter queue"
+                ),
                 Loc::Parked(_) | Loc::None => {}
             }
-            if matches!(e.loc, Loc::Lane | Loc::Edf | Loc::Due | Loc::Parked(_)) {
+            if matches!(
+                e.loc,
+                Loc::Lane | Loc::Edf | Loc::Due | Loc::Parked(_) | Loc::LabelWait
+            ) {
                 assert_eq!(e.status, TaskStatus::Ready);
             }
             if e.status == TaskStatus::Blocked {

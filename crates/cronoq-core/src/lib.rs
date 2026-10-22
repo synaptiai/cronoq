@@ -34,7 +34,7 @@ pub use autoscale::{AutoscaleState, Signals};
 pub use config::*;
 pub use engine::{Core, Totals};
 pub use io::*;
-pub use snapshot::{PoolSnapshot, Snapshot};
+pub use snapshot::{GroupSnapshot, PoolSnapshot, Snapshot};
 pub use spec::*;
 pub use stats::{DurStats, Histogram};
 pub use time::Time;

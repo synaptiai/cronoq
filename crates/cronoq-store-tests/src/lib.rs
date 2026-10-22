@@ -167,6 +167,8 @@ fn full_spec() -> TaskSpec<Bytes> {
         .resource("gpu_mem", 8)
         .tag("tenant", "acme")
         .tag("traceparent", "00-abc-def-01")
+        .label("gpu", "a100")
+        .label("zone", "eu")
 }
 
 /// Every mutation kind and spec field survives a commit and recovery; lookups by id and key
@@ -185,7 +187,8 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             .pool("gpu")
             .retry(RetryPolicy::none())
             .key("nightly")
-            .tag("a", "b"),
+            .tag("a", "b")
+            .label("gpu", "a100"),
         deadline_after: Some(Duration::from_millis(1500)),
         overlap: OverlapPolicy::QueueOnSuccess,
         tolerance: Duration::from_secs(5),
@@ -251,6 +254,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(a.deps, b.deps);
     assert_eq!(a.resources, b.resources);
     assert_eq!(a.tags, b.tags);
+    assert_eq!(a.labels, b.labels);
     let retrying = &rec.tasks[1];
     assert_eq!((retrying.id, retrying.attempt), (TaskId(11), 1));
     assert_eq!(rec.terminal.len(), 1);
@@ -285,6 +289,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
         ("report", "gpu", Some(RetryPolicy::none()))
     );
     assert_eq!(r.template.tags, recurring.template.tags);
+    assert_eq!(r.template.labels, recurring.template.labels);
 
     let rec12 = store
         .get_task(&TaskRef::Key("done".into()))

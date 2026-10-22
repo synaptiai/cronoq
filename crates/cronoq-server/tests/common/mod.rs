@@ -280,6 +280,7 @@ pub fn register(pool: &str, slots: u32) -> pb::WorkerMessage {
             slots,
             worker_name: "raw".into(),
             protocol_version: cronoq_proto::PROTOCOL_VERSION,
+            labels: Default::default(),
         })),
     }
 }

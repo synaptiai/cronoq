@@ -72,6 +72,9 @@ pub struct TaskContext {
     pub deadline: Option<SystemTime>,
     /// Per-attempt timeout, if any. The engine aborts the attempt when it elapses.
     pub timeout: Option<Duration>,
+    /// Labels of the worker group chosen for this attempt (empty for unlabeled workers). An
+    /// executor that fronts several kinds of workers runs the attempt on one with these labels.
+    pub group: cronoq_core::Labels,
     pub(crate) cancel: CancellationToken,
     pub(crate) heartbeat: HeartbeatFn,
     /// Set while a heartbeat for this lease is queued, so heartbeats coalesce.
@@ -105,6 +108,7 @@ impl TaskContext {
             tags: Arc::from(Vec::new()),
             deadline: None,
             timeout: None,
+            group: Arc::from(Vec::new()),
             cancel: CancellationToken::new(),
             heartbeat: Arc::new(|_, _| {}),
             heartbeat_pending: Arc::new(AtomicBool::new(false)),

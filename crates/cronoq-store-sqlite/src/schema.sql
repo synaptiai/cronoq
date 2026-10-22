@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS cronoq_tasks (
     deps                TEXT NOT NULL,
     resources           TEXT NOT NULL,
     tags                TEXT NOT NULL,
+    -- Worker labels the task requires.
+    labels              TEXT NOT NULL DEFAULT '[]',
     status              TEXT NOT NULL,
     terminal            INTEGER NOT NULL DEFAULT 0,
     attempt             INTEGER NOT NULL DEFAULT 0,
