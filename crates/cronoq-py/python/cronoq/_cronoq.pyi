@@ -160,6 +160,7 @@ class Task:
         deps: Sequence[Dep] | None = None,
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> Self: ...
 
 @final
@@ -170,6 +171,7 @@ class TaskContext:
     key: str | None
     pool: str
     tags: dict[str, str]
+    group: dict[str, str]
     timeout: float | None
     def is_cancelled(self) -> bool: ...
     @property
@@ -300,6 +302,7 @@ class Scheduler:
         deps: Sequence[Dep] | None = None,
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
@@ -322,6 +325,7 @@ class Scheduler:
         deps: Sequence[Dep] | None = None,
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
@@ -329,6 +333,9 @@ class Scheduler:
     def handle(self, target: _TaskRefLike) -> Awaitable[TaskHandle | None]: ...
     def snapshot(self) -> Awaitable[Snapshot]: ...
     def set_capacity(self, pool: str, capacity: int) -> Awaitable[None]: ...
+    def set_group_capacity(
+        self, pool: str, labels: Mapping[str, str], capacity: int
+    ) -> Awaitable[None]: ...
     def add_recurring(
         self,
         name: str,
@@ -349,6 +356,7 @@ class Scheduler:
         retry: RetryPolicy | None = None,
         resources: Mapping[str, int] | None = None,
         tags: Mapping[str, Any] | None = None,
+        labels: Mapping[str, str] | None = None,
     ) -> Awaitable[None]: ...
     def remove_recurring(self, name: str) -> Awaitable[bool]: ...
     def events(self, on_lag: Literal["skip", "raise"] = "skip") -> EventStream: ...

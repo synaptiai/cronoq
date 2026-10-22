@@ -246,6 +246,16 @@ pub fn tags_json<P>(spec: &TaskSpec<P>) -> String {
     serde_json::to_string(&v).expect("serializable")
 }
 
+/// Required worker labels as a JSON array of `[name, value]`.
+pub fn labels_json<P>(spec: &TaskSpec<P>) -> String {
+    let v: Vec<(Cow<'_, str>, Cow<'_, str>)> = spec
+        .labels
+        .iter()
+        .map(|(k, v)| (clean(k), clean(v)))
+        .collect();
+    serde_json::to_string(&v).expect("serializable")
+}
+
 /// Tags from their JSON array.
 pub fn tags_from(v: &str) -> Result<Vec<Tag>, String> {
     let t: Vec<(String, String)> = serde_json::from_str(v).map_err(|e| e.to_string())?;
@@ -283,6 +293,8 @@ struct TemplateJ {
     deps: Vec<DepJ>,
     resources: Vec<(String, u32)>,
     tags: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<(String, String)>,
 }
 
 /// A recurring schedule (without its template payload) as a JSON document.
@@ -308,6 +320,11 @@ pub fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String {
             resources: t.resources.iter().map(|(n, a)| (cleaned(n), *a)).collect(),
             tags: t
                 .tags
+                .iter()
+                .map(|(k, v)| (cleaned(k), cleaned(v)))
+                .collect(),
+            labels: t
+                .labels
                 .iter()
                 .map(|(k, v)| (cleaned(k), cleaned(v)))
                 .collect(),
@@ -342,6 +359,11 @@ pub fn recurring_from(
         .collect();
     template.tags = t
         .tags
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+    template.labels = t
+        .labels
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect();

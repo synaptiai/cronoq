@@ -104,6 +104,9 @@ The worker:
 - on `stop()`, stops taking leases, lets running ones finish for up to `grace` seconds, then
   cancels the rest.
 
+Pass `labels={"gpu": "a100"}` to register the worker with labels: tasks submitted with
+`labels=` run only on workers that have them ([Worker labels](../concepts/labels.md)).
+
 Raise `Reject` to give a lease back unrun (the server offers it to another worker of the pool
 without counting an attempt), and `CancelTask` to end the task as `cancelled`. For mTLS, pass
 `credentials=grpc.ssl_channel_credentials(root, key, cert)`.
@@ -137,7 +140,7 @@ run_worker(opts, |lease| async move {
 handlers for up to `drain_timeout` (30 s). It returns an error only for problems retrying cannot
 fix, such as a rejected token or an unknown pool. Use `identity: Some((cert_pem, key_pem))` for
 mTLS. TLS settings need an `https://` endpoint: with `http://` the worker returns an error
-rather than connecting in plaintext.
+rather than connecting in plaintext. `.label("gpu", "a100")` registers the worker with a label.
 
 ## Any language over gRPC
 

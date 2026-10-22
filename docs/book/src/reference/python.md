@@ -44,6 +44,7 @@ the scheduler stops and further calls raise `SchedulerError`; calls before `star
 | `await handle(target)` | `TaskHandle \| None` | Attach to an existing task. |
 | `await snapshot()` | `Snapshot` | Metrics and quality signals. |
 | `await set_capacity(pool, n)` | | Report capacity for externally managed pools. |
+| `await set_group_capacity(pool, labels, n)` | | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"`, `"allow"`, `"queue"` or `"queue_on_success"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `key` (a prefix: each occurrence gets `"<key>@<start in UTC>"`), `deadline_in` (relative to each occurrence's start), `duration_hint`, `timeout`, `retry`, `resources`, `tags`. |
 | `await remove_recurring(name)` | `bool` | `False` if no such schedule. |
 | `events(on_lag="skip")` | `EventStream` | Status events; see [below](#status-events). |
@@ -70,6 +71,7 @@ Accepted by `submit`, `enqueue` and `Task(...)`.
 | `deps` | `list[Dep]` | Dependencies with conditions. |
 | `resources` | `dict[str, int]` | Units of named resources per attempt. |
 | `tags` | `dict` | Labels (values converted to `str`). |
+| `labels` | `dict[str, str]` | Worker labels the task requires; it runs only in a group of workers that has them. |
 
 Strings must not contain NUL characters.
 
@@ -153,7 +155,7 @@ executors.
 | `RetryPolicy(max_attempts=3, initial_backoff=1.0, multiplier=2.0, max_backoff=60.0, jitter=True)` | `RetryPolicy.none()` disables retries. |
 | `AutoscaleConfig(interval=1.0, target_utilization=0.75, drain_time=30.0, slo=None, reservation_horizon=60.0, stabilization_window=60.0, cooldown=30.0, max_step_up_abs=4, max_step_down=1, cost_per_worker_second=0.0)` | `slo` maps priority names to wait objectives in seconds. |
 | `Resource.semaphore(name, permits)` / `Resource.token_bucket(name, rate, burst)` | Shared resources. |
-| `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
+| `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `group` (labels of the worker group the attempt was assigned to), `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
 | `TaskHandle` | Awaitable; `id`, `duplicate`, `await result()`, `done()`, `cancel()`. |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
 | `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`. |
@@ -177,7 +179,7 @@ Any other exception from an executor is a retryable failure. See
 
 ## `cronoq.client`
 
-The gRPC client and remote worker for `cronoq-server`, speaking worker protocol version 2
+The gRPC client and remote worker for `cronoq-server`, speaking worker protocol version 3
 (`cronoq.client.PROTOCOL_VERSION`). Both can be created outside a running loop; they connect on
 first use.
 
@@ -225,7 +227,7 @@ Builds a `TaskSpec` for `submit_batch` and `add_recurring`. Options: `pool`, `ki
 Payloads: `bytes` are sent as-is, `str` as UTF-8 text, other values as JSON
 (`application/json`). Worker outputs are encoded the same way.
 
-### `Worker(target, pool, handler, *, slots=1, token=None, name="", tls=False, credentials=None, reconnect=True, backoff=(0.1, 5.0), grace=10.0, options=None)`
+### `Worker(target, pool, handler, *, slots=1, token=None, name="", tls=False, credentials=None, reconnect=True, backoff=(0.1, 5.0), grace=10.0, options=None, labels=None)`
 
 | Member | Description |
 |---|---|

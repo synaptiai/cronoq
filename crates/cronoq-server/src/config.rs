@@ -390,6 +390,8 @@ pub struct TokenConfig {
     pub role: Role,
     /// Restrict a client or worker token to these pools.
     pub pools: Option<Vec<String>>,
+    /// Worker labels (`"name=value"`) a worker with this token may claim (default: any).
+    pub labels: Option<Vec<String>>,
 }
 
 impl fmt::Debug for TokenConfig {
@@ -413,6 +415,8 @@ pub struct CertRoleConfig {
     pub role: Role,
     /// Optional pool allow-list.
     pub pools: Option<Vec<String>>,
+    /// Worker labels (`"name=value"`) a worker with this certificate may claim (default: any).
+    pub labels: Option<Vec<String>>,
 }
 
 /// Scheduler state storage.

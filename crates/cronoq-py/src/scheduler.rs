@@ -368,7 +368,7 @@ impl Scheduler {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None
+        tags=None, labels=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn submit<'py>(
@@ -392,6 +392,7 @@ impl Scheduler {
         deps: Option<Vec<Dep>>,
         resources: Option<&Bound<'py, PyDict>>,
         tags: Option<&Bound<'py, PyDict>>,
+        labels: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -411,6 +412,7 @@ impl Scheduler {
             deps,
             resources,
             tags,
+            labels,
         )?;
         let s = self.sched(py)?;
         let task = self.task(py, &opts, payload)?;
@@ -425,7 +427,7 @@ impl Scheduler {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None
+        tags=None, labels=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn enqueue<'py>(
@@ -449,6 +451,7 @@ impl Scheduler {
         deps: Option<Vec<Dep>>,
         resources: Option<&Bound<'py, PyDict>>,
         tags: Option<&Bound<'py, PyDict>>,
+        labels: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -468,6 +471,7 @@ impl Scheduler {
             deps,
             resources,
             tags,
+            labels,
         )?;
         let s = self.sched(py)?;
         let task = self.task(py, &opts, payload)?;
@@ -560,11 +564,34 @@ impl Scheduler {
         })
     }
 
+    /// Report the slots of the workers of `pool` that carry exactly `labels` (externally
+    /// managed pools). Tasks submitted with `labels=` run only in matching groups;
+    /// `ctx.group` tells the executor which group an attempt was assigned to.
+    fn set_group_capacity<'py>(
+        &self,
+        py: Python<'py>,
+        pool: String,
+        labels: std::collections::HashMap<String, String>,
+        capacity: u32,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        spawn_py(py, async move {
+            let pairs: Vec<(&str, &str)> = labels
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            s.set_group_capacity(&pool, &pairs, capacity)
+                .await
+                .map_err(to_pyerr)?;
+            Ok(NONE)
+        })
+    }
+
     /// Run `payload` on a cron schedule (5 fields, or 6 with leading seconds).
     #[pyo3(signature = (
         name, cron, payload, *, tz=None, overlap="skip", tolerance=1.0, on_miss="run_late",
         priority=None, pool=None, kind=None, key=None, deadline_in=None, duration_hint=None,
-        timeout=None, retry=None, resources=None, tags=None
+        timeout=None, retry=None, resources=None, tags=None, labels=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn add_recurring<'py>(
@@ -587,6 +614,7 @@ impl Scheduler {
         retry: Option<RetryPolicy>,
         resources: Option<&Bound<'py, PyDict>>,
         tags: Option<&Bound<'py, PyDict>>,
+        labels: Option<&Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -606,6 +634,7 @@ impl Scheduler {
             None,
             resources,
             tags,
+            labels,
         )?;
         let mut r = Recurring::new(name, cron, self.task(py, &opts, payload)?)
             .overlap(parse_overlap(overlap)?)

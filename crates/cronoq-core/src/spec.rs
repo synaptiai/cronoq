@@ -280,6 +280,9 @@ pub struct TaskSpec<P> {
     pub resources: SmallVec<[(Arc<str>, u32); 2]>,
     /// Labels passed through to executors (e.g. `traceparent`, tenant).
     pub tags: Vec<(Arc<str>, Arc<str>)>,
+    /// Worker labels this task requires: it runs only on a worker group whose labels include
+    /// every `(name, value)` pair (see [`Core::set_group_capacity`](crate::Core::set_group_capacity)).
+    pub labels: Vec<(Arc<str>, Arc<str>)>,
 }
 
 impl<P> Clone for TaskSpec<P> {
@@ -298,6 +301,7 @@ impl<P> Clone for TaskSpec<P> {
             deps: self.deps.clone(),
             resources: self.resources.clone(),
             tags: self.tags.clone(),
+            labels: self.labels.clone(),
         }
     }
 }
@@ -319,6 +323,7 @@ impl<P> TaskSpec<P> {
             deps: self.deps,
             resources: self.resources,
             tags: self.tags,
+            labels: self.labels,
         }
     }
 
@@ -342,6 +347,7 @@ impl<P> TaskSpec<P> {
             deps: Vec::new(),
             resources: SmallVec::new(),
             tags: Vec::new(),
+            labels: Vec::new(),
         }
     }
     /// Set the kind.
@@ -406,6 +412,11 @@ impl<P> TaskSpec<P> {
     /// Add a label.
     pub fn tag(mut self, k: impl Into<Arc<str>>, v: impl Into<Arc<str>>) -> Self {
         self.tags.push((k.into(), v.into()));
+        self
+    }
+    /// Require a worker label (`name = value`) to run.
+    pub fn label(mut self, name: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> Self {
+        self.labels.push((name.into(), value.into()));
         self
     }
 }

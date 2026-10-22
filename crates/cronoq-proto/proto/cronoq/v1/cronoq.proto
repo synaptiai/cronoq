@@ -94,6 +94,8 @@ message TaskSpec {
   repeated Dep deps = 16;
   map<string, uint32> resources = 17;
   map<string, string> tags = 18;
+  // Worker labels this task requires: it runs only on workers that registered with all of them.
+  map<string, string> labels = 19;
 }
 
 message SubmitRequest {
@@ -197,12 +199,16 @@ service Tasks {
 // Protocol version spoken by this definition.
 // 1: initial version.
 // 2: Nack/Cancelled outcomes, Shutdown, lease metadata, Complete.content_type.
+// 3: worker labels (Register.labels); lease ids carry the leader epoch. Servers refuse workers
+//    that speak an older version.
 
 message Register {
   string pool = 1;
   uint32 slots = 2;
   string worker_name = 3;
   uint32 protocol_version = 4;      // 0 is treated as 1
+  // Labels of this worker; tasks that require labels are leased only to matching workers.
+  map<string, string> labels = 5;
 }
 
 message Heartbeat {
@@ -322,6 +328,14 @@ message PoolSnapshot {
   double wait_p99_s = 17;
   double cost = 18;
   uint64 workers_connected = 19;
+  // Worker groups (workers with the same labels), unlabeled first.
+  repeated WorkerGroup groups = 20;
+}
+
+message WorkerGroup {
+  map<string, string> labels = 1;
+  uint32 capacity = 2;
+  uint32 busy = 3;
 }
 
 message Totals {

@@ -75,7 +75,9 @@ exist. Keys, however, are one namespace across pools (see the threat model).
 9. **Run the provided image.** It is distroless, runs as a non-root user and has no shell.
    Validate configuration changes in CI with `cronoq-server --config cronoq.toml --check`.
 10. **Treat workers as trusted with their pools.** A worker sees every payload of the pools it
-    serves and decides their outputs. Give each worker fleet credentials for its own pools only.
+    serves and decides their outputs. Give each worker fleet credentials for its own pools only,
+    and, where workers carry labels, a `labels = [...]` allow-list so a credential cannot claim
+    labels of another fleet.
 
 ## Reporting vulnerabilities
 

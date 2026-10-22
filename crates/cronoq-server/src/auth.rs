@@ -24,6 +24,9 @@ pub struct Principal {
     pub role: Role,
     /// Pools the caller may use (`None` = all).
     pub pools: Option<Arc<[Arc<str>]>>,
+    /// Worker labels a worker with these credentials may claim, as `name=value` pairs
+    /// (`None` = any).
+    pub labels: Option<cronoq::Labels>,
 }
 
 impl Principal {
@@ -32,12 +35,20 @@ impl Principal {
         Principal {
             role: Role::Admin,
             pools: None,
+            labels: None,
         }
     }
 
     /// Whether this principal may act as `required`.
     pub fn has_role(&self, required: Role) -> bool {
         self.role == Role::Admin || self.role == required
+    }
+
+    /// Whether a worker with these credentials may claim every one of `labels`.
+    pub fn may_claim_labels(&self, labels: &[(Arc<str>, Arc<str>)]) -> bool {
+        self.labels
+            .as_ref()
+            .is_none_or(|allowed| labels.iter().all(|l| allowed.contains(l)))
     }
 
     /// Whether this principal may use `pool`.
@@ -73,6 +84,20 @@ impl fmt::Debug for Auth {
             .field("cert_mappings", &self.certs.len())
             .finish()
     }
+}
+
+/// Parse `name=value` label pairs from the configuration.
+fn labels(v: &Option<Vec<String>>) -> anyhow::Result<Option<cronoq::Labels>> {
+    let Some(v) = v else { return Ok(None) };
+    v.iter()
+        .map(|l| match l.split_once('=') {
+            Some((k, val)) if !k.is_empty() => Ok((Arc::from(k), Arc::from(val))),
+            _ => Err(anyhow::anyhow!(
+                "auth label '{l}' must have the form name=value"
+            )),
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(|v| Some(v.into()))
 }
 
 fn digest(token: &str) -> [u8; 32] {
@@ -118,20 +143,24 @@ impl Auth {
                 principal: Principal {
                     role: t.role,
                     pools: pools(&t.pools),
+                    labels: labels(&t.labels)?,
                 },
             });
         }
         let certs = cfg
             .certs
             .iter()
-            .map(|c| CertEntry {
-                dns_name: c.dns_name.to_ascii_lowercase(),
-                principal: Principal {
-                    role: c.role,
-                    pools: pools(&c.pools),
-                },
+            .map(|c| {
+                Ok(CertEntry {
+                    dns_name: c.dns_name.to_ascii_lowercase(),
+                    principal: Principal {
+                        role: c.role,
+                        pools: pools(&c.pools),
+                        labels: labels(&c.labels)?,
+                    },
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<_>>()?;
         Ok(Auth {
             tokens: Arc::new(tokens),
             certs: Arc::new(certs),
@@ -276,6 +305,7 @@ mod tests {
             token_env: None,
             role,
             pools: pools.map(|p| p.into_iter().map(String::from).collect()),
+            labels: None,
         }
     }
 

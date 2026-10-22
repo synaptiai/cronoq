@@ -7,7 +7,7 @@ crate in Rust, or use the generated stubs shipped in the Python package (`cronoq
 The server listens on `server.grpc_addr` (default `127.0.0.1:7070`), with TLS when
 `[server.tls]` is configured.
 
-This page describes **worker protocol version 2**.
+This page describes **worker protocol version 3**.
 
 ## Conventions
 
@@ -59,6 +59,7 @@ This page describes **worker protocol version 2**.
 | `deps` | repeated `Dep` | `{target: TaskRef, cond: EdgeCond}`. |
 | `resources` | map<string, uint32> | Units of each named resource per attempt. |
 | `tags` | map<string, string> | Labels passed to the worker. |
+| `labels` | map<string, string> | Worker labels the task requires ([Worker labels](../concepts/labels.md)). |
 
 The fields match the [HTTP task object](http.md#task-object), which documents them in detail.
 `TaskRef` is a `oneof` of `id` (uint64) and `key` (string).
@@ -127,7 +128,7 @@ use `Get` / `Wait` to reconcile anything that happened while disconnected.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| worker → server | `Register{pool, slots, worker_name, protocol_version}` | Must be the first message, within 10 s. `protocol_version` 0 means 1; send 2. |
+| worker → server | `Register{pool, slots, worker_name, protocol_version, labels}` | Must be the first message, within 10 s. Send `protocol_version` 3; older versions are refused with `FAILED_PRECONDITION`. `labels` place the worker in a [group](../concepts/labels.md); a credential with `labels = [...]` may claim only those (`PERMISSION_DENIED` otherwise). |
 | server → worker | `Registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes}` | Registration accepted. `slots` is what was granted: at most the pool's `max_slots_per_worker`. |
 | server → worker | `Lease{lease, task_id, attempt, payload, content_type, kind, key, tags, timeout_s, deadline_unix_ns, pool, priority, lease_ttl_s}` | Run this attempt. `priority` is currently always `UNSPECIFIED`. |
 | worker → server | `Heartbeat{lease}` | Keep a lease alive. |
@@ -231,6 +232,7 @@ Status meanings: [HTTP statuses](http.md#statuses).
 |---|---|
 | 1 | Initial version. |
 | 2 | `Nack` and `Cancelled` outcomes, `Shutdown`, lease metadata (`pool`, `priority`, `lease_ttl_s`), `Complete.content_type`, granted slots and `max_message_bytes` in `Registered`. |
+| 3 | Worker labels (`Register.labels`); lease ids carry the leader epoch. |
 
-Protobuf ignores unknown fields and `oneof` cases, so a version 1 worker keeps working against
-a version 2 server: it ignores `Shutdown` and notices the stream ending instead.
+A server refuses workers that speak an older version, with `FAILED_PRECONDITION` and a message
+naming the version it needs.

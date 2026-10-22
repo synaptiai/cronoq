@@ -71,6 +71,8 @@ limited to a list of pools.
   are kept only as SHA-256 digests, compared in constant time, and never logged.
 - **Pool scoping.** Scoped credentials cannot submit into, serve, watch or look up tasks of other
   pools; such tasks are reported as not found rather than forbidden, so ids do not leak.
+- **Label scoping.** Worker credentials with a `labels` allow-list may only register with those
+  labels, so they receive only tasks meant for such workers.
 - **Safe defaults.** Both listeners bind to `127.0.0.1` by default. Without any configured
   credentials, authentication is off and the server refuses to listen on a non-loopback address
   unless started with `--insecure-no-auth`. In that loopback-only mode the HTTP API answers only
@@ -116,3 +118,6 @@ limited to a list of pools.
   `max_pending` values.
 - **Workers are trusted with the payloads** of the pools they serve and with the outputs they
   report.
+- **Workers declare their own labels.** A worker credential without a `labels` allow-list may
+  claim any labels and receive tasks that require them; set `labels = [...]` on worker tokens
+  and certificate mappings to restrict what each may claim.

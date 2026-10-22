@@ -562,6 +562,7 @@ pub(crate) struct Opts {
     deps: Vec<CoreDep>,
     resources: Vec<(Arc<str>, u32)>,
     tags: Vec<(Arc<str>, Arc<str>)>,
+    labels: Vec<(Arc<str>, Arc<str>)>,
 }
 
 pub(crate) fn parse_miss(s: &str) -> PyResult<MissPolicy> {
@@ -607,6 +608,7 @@ impl Opts {
         deps: Option<Vec<Dep>>,
         resources: Option<&Bound<'_, PyDict>>,
         tags: Option<&Bound<'_, PyDict>>,
+        labels: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Opts> {
         let mut o = Opts {
             priority: priority.map(extract_priority).transpose()?,
@@ -650,6 +652,12 @@ impl Opts {
             for (k, v) in t.iter() {
                 o.tags
                     .push((k.str()?.to_string().into(), v.str()?.to_string().into()));
+            }
+        }
+        if let Some(l) = labels {
+            for (k, v) in l.iter() {
+                o.labels
+                    .push((k.extract::<String>()?.into(), v.extract::<String>()?.into()));
             }
         }
         if o.start_in.is_some() && o.start_at.is_some() {
@@ -712,6 +720,9 @@ impl Opts {
         for (k, v) in &self.tags {
             t = t.tag(k.clone(), v.clone());
         }
+        for (k, v) in &self.labels {
+            t = t.label(k.clone(), v.clone());
+        }
         t
     }
 }
@@ -730,7 +741,7 @@ impl Task {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None
+        tags=None, labels=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -752,6 +763,7 @@ impl Task {
         deps: Option<Vec<Dep>>,
         resources: Option<&Bound<'_, PyDict>>,
         tags: Option<&Bound<'_, PyDict>>,
+        labels: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
         let opts = Opts::parse(
             priority,
@@ -771,6 +783,7 @@ impl Task {
             deps,
             resources,
             tags,
+            labels,
         )?;
         Ok(Task { payload, opts })
     }

@@ -63,6 +63,8 @@ pub struct PoolSnapshot {
     pub worker_seconds: f64,
     /// `worker_seconds × AutoscaleConfig::cost_per_worker_second` since start.
     pub cost: f64,
+    /// Worker groups by label set (the unlabeled group first).
+    pub groups: Vec<GroupSnapshot>,
 }
 
 impl PoolSnapshot {
@@ -94,4 +96,15 @@ impl Snapshot {
     pub fn pool(&self, name: &str) -> Option<&PoolSnapshot> {
         self.pools.iter().find(|p| &*p.name == name)
     }
+}
+
+/// Capacity of the workers of a pool that share one label set.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupSnapshot {
+    /// The group's labels, sorted (empty for unlabeled workers).
+    pub labels: Vec<(Arc<str>, Arc<str>)>,
+    /// Slots of the group's workers.
+    pub capacity: u32,
+    /// Slots running a task.
+    pub busy: u32,
 }

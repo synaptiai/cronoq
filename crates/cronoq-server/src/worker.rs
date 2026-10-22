@@ -85,6 +85,9 @@ pub struct WorkerOptions {
     pub drain_timeout: Duration,
     /// Largest lease message accepted from the server.
     pub max_message_bytes: usize,
+    /// Labels of this worker: tasks that require labels are leased only to workers that have
+    /// all of them.
+    pub labels: Vec<(String, String)>,
 }
 
 impl fmt::Debug for WorkerOptions {
@@ -98,6 +101,7 @@ impl fmt::Debug for WorkerOptions {
             .field("tls", &self.tls)
             .field("reconnect", &self.reconnect)
             .field("drain_timeout", &self.drain_timeout)
+            .field("labels", &self.labels)
             .finish_non_exhaustive()
     }
 }
@@ -117,7 +121,13 @@ impl WorkerOptions {
             max_backoff: Duration::from_secs(10),
             drain_timeout: Duration::from_secs(30),
             max_message_bytes: 64 << 20,
+            labels: Vec::new(),
         }
+    }
+    /// Add a label (`name = value`) to this worker.
+    pub fn label(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.labels.push((name.into(), value.into()));
+        self
     }
     /// Concurrent leases.
     pub fn slots(mut self, n: u32) -> Self {
@@ -411,6 +421,7 @@ where
             slots: opts.slots,
             worker_name: opts.name.clone(),
             protocol_version: cronoq_proto::PROTOCOL_VERSION,
+            labels: opts.labels.iter().cloned().collect(),
         })),
     };
     if tx.send(register).await.is_err() {

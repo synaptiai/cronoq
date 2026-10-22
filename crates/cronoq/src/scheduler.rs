@@ -472,6 +472,32 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
             .map_err(|_| Error::Shutdown)
     }
 
+    /// Report the slots of the workers of `pool` that carry exactly `labels` (a worker group).
+    /// Tasks that require labels ([`Task::label`]) run only in groups whose labels include
+    /// them; the attempt's group is [`TaskContext::group`](crate::TaskContext::group).
+    /// [`Scheduler::set_capacity`] sets the unlabeled group.
+    pub async fn set_group_capacity(
+        &self,
+        pool: &str,
+        labels: &[(&str, &str)],
+        capacity: u32,
+    ) -> Result<(), Error> {
+        let id = self.pool_id(pool)?;
+        let labels = labels
+            .iter()
+            .map(|(k, v)| (Arc::<str>::from(*k), Arc::<str>::from(*v)))
+            .collect();
+        self.inner
+            .tx
+            .send(Cmd::SetGroupCapacity {
+                pool: id,
+                labels,
+                capacity,
+            })
+            .await
+            .map_err(|_| Error::Shutdown)
+    }
+
     /// Add or replace a recurring (cron) schedule. With a persistent store, returns once the
     /// schedule is durable.
     pub async fn add_recurring(&self, r: Recurring<P>) -> Result<(), Error> {

@@ -155,7 +155,7 @@ await worker.run()                  # reconnects with backoff; `await worker.sto
 - `Reject(reason)` gives the lease back: the server offers it, within the same attempt, to
   another worker of the pool with a free slot; if there is none, the attempt fails as retryable
   and counts against the retry budget. `CancelTask(reason)` ends the task as `cancelled`.
-- The worker speaks protocol version 2. The server may grant fewer slots than requested
+- The worker speaks protocol version 3. The server may grant fewer slots than requested
   (`worker.granted_slots`, capped by `limits.max_slots_per_worker`); leases beyond the grant are
   handed back. When the server announces it is shutting down (`worker.last_shutdown`) the worker
   reconnects with backoff, or immediately when leadership moved to another node.

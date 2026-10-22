@@ -159,6 +159,12 @@ impl<P> Task<P> {
         self.spec.tags.push((k.into(), v.into()));
         self
     }
+    /// Run only on workers labeled `name = value` (see
+    /// [`Scheduler::set_group_capacity`](crate::Scheduler::set_group_capacity)).
+    pub fn label(mut self, name: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> Self {
+        self.spec.labels.push((name.into(), value.into()));
+        self
+    }
 
     /// Fields that only make sense for a single task: absolute deadlines, fixed starts and
     /// dependencies. (A relative deadline and a key work per occurrence.)
@@ -221,6 +227,9 @@ pub(crate) fn validate<P>(s: &TaskSpec<P>) -> Result<(), Error> {
     }
     if s.tags.iter().any(|(k, v)| nul(k) || nul(v)) {
         return Err(invalid("tags must not contain NUL characters"));
+    }
+    if s.labels.iter().any(|(k, v)| nul(k) || nul(v)) {
+        return Err(invalid("labels must not contain NUL characters"));
     }
     if s.resources.iter().any(|(n, _)| nul(n)) {
         return Err(invalid("resource names must not contain NUL characters"));

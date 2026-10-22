@@ -14,4 +14,4 @@ pub mod v1 {
 pub const PROTO: &str = include_str!("../proto/cronoq/v1/cronoq.proto");
 
 /// Worker protocol version implemented by this crate (see `Register.protocol_version`).
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;

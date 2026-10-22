@@ -332,3 +332,17 @@ async def test_lifecycle_errors():
         await s.submit(1)
     with pytest.raises(ValueError):
         Scheduler([])
+
+
+async def test_tasks_with_labels_run_in_matching_groups():
+    groups = []
+
+    async def run(ctx, payload):
+        groups.append((payload, dict(ctx.group)))
+
+    async with Scheduler([pool(run, max=1, autoscale=False)]) as s:
+        await s.set_group_capacity("default", {"gpu": "a100"}, 1)
+        await (await s.submit("gpu", labels={"gpu": "a100"}))
+        await (await s.submit("plain"))
+    assert ("gpu", {"gpu": "a100"}) in groups
+    assert ("plain", {}) in groups

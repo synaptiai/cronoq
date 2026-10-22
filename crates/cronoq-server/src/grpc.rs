@@ -691,7 +691,21 @@ impl pb::workers_server::Workers for WorkersService {
                 "expected Register as first message",
             ));
         };
+        if reg.protocol_version.max(1) < cronoq_proto::PROTOCOL_VERSION {
+            return Err(Status::failed_precondition(format!(
+                "worker protocol version {} is not supported: this server needs version {} \
+                 (upgrade the worker)",
+                reg.protocol_version.max(1),
+                cronoq_proto::PROTOCOL_VERSION
+            )));
+        }
         convert::check_str("pool", &reg.pool, 64)?;
+        let labels = convert::worker_labels(reg.labels, &app.limits)?;
+        if !principal.may_claim_labels(&labels) {
+            return Err(Status::permission_denied(
+                "credentials do not allow this worker's labels",
+            ));
+        }
         let Some(info) = app.pool(&reg.pool).cloned() else {
             return Err(Status::not_found(format!("unknown pool '{}'", reg.pool)));
         };
@@ -717,13 +731,21 @@ impl pb::workers_server::Workers for WorkersService {
             })),
         }));
         let cut = CancellationToken::new();
-        if !registry.register(worker, pool.clone(), name.clone(), slots, tx, cut.clone()) {
+        if !registry.register(
+            worker,
+            pool.clone(),
+            labels.clone(),
+            name.clone(),
+            slots,
+            tx,
+            cut.clone(),
+        ) {
             return Err(Status::unavailable("server is shutting down"));
         }
         if slots < reg.slots {
             tracing::info!(worker, pool = %pool, requested = reg.slots, granted = slots, "worker slots capped");
         }
-        tracing::info!(worker, pool = %pool, slots, name = ?name, "worker registered");
+        tracing::info!(worker, pool = %pool, slots, name = ?name, labels = ?labels, "worker registered");
         let slot_cap = info.slot_cap;
         let inbound_cut = cut.clone();
         tokio::spawn(async move {
