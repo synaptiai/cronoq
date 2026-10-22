@@ -191,7 +191,7 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | Form | Description |
 |---|---|
 | `{ kind = "external" }` | Capacity follows connected workers; use the desired-workers metric with KEDA/HPA or your own controller. |
-| `{ kind = "webhook", url = "https://…", token_env = "SCALER_TOKEN" }` | `POST {"pool": "...", "desired": n}` to `url` whenever the target changes. `token_env` (optional) must be set if given; it is sent as a bearer token. The server warns about `http://` URLs. |
+| `{ kind = "webhook", url = "https://…", token_env = "SCALER_TOKEN" }` | `POST {"pool": "...", "desired": n}` to `url` whenever the target changes. `token_env` (optional) must be set if given; it is sent as a bearer token. HTTPS certificates are verified against the operating system's trust store. The server warns about `http://` URLs. |
 
 ### `retry`
 

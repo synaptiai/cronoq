@@ -41,6 +41,6 @@ remote workers, see [`cronoq-server`](https://crates.io/crates/cronoq-server); f
 - 🦀 [API reference](https://docs.rs/cronoq)
 - 💡 [Use cases](https://synaptiai.github.io/cronoq/use-cases/index.html)
 
-Feature `otel` (default) adds OpenTelemetry metrics and trace propagation. MSRV: 1.85.
+Feature `otel` (default) adds OpenTelemetry metrics and trace propagation. MSRV: 1.94.
 
 Licensed under MIT or Apache-2.0, at your option.

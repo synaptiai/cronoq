@@ -11,7 +11,7 @@ so you know where to look.
 | `cronoq-proto` | [docs.rs/cronoq-proto](https://docs.rs/cronoq-proto) | Generated gRPC clients and servers (`cronoq_proto::v1`), `PROTOCOL_VERSION`. |
 | `cronoq-server` | [docs.rs/cronoq-server](https://docs.rs/cronoq-server) | The server binary, and `worker::run_worker` for Rust workers. |
 
-MSRV: Rust 1.85 (edition 2024) for every crate.
+MSRV: Rust 1.94 (edition 2024) for every crate.
 
 ## `cronoq`
 

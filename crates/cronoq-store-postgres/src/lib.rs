@@ -58,7 +58,7 @@ use cronoq_core::{
     TaskStatus,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Connection, PgConnection, PgPool, Row};
+use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Row};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -288,10 +288,14 @@ impl PgStore {
                 .await
                 .map_err(db)?;
         if !exists {
-            sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
-                .execute(&mut *tx)
-                .await
-                .map_err(db)?;
+            // `schema` passed `valid_schema` when the store was configured: ASCII letters,
+            // digits and underscores only.
+            sqlx::query(AssertSqlSafe(format!(
+                "CREATE SCHEMA IF NOT EXISTS \"{schema}\""
+            )))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         }
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS cronoq_schema_version \
@@ -323,7 +327,11 @@ impl PgStore {
         // prove `Send` (sqlx higher-ranked lifetime issue), which breaks `tokio::spawn`.
         for m in &MIGRATIONS[version..] {
             for stmt in statements(m) {
-                sqlx::query(&stmt).execute(&mut *tx).await.map_err(db)?;
+                // Migrations are compile-time constants of this crate.
+                sqlx::query(AssertSqlSafe(stmt))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
             }
         }
         if version < MIGRATIONS.len() {
@@ -383,23 +391,26 @@ impl PgStore {
 
     /// Look up a task by id or key (the most recent task with that key).
     pub async fn get_task(&self, target: &TaskRef) -> Result<Option<TaskRecord>, StoreError> {
-        const COLS: &str =
-            "id, key, pool, kind, priority, status, attempt, message, output, updated_unix_ns";
+        macro_rules! select {
+            ($rest:literal) => {
+                concat!(
+                    "SELECT id, key, pool, kind, priority, status, attempt, message, output, \
+                     updated_unix_ns FROM cronoq_tasks ",
+                    $rest
+                )
+            };
+        }
         let row = match target {
-            TaskRef::Id(id) => {
-                sqlx::query(&format!("SELECT {COLS} FROM cronoq_tasks WHERE id = $1"))
-                    .bind(id.0 as i64)
-                    .fetch_optional(&self.inner.pool)
-                    .await
-                    .map_err(db)?
-            }
-            TaskRef::Key(k) => sqlx::query(&format!(
-                "SELECT {COLS} FROM cronoq_tasks WHERE key = $1 ORDER BY id DESC LIMIT 1"
-            ))
-            .bind(clean(k))
-            .fetch_optional(&self.inner.pool)
-            .await
-            .map_err(db)?,
+            TaskRef::Id(id) => sqlx::query(select!("WHERE id = $1"))
+                .bind(id.0 as i64)
+                .fetch_optional(&self.inner.pool)
+                .await
+                .map_err(db)?,
+            TaskRef::Key(k) => sqlx::query(select!("WHERE key = $1 ORDER BY id DESC LIMIT 1"))
+                .bind(clean(k))
+                .fetch_optional(&self.inner.pool)
+                .await
+                .map_err(db)?,
         };
         let Some(r) = row else { return Ok(None) };
         let status: String = r.get("status");

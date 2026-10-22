@@ -512,7 +512,7 @@ overrides.
 - **Benchmarks**: criterion (core) plus a runtime throughput harness; CI fails on a >10%
   regression vs `main` or a missed absolute target.
 - **Postgres** integration and failover tests (docker), Python `pytest` (asyncio).
-- CI: fmt, clippy `-D warnings`, `cargo deny`, tests, Miri on core, MSRV 1.85,
+- CI: fmt, clippy `-D warnings`, `cargo deny`, tests, Miri on core, MSRV 1.94,
   maturin wheels (manylinux, macOS, Windows).
 
 ---

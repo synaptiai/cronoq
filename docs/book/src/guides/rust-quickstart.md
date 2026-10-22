@@ -11,7 +11,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 The `otel` feature (on by default) adds OpenTelemetry metrics and trace propagation. Disable it
 with `default-features = false` for a minimal dependency tree.
 
-The minimum supported Rust version is **1.85**.
+The minimum supported Rust version is **1.94**.
 
 ## A first scheduler
 

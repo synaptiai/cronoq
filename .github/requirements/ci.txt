@@ -1,8 +1,13 @@
 # Pinned Python tooling for CI (also used as a constraints file when installing wheels).
-# Versions support every Python in the test matrix (3.9+). Update deliberately.
+# The latest releases need Python 3.10+; Python 3.9 keeps the last versions that support it.
+# Update deliberately.
 maturin==1.15.0
-pytest==8.4.2
-pytest-asyncio==1.2.0
-grpcio==1.80.0
-protobuf==6.33.6
+pytest==9.1.1; python_version >= "3.10"
+pytest==8.4.2; python_version < "3.10"
+pytest-asyncio==1.4.0; python_version >= "3.10"
+pytest-asyncio==1.2.0; python_version < "3.10"
+grpcio==1.84.0; python_version >= "3.10"
+grpcio==1.80.0; python_version < "3.10"
+protobuf==7.36.2; python_version >= "3.10"
+protobuf==6.33.6; python_version < "3.10"
 mypy==2.4.0; python_version >= "3.10"

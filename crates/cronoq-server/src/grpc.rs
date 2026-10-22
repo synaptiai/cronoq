@@ -271,10 +271,10 @@ async fn check_cross_pool(
     }
     for d in &spec.deps {
         let target = convert::task_ref(d.target.clone(), &app.limits)?;
-        if let TaskRef::Key(k) = &target {
-            if batch_keys.contains(&&**k) {
-                continue;
-            }
+        if let TaskRef::Key(k) = &target
+            && batch_keys.contains(&&**k)
+        {
+            continue;
         }
         if let Some(id) = resolve_id(app, &target).await? {
             match app.pool_of(id).await {

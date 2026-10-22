@@ -230,10 +230,10 @@ impl WorkerRegistry {
     /// Extend a lease owned by `worker`.
     pub fn heartbeat(&self, worker: u64, lease: u64) {
         let st = self.state.lock().unwrap();
-        if let Some(p) = st.pending.get(&lease) {
-            if p.worker == worker {
-                p.ctx.heartbeat();
-            }
+        if let Some(p) = st.pending.get(&lease)
+            && p.worker == worker
+        {
+            p.ctx.heartbeat();
         }
     }
 

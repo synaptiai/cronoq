@@ -7,7 +7,9 @@ use std::time::Duration;
 use common::*;
 use cronoq_server::Config;
 use cronoq_server::worker::{WorkerOptions, WorkerTls, run_worker};
-use rcgen::{BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair};
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+};
 
 struct Pki {
     dir: tempfile::TempDir,
@@ -20,7 +22,7 @@ struct Leaf {
 }
 
 impl Pki {
-    fn new() -> (Pki, rcgen::Certificate, KeyPair) {
+    fn new() -> (Pki, Issuer<'static, KeyPair>) {
         let key = KeyPair::generate().unwrap();
         let mut p = CertificateParams::new(Vec::<String>::new()).unwrap();
         p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -32,12 +34,11 @@ impl Pki {
                 dir: tempfile::tempdir().unwrap(),
                 ca: ca.pem(),
             },
-            ca,
-            key,
+            Issuer::new(p, key),
         )
     }
 
-    fn leaf(ca: &rcgen::Certificate, ca_key: &KeyPair, names: &[&str], client: bool) -> Leaf {
+    fn leaf(ca: &Issuer<'static, KeyPair>, names: &[&str], client: bool) -> Leaf {
         let key = KeyPair::generate().unwrap();
         let mut p = CertificateParams::new(names.iter().map(|s| s.to_string()).collect::<Vec<_>>())
             .unwrap();
@@ -46,7 +47,7 @@ impl Pki {
         } else {
             ExtendedKeyUsagePurpose::ServerAuth
         }];
-        let cert = p.signed_by(&key, ca, ca_key).unwrap();
+        let cert = p.signed_by(&key, ca).unwrap();
         Leaf {
             cert: cert.pem(),
             key: key.serialize_pem(),
@@ -61,10 +62,10 @@ impl Pki {
 }
 
 fn http_client(ca: &str, identity: Option<&Leaf>) -> reqwest::Client {
+    // reqwest is built without a bundled crypto provider; the tests use ring like the server.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut b = reqwest::Client::builder()
-        .use_rustls_tls()
-        .tls_built_in_root_certs(false)
-        .add_root_certificate(reqwest::Certificate::from_pem(ca.as_bytes()).unwrap());
+        .tls_certs_only([reqwest::Certificate::from_pem(ca.as_bytes()).unwrap()]);
     if let Some(l) = identity {
         b = b.identity(
             reqwest::Identity::from_pem(format!("{}{}", l.cert, l.key).as_bytes()).unwrap(),
@@ -99,8 +100,8 @@ async fn missing_certificate_is_reported_with_its_path() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tls_covers_http_and_grpc() {
-    let (pki, ca, ca_key) = Pki::new();
-    let server = Pki::leaf(&ca, &ca_key, &["localhost"], false);
+    let (pki, ca) = Pki::new();
+    let server = Pki::leaf(&ca, &["localhost"], false);
     let (cert, key) = (
         pki.write("server.pem", &server.cert),
         pki.write("server.key", &server.key),
@@ -156,11 +157,11 @@ async fn tls_covers_http_and_grpc() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mtls_maps_client_certificates_to_roles() {
-    let (pki, ca, ca_key) = Pki::new();
-    let server = Pki::leaf(&ca, &ca_key, &["localhost"], false);
-    let client = Pki::leaf(&ca, &ca_key, &["client.internal"], true);
-    let worker = Pki::leaf(&ca, &ca_key, &["worker.internal"], true);
-    let unmapped = Pki::leaf(&ca, &ca_key, &["stranger.internal"], true);
+    let (pki, ca) = Pki::new();
+    let server = Pki::leaf(&ca, &["localhost"], false);
+    let client = Pki::leaf(&ca, &["client.internal"], true);
+    let worker = Pki::leaf(&ca, &["worker.internal"], true);
+    let unmapped = Pki::leaf(&ca, &["stranger.internal"], true);
     let (cert, key, ca_path) = (
         pki.write("server.pem", &server.cert),
         pki.write("server.key", &server.key),

@@ -24,7 +24,7 @@ fn run(seed: u64) {
     p.unknown_dependency = UnknownDependency::Await {
         timeout: Some(secs(5.0)),
     };
-    p.lease_ttl = (seed % 2 == 0).then(|| secs(3.0));
+    p.lease_ttl = seed.is_multiple_of(2).then(|| secs(3.0));
     p.bounds.max_pending = Some(30);
     p.overflow = [
         OverflowPolicy::Reject,
