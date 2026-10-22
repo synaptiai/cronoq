@@ -6,6 +6,7 @@ members = [
     "crates/cronoq-proto",
     "crates/cronoq-server",
     "crates/cronoq-store-postgres",
+    "crates/cronoq-store-tests",
     "crates/cronoq-py",
 ]
 

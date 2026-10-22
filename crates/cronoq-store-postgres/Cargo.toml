@@ -25,4 +25,5 @@ tokio = { version = "1.47", features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
+cronoq-store-tests = { path = "../cronoq-store-tests" }
 tokio = { version = "1.47", features = ["full"] }

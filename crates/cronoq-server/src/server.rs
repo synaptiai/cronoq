@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bytes::Bytes;
-use cronoq::{ExternalScaler, MemoryStore, Pool, Scheduler, Store};
+use cronoq::{ExternalScaler, Pool, Scheduler};
 use cronoq_proto::v1 as pb;
 use rustc_hash::FxHashMap;
 use rustls_pki_types::pem::PemObject;
@@ -30,6 +30,7 @@ use crate::info::TaskInfoCache;
 use crate::remote::{OutputCache, RemoteExecutor, WorkerRegistry};
 use crate::scaler::WebhookScaler;
 use crate::state::{AppState, PoolInfo, Shared};
+use crate::store::Opened;
 
 /// How long listeners may take to drain after the server stops serving.
 const DRAIN: Duration = Duration::from_secs(5);
@@ -48,14 +49,9 @@ pub struct Bound {
     pub metrics: Option<SocketAddr>,
 }
 
-type OpenedStore = (
-    Arc<dyn Store<Bytes, Bytes>>,
-    Option<cronoq_store_postgres::PgStore>,
-);
-
-async fn open_store(cfg: &StoreConfig) -> anyhow::Result<OpenedStore> {
+async fn open_store(cfg: &StoreConfig) -> anyhow::Result<Opened> {
     match cfg {
-        StoreConfig::Memory => Ok((Arc::new(MemoryStore), None)),
+        StoreConfig::Memory => Ok(Opened::memory()),
         StoreConfig::Postgres {
             url: inline,
             url_env,
@@ -72,8 +68,7 @@ async fn open_store(cfg: &StoreConfig) -> anyhow::Result<OpenedStore> {
                 }
             };
             crate::pg::warn_insecure_url(&url, inline.is_some());
-            let (store, pg) = crate::pg::open(&url, schema.as_deref()).await?;
-            Ok((store, Some(pg)))
+            crate::pg::open(&url, schema.as_deref()).await
         }
     }
 }
@@ -291,7 +286,7 @@ async fn lead(
 ) -> anyhow::Result<()> {
     let limits = &cfg.limits;
     tokio::pin!(shutdown);
-    let (store, pg) = tokio::select! {
+    let Opened { store, queries } = tokio::select! {
         s = open_store(&cfg.store) => s?,
         _ = &mut shutdown => return Ok(()),
     };
@@ -345,7 +340,7 @@ async fn lead(
     for r in &cfg.resources {
         builder = builder.resource(r.to_config());
     }
-    if pg.is_some() {
+    if queries.is_some() {
         tracing::info!("waiting for leadership");
     }
     let sched = tokio::select! {
@@ -356,14 +351,14 @@ async fn lead(
         }
     };
     registry.attach(sched.clone());
-    let pruner = match (&pg, &cfg.store) {
+    let pruner = match (&queries, &cfg.store) {
         (
-            Some(pg),
+            Some(q),
             StoreConfig::Postgres {
                 keep_finished_s, ..
             },
-        ) => Some(crate::pg::spawn_pruner(
-            pg.clone(),
+        ) => Some(crate::store::spawn_pruner(
+            q.clone(),
             Duration::from_secs_f64(keep_finished_s.unwrap_or(7.0 * 86400.0)),
             Duration::from_secs(3600),
         )),
@@ -377,7 +372,7 @@ async fn lead(
         info,
         pools,
         limits: limits.clone(),
-        pg: pg.clone(),
+        queries: queries.clone(),
     });
     let _ = shared.app.set(app);
     shared.ready.store(true, Ordering::SeqCst);
@@ -387,7 +382,7 @@ async fn lead(
     let lost_leadership = tokio::select! {
         _ = &mut shutdown => false,
         _ = sched.stopped() => true,
-        _ = crate::pg::leadership_lost(pg.clone()) => true,
+        _ = crate::store::leadership_lost(queries.clone()) => true,
     };
     shared.ready.store(false, Ordering::SeqCst);
     if let Some(p) = pruner {
