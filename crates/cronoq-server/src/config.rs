@@ -534,6 +534,8 @@ pub struct LimitsConfig {
     pub key_retention_s: f64,
     /// Most finished tasks kept for key deduplication (bounds memory).
     pub key_retention_max: usize,
+    /// Most tasks one `ListTasks` page returns.
+    pub max_list: usize,
 }
 
 impl Default for LimitsConfig {
@@ -559,6 +561,7 @@ impl Default for LimitsConfig {
             keepalive_timeout_s: 20.0,
             key_retention_s: 3600.0,
             key_retention_max: 1_000_000,
+            max_list: 1000,
         }
     }
 }
@@ -604,6 +607,10 @@ impl LimitsConfig {
         ensure!(
             self.max_slots_per_worker >= 1,
             "limits.max_slots_per_worker must be at least 1"
+        );
+        ensure!(
+            (1..=100_000).contains(&self.max_list),
+            "limits.max_list must be between 1 and 100000"
         );
         finite_secs("limits.max_wait_s", self.max_wait_s, 0.0)?;
         finite_secs("limits.request_timeout_s", self.request_timeout_s, 0.1)?;

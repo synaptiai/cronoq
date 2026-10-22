@@ -57,7 +57,7 @@ pub use cronoq_core as core;
 pub use cronoq_core::{
     AutoscaleConfig, Bounds, Dep, EdgeCond, Fairness, GroupSnapshot, Labels, LeaseId, MissPolicy,
     Mutation, OverflowPolicy, OverlapPolicy, PoolConfig, PoolId, PoolSnapshot, Priority,
-    PriorityConfig, Recovered, RecoveredTask, RecoveredTerminal, RecurringSpec, ResourceConfig,
-    ResourceKind, RetryPolicy, Snapshot, StatusEvent, SubmitError, Submitted, TaskId, TaskRef,
-    TaskSpec, TaskStatus, Time, UnknownDependency, UrgencyConfig,
+    PriorityConfig, Recovered, RecoveredTask, RecoveredTerminal, RecurringInfo, RecurringSpec,
+    ResourceConfig, ResourceKind, RetryPolicy, Snapshot, StatusEvent, SubmitError, Submitted,
+    TaskId, TaskRef, TaskSpec, TaskStatus, TaskSummary, Time, UnknownDependency, UrgencyConfig,
 };

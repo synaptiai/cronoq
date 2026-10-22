@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cronoq::{
-    Clock, Dep, EdgeCond, Error, MissPolicy, Priority, RetryPolicy, Snapshot, StatusEvent,
-    SubmitError, Task, TaskId, TaskRef, TaskStatus, When,
+    Clock, Dep, EdgeCond, Error, MissPolicy, OverlapPolicy, Priority, RetryPolicy, Snapshot,
+    StatusEvent, SubmitError, Task, TaskId, TaskRef, TaskStatus, When,
 };
 use cronoq_proto::v1 as pb;
 use tonic::Status;
@@ -384,6 +384,37 @@ pub fn status(s: TaskStatus) -> pb::TaskStatus {
         TaskStatus::Skipped => pb::TaskStatus::Skipped,
         TaskStatus::Missed => pb::TaskStatus::Missed,
         TaskStatus::Shed => pb::TaskStatus::Shed,
+    }
+}
+
+/// Map a wire status to the engine's; `UNSPECIFIED` and unknown values are refused.
+pub fn status_from_pb(s: i32) -> Result<TaskStatus, Status> {
+    Ok(match pb::TaskStatus::try_from(s) {
+        Ok(pb::TaskStatus::Blocked) => TaskStatus::Blocked,
+        Ok(pb::TaskStatus::Scheduled) => TaskStatus::Scheduled,
+        Ok(pb::TaskStatus::Ready) => TaskStatus::Ready,
+        Ok(pb::TaskStatus::Running) => TaskStatus::Running,
+        Ok(pb::TaskStatus::Retrying) => TaskStatus::Retrying,
+        Ok(pb::TaskStatus::Succeeded) => TaskStatus::Succeeded,
+        Ok(pb::TaskStatus::Failed) => TaskStatus::Failed,
+        Ok(pb::TaskStatus::DeadLettered) => TaskStatus::DeadLettered,
+        Ok(pb::TaskStatus::Cancelled) => TaskStatus::Cancelled,
+        Ok(pb::TaskStatus::Skipped) => TaskStatus::Skipped,
+        Ok(pb::TaskStatus::Missed) => TaskStatus::Missed,
+        Ok(pb::TaskStatus::Shed) => TaskStatus::Shed,
+        Ok(pb::TaskStatus::Unspecified) | Err(_) => {
+            return Err(Status::invalid_argument(format!("unknown task status {s}")));
+        }
+    })
+}
+
+/// Map an overlap policy to the wire.
+pub fn overlap_to_pb(o: OverlapPolicy) -> pb::Overlap {
+    match o {
+        OverlapPolicy::Skip => pb::Overlap::Skip,
+        OverlapPolicy::Allow => pb::Overlap::Allow,
+        OverlapPolicy::Queue => pb::Overlap::Queue,
+        OverlapPolicy::QueueOnSuccess => pb::Overlap::QueueOnSuccess,
     }
 }
 

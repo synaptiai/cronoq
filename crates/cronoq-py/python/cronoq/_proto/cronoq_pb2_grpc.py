@@ -54,6 +54,11 @@ class TasksStub(object):
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.GetRequest.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.TaskInfo.FromString,
                 _registered_method=True)
+        self.ListTasks = channel.unary_unary(
+                '/cronoq.v1.Tasks/ListTasks',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListTasksRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListTasksResponse.FromString,
+                _registered_method=True)
         self.Wait = channel.unary_unary(
                 '/cronoq.v1.Tasks/Wait',
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.WaitRequest.SerializeToString,
@@ -88,6 +93,12 @@ class TasksServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Get(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListTasks(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -129,6 +140,11 @@ def add_TasksServicer_to_server(servicer, server):
                     servicer.Get,
                     request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.GetRequest.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.TaskInfo.SerializeToString,
+            ),
+            'ListTasks': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListTasks,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListTasksRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListTasksResponse.SerializeToString,
             ),
             'Wait': grpc.unary_unary_rpc_method_handler(
                     servicer.Wait,
@@ -249,6 +265,33 @@ class Tasks(object):
             '/cronoq.v1.Tasks/Get',
             cronoq_dot_v1_dot_cronoq__pb2.GetRequest.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.TaskInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Tasks/ListTasks',
+            cronoq_dot_v1_dot_cronoq__pb2.ListTasksRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.ListTasksResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -410,6 +453,16 @@ class AdminStub(object):
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.RemoveRecurringRequest.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.RemoveRecurringResponse.FromString,
                 _registered_method=True)
+        self.ListWorkers = channel.unary_unary(
+                '/cronoq.v1.Admin/ListWorkers',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListWorkersResponse.FromString,
+                _registered_method=True)
+        self.ListRecurring = channel.unary_unary(
+                '/cronoq.v1.Admin/ListRecurring',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListRecurringResponse.FromString,
+                _registered_method=True)
 
 
 class AdminServicer(object):
@@ -433,6 +486,19 @@ class AdminServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListWorkers(self, request, context):
+        """Both need the metrics role and list only what the caller's pools allow.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListRecurring(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AdminServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -450,6 +516,16 @@ def add_AdminServicer_to_server(servicer, server):
                     servicer.RemoveRecurring,
                     request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.RemoveRecurringRequest.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.RemoveRecurringResponse.SerializeToString,
+            ),
+            'ListWorkers': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListWorkers,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListWorkersResponse.SerializeToString,
+            ),
+            'ListRecurring': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListRecurring,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListRecurringResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -533,6 +609,60 @@ class Admin(object):
             '/cronoq.v1.Admin/RemoveRecurring',
             cronoq_dot_v1_dot_cronoq__pb2.RemoveRecurringRequest.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.RemoveRecurringResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListWorkers(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/ListWorkers',
+            cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.ListWorkersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListRecurring(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/ListRecurring',
+            cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.ListRecurringResponse.FromString,
             options,
             channel_credentials,
             insecure,

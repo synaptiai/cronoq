@@ -62,14 +62,17 @@ __all__ = [
     "Lease",
     "PROTOCOL_VERSION",
     "PoolSnapshot",
+    "RecurringInfo",
     "Reject",
     "Result",
     "Snapshot",
     "Submitted",
     "TaskInfo",
+    "TaskPage",
     "Totals",
     "Worker",
     "WorkerGroup",
+    "WorkerInfo",
     "task",
 ]
 
@@ -220,6 +223,9 @@ class TaskInfo:
     #: Last error or status message.
     message: str = ""
     output_available: bool = False
+    tenant: str = ""
+    #: ``"critical"``, ``"high"``, ``"normal"`` or ``"low"``; ``None`` if unknown.
+    priority: str | None = None
 
     @property
     def done(self) -> bool:
@@ -240,7 +246,59 @@ class TaskInfo:
             finished_at=_opt_secs(r, "finished_unix_ns"),
             message=r.message,
             output_available=r.output_available,
+            tenant=r.tenant,
+            priority=_priority_name(r.priority),
         )
+
+
+@dataclass(frozen=True)
+class TaskPage:
+    """One page of :meth:`Client.list_tasks`, in id order."""
+
+    tasks: tuple[TaskInfo, ...]
+    #: Pass as ``after`` for the next page; ``None`` when this page is the last.
+    next_after: int | None
+
+
+@dataclass(frozen=True)
+class WorkerInfo:
+    """A connected remote worker, from :meth:`Client.list_workers`."""
+
+    id: int
+    name: str
+    pool: str
+    labels: dict[str, str]
+    slots: int
+    busy: int
+    #: Unix seconds.
+    connected_at: float
+
+
+@dataclass(frozen=True)
+class RecurringInfo:
+    """A recurring schedule, from :meth:`Client.list_recurring`."""
+
+    name: str
+    cron: str
+    #: Empty for UTC.
+    tz: str
+    pool: str
+    kind: str
+    overlap: str
+    #: Unix seconds; ``None`` when the schedule has no further occurrence.
+    next_at: float | None
+    #: Task id of the latest occurrence.
+    last_task_id: int | None
+
+
+def _status_value(name: str) -> int:
+    try:
+        value = pb.TaskStatus.Value("TASK_STATUS_" + name.upper())
+    except ValueError:
+        value = pb.TASK_STATUS_UNSPECIFIED
+    if value == pb.TASK_STATUS_UNSPECIFIED:
+        raise ValueError(f"unknown task status {name!r}")
+    return value
 
 
 _TERMINAL = frozenset({"succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed"})
@@ -660,6 +718,49 @@ class Client:
         r = await self._call(self._tasks.Get, pb.GetRequest(task=_ref(ref)))
         return TaskInfo._from_pb(r)
 
+    async def list_tasks(
+        self,
+        *,
+        pools: Sequence[str] = (),
+        statuses: Sequence[str] = (),
+        after: int = 0,
+        limit: int = 0,
+    ) -> TaskPage:
+        """One page of tasks in id order: live and finished, of ``pools`` (default: all the
+        token may see) with one of ``statuses`` (default: any), with ids above ``after``.
+        ``limit`` defaults to 100 and is capped by the server's ``limits.max_list``. Finished
+        tasks come from the server's store, or from its bounded cache without one."""
+        if isinstance(pools, str) or isinstance(statuses, str):
+            raise TypeError("pools and statuses are sequences of names")
+        req = pb.ListTasksRequest(
+            pools=list(pools),
+            statuses=cast(Any, [_status_value(s) for s in statuses]),
+            after=after,
+            limit=limit,
+        )
+        r = await self._call(self._tasks.ListTasks, req)
+        return TaskPage(
+            tasks=tuple(TaskInfo._from_pb(t) for t in r.tasks),
+            next_after=r.next_after or None,
+        )
+
+    async def iter_tasks(
+        self,
+        *,
+        pools: Sequence[str] = (),
+        statuses: Sequence[str] = (),
+        page_size: int = 0,
+    ) -> AsyncIterator[TaskInfo]:
+        """Every task matching the filters, in id order, fetched one page at a time."""
+        after = 0
+        while True:
+            page = await self.list_tasks(pools=pools, statuses=statuses, after=after, limit=page_size)
+            for t in page.tasks:
+                yield t
+            if page.next_after is None:
+                return
+            after = page.next_after
+
     async def wait(self, ref: TaskRef, timeout: float | None = None) -> Result:
         """Wait for a task to finish and return its :class:`Result`.
 
@@ -811,6 +912,43 @@ class Client:
     async def remove_recurring(self, name: str) -> bool:
         r = await self._call(self._admin.RemoveRecurring, pb.RemoveRecurringRequest(name=name))
         return r.removed
+
+    async def list_workers(self) -> list[WorkerInfo]:
+        """Connected remote workers of the pools the token may see (requires a ``metrics`` or
+        ``admin`` token)."""
+        r = await self._call(self._admin.ListWorkers, pb.Empty())
+        return [
+            WorkerInfo(
+                id=w.id,
+                name=w.name,
+                pool=w.pool,
+                labels=dict(w.labels),
+                slots=w.slots,
+                busy=w.busy,
+                connected_at=w.connected_unix_ns / 1e9,
+            )
+            for w in r.workers
+        ]
+
+    async def list_recurring(self) -> list[RecurringInfo]:
+        """Recurring schedules of the pools the token may see, by name (requires a ``metrics``
+        or ``admin`` token)."""
+        r = await self._call(self._admin.ListRecurring, pb.Empty())
+        return [
+            RecurringInfo(
+                name=s.name,
+                cron=s.cron,
+                tz=s.tz,
+                pool=s.pool,
+                kind=s.kind,
+                overlap=pb.Overlap.Name(s.overlap)[len("OVERLAP_"):].lower()
+                if s.overlap != pb.OVERLAP_UNSPECIFIED
+                else "skip",
+                next_at=_opt_secs(s, "next_unix_ns"),
+                last_task_id=s.last_task_id if s.HasField("last_task_id") else None,
+            )
+            for s in r.schedules
+        ]
 
 
 # ---------------------------------------------------------------------------------------------

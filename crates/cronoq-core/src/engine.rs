@@ -1904,6 +1904,58 @@ impl<P> Core<P> {
         self.index.len()
     }
 
+    /// Live tasks in id order: those in one of `pools` (any pool if empty) with one of
+    /// `statuses` (any if empty), with ids above `after`, at most `limit`. Unknown pools match
+    /// nothing.
+    pub fn list_tasks<S: AsRef<str>>(
+        &self,
+        pools: &[S],
+        statuses: &[TaskStatus],
+        after: Option<TaskId>,
+        limit: usize,
+    ) -> Vec<TaskSummary> {
+        let pool = if pools.is_empty() {
+            None
+        } else {
+            let ids: Vec<u16> = pools
+                .iter()
+                .filter_map(|p| self.pool_index.get(p.as_ref()).copied())
+                .collect();
+            if ids.is_empty() {
+                return Vec::new();
+            }
+            Some(ids)
+        };
+        let mut ids: Vec<(TaskId, Key)> = self
+            .index
+            .iter()
+            .filter(|(id, _)| after.is_none_or(|a| **id > a))
+            .map(|(id, k)| (*id, *k))
+            .filter(|(_, k)| {
+                let e = self.entry(*k);
+                pool.as_ref().is_none_or(|p| p.contains(&e.pool))
+                    && (statuses.is_empty() || statuses.contains(&e.status))
+            })
+            .collect();
+        ids.sort_unstable_by_key(|(id, _)| *id);
+        ids.truncate(limit);
+        ids.into_iter()
+            .map(|(id, k)| {
+                let e = self.entry(k);
+                TaskSummary {
+                    id,
+                    key: e.key.clone(),
+                    pool: self.pools[e.pool as usize].cfg.name.clone(),
+                    kind: self.kinds[e.kind as usize].clone(),
+                    priority: Priority::from_index(e.class as usize).unwrap_or_default(),
+                    status: e.status,
+                    attempt: e.attempt,
+                    tenant: (e.tenant != 0).then(|| self.tenants[e.tenant as usize].clone()),
+                }
+            })
+            .collect()
+    }
+
     /// Number of distinct unknown keys that live tasks are waiting for.
     #[doc(hidden)]
     pub fn awaited_keys(&self) -> usize {
@@ -2023,6 +2075,23 @@ impl<P> Core<P> {
     /// Names of all recurring schedules.
     pub fn recurring_names(&self) -> Vec<Arc<str>> {
         self.recurring.keys().cloned().collect()
+    }
+
+    /// All recurring schedules, by name.
+    pub fn list_recurring(&self) -> Vec<RecurringInfo> {
+        self.recurring
+            .values()
+            .map(|r| RecurringInfo {
+                name: r.spec.name.clone(),
+                cron: r.spec.cron.clone(),
+                tz: r.spec.tz.clone(),
+                pool: r.spec.template.pool.clone(),
+                kind: r.spec.template.kind.clone(),
+                overlap: r.spec.overlap,
+                next: r.next,
+                last_task: r.last_task,
+            })
+            .collect()
     }
 
     fn next_occurrence(&self, r: &Recurring<P>, after: Time) -> Option<Time> {

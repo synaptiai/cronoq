@@ -509,14 +509,16 @@ running remote workers in server mode.
 
 ### Server (`cronoq-server --config cronoq.toml`)
 gRPC (`cronoq.v1`):
-- `TaskService`: Submit, SubmitBatch, Cancel, Get, Watch (stream).
-- `WorkerService.Connect` (bidirectional stream): Register{pool, slots} → Lease ↔
-  Heartbeat / Complete / Fail.
-- `AdminService`: ListPools, Snapshot, SetPoolBounds, Pause/Resume pool.
+- `Tasks`: Submit, SubmitBatch, Cancel, Get, ListTasks (pages of live and finished tasks),
+  Wait, Watch (stream).
+- `Workers.Work` (bidirectional stream): Register{pool, slots, labels} → Lease ↔
+  Heartbeat / Complete / Fail / Nack.
+- `Admin`: Snapshot, AddRecurring, RemoveRecurring, ListWorkers, ListRecurring.
 
-HTTP gateway (axum): `POST /v1/tasks`, `POST /v1/tasks:batch`, `GET|DELETE /v1/tasks/{id}`,
+HTTP gateway (axum): `POST|GET /v1/tasks`, `POST /v1/tasks:batch`, `GET|DELETE /v1/tasks/{id}`,
 `GET /v1/tasks/{id}/result`, the same under `/v1/tasks/by-key/{key}`, `GET /v1/snapshot`,
-`GET /metrics`, `GET /healthz`, `GET /readyz` (ready only on the leader). Task ids are JSON
+`GET /v1/workers`, `GET /v1/recurring`, `GET /metrics`, `GET /healthz`, `GET /readyz` (ready
+only on the leader). Task ids are JSON
 strings; errors are `{"error": ..., "code": ...}` with a matching status (504 for a wait that
 timed out, 503 while standing by).
 Auth: static bearer tokens (config) and optional mTLS. Config: TOML plus environment

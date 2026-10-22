@@ -149,6 +149,24 @@ message TaskInfo {
   optional int64 finished_unix_ns = 10;
   string message = 11;              // last error or status message
   bool output_available = 12;
+  string tenant = 13;
+  Priority priority = 14;           // UNSPECIFIED if unknown
+}
+
+// Tasks in id order (newest last). Live tasks come from the engine; finished ones from the
+// store, or from the server's bounded cache without one. A page is not an atomic snapshot: a
+// task that finishes while the page is built can be missing from it.
+message ListTasksRequest {
+  repeated string pools = 1;        // empty = all pools the caller may see
+  repeated TaskStatus statuses = 2; // empty = any
+  uint64 after = 3;                 // only ids above this; 0 = from the start
+  uint32 limit = 4;                 // 0 = 100; at most the server's `limits.max_list`
+}
+
+message ListTasksResponse {
+  repeated TaskInfo tasks = 1;
+  // Pass as `after` for the next page; 0 when this page is the last.
+  uint64 next_after = 2;
 }
 
 message TaskResult {
@@ -188,6 +206,7 @@ service Tasks {
   rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
   rpc Cancel(CancelRequest) returns (CancelResponse);
   rpc Get(GetRequest) returns (TaskInfo);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc Wait(WaitRequest) returns (TaskResult);
   // Ends with UNAVAILABLE when the server shuts down or loses leadership, and with
   // DATA_LOSS if the client falls too far behind.
@@ -400,8 +419,41 @@ message RemoveRecurringResponse {
   bool removed = 1;
 }
 
+// A connected remote worker.
+message WorkerInfo {
+  uint64 id = 1;                    // assigned by this server for the connection
+  string name = 2;                  // as the worker registered
+  string pool = 3;
+  map<string, string> labels = 4;
+  uint32 slots = 5;
+  uint32 busy = 6;
+  int64 connected_unix_ns = 7;
+}
+
+message ListWorkersResponse {
+  repeated WorkerInfo workers = 1;
+}
+
+message RecurringInfo {
+  string name = 1;
+  string cron = 2;
+  string tz = 3;                    // empty = UTC
+  string pool = 4;
+  string kind = 5;
+  Overlap overlap = 6;
+  optional int64 next_unix_ns = 7;  // unset when the schedule has no further occurrence
+  optional uint64 last_task_id = 8; // the latest occurrence's task
+}
+
+message ListRecurringResponse {
+  repeated RecurringInfo schedules = 1;
+}
+
 service Admin {
   rpc Snapshot(Empty) returns (SnapshotResponse);
   rpc AddRecurring(RecurringRequest) returns (Empty);
   rpc RemoveRecurring(RemoveRecurringRequest) returns (RemoveRecurringResponse);
+  // Both need the metrics role and list only what the caller's pools allow.
+  rpc ListWorkers(Empty) returns (ListWorkersResponse);
+  rpc ListRecurring(Empty) returns (ListRecurringResponse);
 }

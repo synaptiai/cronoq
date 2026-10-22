@@ -36,6 +36,7 @@ This page describes **worker protocol version 3**.
 | `SubmitBatch` | `SubmitBatchRequest` → `SubmitBatchResponse` | Submit up to `max_tasks_per_batch` tasks atomically. |
 | `Cancel` | `CancelRequest{task}` → `CancelResponse{cancelled}` | Cancel by id or key; `false` if the task already finished. |
 | `Get` | `GetRequest{task}` → `TaskInfo` | Task details; `NOT_FOUND` for unknown tasks. |
+| `ListTasks` | `ListTasksRequest` → `ListTasksResponse{tasks, next_after}` | One page of tasks, live and finished, in id order. |
 | `Wait` | `WaitRequest{task, timeout_s}` → `TaskResult` | Wait for the task to finish. |
 | `Watch` | `WatchRequest` → stream `StatusEvent` | Live status events. |
 
@@ -83,7 +84,8 @@ With Postgres, `Submit`, `SubmitBatch` and `Cancel` return after the change is d
 | Field | Description |
 |---|---|
 | `id`, `status` | Authoritative. |
-| `pool`, `key`, `kind` | As submitted. |
+| `pool`, `key`, `kind`, `tenant` | As submitted. |
+| `priority` | `PRIORITY_UNSPECIFIED` if unknown. |
 | `attempt` | Current or last attempt (0 before the first dispatch). |
 | `max_attempts` | Attempt budget; 0 if unknown. |
 | `created_unix_ns`, `started_unix_ns`, `finished_unix_ns` | Lifecycle timestamps, when known. |
@@ -91,7 +93,19 @@ With Postgres, `Submit`, `SubmitBatch` and `Cancel` return after the change is d
 | `output_available` | True when the task succeeded and its output is retained. |
 
 Fields other than `id` and `status` are best effort: they come from the serving leader's info
-cache (`outputs.info_entries`) or, with Postgres, from the stored task.
+cache (`outputs.info_entries`) or, with a durable store, from the stored task.
+
+### `ListTasks`
+
+`ListTasksRequest` has `pools` (empty: every pool the caller may use), `statuses` (empty: any;
+`TASK_STATUS_UNSPECIFIED` is `INVALID_ARGUMENT`), `after` (only larger ids; 0 starts from the
+beginning) and `limit` (0 means 100; capped at `limits.max_list`). The response's `next_after`
+is the value to pass as `after` for the next page, and 0 on the last page. Pools are checked as
+for `Watch`: unknown ones are `NOT_FOUND`, pools the caller may not use `PERMISSION_DENIED`.
+
+Live tasks come from the scheduler. Finished tasks come from the store, or, without one, from
+the bounded info cache, which holds only the most recent ones. A page is not an atomic
+snapshot: a task that finishes while the page is built can be missing from it.
 
 ### `TaskResult`
 
@@ -180,6 +194,15 @@ implement these rules; see [Writing executors and workers](../guides/workers.md)
 | `Snapshot` | metrics | `Empty` → `SnapshotResponse` |
 | `AddRecurring` | admin | `RecurringRequest{name, cron, tz, template, overlap}` → `Empty` |
 | `RemoveRecurring` | admin | `RemoveRecurringRequest{name}` → `RemoveRecurringResponse{removed}` |
+| `ListWorkers` | metrics | `Empty` → `ListWorkersResponse{workers}` |
+| `ListRecurring` | metrics | `Empty` → `ListRecurringResponse{schedules}` |
+
+`ListWorkers` and `ListRecurring` list only the pools the caller may use. A `WorkerInfo` has
+the connection `id` the server assigned, the `name`, `pool` and `labels` the worker registered
+with, its `slots` and `busy` slots, and `connected_unix_ns`. A `RecurringInfo` has the
+schedule's `name`, `cron`, `tz` (empty for UTC), `pool`, `kind` and `overlap`, `next_unix_ns`
+(unset when no further occurrence is due) and `last_task_id` (unset before the first
+occurrence); schedules are sorted by name.
 
 `SnapshotResponse` carries `pools` (one `PoolSnapshot` per pool: `name`, `capacity`, `busy`,
 `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`,

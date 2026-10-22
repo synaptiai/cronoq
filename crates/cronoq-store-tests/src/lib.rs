@@ -39,6 +39,7 @@ macro_rules! suite {
             outputs_are_loaded_from_the_store,
             ids_are_not_reused_after_prune,
             scheduler_resumes_after_restart_without_rerunning_finished_work,
+            finished_tasks_are_listed_by_pool_status_and_page,
         );
     };
     (@tests $setup:expr; $($name:ident),* $(,)?) => {
@@ -771,4 +772,74 @@ async fn pool_step(
         .entry(String::from_utf8_lossy(&p).into_owned())
         .or_default() += 1;
     Ok(Bytes::from(format!("out:{}", String::from_utf8_lossy(&p))))
+}
+
+/// Finished tasks are listed in id order, filtered by pool and status and paged by id; live
+/// tasks are not listed.
+pub async fn finished_tasks_are_listed_by_pool_status_and_page<H: Harness>(h: &H) {
+    let store = h.open().await;
+    let e = store.acquire_leadership().await.unwrap();
+    let t = now();
+    let in_pool = |name: &str, pool: &str| TaskSpec::new(Bytes::from(name.to_owned())).pool(pool);
+    let batch = [
+        submitted(1, 0, in_pool("a1", "a").tenant("acme").key("first")),
+        status(1, TaskStatus::Succeeded, 1, t, None),
+        submitted(2, 1, in_pool("a2", "a")),
+        status(2, TaskStatus::Failed, 3, t, Some("boom")),
+        submitted(3, 2, in_pool("b3", "b")),
+        status(3, TaskStatus::Succeeded, 1, t, None),
+        submitted(4, 3, in_pool("a4", "a")),
+        submitted(5, 4, in_pool("a5", "a")),
+        status(5, TaskStatus::Cancelled, 0, t, None),
+    ];
+    store.commit(e, BASE, &batch, &[]).await.unwrap();
+    let ids = |v: Vec<cronoq::TaskRecord<Bytes>>| v.into_iter().map(|r| r.id.0).collect::<Vec<_>>();
+    let all = store.list_finished(&[], &[], None, 100).await.unwrap();
+    let first = &all[0];
+    assert_eq!(first.key.as_deref(), Some("first"));
+    assert_eq!(first.pool, "a");
+    assert_eq!(first.tenant.as_deref(), Some("acme"));
+    assert_eq!(first.status, Some(TaskStatus::Succeeded));
+    assert_eq!(all[1].message.as_deref(), Some("boom"));
+    assert_eq!(all[1].attempt, 3);
+    assert_eq!(ids(all), [1, 2, 3, 5]);
+    assert_eq!(
+        ids(store.list_finished(&["a"], &[], None, 100).await.unwrap()),
+        [1, 2, 5]
+    );
+    let done = [TaskStatus::Succeeded];
+    assert_eq!(
+        ids(store.list_finished(&[], &done, None, 100).await.unwrap()),
+        [1, 3]
+    );
+    let either = [TaskStatus::Failed, TaskStatus::Cancelled];
+    assert_eq!(
+        ids(store
+            .list_finished(&["a"], &either, None, 100)
+            .await
+            .unwrap()),
+        [2, 5]
+    );
+    assert_eq!(
+        ids(store
+            .list_finished(&[], &[], Some(TaskId(1)), 2)
+            .await
+            .unwrap()),
+        [2, 3]
+    );
+    assert_eq!(
+        ids(store
+            .list_finished(&["a", "b"], &done, None, 100)
+            .await
+            .unwrap()),
+        [1, 3]
+    );
+    assert!(
+        store
+            .list_finished(&["c"], &[], None, 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store.release_leadership().await;
 }

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
-use cronoq::{OverlapPolicy, Recurring, TaskError, TaskFailure, TaskId, TaskRef, TaskStatus};
+use cronoq::{
+    OverlapPolicy, Recurring, TaskError, TaskFailure, TaskId, TaskRecord, TaskRef, TaskStatus,
+};
 use cronoq_proto::v1 as pb;
 use futures_util::Stream;
 use futures_util::StreamExt;
@@ -245,6 +247,8 @@ fn record_submit(app: &AppState, id: TaskId, spec: &pb::TaskSpec) {
             })),
             max_attempts,
             created_ns: Some(convert::unix_ns(SystemTime::now())),
+            tenant: (!spec.tenant.is_empty()).then(|| Arc::from(spec.tenant.as_str())),
+            priority: convert::priority(spec.priority).ok(),
             ..Default::default()
         },
     );
@@ -449,7 +453,17 @@ pub async fn task_info(app: &AppState, target: TaskRef) -> Result<pb::TaskInfo, 
         .or_else(|| rec.as_ref().and_then(|r| r.status))
         // Persisted without a status = queued.
         .unwrap_or(TaskStatus::Ready);
-    let meta = meta.unwrap_or_default();
+    Ok(info_message(app, id, status, meta.unwrap_or_default(), rec))
+}
+
+/// Build a `TaskInfo` from what the cache (`meta`) and the store (`rec`) know; the cache wins.
+fn info_message(
+    app: &AppState,
+    id: TaskId,
+    status: TaskStatus,
+    meta: TaskMeta,
+    rec: Option<TaskRecord<Bytes>>,
+) -> pb::TaskInfo {
     let output_available = status == TaskStatus::Succeeded
         && (app.outputs.get(id).is_some() || rec.as_ref().is_some_and(|r| r.output.is_some()));
     let pool = if meta.pool.is_empty() {
@@ -457,37 +471,200 @@ pub async fn task_info(app: &AppState, target: TaskRef) -> Result<pb::TaskInfo, 
     } else {
         meta.pool.to_string()
     };
-    Ok(pb::TaskInfo {
+    let text = |m: Option<Arc<str>>, r: Option<String>| {
+        m.as_deref().map(str::to_string).or(r).unwrap_or_default()
+    };
+    let rec_key = rec.as_ref().and_then(|r| r.key.clone());
+    let rec_kind = rec.as_ref().map(|r| r.kind.clone());
+    let rec_tenant = rec.as_ref().and_then(|r| r.tenant.clone());
+    let priority = meta.priority.or_else(|| rec.as_ref().map(|r| r.priority));
+    let attempt = meta
+        .attempt
+        .max(rec.as_ref().map(|r| r.attempt).unwrap_or(0));
+    pb::TaskInfo {
         id: id.0,
         status: convert::status(status) as i32,
         pool,
-        key: meta
-            .key
-            .as_deref()
-            .map(str::to_string)
-            .or_else(|| rec.as_ref().and_then(|r| r.key.clone()))
-            .unwrap_or_default(),
-        kind: meta
-            .kind
-            .as_deref()
-            .map(str::to_string)
-            .or_else(|| rec.as_ref().map(|r| r.kind.clone()))
-            .unwrap_or_default(),
-        attempt: meta
-            .attempt
-            .max(rec.as_ref().map(|r| r.attempt).unwrap_or(0)),
+        key: text(meta.key, rec_key),
+        kind: text(meta.kind, rec_kind),
+        attempt,
         max_attempts: meta.max_attempts,
         created_unix_ns: meta.created_ns,
         started_unix_ns: meta.started_ns,
         finished_unix_ns: meta.finished_ns,
-        message: meta
-            .message
-            .as_deref()
-            .map(str::to_string)
-            .or_else(|| rec.and_then(|r| r.message))
-            .unwrap_or_default(),
+        message: text(meta.message, rec.and_then(|r| r.message)),
         output_available,
+        tenant: text(meta.tenant, rec_tenant),
+        priority: priority.map_or(pb::Priority::Unspecified, convert::priority_to_pb) as i32,
+    }
+}
+
+/// Default `ListTasks` page size.
+const DEFAULT_LIST: usize = 100;
+
+/// The pools a listing covers: the requested ones (each checked), else all the caller may see.
+/// `None` means every pool.
+fn listing_pools(
+    app: &AppState,
+    principal: &Principal,
+    requested: Vec<String>,
+) -> Result<Option<Vec<String>>, Status> {
+    if requested.len() > app.limits.max_tasks_per_batch {
+        return Err(Status::invalid_argument("too many pools in the filter"));
+    }
+    for p in &requested {
+        convert::check_str("pool", p, 64)?;
+        if app.pool(p).is_none() {
+            return Err(Status::not_found(format!("unknown pool '{p}'")));
+        }
+        check_pool(principal, p)?;
+    }
+    Ok(match (&principal.pools, requested.is_empty()) {
+        (_, false) => Some(requested),
+        (Some(ps), true) => Some(ps.iter().map(|p| p.to_string()).collect()),
+        (None, true) => None,
     })
+}
+
+/// One page of tasks, live and finished, in id order.
+pub async fn list_tasks(
+    app: &AppState,
+    principal: &Principal,
+    r: pb::ListTasksRequest,
+) -> Result<pb::ListTasksResponse, Status> {
+    let pools = listing_pools(app, principal, r.pools)?;
+    let pools: Vec<&str> = match &pools {
+        // Credentials allowing no pool see nothing (an empty list would mean every pool).
+        Some(v) if v.is_empty() => return Ok(pb::ListTasksResponse::default()),
+        Some(v) => v.iter().map(String::as_str).collect(),
+        None => Vec::new(),
+    };
+    let mut statuses = Vec::new();
+    for s in r.statuses {
+        let s = convert::status_from_pb(s)?;
+        if !statuses.contains(&s) {
+            statuses.push(s);
+        }
+    }
+    let (finished, live): (Vec<TaskStatus>, Vec<TaskStatus>) =
+        statuses.iter().partition(|s| s.is_terminal());
+    let limit = match r.limit {
+        0 => DEFAULT_LIST,
+        n => n as usize,
+    }
+    .min(app.limits.max_list);
+    let after = (r.after > 0).then_some(TaskId(r.after));
+    // One more than a page from each source tells whether another page follows.
+    let mut page: std::collections::BTreeMap<u64, pb::TaskInfo> = Default::default();
+    if statuses.is_empty() || !live.is_empty() {
+        for t in app
+            .sched
+            .list_tasks(&pools, &live, after, limit + 1)
+            .await
+            .map_err(convert::error)?
+        {
+            let meta = app.info.get(t.id.0).unwrap_or_default();
+            let rec = TaskRecord {
+                id: t.id,
+                key: t.key.as_deref().map(str::to_string),
+                pool: t.pool.to_string(),
+                kind: t.kind.to_string(),
+                priority: t.priority,
+                tenant: t.tenant.as_deref().map(str::to_string),
+                status: Some(t.status),
+                attempt: t.attempt,
+                message: None,
+                output: None,
+                updated: SystemTime::UNIX_EPOCH,
+            };
+            page.insert(t.id.0, info_message(app, t.id, t.status, meta, Some(rec)));
+        }
+    }
+    if statuses.is_empty() || !finished.is_empty() {
+        // A task that finished while the live page was read is listed as finished.
+        match &app.queries {
+            Some(q) => {
+                for rec in q
+                    .list_finished(&pools, &finished, after, limit + 1)
+                    .await
+                    .map_err(store_error)?
+                {
+                    let (id, status) = (rec.id, rec.status.unwrap_or(TaskStatus::Ready));
+                    let meta = app.info.get(id.0).unwrap_or_default();
+                    page.insert(id.0, info_message(app, id, status, meta, Some(rec)));
+                }
+            }
+            None => {
+                for (id, meta) in app
+                    .info
+                    .list_finished(&pools, &finished, r.after, limit + 1)
+                {
+                    let status = meta.status.unwrap_or(TaskStatus::Ready);
+                    page.insert(id, info_message(app, TaskId(id), status, meta, None));
+                }
+            }
+        }
+    }
+    let more = page.len() > limit;
+    let tasks: Vec<pb::TaskInfo> = page.into_values().take(limit).collect();
+    let next_after = if more {
+        tasks.last().map_or(0, |t| t.id)
+    } else {
+        0
+    };
+    Ok(pb::ListTasksResponse { tasks, next_after })
+}
+
+/// Connected workers of the pools the caller may see.
+pub fn list_workers(app: &AppState, principal: &Principal) -> pb::ListWorkersResponse {
+    let workers = app
+        .registry
+        .list()
+        .into_iter()
+        .filter(|w| principal.may_use_pool(&w.pool))
+        .map(|w| pb::WorkerInfo {
+            id: w.id,
+            name: w.name,
+            pool: w.pool.to_string(),
+            labels: w
+                .labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            slots: w.slots,
+            busy: w.busy,
+            connected_unix_ns: convert::unix_ns(w.connected),
+        })
+        .collect();
+    pb::ListWorkersResponse { workers }
+}
+
+/// Recurring schedules of the pools the caller may see, by name.
+pub async fn list_recurring(
+    app: &AppState,
+    principal: &Principal,
+) -> Result<pb::ListRecurringResponse, Status> {
+    let clock = *app.sched.clock();
+    let mut schedules: Vec<pb::RecurringInfo> = app
+        .sched
+        .list_recurring()
+        .await
+        .map_err(convert::error)?
+        .into_iter()
+        .filter(|r| principal.may_use_pool(&r.pool))
+        .map(|r| pb::RecurringInfo {
+            name: r.name.to_string(),
+            cron: r.cron.to_string(),
+            tz: r.tz.as_deref().unwrap_or_default().to_string(),
+            pool: r.pool.to_string(),
+            kind: r.kind.to_string(),
+            overlap: convert::overlap_to_pb(r.overlap) as i32,
+            next_unix_ns: r.next.map(|t| convert::unix_ns(clock.to_system(t))),
+            last_task_id: r.last_task.map(|t| t.0),
+        })
+        .collect();
+    schedules.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(pb::ListRecurringResponse { schedules })
 }
 
 /// Cancel a task (`false` if it already finished).
@@ -648,6 +825,15 @@ impl pb::tasks_server::Tasks for TasksService {
         let target = convert::task_ref(req.into_inner().task, &app.limits)?;
         let target = authorize_task(app, &p, target).await?;
         Ok(Response::new(task_info(app, target).await?))
+    }
+
+    async fn list_tasks(
+        &self,
+        req: Request<pb::ListTasksRequest>,
+    ) -> Result<Response<pb::ListTasksResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
+        let app = self.shared.app_or_unavailable()?;
+        Ok(Response::new(list_tasks(app, &p, req.into_inner()).await?))
     }
 
     async fn wait(
@@ -899,5 +1085,23 @@ impl pb::admin_server::Admin for AdminService {
             .await
             .map_err(convert::error)?;
         Ok(Response::new(pb::RemoveRecurringResponse { removed }))
+    }
+
+    async fn list_workers(
+        &self,
+        req: Request<pb::Empty>,
+    ) -> Result<Response<pb::ListWorkersResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
+        let app = self.shared.app_or_unavailable()?;
+        Ok(Response::new(list_workers(app, &p)))
+    }
+
+    async fn list_recurring(
+        &self,
+        req: Request<pb::Empty>,
+    ) -> Result<Response<pb::ListRecurringResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
+        let app = self.shared.app_or_unavailable()?;
+        Ok(Response::new(list_recurring(app, &p).await?))
     }
 }

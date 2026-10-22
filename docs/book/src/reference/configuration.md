@@ -156,6 +156,7 @@ optional.
 | `keepalive_timeout_s` | float ≥ 0.1 | `20` | HTTP/2 keepalive ping timeout. |
 | `key_retention_s` | float ≥ 0 | `3600` | How long the key of a finished task keeps deduplicating submissions (a resubmission returns the finished task and its output), and how far back a new leader loads finished tasks from the store. |
 | `key_retention_max` | int | `1000000` | Most finished tasks kept for key deduplication (bounds memory). |
+| `max_list` | int, 1–100000 | `1000` | Most tasks one `ListTasks` or `GET /v1/tasks` page returns; larger requested limits are capped. |
 
 Strings in task specs (keys, kinds, tags, resource names, worker messages) must not contain
 NUL characters; worker failure messages are sanitized (NUL replaced, cut at 8 KiB) instead of

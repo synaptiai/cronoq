@@ -71,6 +71,16 @@ pub(crate) enum Cmd<P, O> {
         target: TaskRef,
         reply: Reply<Option<TaskStatus>>,
     },
+    ListTasks {
+        pools: Vec<Arc<str>>,
+        statuses: Vec<TaskStatus>,
+        after: Option<TaskId>,
+        limit: usize,
+        reply: Reply<Vec<cronoq_core::TaskSummary>>,
+    },
+    ListRecurring {
+        reply: Reply<Vec<cronoq_core::RecurringInfo>>,
+    },
     Snapshot {
         reply: Reply<Snapshot>,
     },
@@ -640,6 +650,18 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             }
             Cmd::Status { target, reply } => {
                 let _ = reply.send(self.core.status(&target));
+            }
+            Cmd::ListTasks {
+                pools,
+                statuses,
+                after,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(self.core.list_tasks(&pools, &statuses, after, limit));
+            }
+            Cmd::ListRecurring { reply } => {
+                let _ = reply.send(self.core.list_recurring());
             }
             Cmd::Snapshot { reply } => {
                 let _ = reply.send(self.core.snapshot(now));

@@ -4,7 +4,7 @@ use core::fmt;
 use core::time::Duration;
 use std::sync::Arc;
 
-use crate::spec::{LeaseId, MissPolicy, PoolId, TaskId, TaskSpec};
+use crate::spec::{LeaseId, MissPolicy, PoolId, Priority, TaskId, TaskSpec};
 use crate::time::Time;
 
 /// Lifecycle status of a task.
@@ -493,4 +493,46 @@ impl<P> Default for Recovered<P> {
             next_id: 0,
         }
     }
+}
+
+/// A live task, as listed by [`Core::list_tasks`](crate::Core::list_tasks).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskSummary {
+    /// Task id.
+    pub id: TaskId,
+    /// Key, if any.
+    pub key: Option<Arc<str>>,
+    /// Pool.
+    pub pool: Arc<str>,
+    /// Kind.
+    pub kind: Arc<str>,
+    /// Priority class.
+    pub priority: Priority,
+    /// Current status.
+    pub status: TaskStatus,
+    /// Attempts started so far.
+    pub attempt: u32,
+    /// Tenant (pools with fairness).
+    pub tenant: Option<Arc<str>>,
+}
+
+/// A recurring schedule, as listed by [`Core::list_recurring`](crate::Core::list_recurring).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecurringInfo {
+    /// Schedule name.
+    pub name: Arc<str>,
+    /// Cron expression.
+    pub cron: Arc<str>,
+    /// Time zone (UTC if `None`).
+    pub tz: Option<Arc<str>>,
+    /// Pool of its occurrences.
+    pub pool: Arc<str>,
+    /// Kind of its occurrences.
+    pub kind: Arc<str>,
+    /// Overlap policy.
+    pub overlap: OverlapPolicy,
+    /// Next occurrence (`None` when the schedule has ended).
+    pub next: Option<Time>,
+    /// Task of the latest occurrence.
+    pub last_task: Option<TaskId>,
 }

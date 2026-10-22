@@ -657,6 +657,43 @@ async def test_get_returns_task_details(server: Server, client: Client) -> None:
     assert info.output_available
 
 
+async def test_list_tasks_workers_and_schedules(server: Server, client: Client) -> None:
+    async with Running() as r:
+        await r.add(server, upper, name="py-worker", labels={"zone": "eu"})
+        await wait_capacity(client, 1)
+        done = await client.submit("x", key="listed", tenant="acme", priority="high", wait=True)
+        # No worker has gpu=a100, so this task stays queued.
+        queued = await client.submit("y", labels={"gpu": "a100"})
+        page = await client.list_tasks()
+        assert [t.id for t in page.tasks] == [done.id, queued.id]
+        assert page.next_after is None
+        first = page.tasks[0]
+        assert (first.status, first.key, first.tenant, first.priority) == ("succeeded", "listed", "acme", "high")
+        assert [t.id for t in (await client.list_tasks(statuses=["ready"])).tasks] == [queued.id]
+        one = await client.list_tasks(limit=1)
+        assert [t.id for t in one.tasks] == [done.id] and one.next_after == done.id
+        assert [t.id async for t in client.iter_tasks(page_size=1)] == [done.id, queued.id]
+        with pytest.raises(ValueError):
+            await client.list_tasks(statuses=["nope"])
+        with pytest.raises(TypeError):
+            await client.list_tasks(pools="default")
+
+        async with Client(client.target, token=METRICS) as m:
+            workers = await m.list_workers()
+            assert [(w.name, w.pool, w.labels, w.slots) for w in workers] == [
+                ("py-worker", "default", {"zone": "eu"}, 1)
+            ]
+            assert workers[0].connected_at > 0
+        async with Client(client.target, token=ADMIN) as admin:
+            await admin.add_recurring("hourly", "0 0 * * * *", "z", overlap="queue")
+            (s,) = await admin.list_recurring()
+            assert (s.name, s.cron, s.pool, s.overlap) == ("hourly", "0 0 * * * *", "default", "queue")
+            assert s.next_at is not None and s.last_task_id is None
+        with pytest.raises(ClientError) as e:
+            await client.list_workers()
+        assert e.value.code == "permission_denied"
+
+
 async def test_submit_wait_timeout(client: Client) -> None:
     t0 = time.monotonic()
     with pytest.raises(TimeoutError):

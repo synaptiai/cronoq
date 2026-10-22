@@ -20,7 +20,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use cronoq::{TaskId, TaskRef};
+use cronoq::{TaskId, TaskRef, TaskStatus};
 use cronoq_proto::v1 as pb;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
@@ -205,7 +205,7 @@ fn gated(router: Router<St>, st: &St, role: Role) -> Router<St> {
 /// The full HTTP router (health, API, metrics).
 pub fn router(st: St) -> Router {
     let api = Router::new()
-        .route("/v1/tasks", post(submit))
+        .route("/v1/tasks", post(submit).get(list_tasks))
         .route("/v1/tasks:batch", post(submit_batch))
         .route("/v1/tasks/{id}", get(get_by_id).delete(cancel_by_id))
         .route("/v1/tasks/{id}/result", get(result_by_id))
@@ -216,6 +216,8 @@ pub fn router(st: St) -> Router {
         .route("/v1/tasks/by-key/{key}/result", get(result_by_key));
     let metrics = Router::new()
         .route("/v1/snapshot", get(snapshot))
+        .route("/v1/workers", get(list_workers))
+        .route("/v1/recurring", get(list_recurring))
         .route("/metrics", get(metrics));
     let body_limit = st.limits.max_http_body_bytes;
     gated(api, &st, Role::Client)
@@ -624,7 +626,33 @@ fn info_json(i: &pb::TaskInfo) -> Value {
     if !i.message.is_empty() {
         v["message"] = i.message.clone().into();
     }
+    if !i.tenant.is_empty() {
+        v["tenant"] = i.tenant.clone().into();
+    }
+    if let Some(p) = priority_name(i.priority) {
+        v["priority"] = p.into();
+    }
     v
+}
+
+/// Lower-case name of a wire priority (`None` if unspecified).
+fn priority_name(p: i32) -> Option<&'static str> {
+    match pb::Priority::try_from(p).ok()? {
+        pb::Priority::Unspecified => None,
+        pb::Priority::Critical => Some("critical"),
+        pb::Priority::High => Some("high"),
+        pb::Priority::Normal => Some("normal"),
+        pb::Priority::Low => Some("low"),
+    }
+}
+
+fn overlap_name(o: i32) -> &'static str {
+    match pb::Overlap::try_from(o).unwrap_or(pb::Overlap::Unspecified) {
+        pb::Overlap::Unspecified | pb::Overlap::Skip => "skip",
+        pb::Overlap::Allow => "allow",
+        pb::Overlap::Queue => "queue",
+        pb::Overlap::QueueOnSuccess => "queue_on_success",
+    }
 }
 
 fn parse_id(s: &str) -> Result<TaskRef, ApiError> {
@@ -791,6 +819,103 @@ async fn result_by_key(
 ) -> Result<Json<Value>, ApiError> {
     let target = key(app(&st)?, k)?;
     wait_task(&st, &p, target, query(q)?).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListQuery {
+    /// Comma-separated pool names.
+    pool: Option<String>,
+    /// Comma-separated status names.
+    status: Option<String>,
+    after: Option<String>,
+    limit: Option<u32>,
+}
+
+fn csv(s: Option<&str>) -> impl Iterator<Item = &str> {
+    s.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+}
+
+async fn list_tasks(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    q: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Query(q) = q.map_err(|e| bad(e.body_text()))?;
+    let mut statuses = Vec::new();
+    for name in csv(q.status.as_deref()) {
+        let s =
+            TaskStatus::from_name(name).ok_or_else(|| bad(format!("unknown status '{name}'")))?;
+        statuses.push(crate::convert::status(s) as i32);
+    }
+    let after = match q.after.as_deref() {
+        None | Some("") => 0,
+        Some(a) => a
+            .parse::<u64>()
+            .map_err(|_| bad(format!("invalid task id '{a}' in after")))?,
+    };
+    let req = pb::ListTasksRequest {
+        pools: csv(q.pool.as_deref()).map(str::to_string).collect(),
+        statuses,
+        after,
+        limit: q.limit.unwrap_or(0),
+    };
+    let r = grpc::list_tasks(app(&st)?, &p, req).await?;
+    let mut v = json!({ "tasks": r.tasks.iter().map(info_json).collect::<Vec<_>>() });
+    if r.next_after > 0 {
+        v["next_after"] = r.next_after.to_string().into();
+    }
+    Ok(Json(v))
+}
+
+async fn list_workers(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+) -> Result<Json<Value>, ApiError> {
+    let r = grpc::list_workers(app(&st)?, &p);
+    let workers: Vec<Value> = r
+        .workers
+        .iter()
+        .map(|w| {
+            json!({
+                "id": w.id.to_string(), "name": w.name, "pool": w.pool, "labels": w.labels,
+                "slots": w.slots, "busy": w.busy,
+                "connected_unix_ns": w.connected_unix_ns.to_string(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "workers": workers })))
+}
+
+async fn list_recurring(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+) -> Result<Json<Value>, ApiError> {
+    let r = grpc::list_recurring(app(&st)?, &p).await?;
+    let schedules: Vec<Value> = r
+        .schedules
+        .iter()
+        .map(|s| {
+            let mut v = json!({
+                "name": s.name, "cron": s.cron, "pool": s.pool, "kind": s.kind,
+                "overlap": overlap_name(s.overlap),
+            });
+            if !s.tz.is_empty() {
+                v["tz"] = s.tz.clone().into();
+            }
+            if let Some(t) = s.next_unix_ns {
+                v["next_unix_ns"] = t.to_string().into();
+            }
+            if let Some(id) = s.last_task_id {
+                v["last_task_id"] = id.to_string().into();
+            }
+            v
+        })
+        .collect();
+    Ok(Json(json!({ "schedules": schedules })))
 }
 
 async fn snapshot(State(st): State<St>) -> Result<Json<Value>, ApiError> {
