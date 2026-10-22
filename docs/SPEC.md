@@ -425,6 +425,14 @@ ref), `deps`, `crons`, `leader(epoch)`.
   reconnect to the new leader (clients get the leader address from any replica, or via
   a load balancer with a health check).
 
+**SQLite store** (`cronoq-store-sqlite`): the same tables in one local file (WAL journal, full
+sync by default, owner-only permissions), for a single host.
+- **Leader election**: a lease row (`holder`, `expires_unix_ns`) in `cronoq_leader`. A process
+  takes the lease when it is free or expired (`BEGIN IMMEDIATE`, then `epoch + 1`); the leader
+  renews it every `lease_renew` (2 s) for `lease_ttl` (10 s) and clears it on clean shutdown.
+- **Fencing**: every commit reads the epoch and holder inside its write transaction; SQLite
+  admits one writer at a time, so the check is exact.
+
 ---
 
 ## 14. Prototype defects fixed (for traceability)
@@ -542,7 +550,7 @@ overrides.
 
 ## 19. Deferred (post v0.1)
 Effectively-once (idempotent completion), multi-tenant weighted fairness,
-label/constraint matching, SQLite store, Go/TS SDKs, active-active sharding,
+label/constraint matching, Go/TS SDKs, active-active sharding,
 Kubernetes operator.
 
 ## 20. Resolved defaults

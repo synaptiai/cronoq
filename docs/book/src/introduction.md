@@ -24,7 +24,7 @@ any language and connected over gRPC.
 | **Shared resources** | Semaphores and token buckets shared across pools: API rate limits, GPU slots, database connections. |
 | **Elasticity** | Each pool computes how many workers it needs from arrival rate, backlog, wait-time SLOs and upcoming reservations, and asks a pluggable scaler for them. |
 | **Backpressure** | Bounded queues that make submitters wait, reject, or shed lower-priority work. |
-| **Durability and HA** | A Postgres store with leader election and fencing; standby servers take over and resume every accepted task. |
+| **Durability and HA** | Postgres and SQLite stores with leader election and fencing; standby servers take over and resume every accepted task. |
 | **Observability** | OpenTelemetry metrics and trace propagation, Prometheus `/metrics`, and windowed quality metrics such as priority adherence and fixed-start hit rate. |
 
 ## Three ways to use it

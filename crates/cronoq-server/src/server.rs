@@ -70,6 +70,12 @@ async fn open_store(cfg: &StoreConfig) -> anyhow::Result<Opened> {
             crate::pg::warn_insecure_url(&url, inline.is_some());
             crate::pg::open(&url, schema.as_deref()).await
         }
+        StoreConfig::Sqlite { path, .. } => {
+            let store = cronoq_store_sqlite::SqliteStore::open(path)
+                .await
+                .map_err(|e| anyhow::anyhow!("sqlite {}: {e}", path.display()))?;
+            Ok(Opened::durable(store))
+        }
     }
 }
 
@@ -294,7 +300,7 @@ async fn lead(
     let outputs = OutputCache::new(cfg.outputs.cache_entries, cfg.outputs.cache_bytes);
     let info = TaskInfoCache::new(cfg.outputs.info_entries);
     let mut builder = Scheduler::<Bytes, Bytes>::builder()
-        .store_arc(store)
+        .store_arc(store.clone())
         // Outputs are cached by the server (bounded by count and bytes) and the store; the
         // runtime's count-only cache would hold up to 1024 maximum-size outputs.
         .output_cache(0)
@@ -356,6 +362,9 @@ async fn lead(
             Some(q),
             StoreConfig::Postgres {
                 keep_finished_s, ..
+            }
+            | StoreConfig::Sqlite {
+                keep_finished_s, ..
             },
         ) => Some(crate::store::spawn_pruner(
             q.clone(),
@@ -398,6 +407,8 @@ async fn lead(
         // Workers keep reporting outcomes while running attempts finish.
         let r = sched.shutdown(grace).await;
         registry.close_all("server shutting down", false, WORKER_GRACE);
+        // Hand over at once instead of letting a standby wait for the lease to run out.
+        store.release_leadership().await;
         r.context("scheduler shutdown")
     };
     // Ends Watch streams and pending waits before the listeners drain.

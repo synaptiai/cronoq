@@ -1,26 +1,28 @@
-//! Conversions between engine types and their stored representation.
+//! Conversions between engine types and the representation durable stores keep, shared by
+//! the PostgreSQL and SQLite stores so both store tasks the same way.
 //!
-//! Times are stored as Unix nanoseconds in `BIGINT` columns (saturating in the year 2262);
-//! durations inside JSON documents are exact (`u128` nanoseconds). PostgreSQL text and JSONB
-//! cannot hold NUL characters, so every string is stored with NUL replaced by U+FFFD.
+//! Times are Unix nanoseconds in 64-bit integers (saturating in the year 2262); durations inside
+//! JSON documents are exact (`u128` nanoseconds). Strings are stored with NUL characters
+//! replaced by U+FFFD, which every backend can hold.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::TimeBase;
 use bytes::Bytes;
-use cronoq::TimeBase;
 use cronoq_core::{
     Dep, EdgeCond, FixedStart, MissPolicy, OverlapPolicy, Priority, RecurringSpec, RetryPolicy,
     TaskId, TaskRef, TaskSpec, Time,
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) type Tag = (Arc<str>, Arc<str>);
+/// A task tag (key, value).
+pub type Tag = (Arc<str>, Arc<str>);
 
-/// `s` with NUL characters (rejected by PostgreSQL text and JSONB) replaced by U+FFFD.
+/// `s` with NUL characters replaced by U+FFFD.
 #[inline]
-pub(crate) fn clean(s: &str) -> Cow<'_, str> {
+pub fn clean(s: &str) -> Cow<'_, str> {
     if s.contains('\0') {
         Cow::Owned(s.replace('\0', "\u{FFFD}"))
     } else {
@@ -30,31 +32,32 @@ pub(crate) fn clean(s: &str) -> Cow<'_, str> {
 
 /// [`clean`], owned.
 #[inline]
-pub(crate) fn cleaned(s: &str) -> String {
+pub fn cleaned(s: &str) -> String {
     clean(s).into_owned()
 }
 
 /// Engine time to wall-clock Unix nanoseconds (saturating).
 #[inline]
-pub(crate) fn to_unix(base: TimeBase, t: Time) -> i64 {
+pub fn to_unix(base: TimeBase, t: Time) -> i64 {
     base.unix_nanos_at_zero
         .saturating_add(i64::try_from(t.0).unwrap_or(i64::MAX))
 }
 
 /// Wall-clock Unix nanoseconds to engine time (times before engine zero map to zero).
 #[inline]
-pub(crate) fn from_unix(base: TimeBase, unix: i64) -> Time {
+pub fn from_unix(base: TimeBase, unix: i64) -> Time {
     Time(u64::try_from(unix.saturating_sub(base.unix_nanos_at_zero)).unwrap_or(0))
 }
 
-/// Duration as `BIGINT` nanoseconds (saturating at ~292 years).
+/// Duration as 64-bit nanoseconds (saturating at ~292 years).
 #[inline]
-pub(crate) fn dur_ns(d: Duration) -> i64 {
+pub fn dur_ns(d: Duration) -> i64 {
     d.as_nanos().min(i64::MAX as u128) as i64
 }
 
 #[inline]
-pub(crate) fn ns_dur(ns: i64) -> Duration {
+/// Nanoseconds to a duration (negative values map to zero).
+pub fn ns_dur(ns: i64) -> Duration {
     Duration::from_nanos(ns.max(0) as u64)
 }
 
@@ -70,7 +73,8 @@ fn ns128_dur(ns: u128) -> Duration {
     Duration::new((ns / NS).min(u64::MAX as u128) as u64, (ns % NS) as u32)
 }
 
-pub(crate) fn miss_name(p: MissPolicy) -> &'static str {
+/// Stored name of a miss policy.
+pub fn miss_name(p: MissPolicy) -> &'static str {
     match p {
         MissPolicy::RunLate => "run_late",
         MissPolicy::Skip => "skip",
@@ -78,7 +82,8 @@ pub(crate) fn miss_name(p: MissPolicy) -> &'static str {
     }
 }
 
-pub(crate) fn miss_from(s: &str) -> MissPolicy {
+/// Miss policy from its stored name (unknown names run late).
+pub fn miss_from(s: &str) -> MissPolicy {
     match s {
         "skip" => MissPolicy::Skip,
         "fail" => MissPolicy::Fail,
@@ -87,7 +92,7 @@ pub(crate) fn miss_from(s: &str) -> MissPolicy {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct DepJ {
+struct DepJ {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,7 +101,7 @@ pub(crate) struct DepJ {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct RetryJ {
+struct RetryJ {
     max_attempts: u32,
     initial_backoff_ns: u128,
     /// `None` (JSON `null`) for a multiplier that JSON cannot represent (non-finite).
@@ -135,7 +140,8 @@ impl From<RetryJ> for RetryPolicy {
     }
 }
 
-pub(crate) fn deps_json(deps: &[Dep]) -> String {
+/// Dependencies as a JSON array.
+pub fn deps_json(deps: &[Dep]) -> String {
     let v: Vec<DepJ> = deps
         .iter()
         .map(|d| {
@@ -158,7 +164,8 @@ pub(crate) fn deps_json(deps: &[Dep]) -> String {
     serde_json::to_string(&v).expect("serializable")
 }
 
-pub(crate) fn deps_from(v: &str) -> Result<Vec<Dep>, String> {
+/// Dependencies from their JSON array.
+pub fn deps_from(v: &str) -> Result<Vec<Dep>, String> {
     let deps: Vec<DepJ> = serde_json::from_str(v).map_err(|e| e.to_string())?;
     deps_from_j(deps)
 }
@@ -181,12 +188,14 @@ fn deps_from_j(deps: Vec<DepJ>) -> Result<Vec<Dep>, String> {
         .collect()
 }
 
-pub(crate) fn retry_json(r: &Option<RetryPolicy>) -> Option<String> {
+/// Retry policy as a JSON object.
+pub fn retry_json(r: &Option<RetryPolicy>) -> Option<String> {
     r.as_ref()
         .map(|r| serde_json::to_string(&RetryJ::from(r)).expect("serializable"))
 }
 
-pub(crate) fn retry_from(v: Option<&str>) -> Result<Option<RetryPolicy>, String> {
+/// Retry policy from its JSON object.
+pub fn retry_from(v: Option<&str>) -> Result<Option<RetryPolicy>, String> {
     v.map(|v| {
         serde_json::from_str::<RetryJ>(v)
             .map(Into::into)
@@ -195,17 +204,20 @@ pub(crate) fn retry_from(v: Option<&str>) -> Result<Option<RetryPolicy>, String>
     .transpose()
 }
 
-pub(crate) fn resources_json<P>(spec: &TaskSpec<P>) -> String {
+/// Resource requests as a JSON array of `[name, amount]`.
+pub fn resources_json<P>(spec: &TaskSpec<P>) -> String {
     let v: Vec<(Cow<'_, str>, u32)> = spec.resources.iter().map(|(n, a)| (clean(n), *a)).collect();
     serde_json::to_string(&v).expect("serializable")
 }
 
-pub(crate) fn resources_from(v: &str) -> Result<Vec<(Arc<str>, u32)>, String> {
+/// Resource requests from their JSON array.
+pub fn resources_from(v: &str) -> Result<Vec<(Arc<str>, u32)>, String> {
     let r: Vec<(String, u32)> = serde_json::from_str(v).map_err(|e| e.to_string())?;
     Ok(r.into_iter().map(|(n, a)| (n.into(), a)).collect())
 }
 
-pub(crate) fn tags_json<P>(spec: &TaskSpec<P>) -> String {
+/// Tags as a JSON array of `[key, value]`.
+pub fn tags_json<P>(spec: &TaskSpec<P>) -> String {
     let v: Vec<(Cow<'_, str>, Cow<'_, str>)> = spec
         .tags
         .iter()
@@ -214,14 +226,15 @@ pub(crate) fn tags_json<P>(spec: &TaskSpec<P>) -> String {
     serde_json::to_string(&v).expect("serializable")
 }
 
-pub(crate) fn tags_from(v: &str) -> Result<Vec<Tag>, String> {
+/// Tags from their JSON array.
+pub fn tags_from(v: &str) -> Result<Vec<Tag>, String> {
     let t: Vec<(String, String)> = serde_json::from_str(v).map_err(|e| e.to_string())?;
     Ok(t.into_iter().map(|(k, v)| (k.into(), v.into())).collect())
 }
 
 /// Recurring schedule definition; the template payload is stored separately as bytes.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct RecurringJ {
+struct RecurringJ {
     cron: String,
     tz: Option<String>,
     overlap: String,
@@ -250,7 +263,8 @@ struct TemplateJ {
     tags: Vec<(String, String)>,
 }
 
-pub(crate) fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String {
+/// A recurring schedule (without its template payload) as a JSON document.
+pub fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String {
     let t = &r.template;
     let j = RecurringJ {
         cron: cleaned(&r.cron),
@@ -282,7 +296,8 @@ pub(crate) fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String
     serde_json::to_string(&j).expect("serializable")
 }
 
-pub(crate) fn recurring_from(
+/// A recurring schedule from its JSON document and template payload.
+pub fn recurring_from(
     base: TimeBase,
     name: String,
     spec: &str,
@@ -326,7 +341,7 @@ pub(crate) fn recurring_from(
 }
 
 /// Fixed-start columns: (at, tolerance, on_miss).
-pub(crate) fn fixed_cols(
+pub fn fixed_cols(
     base: TimeBase,
     f: &Option<FixedStart>,
 ) -> (Option<i64>, Option<i64>, Option<String>) {

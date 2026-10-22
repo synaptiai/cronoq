@@ -21,6 +21,7 @@ path = "src/main.rs"
 cronoq = { path = "../cronoq", version = "0.1.0" }
 cronoq-proto = { path = "../cronoq-proto", version = "0.1.0" }
 cronoq-store-postgres = { path = "../cronoq-store-postgres", version = "0.1.0" }
+cronoq-store-sqlite = { path = "../cronoq-store-sqlite", version = "0.1.0" }
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"

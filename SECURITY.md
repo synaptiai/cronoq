@@ -21,7 +21,7 @@ Report them privately through
 
 Please include:
 
-- the affected component (engine, runtime, server, Postgres store, Python package) and version;
+- the affected component (engine, runtime, server, Postgres or SQLite store, Python package) and version;
 - a description of the issue and its impact;
 - steps to reproduce or a proof of concept;
 - any suggested mitigation.
@@ -58,6 +58,7 @@ team or trust domain); run separate servers for mutually untrusted tenants.
 | `admin` credentials | Everything, including recurring schedules. |
 | Unauthenticated network peers | `/healthz` and `/readyz`; `/metrics` only on the optional `server.metrics_addr` listener. |
 | PostgreSQL | Fully trusted: it stores payloads, outputs and schedules. |
+| SQLite file | Fully trusted, like PostgreSQL: anyone who can write it can change tasks and schedules. It is created readable and writable by its owner only (on Unix). |
 
 Credentials are bearer tokens (`[[auth.tokens]]`) or client certificates mapped to a role by DNS
 subject alternative name (`[[auth.certs]]`, which requires `server.tls.client_ca`). Both can be

@@ -67,6 +67,15 @@ First public release.
   high-water mark so ids are never reused after pruning, NUL-safe text storage, and quarantine of
   undecodable rows instead of failed recoveries.
 
+#### SQLite store (`cronoq-store-sqlite`)
+
+- Durable state in one local file, with no database server: the same tables, migrations and
+  recovery as the Postgres store, checked by the same conformance tests.
+- Leader election through a renewed lease, so standby processes on the same host take over
+  when the leader stops; every commit checks the fencing epoch inside its write transaction.
+- WAL journal synced on every commit by default; the file is created with owner-only
+  permissions.
+
 #### Server (`cronoq-server`)
 
 - gRPC (`Tasks`, `Workers`, `Admin`) and HTTP/JSON APIs. HTTP returns ids as strings, has
@@ -77,7 +86,7 @@ First public release.
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
   results; waits bounded by `limits.max_wait_s`.
 - Webhook and external scalers, Prometheus metrics, health and readiness endpoints, and
-  active-passive HA with Postgres.
+  active-passive HA with Postgres or SQLite.
 - Rust worker client (`worker::run_worker`) with slot enforcement, heartbeats, panic isolation,
   reconnect with backoff, TLS/mTLS and graceful drain.
 - `--check` to validate configuration, `--print-proto` to print the API.
