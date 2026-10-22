@@ -47,6 +47,8 @@ pub use error::{Error, ScaleError, StoreError, TaskError, TaskFailure};
 pub use executor::{BoxFuture, Executor, FnExecutor, TaskContext};
 pub use scaler::{ExternalScaler, Scaler, SlotScaler};
 pub use scheduler::{Builder, Pool, Scheduler, TaskHandle};
+#[cfg(feature = "store-codec")]
+pub mod codec;
 pub use store::{MemoryStore, Store, StoreQueries, TaskRecord, TimeBase};
 pub use task::{Recurring, Task, When};
 

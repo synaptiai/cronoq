@@ -1,8 +1,15 @@
 # Durability and high availability
 
 By default the scheduler keeps its state in memory: fast, but a process restart loses queued
-work. The `Store` trait makes state durable, and `cronoq-store-postgres` implements it on
-PostgreSQL, including active-passive high availability.
+work. The `Store` trait makes state durable. Two stores implement it, both with active-passive
+high availability:
+
+| Store | Use it for |
+|---|---|
+| `cronoq-store-postgres` | Replicas on several hosts sharing a PostgreSQL database. |
+| `cronoq-store-sqlite` | One host, no database server: state in a local file, with standby processes on the same host. |
+
+Both pass the same conformance suite, so the behaviour below holds for either.
 
 ## Model
 
@@ -87,6 +94,27 @@ Several `cronoq-server` replicas (or embedding processes) can point at the same 
 Clients and workers reach the leader through a load balancer that routes on `/readyz`, and
 workers reconnect automatically (both official worker clients do).
 
+## Leader election and fencing (SQLite)
+
+Several processes on one host can open the same database file:
+
+- Leadership is a **lease** row in the file: the holder's identity and an expiry time. A
+  process that finds the lease free or expired takes it, increments the epoch and serves. The
+  others check every `lock_poll` (0.5 s) and report `GET /readyz` = 503.
+- The leader renews the lease every `lease_renew` (2 s); it lasts `lease_ttl` (10 s). If the
+  leader dies or hangs, a standby takes over once the lease runs out. A leader that shuts down
+  cleanly releases the lease, so the standby takes over at once.
+- SQLite lets one writer at a time into the file. Every commit checks the epoch and lease
+  holder inside its write transaction, so a leader that was paused past its lease and replaced
+  can no longer write: its commit fails with `Fenced` and it stops. Its renewal also notices
+  the takeover.
+- Lease expiry uses the wall clock, which processes on one host share. Keep the file on a
+  local filesystem: SQLite's WAL journal does not work over network filesystems, which is also
+  why this store does not span hosts.
+- The file is created readable and writable by its owner only (on Unix), and SQLite gives its
+  journal files the same permissions. By default every commit syncs the journal to disk
+  (`full_sync`).
+
 ```text
             ┌──────────────┐   advisory lock    ┌──────────────┐
  clients ──▶│ replica A    │◀──────────────────▶│              │
@@ -100,14 +128,16 @@ workers reconnect automatically (both official worker clients do).
 
 ## Schema and migrations
 
-- Tables live in one PostgreSQL schema, `public` by default (`PgStoreConfig::schema` when you
-  embed the store; the server uses `public`). Instances configured with the same schema form one
-  cluster; different schemas are fully independent, so one database can host several clusters.
+- PostgreSQL tables live in one schema, `public` by default (`PgStoreConfig::schema` when you
+  embed the store, `store.schema` in the server). Instances configured with the same schema form
+  one cluster; different schemas are fully independent, so one database can host several
+  clusters. With SQLite, each file is one cluster.
 - Migrations are versioned in `cronoq_schema_version` and applied automatically on connect,
   under a lock, by whichever instance starts first. An older build refuses to run against a
   newer schema instead of corrupting it.
 - PostgreSQL text cannot hold NUL characters. The APIs reject them in keys, kinds, tags and
-  names; NUL in messages reported by executors or workers is stored as U+FFFD.
+  names; NUL in messages reported by executors or workers is stored as U+FFFD (in both stores,
+  so they behave alike).
 - A row that cannot be decoded during recovery (for example after manual edits) is
   quarantined: marked failed with an explanatory message, instead of preventing the leader from
   starting.

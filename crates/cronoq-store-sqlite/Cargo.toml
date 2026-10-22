@@ -1,0 +1,29 @@
+[package]
+name = "cronoq-store-sqlite"
+description = "SQLite store for cronoq: durable state in a local file, with standby processes and fencing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/cronoq-store-sqlite"
+readme = "README.md"
+keywords = ["scheduler", "sqlite", "leader-election", "fencing"]
+categories = ["database", "concurrency"]
+
+[dependencies]
+cronoq = { path = "../cronoq", version = "0.1.0", default-features = false, features = ["store-codec"] }
+cronoq-core.workspace = true
+async-trait = "0.1"
+bytes = "1"
+serde_json = "1"
+# Bundled SQLite, without extension loading.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+tokio = { version = "1.47", features = ["rt", "sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+cronoq-store-tests = { path = "../cronoq-store-tests" }
+tokio = { version = "1.47", features = ["full"] }

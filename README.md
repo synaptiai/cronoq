@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>An elastic, priority-aware task scheduler for Rust, Python and any language over gRPC.</strong><br>
-  Priorities with aging · deadlines · cron with reserved capacity · DAGs · rate limits · queue-pressure autoscaling · Postgres HA
+  Priorities with aging · deadlines · cron with reserved capacity · DAGs · rate limits · queue-pressure autoscaling · Postgres or SQLite HA
 </p>
 
 <p align="center">
@@ -44,7 +44,7 @@ Plain queues treat every job the same. Real workloads do not:
 - 🔗 **Hand-rolled job chaining** → DAG edges on success, failure or completion; atomic batches;
   idempotent keys.
 - 💥 **Lost jobs when a worker dies** → leases, heartbeats, timeouts, retries with backoff,
-  dead letters, and Postgres-backed failover.
+  dead letters, and failover backed by Postgres or a local SQLite file.
 
 It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, with
 dispatch cost independent of backlog size.
@@ -165,7 +165,7 @@ curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TO
 | Reliability | Leases, heartbeats, timeouts, retries with exponential backoff and `retry_after`, dead letters, cancellation |
 | Limits | Semaphores and token buckets shared across pools, bounded queues (wait / reject / shed) |
 | Elasticity | Per-pool queue-pressure autoscaling, wait-time SLOs, reservation pre-warming, cost reporting |
-| Durability | Postgres store, leader election, epoch fencing, recovery, at-least-once execution |
+| Durability | Postgres and SQLite stores, leader election, epoch fencing, recovery, at-least-once execution |
 | Interfaces | Rust (async + blocking), Python (asyncio), gRPC, HTTP/JSON |
 | Observability | OpenTelemetry metrics and trace propagation, Prometheus, windowed quality metrics |
 
@@ -219,6 +219,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`cronoq-core`](crates/cronoq-core) | Sans-IO scheduling engine |
 | [`cronoq`](crates/cronoq) | Tokio runtime and Rust API |
 | [`cronoq-store-postgres`](crates/cronoq-store-postgres) | Durable store with leader election and fencing |
+| [`cronoq-store-sqlite`](crates/cronoq-store-sqlite) | Durable store in a local file, with standby processes and fencing |
 | [`cronoq-proto`](crates/cronoq-proto) | Protobuf definitions and generated gRPC code |
 | [`cronoq-server`](crates/cronoq-server) | gRPC/HTTP server, remote workers, Rust worker client |
 | [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |

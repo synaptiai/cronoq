@@ -256,7 +256,7 @@ async fn full_queue_waits_for_space() {
     for j in joins {
         total += *j.await.unwrap();
     }
-    assert_eq!(total, (0..20).sum());
+    assert_eq!(total, (0..20).sum::<u64>());
 
     let r: Sched = Scheduler::builder()
         .pool(

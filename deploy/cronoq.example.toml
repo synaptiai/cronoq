@@ -51,6 +51,10 @@ role = "admin"     # everything, plus recurring schedules
 # Durable state and active-passive HA: run several replicas against the same database;
 # one leads, the others report /readyz = 503 and take over on failure.
 # [store]
+# kind = "sqlite"
+# path = "/var/lib/cronoq/state.db"  # one host: a local file, standbys on the same host
+#
+# [store]
 # kind = "postgres"
 # url_env = "DATABASE_URL"   # use sslmode=verify-full for a remote database
 # keep_finished_s = 604800

@@ -34,8 +34,9 @@ yourself. From Python, the bindings manage their own runtime.
 
 ### Do I need Postgres?
 
-Only for durability across restarts and for running several server replicas. Embedded use and
-single-node servers work in memory.
+No. Without a store, state is in memory. For durability on one host, use the SQLite store (a
+local file, with standby processes on the same host). Use Postgres to run replicas on several
+hosts.
 
 ### How do workers find the leader in an HA setup?
 

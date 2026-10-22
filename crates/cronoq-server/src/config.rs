@@ -234,18 +234,30 @@ impl Config {
             );
         }
         self.limits.validate()?;
-        if let StoreConfig::Postgres {
-            keep_finished_s,
-            url,
-            url_env,
-            ..
-        } = &self.store
-        {
-            opt_secs("store.keep_finished_s", *keep_finished_s, 60.0)?;
-            ensure!(
-                !(url.is_some() && url_env.is_some()),
-                "store: set either url or url_env, not both"
-            );
+        match &self.store {
+            StoreConfig::Memory => {}
+            StoreConfig::Postgres {
+                keep_finished_s,
+                url,
+                url_env,
+                ..
+            } => {
+                opt_secs("store.keep_finished_s", *keep_finished_s, 60.0)?;
+                ensure!(
+                    !(url.is_some() && url_env.is_some()),
+                    "store: set either url or url_env, not both"
+                );
+            }
+            StoreConfig::Sqlite {
+                path,
+                keep_finished_s,
+            } => {
+                opt_secs("store.keep_finished_s", *keep_finished_s, 60.0)?;
+                ensure!(
+                    !path.as_os_str().is_empty(),
+                    "store.path must name the database file"
+                );
+            }
         }
         Ok(())
     }
@@ -423,6 +435,14 @@ pub enum StoreConfig {
         /// keeps other database roles away from its tables.
         schema: Option<String>,
     },
+    /// SQLite: durable state in a local file; server processes sharing the file elect one
+    /// leader and the others stand by.
+    Sqlite {
+        /// Database file (created if missing). Keep it on a local filesystem.
+        path: std::path::PathBuf,
+        /// Delete finished tasks older than this (default 7 days).
+        keep_finished_s: Option<f64>,
+    },
 }
 
 impl fmt::Debug for StoreConfig {
@@ -440,6 +460,14 @@ impl fmt::Debug for StoreConfig {
                 .field("url_env", url_env)
                 .field("keep_finished_s", keep_finished_s)
                 .field("schema", schema)
+                .finish(),
+            StoreConfig::Sqlite {
+                path,
+                keep_finished_s,
+            } => f
+                .debug_struct("Sqlite")
+                .field("path", path)
+                .field("keep_finished_s", keep_finished_s)
                 .finish(),
         }
     }

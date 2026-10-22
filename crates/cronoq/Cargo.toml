@@ -16,6 +16,8 @@ categories = ["asynchronous", "concurrency"]
 [features]
 default = ["otel"]
 otel = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
+# Encoding of tasks and schedules shared by durable store implementations.
+store-codec = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 cronoq-core.workspace = true
@@ -27,6 +29,8 @@ thiserror = "2"
 tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = "0.7"
 tracing = "0.1"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 opentelemetry = { version = "0.33", features = ["metrics", "trace"], optional = true }
 tracing-opentelemetry = { version = "0.34", optional = true }
 

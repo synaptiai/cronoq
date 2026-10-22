@@ -43,8 +43,6 @@
 
 #![warn(missing_docs)]
 
-mod codec;
-
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -62,7 +60,7 @@ use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Row};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use codec::*;
+use cronoq::codec::*;
 
 /// Ordered schema migrations; `cronoq_schema_version` records how many were applied. Each one
 /// is idempotent so databases created before versioning upgrade cleanly.

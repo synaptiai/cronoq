@@ -114,11 +114,12 @@ keep_finished_s = 604800
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | `memory` \| `postgres` | `memory` | `memory` keeps all state in the process (lost on restart). `postgres` makes state durable and enables active-passive HA. |
-| `url` | string | – | Connection URL. Prefer `url_env`; the server warns about inline URLs and about URLs without `sslmode=verify-full`/`require`. |
-| `url_env` | string | `DATABASE_URL` | Read the URL from this environment variable. Set `url` or `url_env`, not both. |
+| `kind` | `memory` \| `postgres` \| `sqlite` | `memory` | `memory` keeps all state in the process (lost on restart). `postgres` and `sqlite` make state durable and enable active-passive HA (`sqlite`: processes on one host). |
+| `url` | string | – | `postgres` only. Connection URL. Prefer `url_env`; the server warns about inline URLs and about URLs without `sslmode=verify-full`/`require`. |
+| `url_env` | string | `DATABASE_URL` | `postgres` only. Read the URL from this environment variable. Set `url` or `url_env`, not both. |
 | `keep_finished_s` | float ≥ 60 | `604800` (7 days) | Finished tasks older than this are pruned hourly (in batches; tasks that live tasks depend on are kept). |
-| `schema` | string | `public` | PostgreSQL schema for the server's tables (letters, digits and `_`; created if missing). Servers sharing a schema form one cluster; different schemas are independent. |
+| `path` | path | – | `sqlite` only, required: the database file (created if missing, owner-only permissions). Keep it on a local filesystem. |
+| `schema` | string | `public` | `postgres` only. PostgreSQL schema for the server's tables (letters, digits and `_`; created if missing). Servers sharing a schema form one cluster; different schemas are independent. |
 
 The server refuses to start if the schema already holds cronoq tables owned by a role other than
 the one it connects as (or a superuser). Prefer a dedicated schema that only the server's role

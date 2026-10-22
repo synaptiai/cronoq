@@ -8,6 +8,7 @@ so you know where to look.
 | `cronoq` | [docs.rs/cronoq](https://docs.rs/cronoq) | Embedding the scheduler in a tokio application. Start here. |
 | `cronoq-core` | [docs.rs/cronoq-core](https://docs.rs/cronoq-core) | The sans-IO engine: custom drivers, simulations, deterministic tests. |
 | `cronoq-store-postgres` | [docs.rs/cronoq-store-postgres](https://docs.rs/cronoq-store-postgres) | Durable state and leader election for `Scheduler<Bytes, Bytes>`. |
+| `cronoq-store-sqlite` | [docs.rs/cronoq-store-sqlite](https://docs.rs/cronoq-store-sqlite) | The same, in a local SQLite file. |
 | `cronoq-proto` | [docs.rs/cronoq-proto](https://docs.rs/cronoq-proto) | Generated gRPC clients and servers (`cronoq_proto::v1`), `PROTOCOL_VERSION`. |
 | `cronoq-server` | [docs.rs/cronoq-server](https://docs.rs/cronoq-server) | The server binary, and `worker::run_worker` for Rust workers. |
 
@@ -173,6 +174,14 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `get_task(target)` | Read a stored task (`TaskRecord`). Also available through the `cronoq::StoreQueries` trait, with `prune`, `is_leader` and `leadership_lost`. |
 | `prune(older_than)` | Delete finished tasks older than the given age. |
 | `is_leader()`, `epoch()`, `leadership_lost().await`, `release_leadership().await` | Leadership state. |
+
+## `cronoq-store-sqlite`
+
+| Item | Description |
+|---|---|
+| `SqliteStore::open(path)` / `open_with(path, SqliteStoreConfig)` | Open (creating if needed) and migrate. |
+| `SqliteStoreConfig` | `retention`, `lease_ttl` (10 s), `lease_renew` (2 s), `lock_poll`, `busy_timeout`, `commit_timeout`, `full_sync` (default on), `max_connections`. |
+| `get_task`, `prune`, `is_leader()`, `epoch()`, `leadership_lost().await`, `release_leadership().await` | As for the Postgres store. |
 
 See [Durability and high availability](../concepts/durability.md).
 

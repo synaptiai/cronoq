@@ -79,6 +79,22 @@ gRPC streams are long-lived. If an ingress or L7 load balancer sits in front, en
 (gRPC) and raise idle timeouts above your longest wait; the server sends HTTP/2 keepalive pings
 every 20 s (`limits.keepalive_interval_s`).
 
+### Durable state on one host with SQLite
+
+For a single machine (a VM, a bare-metal host, a container with a persistent volume), keep state
+in a file:
+
+```toml
+[store]
+kind = "sqlite"
+path = "/var/lib/cronoq/state.db"   # a local filesystem, not NFS
+keep_finished_s = 604800            # prune finished tasks after 7 days
+```
+
+A second server process pointed at the same file stands by and takes over when the first stops
+(at once on a clean shutdown, after the 10 s lease otherwise). Back the file up with SQLite's
+online backup (`sqlite3 state.db ".backup backup.db"`), not by copying it while it is in use.
+
 ### High availability with Postgres
 
 Add a store and run two or more replicas:

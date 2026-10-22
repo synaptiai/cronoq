@@ -22,6 +22,7 @@
 | `cronoq-core` | The scheduling engine. No clock, threads, I/O or `unsafe`. |
 | `cronoq` | Tokio driver, public API, executors, scalers, `Store` trait, telemetry, blocking facade. |
 | `cronoq-store-postgres` | Durable `Store` with leader election and fencing. |
+| `cronoq-store-sqlite` | Durable `Store` in a local file, with a lease for leader election and fencing. |
 | `cronoq-proto` | Protobuf definitions (vendored `protoc`, no system dependency). |
 | `cronoq-server` | gRPC and HTTP services, remote executor, auth, metrics, worker client. |
 | `cronoq-py` | PyO3 bindings (abi3), compat shim and gRPC client. |
@@ -81,7 +82,7 @@ Pool capacity is the sum of connected workers' slots.
 |---|---|
 | Engine | Unit tests per feature; property tests for data structures; **randomized deterministic simulation**: hundreds of seeded workloads mixing microtasks, heavy-tailed jobs, deadlines, fixed starts, DAGs, resources, failures, cancellations and capacity changes, with internal invariants checked after every step and end-to-end properties (dependency order, FIFO within class, every task terminates) checked at the end. |
 | Runtime | Tests under tokio's paused clock; OpenTelemetry export test. |
-| Store | Throwaway PostgreSQL servers; fencing and `pg_terminate_backend` failover. |
+| Store | One conformance suite run against every store (throwaway PostgreSQL servers, temporary SQLite files); fencing, `pg_terminate_backend` failover, lease expiry and takeover. |
 | Server | Real gRPC/HTTP listeners with real workers; active-passive failover test. |
 | Python | pytest suites for the bindings, the compat shim and the client against a real server, run against built wheels on Linux, macOS and Windows. |
 | Performance | Criterion benchmarks with throughput gates in CI. |

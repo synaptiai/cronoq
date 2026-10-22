@@ -1,4 +1,4 @@
-//! Active-passive failover with the Postgres store.
+//! Active-passive failover with the durable stores (PostgreSQL and SQLite).
 
 #[path = "../../cronoq-store-postgres/tests/common/mod.rs"]
 mod pgtest;
@@ -29,7 +29,8 @@ struct Node {
 }
 
 impl Node {
-    fn start(db: &str) -> Node {
+    /// `store` is the body of the `[store]` section.
+    fn start(store: &str) -> Node {
         let (gp, hp) = (free_port(), free_port());
         let cfg = Config::parse(&format!(
             r#"
@@ -38,8 +39,7 @@ impl Node {
             http_addr = "127.0.0.1:{hp}"
             shutdown_grace_s = 0
             [store]
-            kind = "postgres"
-            url = "{db}"
+            {store}
             [[pools]]
             name = "default"
             max = 4
@@ -69,8 +69,8 @@ impl Node {
         }
     }
 
-    async fn leader(db: &str) -> Node {
-        let mut n = Node::start(db);
+    async fn leader(store: &str) -> Node {
+        let mut n = Node::start(store);
         if tokio::time::timeout(Duration::from_secs(20), n.bound.take().unwrap())
             .await
             .unwrap()
@@ -81,8 +81,8 @@ impl Node {
         n
     }
 
-    async fn standby(db: &str) -> Node {
-        let n = Node::start(db);
+    async fn standby(store: &str) -> Node {
+        let n = Node::start(store);
         for _ in 0..200 {
             if n.ready().await.is_some() {
                 break;
@@ -119,6 +119,35 @@ impl Node {
     }
 }
 
+fn pg_store(url: &str) -> String {
+    format!("kind = \"postgres\"\nurl = \"{url}\"")
+}
+
+/// A SQLite store in a fresh directory, with a short lease so takeovers are quick.
+struct SqliteDir(std::path::PathBuf);
+
+impl SqliteDir {
+    fn new(name: &str) -> SqliteDir {
+        let dir = std::env::temp_dir().join(format!("cronoq-ha-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        SqliteDir(dir)
+    }
+
+    fn store(&self) -> String {
+        format!(
+            "kind = \"sqlite\"\npath = \"{}\"",
+            self.0.join("state.db").display()
+        )
+    }
+}
+
+impl Drop for SqliteDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn worker(node: &Node) -> oneshot::Sender<()> {
     let (tx, rx) = oneshot::channel::<()>();
     let opts = WorkerOptions::new(node.grpc.clone(), "default").slots(2);
@@ -140,8 +169,18 @@ async fn standby_takes_over_and_finishes_accepted_work() {
     let Some(pg) = pgtest::TestPg::start() else {
         return;
     };
-    let mut a = Node::leader(&pg.url).await;
-    let mut b = Node::standby(&pg.url).await;
+    takes_over_and_finishes_accepted_work(&pg_store(&pg.url)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_standby_takes_over_and_finishes_accepted_work() {
+    let dir = SqliteDir::new("takeover");
+    takes_over_and_finishes_accepted_work(&dir.store()).await;
+}
+
+async fn takes_over_and_finishes_accepted_work(store: &str) {
+    let mut a = Node::leader(store).await;
+    let mut b = Node::standby(store).await;
     assert_eq!(a.ready().await, Some(200));
 
     // Accept work on A with no workers connected, so nothing runs yet.
@@ -212,8 +251,18 @@ async fn standby_answers_unavailable_and_honors_shutdown() {
     let Some(pg) = pgtest::TestPg::start() else {
         return;
     };
-    let mut a = Node::leader(&pg.url).await;
-    let mut b = Node::standby(&pg.url).await;
+    answers_unavailable_and_honors_shutdown(&pg_store(&pg.url)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_standby_answers_unavailable_and_honors_shutdown() {
+    let dir = SqliteDir::new("standby");
+    answers_unavailable_and_honors_shutdown(&dir.store()).await;
+}
+
+async fn answers_unavailable_and_honors_shutdown(store: &str) {
+    let mut a = Node::leader(store).await;
+    let mut b = Node::standby(store).await;
     let e = b
         .tasks()
         .await
@@ -242,8 +291,8 @@ async fn slow_http_client_does_not_block_promotion() {
     let Some(pg) = pgtest::TestPg::start() else {
         return;
     };
-    let mut a = Node::leader(&pg.url).await;
-    let mut b = Node::standby(&pg.url).await;
+    let mut a = Node::leader(&pg_store(&pg.url)).await;
+    let mut b = Node::standby(&pg_store(&pg.url)).await;
     let mut sock = tokio::net::TcpStream::connect(b.http.trim_start_matches("http://"))
         .await
         .unwrap();
@@ -269,7 +318,7 @@ async fn deposed_leader_stops_and_releases_workers() {
     if !psql.exists() {
         return;
     }
-    let mut a = Node::leader(&pg.url).await;
+    let mut a = Node::leader(&pg_store(&pg.url)).await;
     let opts = WorkerOptions::new(a.grpc.clone(), "default")
         .slots(1)
         .reconnect(false);
