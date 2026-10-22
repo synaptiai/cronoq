@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "cronoq"
 description = "Elastic, priority-aware task scheduler for asyncio: priorities with aging, deadlines, cron, DAGs, rate limits and autoscaling, powered by Rust"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.14"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Daniel Bentes", email = "daniel.bentes@synapti.ai" }]
@@ -20,6 +20,8 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: Implementation :: CPython",
     "Framework :: AsyncIO",
     "Topic :: System :: Distributed Computing",
@@ -38,8 +40,8 @@ Changelog = "https://github.com/synaptiai/cronoq/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 # gRPC client and remote worker for cronoq-server (`cronoq.client`). The generated stubs need
 # runtimes at least as new as the generator (see scripts/gen_proto.sh).
-client = ["grpcio>=1.66.2", "protobuf>=5.27.2,<8"]
-test = ["cronoq[client]", "pytest>=7", "pytest-asyncio>=0.23", "mypy>=1.13"]
+client = ["grpcio>=1.75.1", "protobuf>=5.27.2,<8"]
+test = ["cronoq[client]", "pytest>=8.4", "pytest-asyncio>=1.2", "mypy>=1.18"]
 
 [tool.maturin]
 python-source = "python"

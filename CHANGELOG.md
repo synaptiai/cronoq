@@ -91,7 +91,7 @@ First public release.
 - `cronoq.compat.ElasticPriorityScheduler`, a synchronous drop-in for code written against the
   original API.
 - `cronoq.client`: gRPC client and remote worker speaking worker protocol version 2.
-- Wheels for CPython 3.9+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
+- Wheels for CPython 3.14+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
 
 #### Project
 

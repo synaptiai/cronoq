@@ -5,7 +5,7 @@ pip install cronoq            # embedded scheduler (module: cronoq)
 pip install "cronoq[client]"  # + cronoq.client: gRPC client and remote worker for cronoq-server
 ```
 
-Wheels use the stable ABI (`abi3`, CPython 3.9+) for Linux, macOS and Windows. Type stubs ship
+Wheels use the stable ABI (`abi3`, CPython 3.14+) for Linux, macOS and Windows. Type stubs ship
 with the package (`py.typed`). Durations are seconds
 (`float`); absolute times accept a `datetime` or Unix seconds. Invalid durations or
 configuration (negative, NaN, out of range) raise `ValueError`.

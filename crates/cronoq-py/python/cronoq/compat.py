@@ -30,9 +30,10 @@ import math
 import statistics
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, TypeVar
+from typing import Any, TypeVar
 
 from ._cronoq import AutoscaleConfig, Pool, Scheduler
 from .errors import SubmitError
@@ -73,9 +74,9 @@ class Task:
     duration: float
     priority: Priority = Priority.NORMAL
     arrival_time: float = 0.0
-    fixed_start: Optional[float] = None
-    deadline: Optional[float] = None
-    dependencies: List[str] = field(default_factory=list)
+    fixed_start: float | None = None
+    deadline: float | None = None
+    dependencies: list[str] = field(default_factory=list)
 
     def __hash__(self) -> int:
         return hash(self.id)
@@ -137,18 +138,18 @@ class ElasticPriorityScheduler:
         self.scale_down_threshold = scale_down_threshold
         self._lock = threading.RLock()
         self._lifecycle = threading.RLock()
-        self._completed: List[ScheduledTask] = []
-        self._ws_first: Optional[float] = None  # worker-seconds at first start
-        self._ws_last: Optional[float] = None  # worker-seconds at latest completion
-        self._pending: Dict[str, Task] = {}
-        self._queued: List[Task] = []  # waiting for start()
-        self._generation: Dict[str, int] = {}  # submissions per id (for engine keys)
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._sched: Optional[Scheduler] = None
+        self._completed: list[ScheduledTask] = []
+        self._ws_first: float | None = None  # worker-seconds at first start
+        self._ws_last: float | None = None  # worker-seconds at latest completion
+        self._pending: dict[str, Task] = {}
+        self._queued: list[Task] = []  # waiting for start()
+        self._generation: dict[str, int] = {}  # submissions per id (for engine keys)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._sched: Scheduler | None = None
         self._start_time = 0.0
-        self._stop_time: Optional[float] = None
-        self._last: Optional[tuple[int, int, float, float]] = None  # pending, workers, adherence, cost
+        self._stop_time: float | None = None
+        self._last: tuple[int, int, float, float] | None = None  # pending, workers, adherence, cost
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -224,7 +225,7 @@ class ElasticPriorityScheduler:
 
     # ------------------------------------------------------------------ work
 
-    async def _worker_seconds(self) -> Optional[float]:
+    async def _worker_seconds(self) -> float | None:
         sched = self._sched
         if sched is None:
             return None
@@ -295,12 +296,13 @@ class ElasticPriorityScheduler:
                 return False
             return True
 
-    def _prestart_rejection(self, task: Task) -> Optional[str]:
+    def _prestart_rejection(self, task: Task) -> str | None:
         """The engine's admission checks for tasks waiting for :meth:`start`."""
         # Dependency cycles among waiting tasks (including depending on itself).
-        deps: Dict[str, List[str]] = {t.id: t.dependencies for t in self._queued}
+        deps: dict[str, list[str]] = {t.id: t.dependencies for t in self._queued}
         deps[task.id] = task.dependencies
-        stack, seen = list(task.dependencies), set()  # type: List[str], Set[str]
+        stack: list[str] = list(task.dependencies)
+        seen: set[str] = set()
         while stack:
             d = stack.pop()
             if d == task.id:
@@ -396,11 +398,11 @@ class ElasticPriorityScheduler:
             return len(self._completed)
 
     @property
-    def completed_tasks(self) -> List[ScheduledTask]:
+    def completed_tasks(self) -> list[ScheduledTask]:
         with self._lock:
             return list(self._completed)
 
     @property
-    def pending_tasks(self) -> List[Task]:
+    def pending_tasks(self) -> list[Task]:
         with self._lock:
             return list(self._pending.values())

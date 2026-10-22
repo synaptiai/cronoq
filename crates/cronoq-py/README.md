@@ -78,7 +78,7 @@ asyncio.run(main())
 * Invalid durations or configuration (negative, NaN, out of range) raise `ValueError`.
 * `cronoq.compat.ElasticPriorityScheduler` is a synchronous, thread-safe API for code written
   against `ElasticPriorityScheduler`.
-* Wheels use the stable ABI (`abi3`, CPython 3.9+). Free-threaded (no-GIL) CPython builds are
+* Wheels use the stable ABI (`abi3`, CPython 3.14+). Free-threaded (no-GIL) CPython builds are
   not supported.
 
 ### Status events

@@ -35,7 +35,7 @@ For security issues, do **not** open a public issue; see [SECURITY.md](SECURITY.
 Requirements:
 
 - Rust stable (MSRV 1.94), installed with [rustup](https://rustup.rs).
-- Python 3.9+ for the Python package.
+- Python 3.14+ for the Python package, and on `PATH` (or in `PYO3_PYTHON`) to build the whole workspace, which includes the bindings.
 - PostgreSQL 16 binaries for the store and HA tests (optional; those tests skip without them).
   On Debian/Ubuntu: `apt install postgresql-16`. Tests look in `/usr/lib/postgresql/16/bin` and
   start throwaway servers; they never touch an existing database.

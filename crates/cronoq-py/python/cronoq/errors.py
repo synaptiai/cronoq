@@ -8,7 +8,7 @@ exception is treated as retryable. Awaiting a task that did not succeed raises
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any
 
 
 class CronoqError(Exception):
@@ -28,7 +28,7 @@ class SubmitError(CronoqError):
         self.code = code
         self.message = message
 
-    def __reduce__(self) -> Tuple[Any, ...]:
+    def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (self.code, self.message))
 
 
@@ -43,13 +43,13 @@ class TaskFailed(CronoqError):
     ``skipped``, ``missed``, ``shed``), or ``shutdown`` if the scheduler stopped first.
     """
 
-    def __init__(self, status: str, message: str, task_id: Optional[int] = None) -> None:
+    def __init__(self, status: str, message: str, task_id: int | None = None) -> None:
         super().__init__(f"task {task_id} ended as {status}: {message}")
         self.status = status
         self.message = message
         self.task_id = task_id
 
-    def __reduce__(self) -> Tuple[Any, ...]:
+    def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (self.status, self.message, self.task_id))
 
 
@@ -61,7 +61,7 @@ class EventsLagged(CronoqError):
         super().__init__(f"event stream fell behind; {skipped} events were dropped")
         self.skipped = skipped
 
-    def __reduce__(self) -> Tuple[Any, ...]:
+    def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (self.skipped,))
 
 
@@ -73,11 +73,11 @@ class Retryable(CronoqError):
 
     _cronoq_kind = "retryable"
 
-    def __init__(self, message: str = "", retry_after: Optional[float] = None) -> None:
+    def __init__(self, message: str = "", retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
 
-    def __reduce__(self) -> Tuple[Any, ...]:
+    def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (str(self), self.retry_after))
 
 

@@ -10,7 +10,7 @@ pip install cronoq             # embedded scheduler
 pip install "cronoq[client]"   # plus the gRPC client and remote worker for cronoq-server
 ```
 
-Wheels are published for CPython 3.9+ (abi3) on Linux, macOS and Windows.
+Wheels are published for CPython 3.14+ (abi3) on Linux, macOS and Windows.
 
 ## A first scheduler
 
