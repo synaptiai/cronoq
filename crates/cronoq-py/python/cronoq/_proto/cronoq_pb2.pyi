@@ -43,6 +43,14 @@ class MissPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     MISS_POLICY_RUN_LATE: _ClassVar[MissPolicy]
     MISS_POLICY_SKIP: _ClassVar[MissPolicy]
     MISS_POLICY_FAIL: _ClassVar[MissPolicy]
+
+class Overlap(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    OVERLAP_UNSPECIFIED: _ClassVar[Overlap]
+    OVERLAP_SKIP: _ClassVar[Overlap]
+    OVERLAP_ALLOW: _ClassVar[Overlap]
+    OVERLAP_QUEUE: _ClassVar[Overlap]
+    OVERLAP_QUEUE_ON_SUCCESS: _ClassVar[Overlap]
 PRIORITY_UNSPECIFIED: Priority
 PRIORITY_CRITICAL: Priority
 PRIORITY_HIGH: Priority
@@ -69,6 +77,11 @@ MISS_POLICY_UNSPECIFIED: MissPolicy
 MISS_POLICY_RUN_LATE: MissPolicy
 MISS_POLICY_SKIP: MissPolicy
 MISS_POLICY_FAIL: MissPolicy
+OVERLAP_UNSPECIFIED: Overlap
+OVERLAP_SKIP: Overlap
+OVERLAP_ALLOW: Overlap
+OVERLAP_QUEUE: Overlap
+OVERLAP_QUEUE_ON_SUCCESS: Overlap
 
 class TaskRef(_message.Message):
     __slots__ = ("id", "key")
@@ -534,18 +547,18 @@ class SnapshotResponse(_message.Message):
     def __init__(self, pools: _Optional[_Iterable[_Union[PoolSnapshot, _Mapping]]] = ..., live_tasks: _Optional[int] = ..., running: _Optional[int] = ..., pending: _Optional[int] = ..., totals: _Optional[_Union[Totals, _Mapping]] = ..., workers_connected: _Optional[int] = ...) -> None: ...
 
 class RecurringRequest(_message.Message):
-    __slots__ = ("name", "cron", "tz", "template", "allow_overlap")
+    __slots__ = ("name", "cron", "tz", "template", "overlap")
     NAME_FIELD_NUMBER: _ClassVar[int]
     CRON_FIELD_NUMBER: _ClassVar[int]
     TZ_FIELD_NUMBER: _ClassVar[int]
     TEMPLATE_FIELD_NUMBER: _ClassVar[int]
-    ALLOW_OVERLAP_FIELD_NUMBER: _ClassVar[int]
+    OVERLAP_FIELD_NUMBER: _ClassVar[int]
     name: str
     cron: str
     tz: str
     template: TaskSpec
-    allow_overlap: bool
-    def __init__(self, name: _Optional[str] = ..., cron: _Optional[str] = ..., tz: _Optional[str] = ..., template: _Optional[_Union[TaskSpec, _Mapping]] = ..., allow_overlap: bool = ...) -> None: ...
+    overlap: Overlap
+    def __init__(self, name: _Optional[str] = ..., cron: _Optional[str] = ..., tz: _Optional[str] = ..., template: _Optional[_Union[TaskSpec, _Mapping]] = ..., overlap: _Optional[_Union[Overlap, str]] = ...) -> None: ...
 
 class RemoveRecurringRequest(_message.Message):
     __slots__ = ("name",)

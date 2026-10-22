@@ -55,8 +55,8 @@ use bytes::Bytes;
 use cronoq::codec::*;
 use cronoq::{Store, StoreError, StoreQueries, TimeBase};
 use cronoq_core::{
-    Mutation, Priority, Recovered, RecoveredTask, RecoveredTerminal, TaskId, TaskRef, TaskSpec,
-    TaskStatus, Time,
+    Mutation, Priority, Recovered, RecoveredRecurring, RecoveredTask, RecoveredTerminal, TaskId,
+    TaskRef, TaskSpec, TaskStatus, Time,
 };
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow,
@@ -673,13 +673,17 @@ impl SqliteStore {
                         .await
                         .map_err(db)?;
                 }
-                Mutation::RecurringNext { name, next } => {
-                    sqlx::query("UPDATE cronoq_recurring SET next_unix_ns = ?2 WHERE name = ?1")
-                        .bind(clean(name))
-                        .bind(next.map(|t| to_unix(base, t)))
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(db)?;
+                Mutation::RecurringNext { name, next, last } => {
+                    sqlx::query(
+                        "UPDATE cronoq_recurring SET next_unix_ns = ?2, last_task_id = ?3 \
+                         WHERE name = ?1",
+                    )
+                    .bind(clean(name))
+                    .bind(next.map(|t| to_unix(base, t)))
+                    .bind(last.map(|id| id.0 as i64))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
                 }
                 _ => {}
             }
@@ -1021,7 +1025,7 @@ impl Store<Bytes, Bytes> for SqliteStore {
             }));
 
         let rows = sqlx::query(
-            "SELECT name, spec, template_payload, next_unix_ns FROM cronoq_recurring ORDER BY name",
+            "SELECT name, spec, template_payload, next_unix_ns, last_task_id FROM cronoq_recurring ORDER BY name",
         )
         .fetch_all(pool)
         .await
@@ -1034,7 +1038,10 @@ impl Store<Bytes, Bytes> for SqliteStore {
                     let next = r
                         .get::<Option<i64>, _>("next_unix_ns")
                         .map(|u| from_unix(base, u));
-                    rec.recurring.push((spec, next));
+                    let last = r
+                        .get::<Option<i64>, _>("last_task_id")
+                        .map(|id| TaskId(id as u64));
+                    rec.recurring.push(RecoveredRecurring { spec, next, last });
                 }
                 // Left in place (so it can be repaired) but not scheduled.
                 Err(e) => tracing::error!(

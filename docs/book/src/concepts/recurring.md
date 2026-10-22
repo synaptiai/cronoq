@@ -16,7 +16,8 @@ sched.remove_recurring("nightly-export").await?;
 
 ```python
 await sched.add_recurring("nightly-export", "0 30 2 * * *", payload, pool="batch",
-                          tz="America/New_York", overlap="skip", tolerance=60)
+                          tz="America/New_York", overlap="queue", tolerance=60,
+                          key="nightly-export", deadline_in=3600)
 ```
 
 Over gRPC, use `Admin.AddRecurring` with an admin token (for example the Python client's
@@ -60,18 +61,31 @@ Use UTC for schedules that must run at exact intervals.
 |---|---|
 | `Skip` (default) | If the previous occurrence is still live when the next one is due, the next one ends as `Skipped` ("previous occurrence still running"). |
 | `Allow` | Occurrences run independently and may overlap. |
+| `Queue` (`"queue"`) | Each occurrence depends on the previous one and starts once it has finished, whatever the outcome. Occurrences run one after another instead of being skipped. |
+| `QueueOnSuccess` (`"queue_on_success"`) | Like `Queue`, but an occurrence runs only if the previous one succeeded. After a failure the following occurrences end as `Skipped`, until the schedule is added again, which starts a new chain. |
 
-The overlap guard survives failover: after a restart with a durable store, the occurrence that
-was running is recognised by its `cronoq.recurring` tag, and the next occurrence will not
-overlap it.
+A queued occurrence that waits past its start tolerance follows the miss policy, so keep
+`on_miss` at its default, `RunLate`, unless a late run should be dropped.
 
-## Template restrictions
+The overlap guard and the chain survive failover: with a durable store, the occurrence a queued
+schedule depends on is stored with the schedule, and the occurrence that was running is
+recognised by its `cronoq.recurring` tag.
+
+## The template
 
 The template's payload, pool, kind, priority, duration hint, timeout, retry policy, resources
-and tags are copied to every occurrence. A template may **not** set a deadline, a fixed start, a
-key or dependencies: they describe a single task, so `add_recurring` rejects them
-(`Error::Config` in Rust, `SchedulerError` in Python, `INVALID_ARGUMENT` on the server). Use the
-schedule's `tolerance` and `on_miss` to control how late an occurrence may start.
+and tags are copied to every occurrence. Two options apply per occurrence:
+
+| Template option | Effect on each occurrence |
+|---|---|
+| Relative deadline (`Task::deadline_in`, Python `deadline_in=`, gRPC `deadline_in_s`) | The deadline is that long after the occurrence's start. |
+| Key (`Task::key`, `key=`, `key`) | A prefix: the occurrence's key is `<key>@<start in UTC, RFC 3339>`, for example `nightly-export@2026-10-22T06:30:00Z`. Look occurrences up by it; an occurrence whose key already exists (for example one created before a failover) is not created again. |
+
+A template may **not** set an absolute deadline, a fixed start or dependencies: they describe a
+single task, so `add_recurring` rejects them (`Error::Config` in Rust, `SchedulerError` in
+Python, `INVALID_ARGUMENT` on the server). Use `Queue` to make occurrences depend on each other,
+and the schedule's `tolerance` and `on_miss` (or the template's start tolerance and miss policy)
+to control how late an occurrence may start.
 
 ## Downtime and failover
 

@@ -579,7 +579,11 @@ pub(crate) fn parse_overlap(s: &str) -> PyResult<OverlapPolicy> {
     match s {
         "skip" => Ok(OverlapPolicy::Skip),
         "allow" => Ok(OverlapPolicy::Allow),
-        _ => Err(PyValueError::new_err("overlap must be 'skip' or 'allow'")),
+        "queue" => Ok(OverlapPolicy::Queue),
+        "queue_on_success" => Ok(OverlapPolicy::QueueOnSuccess),
+        _ => Err(PyValueError::new_err(
+            "overlap must be 'skip', 'allow', 'queue' or 'queue_on_success'",
+        )),
     }
 }
 

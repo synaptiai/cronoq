@@ -264,6 +264,13 @@ pub enum OverlapPolicy {
     Skip,
     /// Start occurrences regardless of the previous one.
     Allow,
+    /// Queue each occurrence behind the previous one: it starts once the previous one has
+    /// finished, whatever the outcome.
+    Queue,
+    /// Queue each occurrence behind the previous one and run it only if the previous one
+    /// succeeded; otherwise it ends as `Skipped`, and so do the following ones, until the
+    /// schedule is added again.
+    QueueOnSuccess,
 }
 
 /// A cron schedule that submits a fixed-start task from `template` at each occurrence.
@@ -275,8 +282,11 @@ pub struct RecurringSpec<P> {
     pub cron: Arc<str>,
     /// IANA time zone (default UTC).
     pub tz: Option<Arc<str>>,
-    /// Spec of each occurrence (its `fixed_start` is overwritten).
+    /// Spec of each occurrence. Its `fixed_start` is set to the occurrence; a `key` is a
+    /// prefix that each occurrence extends with `@` and its UTC start time (RFC 3339).
     pub template: TaskSpec<P>,
+    /// Deadline of each occurrence, relative to its start.
+    pub deadline_after: Option<Duration>,
     /// What to do while the previous occurrence is still live.
     pub overlap: OverlapPolicy,
     /// How late an occurrence may start.
@@ -292,6 +302,7 @@ impl<P> Clone for RecurringSpec<P> {
             cron: self.cron.clone(),
             tz: self.tz.clone(),
             template: self.template.clone(),
+            deadline_after: self.deadline_after,
             overlap: self.overlap,
             tolerance: self.tolerance,
             on_miss: self.on_miss,
@@ -342,6 +353,8 @@ pub enum Mutation<P> {
         name: Arc<str>,
         /// Next occurrence (`None` = the schedule has ended).
         next: Option<Time>,
+        /// Task of the latest occurrence a queued schedule chains to (`None` = no chain yet).
+        last: Option<TaskId>,
     },
 }
 
@@ -374,9 +387,10 @@ impl<P> Clone for Mutation<P> {
             },
             Mutation::RecurringUpsert { spec } => Mutation::RecurringUpsert { spec: spec.clone() },
             Mutation::RecurringRemove { name } => Mutation::RecurringRemove { name: name.clone() },
-            Mutation::RecurringNext { name, next } => Mutation::RecurringNext {
+            Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
                 name: name.clone(),
                 next: *next,
+                last: *last,
             },
         }
     }
@@ -439,6 +453,17 @@ pub struct RecoveredTerminal {
     pub at: Time,
 }
 
+/// A recurring schedule restored from durable storage.
+#[derive(Debug)]
+pub struct RecoveredRecurring<P> {
+    /// The schedule.
+    pub spec: RecurringSpec<P>,
+    /// Its stored next occurrence.
+    pub next: Option<Time>,
+    /// Task of the latest occurrence a queued schedule chains to.
+    pub last: Option<TaskId>,
+}
+
 /// Engine state restored from durable storage, passed to `Core::recover`.
 #[derive(Debug)]
 pub struct Recovered<P> {
@@ -446,8 +471,8 @@ pub struct Recovered<P> {
     pub tasks: Vec<RecoveredTask<P>>,
     /// Recently finished tasks.
     pub terminal: Vec<RecoveredTerminal>,
-    /// Recurring schedules with their stored next occurrence.
-    pub recurring: Vec<(RecurringSpec<P>, Option<Time>)>,
+    /// Recurring schedules.
+    pub recurring: Vec<RecoveredRecurring<P>>,
     /// Lowest task id the engine may hand out next.
     pub next_id: u64,
 }

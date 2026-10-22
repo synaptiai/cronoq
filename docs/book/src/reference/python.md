@@ -44,7 +44,7 @@ the scheduler stops and further calls raise `SchedulerError`; calls before `star
 | `await handle(target)` | `TaskHandle \| None` | Attach to an existing task. |
 | `await snapshot()` | `Snapshot` | Metrics and quality signals. |
 | `await set_capacity(pool, n)` | | Report capacity for externally managed pools. |
-| `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"` / `"allow"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `duration_hint`, `timeout`, `retry`, `resources`, `tags`. |
+| `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"`, `"allow"`, `"queue"` or `"queue_on_success"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `key` (a prefix: each occurrence gets `"<key>@<start in UTC>"`), `deadline_in` (relative to each occurrence's start), `duration_hint`, `timeout`, `retry`, `resources`, `tags`. |
 | `await remove_recurring(name)` | `bool` | `False` if no such schedule. |
 | `events(on_lag="skip")` | `EventStream` | Status events; see [below](#status-events). |
 | `await shutdown(grace=5.0)` | | Stop admitting, let running attempts finish for `grace` seconds, then stop. |
@@ -196,7 +196,7 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | `await wait(ref, timeout=None)` | `Result` | Raises `TimeoutError` if still running after `timeout` (or the server's `max_wait_s`). |
 | `watch(pools=None, *, ids=None, keys=None, all_transitions=False)` | async iterator of `Event` | Terminal events by default; every transition with `all_transitions=True`. |
 | `await snapshot()` | `Snapshot` | Requires a metrics or admin token. |
-| `await add_recurring(name, cron, payload=None, *, tz=None, overlap="skip", **options)` | | Requires an admin token. `payload` may also be a prebuilt `task(...)` spec. |
+| `await add_recurring(name, cron, payload=None, *, tz=None, overlap="skip", **options)` | | Requires an admin token. `payload` may also be a prebuilt `task(...)` spec. `overlap`, `key` and `deadline_in` work as for the native scheduler. |
 | `await remove_recurring(name)` | `bool` | Requires an admin token. |
 
 Result types (frozen dataclasses):

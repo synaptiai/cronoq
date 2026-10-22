@@ -411,10 +411,34 @@ async fn recurring_schedules_via_admin() {
             cron: "0 0 3 * * *".into(),
             tz: "UTC".into(),
             template: Some(spec(b"x")),
-            allow_overlap: false,
+            overlap: pb::Overlap::Queue as i32,
         })
         .await
         .unwrap();
+    // A relative deadline and a key prefix are per occurrence; absolute times and
+    // dependencies describe a single task and are refused.
+    let mut per_occurrence = spec(b"x");
+    per_occurrence.key = "nightly".into();
+    per_occurrence.deadline_in_s = Some(60.0);
+    let mut absolute = spec(b"x");
+    absolute.deadline_unix_ns = Some(1);
+    let mut with_dep = spec(b"x");
+    with_dep.deps.push(pb::Dep {
+        target: by_key("other"),
+        cond: pb::EdgeCond::OnSuccess as i32,
+    });
+    for (template, ok) in [(per_occurrence, true), (absolute, false), (with_dep, false)] {
+        let r = admin
+            .add_recurring(pb::RecurringRequest {
+                name: "nightly".into(),
+                cron: "0 0 3 * * *".into(),
+                tz: "UTC".into(),
+                template: Some(template),
+                overlap: pb::Overlap::Skip as i32,
+            })
+            .await;
+        assert_eq!(r.is_ok(), ok, "{r:?}");
+    }
     let r = admin
         .remove_recurring(pb::RemoveRecurringRequest {
             name: "nightly".into(),

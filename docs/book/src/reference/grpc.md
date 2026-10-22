@@ -176,7 +176,7 @@ implement these rules; see [Writing executors and workers](../guides/workers.md)
 | RPC | Role | Request → Response |
 |---|---|---|
 | `Snapshot` | metrics | `Empty` → `SnapshotResponse` |
-| `AddRecurring` | admin | `RecurringRequest{name, cron, tz, template, allow_overlap}` → `Empty` |
+| `AddRecurring` | admin | `RecurringRequest{name, cron, tz, template, overlap}` → `Empty` |
 | `RemoveRecurring` | admin | `RemoveRecurringRequest{name}` → `RemoveRecurringResponse{removed}` |
 
 `SnapshotResponse` carries `pools` (one `PoolSnapshot` per pool: `name`, `capacity`, `busy`,
@@ -190,11 +190,14 @@ field.
 
 `AddRecurring` registers (or replaces) a cron schedule named `name`. `cron` has six fields
 (seconds first) or five (seconds = 0); `tz` is an IANA time zone (default UTC). The template is
-a `TaskSpec` without `deadline_*`, `start_*`, `tolerance_s`, `key` or `deps`
-(`INVALID_ARGUMENT` otherwise): each occurrence gets its own fixed start at the cron time, with
-a 1 s tolerance and the `RUN_LATE` miss policy. With `allow_overlap = false` (the default), an
-occurrence whose previous run is still going ends as `SKIPPED`. Schedules are durable with
-Postgres; `AddRecurring` returns once the schedule is stored. See [Recurring schedules](../concepts/recurring.md).
+a `TaskSpec` without `deadline_unix_ns`, `start_*` or `deps` (`INVALID_ARGUMENT` otherwise).
+Each occurrence gets its own fixed start at the cron time, with the template's `tolerance_s`
+(default 1 s) and `on_miss` (default `RUN_LATE`). The template's `deadline_in_s` is relative to
+each occurrence's start, and its `key` is a prefix: each occurrence's key is
+`<key>@<start in UTC, RFC 3339>`. `overlap` is `OVERLAP_SKIP` (the default: an occurrence whose
+previous run is still going ends as `SKIPPED`), `OVERLAP_ALLOW`, `OVERLAP_QUEUE` (wait for the
+previous run) or `OVERLAP_QUEUE_ON_SUCCESS` (wait, and run only if it succeeded). Schedules are
+durable with a durable store; `AddRecurring` returns once the schedule is stored. See [Recurring schedules](../concepts/recurring.md).
 
 ## Status codes
 

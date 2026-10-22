@@ -563,8 +563,8 @@ impl Scheduler {
     /// Run `payload` on a cron schedule (5 fields, or 6 with leading seconds).
     #[pyo3(signature = (
         name, cron, payload, *, tz=None, overlap="skip", tolerance=1.0, on_miss="run_late",
-        priority=None, pool=None, kind=None, duration_hint=None, timeout=None, retry=None,
-        resources=None, tags=None
+        priority=None, pool=None, kind=None, key=None, deadline_in=None, duration_hint=None,
+        timeout=None, retry=None, resources=None, tags=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn add_recurring<'py>(
@@ -580,6 +580,8 @@ impl Scheduler {
         priority: Option<&Bound<'py, PyAny>>,
         pool: Option<&str>,
         kind: Option<&str>,
+        key: Option<&str>,
+        deadline_in: Option<f64>,
         duration_hint: Option<f64>,
         timeout: Option<f64>,
         retry: Option<RetryPolicy>,
@@ -590,8 +592,8 @@ impl Scheduler {
             priority,
             pool,
             kind,
-            None,
-            None,
+            key,
+            deadline_in,
             None,
             None,
             None,

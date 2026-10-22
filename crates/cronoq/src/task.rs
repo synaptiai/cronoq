@@ -160,16 +160,15 @@ impl<P> Task<P> {
         self
     }
 
-    /// Whether relative/absolute times or fields that only make sense once were set.
+    /// Fields that only make sense for a single task: absolute deadlines, fixed starts and
+    /// dependencies. (A relative deadline and a key work per occurrence.)
     fn one_shot_fields(&self) -> Option<&'static str> {
-        if self.deadline.is_some() || self.spec.deadline.is_some() {
-            Some("deadline")
+        if matches!(self.deadline, Some(When::At(_))) || self.spec.deadline.is_some() {
+            Some("an absolute deadline (use deadline_in, relative to each occurrence)")
         } else if self.start.is_some() || self.spec.fixed_start.is_some() {
-            Some("fixed start")
-        } else if self.spec.key.is_some() {
-            Some("key")
+            Some("a fixed start")
         } else if !self.spec.deps.is_empty() {
-            Some("dependencies")
+            Some("a dependency (use OverlapPolicy::Queue to chain occurrences)")
         } else {
             None
         }
@@ -252,14 +251,24 @@ impl<P> Recurring<P> {
     /// `cron` accepts 5 fields, or 6 with leading seconds.
     ///
     /// The template supplies payload, pool, kind, priority, resources, retry, timeout and tags
-    /// for every occurrence. Deadlines, fixed starts, keys and dependencies describe a single
-    /// task and are rejected by [`Scheduler::add_recurring`](crate::Scheduler::add_recurring);
-    /// each occurrence starts at its cron time with [`Recurring::tolerance`] and
-    /// [`Recurring::on_miss`].
+    /// for every occurrence, and optionally:
+    ///
+    /// - a relative deadline ([`Task::deadline_in`]): each occurrence's deadline is that long
+    ///   after its start;
+    /// - a start tolerance and miss policy ([`Task::start_tolerance`], [`Task::on_miss`]), as
+    ///   defaults for [`Recurring::tolerance`] and [`Recurring::on_miss`];
+    /// - a key: a prefix; each occurrence gets `"<key>@<start in UTC, RFC 3339>"`, e.g.
+    ///   `nightly@2026-10-22T03:00:00Z`, so occurrences can be looked up and are not created
+    ///   twice.
+    ///
+    /// Absolute deadlines, fixed starts and dependencies describe a single task and are
+    /// rejected by [`Scheduler::add_recurring`](crate::Scheduler::add_recurring); to run
+    /// occurrences one after another, use [`OverlapPolicy::Queue`]. Each occurrence starts at
+    /// its cron time with [`Recurring::tolerance`] and [`Recurring::on_miss`].
     pub fn new(name: impl Into<Arc<str>>, cron: impl Into<Arc<str>>, template: Task<P>) -> Self {
         let invalid = template
             .one_shot_fields()
-            .map(|f| format!("recurring templates cannot set a {f}"))
+            .map(|f| format!("recurring templates cannot set {f}"))
             .or_else(|| validate(&template.spec).err().map(|e| e.to_string()));
         let name = name.into();
         let invalid = invalid.or_else(|| {
@@ -271,10 +280,14 @@ impl<P> Recurring<P> {
                 name,
                 cron: cron.into(),
                 tz: None,
+                deadline_after: match template.deadline {
+                    Some(When::In(d)) => Some(d),
+                    _ => None,
+                },
                 template: template.spec,
                 overlap: OverlapPolicy::Skip,
-                tolerance: Duration::from_secs(1),
-                on_miss: MissPolicy::RunLate,
+                tolerance: template.tolerance.unwrap_or(DEFAULT_TOLERANCE),
+                on_miss: template.on_miss.unwrap_or_default(),
             },
             invalid,
         }
@@ -284,7 +297,8 @@ impl<P> Recurring<P> {
         self.spec.tz = Some(tz.into());
         self
     }
-    /// Whether an occurrence may start while the previous one is still running.
+    /// What happens while the previous occurrence is still live: skip (default), allow overlap,
+    /// or queue behind it ([`OverlapPolicy::Queue`], [`OverlapPolicy::QueueOnSuccess`]).
     pub fn overlap(mut self, o: OverlapPolicy) -> Self {
         self.spec.overlap = o;
         self
@@ -338,22 +352,23 @@ mod tests {
     }
 
     #[test]
-    fn recurring_rejects_one_shot_template_fields() {
+    fn recurring_templates_take_relative_deadlines_and_key_prefixes() {
         let r = Recurring::new(
             "r",
             "* * * * *",
-            Task::new(1).deadline_in(Duration::from_secs(1)),
+            Task::new(1).deadline_in(Duration::from_secs(5)).key("k"),
         );
-        assert!(r.invalid.unwrap().contains("deadline"));
-        assert!(
-            Recurring::new("r", "* * * * *", Task::new(1).key("k"))
-                .invalid
-                .is_some()
-        );
-        assert!(
-            Recurring::new("r", "* * * * *", Task::new(1))
-                .invalid
-                .is_none()
-        );
+        assert!(r.invalid.is_none(), "{:?}", r.invalid);
+        assert_eq!(r.spec.deadline_after, Some(Duration::from_secs(5)));
+        assert_eq!(r.spec.template.key.as_deref(), Some("k"));
+        let at = SystemTime::now() + Duration::from_secs(60);
+        for (t, what) in [
+            (Task::new(1).deadline_at(at), "absolute deadline"),
+            (Task::new(1).start_in(Duration::from_secs(1)), "fixed start"),
+            (Task::new(1).after("other"), "dependency"),
+        ] {
+            let r = Recurring::new("r", "* * * * *", t);
+            assert!(r.invalid.unwrap().contains(what), "{what}");
+        }
     }
 }

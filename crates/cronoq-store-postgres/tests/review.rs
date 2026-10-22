@@ -251,7 +251,7 @@ async fn schema_version_is_recorded() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, 3);
     sqlx::query("UPDATE cronoq_schema_version SET version = 99")
         .execute(store.pool())
         .await

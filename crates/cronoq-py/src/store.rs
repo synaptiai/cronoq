@@ -143,6 +143,7 @@ impl CodecStore {
                                 cron: s.cron,
                                 tz: s.tz,
                                 template: s.template.map_payload(Arc::new(bytes)),
+                                deadline_after: s.deadline_after,
                                 overlap: s.overlap,
                                 tolerance: s.tolerance,
                                 on_miss: s.on_miss,
@@ -165,9 +166,10 @@ impl CodecStore {
                     Mutation::RecurringRemove { name } => {
                         Mutation::RecurringRemove { name: name.clone() }
                     }
-                    Mutation::RecurringNext { name, next } => Mutation::RecurringNext {
+                    Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
                         name: name.clone(),
                         next: *next,
+                        last: *last,
                     },
                 });
             }
@@ -245,20 +247,23 @@ impl Store<PyObj, PyObj> for CodecStore {
                     }
                 }
             }
-            for (spec, next) in rec.recurring {
+            for r in rec.recurring {
+                let spec = r.spec;
                 match self.codec.decode(py, &spec.template.payload) {
-                    Ok(p) => out.recurring.push((
-                        cronoq::core::RecurringSpec {
+                    Ok(p) => out.recurring.push(cronoq::core::RecoveredRecurring {
+                        spec: cronoq::core::RecurringSpec {
                             name: spec.name,
                             cron: spec.cron,
                             tz: spec.tz,
                             template: spec.template.map_payload(Arc::new(p)),
+                            deadline_after: spec.deadline_after,
                             overlap: spec.overlap,
                             tolerance: spec.tolerance,
                             on_miss: spec.on_miss,
                         },
-                        next,
-                    )),
+                        next: r.next,
+                        last: r.last,
+                    }),
                     Err(e) => warn(
                         py,
                         &format!(

@@ -184,8 +184,10 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             .kind("report")
             .pool("gpu")
             .retry(RetryPolicy::none())
+            .key("nightly")
             .tag("a", "b"),
-        overlap: OverlapPolicy::Allow,
+        deadline_after: Some(Duration::from_millis(1500)),
+        overlap: OverlapPolicy::QueueOnSuccess,
         tolerance: Duration::from_secs(5),
         on_miss: MissPolicy::Fail,
     };
@@ -214,6 +216,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
         Mutation::RecurringNext {
             name: "nightly".into(),
             next: Some(Time(3600 * S)),
+            last: Some(TaskId(12)),
         },
         Mutation::RecurringRemove {
             name: "gone".into(),
@@ -258,8 +261,12 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     );
 
     assert_eq!(rec.recurring.len(), 1);
-    let (r, next) = &rec.recurring[0];
-    assert_eq!(*next, Some(Time(3600 * S)));
+    let stored = &rec.recurring[0];
+    let r = &stored.spec;
+    assert_eq!(stored.next, Some(Time(3600 * S)));
+    assert_eq!(stored.last, Some(TaskId(12)));
+    assert_eq!(r.deadline_after, Some(Duration::from_millis(1500)));
+    assert_eq!(r.template.key.as_deref(), Some("nightly"));
     assert_eq!(
         (&*r.name, &*r.cron, r.tz.as_deref()),
         ("nightly", "0 3 * * *", Some("Europe/Lisbon"))
@@ -267,7 +274,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(
         (r.overlap, r.tolerance, r.on_miss),
         (
-            OverlapPolicy::Allow,
+            OverlapPolicy::QueueOnSuccess,
             Duration::from_secs(5),
             MissPolicy::Fail
         )
@@ -514,6 +521,7 @@ pub async fn long_missed_starts_are_not_run_after_restart<H: Harness>(h: &H) {
             cron: cron.into(),
             tz: None,
             template: TaskSpec::new(Bytes::from(name.to_string())),
+            deadline_after: None,
             overlap: OverlapPolicy::Skip,
             tolerance: Duration::from_secs(5),
             on_miss: MissPolicy::Skip,
@@ -522,6 +530,7 @@ pub async fn long_missed_starts_are_not_run_after_restart<H: Harness>(h: &H) {
     let next = |name: &str| Mutation::RecurringNext {
         name: name.into(),
         next: Some(Time(t0 + 120 * S)),
+        last: None,
     };
     let batch = [
         recurring("hourly", "0 * * * *"),
