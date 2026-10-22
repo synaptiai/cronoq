@@ -226,6 +226,16 @@ fn message_pane<T>(p: &Pane<T>) -> Option<String> {
     }
 }
 
+/// A table row of server-supplied text. ratatui drops control characters itself; this also
+/// shows bidirectional controls, which it would keep, as escapes.
+fn row(cells: Vec<String>) -> Row<'static> {
+    Row::new(
+        cells
+            .into_iter()
+            .map(|c| fmt::clean(&c, false).into_owned()),
+    )
+}
+
 fn header() -> Style {
     Style::new().add_modifier(Modifier::BOLD)
 }
@@ -274,7 +284,7 @@ fn render_events(f: &mut Frame, st: &State, area: Rect, now: i64) {
         return;
     }
     let rows = st.events.recent.iter().map(|e| {
-        Row::new(vec![
+        row(vec![
             fmt::ago(e.at_unix_ns, now),
             fmt::status(e.status).to_string(),
             e.id.to_string(),
@@ -338,7 +348,7 @@ fn render_pools(f: &mut Frame, st: &State, area: Rect) {
             return;
         }
     };
-    let rows = s.pools.iter().map(|p| Row::new(pool_cells(p)));
+    let rows = s.pools.iter().map(|p| row(pool_cells(p)));
     let table = Table::new(rows, [Constraint::Fill(1); 10])
         .header(Row::new(POOL_HEADER).style(header()))
         .block(block);
@@ -403,7 +413,7 @@ fn render_workers(f: &mut Frame, st: &State, area: Rect, now: i64) {
         }
     };
     let rows = w.workers.iter().map(|w| {
-        Row::new(vec![
+        row(vec![
             w.name.clone(),
             w.pool.clone(),
             format!("{}/{}", w.busy, w.slots),
@@ -439,7 +449,7 @@ fn render_schedules(f: &mut Frame, st: &State, area: Rect, now: i64) {
         }
     };
     let rows = s.schedules.iter().map(|s| {
-        Row::new(vec![
+        row(vec![
             s.name.clone(),
             s.cron.clone(),
             s.pool.clone(),
@@ -477,7 +487,7 @@ fn render_tasks(f: &mut Frame, st: &State, area: Rect, now: i64) {
     // Running work first, then the rest in submission order.
     let mut list: Vec<&pb::TaskInfo> = page.tasks.iter().collect();
     list.sort_by_key(|t| (t.status != pb::TaskStatus::Running as i32, t.id));
-    let rows = list.iter().map(|t| Row::new(fmt::task_row(t, now)));
+    let rows = list.iter().map(|t| row(fmt::task_row(t, now)));
     let more = if page.next_after > 0 {
         " (more not shown) "
     } else {
@@ -734,6 +744,13 @@ name = "default"
         assert!(s.contains("unavailable: this instance is a standby"), "{s}");
         // The task pane still shows its data.
         assert!(s.contains("running-one"), "{s}");
+        // Bidirectional controls in another client's text are shown, not applied.
+        st.events.recent[0].key = "report\u{202e}fdp.exe".into();
+        let s = draw(&st);
+        assert!(
+            !s.contains('\u{202e}') && s.contains("report\\u{202e}"),
+            "{s}"
+        );
         // The event stream reports why it stopped and keeps the events it had.
         st.events.problem = Some("needs a token with the client role; reconnecting".into());
         let s = draw(&st);
