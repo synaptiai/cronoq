@@ -4,7 +4,11 @@
 //! and the task pane the client role, so with a token holding only one of them the other panes
 //! say which role they need instead of failing the whole view.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use futures_util::StreamExt;
 
 use cronoq_proto::v1 as pb;
 use ratatui::Frame;
@@ -53,15 +57,67 @@ pub enum Pane<T> {
     Error(String),
 }
 
+/// Why a pane has no data: the role it needs, or the server's error.
+fn explain(s: &tonic::Status, role: &str) -> String {
+    if s.code() == tonic::Code::PermissionDenied {
+        format!("needs a token with the {role} role")
+    } else {
+        describe(s)
+    }
+}
+
 impl<T> Pane<T> {
     fn from(r: Result<tonic::Response<T>, tonic::Status>, role: &str) -> Pane<T> {
         match r {
             Ok(r) => Pane::Ready(r.into_inner()),
-            Err(s) if s.code() == tonic::Code::PermissionDenied => {
-                Pane::Error(format!("needs a token with the {role} role"))
-            }
-            Err(s) => Pane::Error(describe(&s)),
+            Err(s) => Pane::Error(explain(&s, role)),
         }
+    }
+}
+
+/// Most recent status events kept for the events pane.
+const RECENT: usize = 200;
+
+/// The latest status events, newest first, and the state of the stream that delivers them.
+#[derive(Clone, Debug, Default)]
+pub struct Events {
+    pub recent: VecDeque<pb::StatusEvent>,
+    /// Why no events are arriving (connecting, an error, a missing role); `None` while live.
+    pub problem: Option<String>,
+}
+
+/// Follow every status transition into `events`, reconnecting with backoff.
+async fn follow(mut tasks: Tasks, pools: Vec<String>, events: Arc<Mutex<Events>>) {
+    let set_problem = |p: Option<String>| events.lock().unwrap().problem = p;
+    let mut backoff = Duration::from_millis(500);
+    loop {
+        let req = pb::WatchRequest {
+            pools: pools.clone(),
+            all_transitions: true,
+            ..Default::default()
+        };
+        match tasks.watch(req).await {
+            Ok(r) => {
+                set_problem(None);
+                backoff = Duration::from_millis(500);
+                let mut stream = r.into_inner();
+                let ended = loop {
+                    match stream.next().await {
+                        Some(Ok(ev)) => {
+                            let mut e = events.lock().unwrap();
+                            e.recent.push_front(ev);
+                            e.recent.truncate(RECENT);
+                        }
+                        Some(Err(s)) => break explain(&s, "client"),
+                        None => break "the event stream ended".to_string(),
+                    }
+                };
+                set_problem(Some(format!("{ended}; reconnecting")));
+            }
+            Err(s) => set_problem(Some(explain(&s, "client"))),
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(10));
     }
 }
 
@@ -73,6 +129,7 @@ pub struct State {
     pub workers: Pane<pb::ListWorkersResponse>,
     pub tasks: Pane<pb::ListTasksResponse>,
     pub schedules: Pane<pb::ListRecurringResponse>,
+    pub events: Events,
     /// When the panes were fetched (Unix ns); 0 before the first fetch.
     pub updated_ns: i64,
 }
@@ -115,8 +172,14 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut st = State {
         server,
+        events: Events {
+            problem: Some("connecting…".into()),
+            ..Default::default()
+        },
         ..Default::default()
     };
+    let events = Arc::new(Mutex::new(st.events.clone()));
+    let follower = tokio::spawn(follow(tasks.clone(), a.pools.clone(), events.clone()));
     let mut terminal = ratatui::try_init()?;
     let every = Duration::from_secs_f64(a.interval);
     let mut next = Instant::now();
@@ -125,6 +188,7 @@ pub async fn run(
             fetch(&mut tasks, &mut admin, &a, &mut st).await;
             next = Instant::now() + every;
         }
+        st.events = events.lock().unwrap().clone();
         if let Err(e) = terminal.draw(|f| render(f, &st, fmt::now_ns())) {
             break Err(e.into());
         }
@@ -149,6 +213,7 @@ pub async fn run(
             Err(e) => break Err(e.into()),
         }
     };
+    follower.abort();
     ratatui::restore();
     result
 }
@@ -188,7 +253,51 @@ pub fn render(f: &mut Frame, st: &State, now: i64) {
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
     render_workers(f, st, workers, now);
     render_schedules(f, st, schedules, now);
+    let [tasks, events] =
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(tasks);
     render_tasks(f, st, tasks, now);
+    render_events(f, st, events, now);
+}
+
+fn render_events(f: &mut Frame, st: &State, area: Rect, now: i64) {
+    let mut block = Block::bordered().title(" Recent events ");
+    if let Some(p) = &st.events.problem {
+        block = block.title_bottom(format!(" {p} "));
+    }
+    if st.events.recent.is_empty() {
+        let text = st
+            .events
+            .problem
+            .clone()
+            .unwrap_or_else(|| "no events yet".into());
+        f.render_widget(Paragraph::new(text).block(block), area);
+        return;
+    }
+    let rows = st.events.recent.iter().map(|e| {
+        Row::new(vec![
+            fmt::ago(e.at_unix_ns, now),
+            fmt::status(e.status).to_string(),
+            e.id.to_string(),
+            e.pool.clone(),
+            match (e.key.is_empty(), e.message.is_empty()) {
+                (_, true) => e.key.clone(),
+                (true, false) => e.message.clone(),
+                (false, false) => format!("{}: {}", e.key, e.message),
+            },
+        ])
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(8),
+            Constraint::Length(13),
+            Constraint::Length(20),
+            Constraint::Fill(1),
+            Constraint::Fill(2),
+        ],
+    )
+    .header(Row::new(["WHEN", "STATUS", "ID", "POOL", "KEY / MESSAGE"]).style(header()));
+    f.render_widget(table.block(block), area);
 }
 
 fn pool_height(st: &State) -> u16 {
@@ -398,6 +507,96 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    const CONFIG: &str = r#"
+[server]
+grpc_addr = "127.0.0.1:0"
+http_addr = "127.0.0.1:0"
+shutdown_grace_s = 0.2
+[[auth.tokens]]
+token = "client-token-0123456789abcdef0123"
+role = "client"
+[[auth.tokens]]
+token = "metrics-token-0123456789abcdef0123"
+role = "metrics"
+[[pools]]
+name = "default"
+"#;
+
+    /// Clients for `url` authenticating with `token` (through a token file).
+    fn clients(url: &str, token: &str, name: &str) -> crate::conn::Clients {
+        let path = std::env::temp_dir().join(format!("cronoq-top-{}-{name}", std::process::id()));
+        std::fs::write(&path, token).unwrap();
+        crate::conn::ConnArgs {
+            server: url.into(),
+            token_file: Some(path),
+            ca: None,
+            cert: None,
+            key: None,
+            domain: None,
+        }
+        .clients()
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_event_pane_follows_the_stream_and_reports_missing_roles() {
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(cronoq_server::run(
+            cronoq_server::Config::parse(CONFIG).unwrap(),
+            async {
+                let _ = stopped.await;
+            },
+            move |b| {
+                let _ = bound_tx.send(b);
+            },
+        ));
+        let url = format!("http://{}", bound_rx.await.unwrap().grpc);
+        let client = clients(&url, "client-token-0123456789abcdef0123", "client");
+        let metrics = clients(&url, "metrics-token-0123456789abcdef0123", "metrics");
+
+        let live = Arc::new(Mutex::new(Events::default()));
+        let denied = Arc::new(Mutex::new(Events::default()));
+        let a = tokio::spawn(follow(client.tasks.clone(), vec![], live.clone()));
+        let b = tokio::spawn(follow(metrics.tasks.clone(), vec![], denied.clone()));
+        // Submit until the stream (which starts asynchronously) has seen an event.
+        let mut tasks = client.tasks.clone();
+        for _ in 0..100 {
+            tasks
+                .submit(pb::SubmitRequest {
+                    task: Some(pb::TaskSpec::default()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            if !live.lock().unwrap().recent.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        {
+            let e = live.lock().unwrap();
+            assert!(!e.recent.is_empty());
+            assert_eq!(e.problem, None);
+        }
+        let mut problem = None;
+        for _ in 0..200 {
+            problem = denied.lock().unwrap().problem.clone();
+            if problem.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            problem.as_deref(),
+            Some("needs a token with the client role")
+        );
+        a.abort();
+        b.abort();
+        let _ = stop.send(());
+        let _ = server.await;
+    }
+
     fn draw(st: &State) -> String {
         let mut t = Terminal::new(TestBackend::new(140, 40)).unwrap();
         t.draw(|f| render(f, st, 100_000_000_000)).unwrap();
@@ -472,6 +671,18 @@ mod tests {
                     ..Default::default()
                 }],
             }),
+            events: Events {
+                recent: [pb::StatusEvent {
+                    id: 40,
+                    pool: "gpu-pool".into(),
+                    status: pb::TaskStatus::Failed as i32,
+                    at_unix_ns: 95_000_000_000,
+                    message: "out of memory".into(),
+                    ..Default::default()
+                }]
+                .into(),
+                problem: None,
+            },
             updated_ns: 98_000_000_000,
         }
     }
@@ -493,6 +704,9 @@ mod tests {
             "in 1m",
             "1/3",
             "(more not shown)",
+            "Recent events",
+            "out of memory",
+            "5s ago",
         ] {
             assert!(s.contains(want), "missing {want:?} in\n{s}");
         }
@@ -520,5 +734,10 @@ mod tests {
         assert!(s.contains("unavailable: this instance is a standby"), "{s}");
         // The task pane still shows its data.
         assert!(s.contains("running-one"), "{s}");
+        // The event stream reports why it stopped and keeps the events it had.
+        st.events.problem = Some("needs a token with the client role; reconnecting".into());
+        let s = draw(&st);
+        assert!(s.contains("needs a token with the client role"), "{s}");
+        assert!(s.contains("out of memory"), "{s}");
     }
 }

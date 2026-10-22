@@ -75,9 +75,12 @@ Exit codes:
 - **Workers:** name, pool, busy and total slots, labels, and when each one connected.
 - **Schedules:** cron expression, pool and next occurrence.
 - **Live tasks:** running tasks first, then waiting ones, up to `--tasks` (200).
-  `--pool` limits this pane to some pools.
+- **Recent events:** the latest 200 status transitions, newest first, with the task's key and
+  message. The stream reconnects by itself after errors or a leader change.
+
+`--pool` limits the task and event panes to some pools.
 
 Press `q` to quit and `r` to refresh now. The pool, worker and schedule panes need the
-`metrics` role and the task pane the `client` role. With a token that has only one of them,
+`metrics` role, the task and event panes the `client` role. With a token that has only one of them,
 the other panes say which role they need; use an admin token to see everything. When the
 server is a standby or restarting, the panes show the error and recover on the next refresh.
