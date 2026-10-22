@@ -51,7 +51,10 @@ toml = "1.1"
 tower = { version = "0.5", features = ["limit", "util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tonic-web = "0.14"
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
+prost = "0.14"
 rcgen = "0.14"
 tempfile = "3"

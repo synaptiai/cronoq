@@ -103,6 +103,9 @@ First public release.
   (`labels = ["name=value", ...]`).
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
   results; waits bounded by `limits.max_wait_s`.
+- gRPC-Web for browser clients on the gRPC listener, off unless `[server.grpc_web]` lists the
+  allowed origins: unary calls and `Watch`, the same authentication, CORS only for those origins,
+  and in loopback-only mode only loopback hosts.
 - Listing: `ListTasks` / `GET /v1/tasks` pages through live and finished tasks by pool and
   status (pages capped by `limits.max_list`), and `ListWorkers` / `GET /v1/workers` and
   `ListRecurring` / `GET /v1/recurring` show connected workers and schedules. Each lists only

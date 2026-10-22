@@ -14,6 +14,10 @@ http_addr = "0.0.0.0:7071"   # /v1/* JSON API, /metrics, /healthz, /readyz
 # metrics_addr = "0.0.0.0:9090"  # optional unauthenticated /metrics (+ health) for scrapers
 shutdown_grace_s = 10        # running attempts get this long to finish on shutdown
 
+# gRPC-Web for browser dashboards on the gRPC listener; calls still need a token.
+# [server.grpc_web]
+# allowed_origins = ["https://dash.example.com"]
+
 # TLS applies to both listeners. With client_ca, clients must present a certificate signed by
 # it (mTLS); map certificate DNS names to roles under [[auth.certs]].
 # [server.tls]

@@ -114,6 +114,19 @@ impl Config {
                 "server.tls needs cert and key"
             );
         }
+        if let Some(w) = &s.grpc_web {
+            ensure!(
+                (1..=64).contains(&w.allowed_origins.len()),
+                "server.grpc_web.allowed_origins needs 1 to 64 origins"
+            );
+            for o in &w.allowed_origins {
+                ensure!(
+                    valid_origin(o),
+                    "server.grpc_web.allowed_origins: {o:?} is not an origin \
+                     (scheme://host[:port], no path, no wildcard)"
+                );
+            }
+        }
         let mut names = HashSet::new();
         for p in &self.pools {
             ensure!(
@@ -310,6 +323,51 @@ pub struct ServerConfig {
     /// Grace period for running attempts on shutdown.
     #[serde(default = "default_grace")]
     pub shutdown_grace_s: f64,
+    /// Serve gRPC-Web for browsers on the gRPC listener (off unless set).
+    pub grpc_web: Option<GrpcWebConfig>,
+}
+
+/// gRPC-Web for browser clients.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrpcWebConfig {
+    /// Origins (`https://dash.example.com`, scheme, host and optional port) whose pages may
+    /// call the API. Credentials are still required as for any other call.
+    pub allowed_origins: Vec<String>,
+}
+
+/// Whether `o` is an exact origin: `http` or `https`, a host, an optional port, nothing else.
+fn valid_origin(o: &str) -> bool {
+    let Some((scheme, rest)) = o.split_once("://") else {
+        return false;
+    };
+    if !matches!(scheme, "http" | "https") || rest.is_empty() || o.len() > 256 {
+        return false;
+    }
+    let (host, port) = match rest.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((ip, port)) => {
+                if ip.parse::<std::net::Ipv6Addr>().is_err() {
+                    return false;
+                }
+                (ip, port)
+            }
+            None => return false,
+        },
+        None => match rest.find(':') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, ""),
+        },
+    };
+    let port_ok = port.is_empty()
+        || port
+            .strip_prefix(':')
+            .is_some_and(|p| !p.is_empty() && p.parse::<u16>().is_ok());
+    let host_ok = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'));
+    port_ok && host_ok
 }
 
 impl Default for ServerConfig {
@@ -321,6 +379,7 @@ impl Default for ServerConfig {
             tls: None,
             insecure_no_auth: false,
             shutdown_grace_s: default_grace(),
+            grpc_web: None,
         }
     }
 }
@@ -983,6 +1042,44 @@ impl ResourceSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grpc_web_origins_must_be_exact() {
+        for ok in [
+            "https://dash.example.com",
+            "http://localhost:3000",
+            "https://[::1]:8443",
+            "http://127.0.0.1",
+        ] {
+            assert!(valid_origin(ok), "{ok}");
+        }
+        for bad in [
+            "*",
+            "https://*.example.com",
+            "https://dash.example.com/",
+            "https://dash.example.com/app",
+            "dash.example.com",
+            "ftp://dash.example.com",
+            "https://",
+            "https://host:",
+            "https://host:99999",
+            "https://[nope]:1",
+            "https://a b",
+        ] {
+            assert!(!valid_origin(bad), "{bad}");
+        }
+        let base = "[[pools]]\nname = \"default\"\n[server.grpc_web]\n";
+        assert!(Config::parse(&format!("{base}allowed_origins = []\n")).is_err());
+        assert!(Config::parse(&format!("{base}allowed_origins = [\"*\"]\n")).is_err());
+        let c = Config::parse(&format!(
+            "{base}allowed_origins = [\"https://x.example\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            c.server.grpc_web.unwrap().allowed_origins,
+            ["https://x.example"]
+        );
+    }
 
     #[test]
     fn parses_full_config() {

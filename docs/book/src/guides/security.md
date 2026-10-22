@@ -23,7 +23,8 @@ exist. Keys, however, are one namespace across pools (see the threat model).
 1. **Configure credentials.** Without `[[auth.tokens]]` or `[[auth.certs]]`, authentication is
    off: the server then refuses non-loopback addresses unless you pass `--insecure-no-auth`,
    and its HTTP API answers only requests whose host is `localhost`, `*.localhost`, `127.0.0.1`
-   or `[::1]`, which stops web pages that rebind their name to `127.0.0.1`.
+   or `[::1]`, which stops web pages that rebind their name to `127.0.0.1` (the gRPC listener
+   does the same when gRPC-Web is on).
    Create one token per role and per consumer, scoped to the pools it needs:
 
    ```toml
@@ -78,6 +79,10 @@ exist. Keys, however, are one namespace across pools (see the threat model).
     serves and decides their outputs. Give each worker fleet credentials for its own pools only,
     and, where workers carry labels, a `labels = [...]` allow-list so a credential cannot claim
     labels of another fleet.
+11. **Give browser dashboards narrow tokens.** Enable `[server.grpc_web]` only for the exact
+    origins of your dashboards. A token held by a page can be read by any script on that page,
+    so give it the least role it needs (often `metrics`), scoped to the pools it shows, and serve
+    the page over HTTPS with TLS on the server.
 
 ## Reporting vulnerabilities
 

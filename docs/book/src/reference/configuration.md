@@ -48,6 +48,18 @@ stays plain HTTP). Files are read once at startup; a missing file is reported wi
 | `key` | path | PEM private key. |
 | `client_ca` | path, optional | Require client certificates signed by this CA on both listeners (mutual TLS). Needed for `[[auth.certs]]`. |
 
+### `[server.grpc_web]`
+
+Optional. Serves [gRPC-Web](grpc.md#grpc-web) for browser clients on the gRPC listener,
+alongside native gRPC. Without this table the listener speaks only HTTP/2 gRPC.
+
+| Key | Type | Description |
+|---|---|---|
+| `allowed_origins` | list of 1–64 strings | Origins whose pages may call the API, each exactly `scheme://host[:port]` (`http` or `https`; no path, no wildcard), e.g. `["https://dash.example.com"]`. Other origins get no CORS headers, so browsers block their requests. |
+
+The origin list only controls which pages a browser lets call the server; every call still needs
+credentials with the right role, as over native gRPC.
+
 ## `[auth]`
 
 Callers authenticate with `authorization: Bearer <token>` (gRPC metadata or HTTP header), or
@@ -260,5 +272,7 @@ outputs that are no longer cached are read from the database.
 - `[[auth.tokens]]` entries without exactly one of `token`/`token_env`, duplicate literal
   tokens, tokens shorter than 16 characters, pool allow-lists naming unknown pools;
 - `[[auth.certs]]` without `server.tls.client_ca`;
+- `server.grpc_web.allowed_origins` that is empty, has more than 64 entries, or holds anything
+  other than exact origins;
 - both `store.url` and `store.url_env`;
 - non-loopback listeners with no credentials, unless `insecure_no_auth` is set.
