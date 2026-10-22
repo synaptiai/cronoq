@@ -1,7 +1,8 @@
 # Python quickstart
 
 The `cronoq` package embeds the same Rust engine in Python, with an asyncio-native API.
-Payloads and results are ordinary Python objects; nothing is serialized.
+Payloads and results are ordinary Python objects; nothing is serialized unless you keep state on
+disk (see [Durable state](#durable-state)).
 
 ## Install
 
@@ -117,6 +118,26 @@ behind loses the oldest ones (counted in `events.lagged`), or gets `cronoq.Event
   `cronoq.SchedulerError`.
 - Cancelling a task, a timeout or a lost lease cancels the executor's asyncio task. An executor
   that swallows `CancelledError` keeps running and may overlap with its retry.
+
+## Durable state
+
+By default the scheduler keeps its state in memory. Give it a store to keep queued work,
+schedules and results across restarts:
+
+```python
+store = cronoq.SqliteStore("/var/lib/myapp/cronoq.db")
+async with cronoq.Scheduler(pools, store=store) as sched:
+    await sched.enqueue({"doc": 42}, key="summary:42")
+```
+
+- Payloads and results are stored as JSON by default; submitting something JSON cannot hold
+  raises `TypeError`. Pass `codec=` (an object with `encode` and `decode`) for other types.
+- After a restart, queued and interrupted tasks run again on the new scheduler's pools, and
+  `await sched.handle("summary:42")` returns the stored result of a task that already finished.
+- Several processes may open the same file. One leads; the others wait in `start()` and take
+  over when it stops.
+
+See [`SqliteStore`](../reference/python.md#cronoqsqlitestore) for the options.
 
 ## Coming from `ElasticPriorityScheduler`
 

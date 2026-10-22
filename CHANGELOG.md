@@ -99,6 +99,9 @@ First public release.
   `on_lag="raise"`.
 - `cronoq.compat.ElasticPriorityScheduler`, a synchronous drop-in for code written against the
   original API.
+- Durable state with `Scheduler(..., store=SqliteStore(path))`: payloads and results are
+  encoded with a codec (JSON by default, which never runs code when read back); several
+  processes can share the file, with one leading and the others standing by.
 - `cronoq.client`: gRPC client and remote worker speaking worker protocol version 2.
 - Wheels for CPython 3.14+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
 

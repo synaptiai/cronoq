@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 mod errors;
 mod executor;
 mod scheduler;
+mod store;
 mod types;
 
 #[pymodule]
@@ -23,6 +24,7 @@ fn _cronoq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::Task>()?;
     m.add_class::<executor::TaskContext>()?;
     m.add_class::<scheduler::Scheduler>()?;
+    m.add_class::<store::SqliteStore>()?;
     m.add_class::<scheduler::TaskHandle>()?;
     m.add_class::<scheduler::Snapshot>()?;
     m.add_class::<scheduler::PoolSnapshot>()?;
