@@ -295,6 +295,8 @@ struct TemplateJ {
     tags: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     labels: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tenant: Option<String>,
 }
 
 /// A recurring schedule (without its template payload) as a JSON document.
@@ -328,6 +330,7 @@ pub fn recurring_json(base: TimeBase, r: &RecurringSpec<Bytes>) -> String {
                 .iter()
                 .map(|(k, v)| (cleaned(k), cleaned(v)))
                 .collect(),
+            tenant: t.tenant.as_deref().map(cleaned),
         },
     };
     serde_json::to_string(&j).expect("serializable")
@@ -367,6 +370,7 @@ pub fn recurring_from(
         .into_iter()
         .map(|(k, v)| (k.into(), v.into()))
         .collect();
+    template.tenant = t.tenant.map(Into::into);
     Ok(RecurringSpec {
         name: name.into(),
         cron: j.cron.into(),

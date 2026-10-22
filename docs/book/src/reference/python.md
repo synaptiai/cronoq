@@ -72,6 +72,7 @@ Accepted by `submit`, `enqueue` and `Task(...)`.
 | `resources` | `dict[str, int]` | Units of named resources per attempt. |
 | `tags` | `dict` | Labels (values converted to `str`). |
 | `labels` | `dict[str, str]` | Worker labels the task requires; it runs only in a group of workers that has them. |
+| `tenant` | `str` | Tenant, for pools with `tenant_weights` or `fair_share` ([Fair sharing](../concepts/fairness.md)). |
 
 Strings must not contain NUL characters.
 
@@ -126,7 +127,8 @@ With a store, payloads and results are encoded by the scheduler's codec:
 ```python
 Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=None,
      max_pending=None, overflow="wait", retry=None, unknown_dependency="reject",
-     await_timeout=None, default_duration=1.0, reservable_fraction=0.5)
+     await_timeout=None, default_duration=1.0, reservable_fraction=0.5,
+     tenant_weights=None, fair_share=False)
 ```
 
 | Argument | Description |
@@ -134,6 +136,7 @@ Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=N
 | `executor` | `async def run(ctx, payload)`, or a plain function (runs in the loop's default thread pool). |
 | `min`, `max`, `initial` | Concurrency bounds (`initial` defaults to `min`). |
 | `autoscale` | `True` / `None` (default policy), `False` (fixed size: `initial`, or `max` when `initial` is not given), or an `AutoscaleConfig`. |
+| `tenant_weights`, `fair_share` | Share the pool fairly between tenants: weights by tenant (others weigh 1), or equal shares with `fair_share=True` ([Fair sharing](../concepts/fairness.md)). |
 | `lease_ttl` | Attempts that do not call `ctx.heartbeat()` within this many seconds are failed as retryable. |
 | `max_pending`, `overflow` | Queue bound and what happens when it is reached: `"wait"`, `"reject"`, `"shed_lowest"`, `"shed_oldest"`. |
 | `retry` | Default `RetryPolicy` (3 attempts, exponential backoff). |

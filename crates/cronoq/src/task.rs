@@ -159,6 +159,12 @@ impl<P> Task<P> {
         self.spec.tags.push((k.into(), v.into()));
         self
     }
+    /// The tenant this task belongs to, for weighted fair sharing of pools with
+    /// [`PoolConfig::fairness`](crate::PoolConfig::fairness).
+    pub fn tenant(mut self, tenant: impl Into<Arc<str>>) -> Self {
+        self.spec.tenant = Some(tenant.into());
+        self
+    }
     /// Run only on workers labeled `name = value` (see
     /// [`Scheduler::set_group_capacity`](crate::Scheduler::set_group_capacity)).
     pub fn label(mut self, name: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> Self {
@@ -220,9 +226,13 @@ fn invalid(what: &'static str) -> Error {
 /// Reject values that cannot be stored or would misbehave later.
 pub(crate) fn validate<P>(s: &TaskSpec<P>) -> Result<(), Error> {
     let nul = |v: &str| v.contains('\0');
-    if nul(&s.kind) || nul(&s.pool) || s.key.as_deref().is_some_and(nul) {
+    if nul(&s.kind)
+        || nul(&s.pool)
+        || s.key.as_deref().is_some_and(nul)
+        || s.tenant.as_deref().is_some_and(nul)
+    {
         return Err(invalid(
-            "kind, pool and key must not contain NUL characters",
+            "kind, pool, key and tenant must not contain NUL characters",
         ));
     }
     if s.tags.iter().any(|(k, v)| nul(k) || nul(v)) {

@@ -727,6 +727,7 @@ struct InsertRow {
     resources: String,
     tags: String,
     labels: String,
+    tenant: Option<String>,
     created: i64,
     /// The latest transition within the batch; `None` while the task has not moved.
     status: Option<StatusRow>,
@@ -759,6 +760,7 @@ impl InsertRow {
             resources: resources_json(s),
             tags: tags_json(s),
             labels: labels_json(s),
+            tenant: s.tenant.as_deref().map(cleaned),
             created: now,
             status: None,
         }
@@ -779,8 +781,8 @@ impl InsertRow {
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, \
              timeout_ns, retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, \
-             labels) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-             ?18, ?19, ?20, ?21, ?22, ?23, ?24) ON CONFLICT (id) DO NOTHING",
+             labels, tenant) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25) ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
         .bind(self.seq)
@@ -806,6 +808,7 @@ impl InsertRow {
         .bind(at)
         .bind(message)
         .bind(&self.labels)
+        .bind(self.tenant.as_deref())
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -848,6 +851,7 @@ fn decode_task(base: TimeBase, r: &SqliteRow) -> Result<RecoveredTask<Bytes>, St
         .collect();
     spec.tags = tags_from(&r.get::<String, _>("tags"))?;
     spec.labels = tags_from(&r.get::<String, _>("labels"))?;
+    spec.tenant = r.get::<Option<String>, _>("tenant").map(Into::into);
     Ok(RecoveredTask {
         id: TaskId(r.get::<i64, _>("id") as u64),
         seq: r.get::<i64, _>("seq") as u64,
@@ -957,7 +961,7 @@ impl Store<Bytes, Bytes> for SqliteStore {
         let rows = sqlx::query(
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
              fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
-             retry, deps, resources, tags, labels, attempt FROM cronoq_tasks WHERE terminal = 0 \
+             retry, deps, resources, tags, labels, tenant, attempt FROM cronoq_tasks WHERE terminal = 0 \
              ORDER BY id",
         )
         .fetch_all(pool)

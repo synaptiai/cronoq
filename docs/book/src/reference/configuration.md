@@ -77,6 +77,7 @@ pools = ["llm"]            # optional
 | `token_env` | string | Read the token from this environment variable (it must be set at startup). |
 | `role` | `client` \| `worker` \| `metrics` \| `admin` | What the token may do. |
 | `pools` | list of pool names, optional | Restrict a `client` or `worker` token to these pools. Tasks in other pools behave as if they did not exist (`NOT_FOUND`), `Watch` filters them out, and workers may only register for these pools. Submitting a key already used in another pool fails with `ALREADY_EXISTS`, and dependencies on tasks of other pools are refused. |
+| `tenant` | string, optional | Tenant of every task submitted with a `client` token: tasks without a tenant get it, and naming another tenant is refused (`PERMISSION_DENIED`). See [Fair sharing](../concepts/fairness.md). |
 | `labels` | list of `"name=value"`, optional | Labels a `worker` token may claim when it registers; a worker claiming any other label is refused (`PERMISSION_DENIED`). Without it, a worker may claim any labels. See [Worker labels](../concepts/labels.md). |
 
 Exactly one of `token` / `token_env` is required. Tokens must be at least **16** characters
@@ -102,6 +103,7 @@ pools = ["gpu"]            # optional
 | `role` | role | Role granted to that certificate. |
 | `pools` | list, optional | Pool allow-list, as for tokens. |
 | `labels` | list, optional | Worker-label allow-list, as for tokens. |
+| `tenant` | string, optional | Tenant pinned to the certificate, as for tokens. |
 
 A bearer token, when present, takes precedence over the certificate.
 
@@ -209,6 +211,8 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `multiplier` | float in [1, 1000] | `2` | Backoff growth factor. |
 | `max_backoff_s` | float ≥ 0 | `60` | Backoff ceiling. |
 | `jitter` | bool | `true` | Full jitter (uniform in `[0, backoff]`). |
+| `fair_share` | bool | `false` | Share the pool fairly between tenants with equal weights (implied by `tenant_weights`). |
+| `tenant_weights` | table of tenant = weight | `{}` | Share the pool fairly between tenants with these weights (others weigh 1). See [Fair sharing](../concepts/fairness.md). |
 
 ## `[[resources]]`
 

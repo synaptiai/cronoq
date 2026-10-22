@@ -410,7 +410,8 @@ impl Pool {
     #[pyo3(signature = (
         name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=None,
         max_pending=None, overflow="wait", retry=None, unknown_dependency="reject",
-        await_timeout=None, default_duration=1.0, reservable_fraction=0.5
+        await_timeout=None, default_duration=1.0, reservable_fraction=0.5,
+        tenant_weights=None, fair_share=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -429,6 +430,8 @@ impl Pool {
         await_timeout: Option<f64>,
         default_duration: f64,
         reservable_fraction: f64,
+        tenant_weights: Option<std::collections::HashMap<String, f64>>,
+        fair_share: bool,
     ) -> PyResult<Self> {
         if !executor.is_callable() {
             return Err(PyTypeError::new_err("executor must be callable"));
@@ -475,6 +478,17 @@ impl Pool {
         };
         if let Some(r) = retry {
             cfg.retry = r.to_core();
+        }
+        if fair_share || tenant_weights.as_ref().is_some_and(|w| !w.is_empty()) {
+            let weights = tenant_weights.unwrap_or_default();
+            if weights.values().any(|w| !(w.is_finite() && *w > 0.0)) {
+                return Err(PyValueError::new_err(
+                    "tenant weights must be finite and > 0",
+                ));
+            }
+            cfg.fairness = Some(cronoq::Fairness::weights(
+                weights.iter().map(|(k, w)| (k.as_str(), *w)),
+            ));
         }
         cfg.unknown_dependency = match unknown_dependency {
             "reject" => UnknownDependency::Reject,
@@ -563,6 +577,7 @@ pub(crate) struct Opts {
     resources: Vec<(Arc<str>, u32)>,
     tags: Vec<(Arc<str>, Arc<str>)>,
     labels: Vec<(Arc<str>, Arc<str>)>,
+    tenant: Option<Arc<str>>,
 }
 
 pub(crate) fn parse_miss(s: &str) -> PyResult<MissPolicy> {
@@ -609,12 +624,14 @@ impl Opts {
         resources: Option<&Bound<'_, PyDict>>,
         tags: Option<&Bound<'_, PyDict>>,
         labels: Option<&Bound<'_, PyDict>>,
+        tenant: Option<&str>,
     ) -> PyResult<Opts> {
         let mut o = Opts {
             priority: priority.map(extract_priority).transpose()?,
             pool: pool.map(Arc::from),
             kind: kind.map(Arc::from),
             key: key.map(Arc::from),
+            tenant: tenant.map(Arc::from),
             deadline_in: deadline_in.map(|s| secs(s, "deadline_in")).transpose()?,
             deadline_at: deadline_at.map(to_system_time).transpose()?,
             start_in: start_in.map(|s| secs(s, "start_in")).transpose()?,
@@ -723,6 +740,9 @@ impl Opts {
         for (k, v) in &self.labels {
             t = t.label(k.clone(), v.clone());
         }
+        if let Some(tn) = &self.tenant {
+            t = t.tenant(tn.clone());
+        }
         t
     }
 }
@@ -741,7 +761,7 @@ impl Task {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None
+        tags=None, labels=None, tenant=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -764,6 +784,7 @@ impl Task {
         resources: Option<&Bound<'_, PyDict>>,
         tags: Option<&Bound<'_, PyDict>>,
         labels: Option<&Bound<'_, PyDict>>,
+        tenant: Option<&str>,
     ) -> PyResult<Self> {
         let opts = Opts::parse(
             priority,
@@ -784,6 +805,7 @@ impl Task {
             resources,
             tags,
             labels,
+            tenant,
         )?;
         Ok(Task { payload, opts })
     }

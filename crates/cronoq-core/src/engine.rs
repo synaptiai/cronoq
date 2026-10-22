@@ -46,6 +46,8 @@ enum Loc {
     Parked(ResourceId),
     /// Waiting for a free slot in a worker group with the labels it requires.
     LabelWait,
+    /// Queued in its class's fair queue (pools with tenant fairness).
+    Fair,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +95,10 @@ struct Entry<P> {
     fixed: Option<Box<FixedInfo>>,
     /// Required worker labels, interned in `Core::constraints` (0 = none).
     constraint: u32,
+    /// Tenant, interned in `Core::tenants` (0 = none; only set in pools with fairness).
+    tenant: u32,
+    /// Start tag in the class's fair queue (pools with fairness).
+    vtag: u64,
 }
 
 struct Slot<P> {
@@ -158,6 +164,8 @@ struct Pool {
     groups: Vec<Group>,
     /// Tasks waiting for a free slot in a group with the labels they require, by constraint.
     label_waiters: BTreeMap<u32, VecDeque<Key>>,
+    /// Weighted fair queues, when the pool shares capacity between tenants.
+    fair: Option<Box<FairState>>,
     lanes: [Lane<Key>; Priority::COUNT],
     edf: [BTreeMap<(Time, u64), Key>; Priority::COUNT],
     due: BTreeMap<(Time, u64), Key>,
@@ -182,6 +190,39 @@ struct Pool {
     worker_secs: f64,
     cost: f64,
     dirty: bool,
+}
+
+/// Start-time fair queuing per priority class: a task's start tag is the later of the class's
+/// virtual time and its tenant's previous finish tag; its finish tag adds `1e6 / weight`.
+/// Dispatching in tag order gives each backlogged tenant shares proportional to its weight, and
+/// an idle tenant cannot bank credit because its tags never fall behind the virtual time.
+struct FairState {
+    queues: [BTreeMap<(u64, u64), Key>; Priority::COUNT],
+    /// Start tag of the latest dispatched task, per class.
+    vtime: [u64; Priority::COUNT],
+    /// Latest finish tag per (class, tenant).
+    finish: FxHashMap<(u8, u32), u64>,
+    /// Tag increment per tenant (from its weight).
+    cost: FxHashMap<u32, u64>,
+    weights: StrMap<f64>,
+    default_weight: f64,
+}
+
+impl FairState {
+    fn new(cfg: &crate::config::Fairness) -> Self {
+        FairState {
+            queues: Default::default(),
+            vtime: [0; Priority::COUNT],
+            finish: FxHashMap::default(),
+            cost: FxHashMap::default(),
+            weights: cfg.weights.iter().cloned().collect(),
+            default_weight: cfg.default_weight,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.queues.iter().map(|q| q.len()).sum()
+    }
 }
 
 /// Workers of a pool that share one label set.
@@ -241,6 +282,7 @@ impl Pool {
         self.lanes.iter().map(|l| l.len()).sum::<usize>()
             + self.edf.iter().map(|l| l.len()).sum::<usize>()
             + self.due.len()
+            + self.fair.as_ref().map_or(0, |f| f.len())
     }
 }
 
@@ -324,6 +366,9 @@ pub struct Core<P> {
     timer_seq: u64,
     kinds: Vec<Arc<str>>,
     kind_index: StrMap<u32>,
+    /// Interned tenant names of tasks in pools with fairness; index 0 is "none".
+    tenants: Vec<Arc<str>>,
+    tenant_index: StrMap<u32>,
     /// Interned label requirements of tasks; index 0 is "none".
     constraints: Vec<Labels>,
     constraint_index: std::collections::HashMap<Labels, u32>,
@@ -392,6 +437,7 @@ impl<P> Core<P> {
                     busy: 0,
                 }],
                 label_waiters: BTreeMap::new(),
+                fair: pc.fairness.as_ref().map(|f| Box::new(FairState::new(f))),
                 lanes: Default::default(),
                 edf: Default::default(),
                 due: BTreeMap::new(),
@@ -462,6 +508,8 @@ impl<P> Core<P> {
             timer_seq,
             kinds: Vec::new(),
             kind_index: StrMap::default(),
+            tenants: vec![Arc::from("")],
+            tenant_index: StrMap::default(),
             constraints: vec![Arc::from(Vec::new())],
             constraint_index: std::collections::HashMap::new(),
             dur: FxHashMap::default(),
@@ -1047,9 +1095,23 @@ impl<P> Core<P> {
         } else {
             waiting.min_by_key(|k| seq(k))
         };
-        let candidates = [lane, edf.copied(), parked.copied(), waiting.copied()]
-            .into_iter()
-            .flatten();
+        let fair = p.fair.as_ref().and_then(|f| {
+            let q = f.queues[class].values();
+            if newest {
+                q.max_by_key(|k| seq(k))
+            } else {
+                q.min_by_key(|k| seq(k))
+            }
+        });
+        let candidates = [
+            lane,
+            edf.copied(),
+            parked.copied(),
+            waiting.copied(),
+            fair.copied(),
+        ]
+        .into_iter()
+        .flatten();
         if newest {
             candidates.max_by_key(|k| seq(k))
         } else {
@@ -1110,6 +1172,34 @@ impl<P> Core<P> {
         let kind = self.kind_index.get(&spec.kind).copied();
         let d = self.estimate_raw(pool, kind, spec.duration_hint.map(nanos).unwrap_or(0));
         (f.at - f.tolerance, f.at + d + f.tolerance)
+    }
+
+    fn intern_tenant(&mut self, t: &Arc<str>) -> u32 {
+        if let Some(&i) = self.tenant_index.get(t) {
+            return i;
+        }
+        let i = self.tenants.len() as u32;
+        self.tenants.push(t.clone());
+        self.tenant_index.insert(t.clone(), i);
+        i
+    }
+
+    /// Next start tag for a task of `tenant` in `class` of a fair pool.
+    fn fair_tag(&mut self, pool: u16, class: usize, tenant: u32) -> u64 {
+        let name = self.tenants[tenant as usize].clone();
+        let f = self.pools[pool as usize].fair.as_mut().unwrap();
+        let cost = *f.cost.entry(tenant).or_insert_with(|| {
+            let w = f.weights.get(&name).copied().unwrap_or(f.default_weight);
+            ((1e6 / w).round() as u64).max(1)
+        });
+        let start = f.vtime[class].max(f.finish.get(&(class as u8, tenant)).copied().unwrap_or(0));
+        f.finish.insert((class as u8, tenant), start + cost);
+        if f.finish.len() > 4096 {
+            // Tags at or behind the virtual time carry no state: forget them.
+            let vtime = f.vtime;
+            f.finish.retain(|(c, _), fin| *fin > vtime[*c as usize]);
+        }
+        start
     }
 
     fn intern_constraint(&mut self, labels: &[(Arc<str>, Arc<str>)]) -> u32 {
@@ -1238,10 +1328,15 @@ impl<P> Core<P> {
                 e.lst,
             )
         };
+        let vtag = self.entry(k).vtag;
         let p = &mut self.pools[pool as usize];
         if has_deadline {
             p.edf[class].insert((lst, seq), k);
             self.entry_mut(k).loc = Loc::Edf;
+        } else if let Some(f) = &mut p.fair {
+            // A woken task keeps its place in the fair order.
+            f.queues[class].insert((vtag, seq), k);
+            self.entry_mut(k).loc = Loc::Fair;
         } else {
             p.lanes[class].insert(seq, k);
             self.entry_mut(k).loc = Loc::Lane;
@@ -1302,6 +1397,10 @@ impl<P> Core<P> {
         }
         let kind = self.intern_kind(&spec.kind);
         let constraint = self.intern_constraint(&spec.labels);
+        let tenant = match (&spec.tenant, self.pools[pool as usize].fair.is_some()) {
+            (Some(t), true) => self.intern_tenant(t),
+            _ => 0,
+        };
         let hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
         let resources = if spec.resources.is_empty() {
             None
@@ -1408,6 +1507,8 @@ impl<P> Core<P> {
             },
             fixed,
             constraint,
+            tenant,
+            vtag: 0,
         };
         let key = self.slab_insert(entry);
         self.index.insert(id, key);
@@ -2395,6 +2496,14 @@ impl<P> Core<P> {
                     e.lst = lst;
                     e.loc = Loc::Edf;
                     self.pools[pool as usize].edf[class].insert((lst, seq), k);
+                } else if self.pools[pool as usize].fair.is_some() {
+                    let tenant = self.entry(k).tenant;
+                    let tag = self.fair_tag(pool, class, tenant);
+                    let e = self.entry_mut(k);
+                    e.vtag = tag;
+                    e.loc = Loc::Fair;
+                    let f = self.pools[pool as usize].fair.as_mut().unwrap();
+                    f.queues[class].insert((tag, seq), k);
                 } else {
                     self.entry_mut(k).loc = Loc::Lane;
                     self.pools[pool as usize].lanes[class].insert(seq, k);
@@ -2407,7 +2516,7 @@ impl<P> Core<P> {
     }
 
     fn unqueue(&mut self, k: Key) {
-        let (loc, pool, class, seq, lst, at) = {
+        let (loc, pool, class, seq, lst, at, vtag) = {
             let e = self.entry(k);
             (
                 e.loc,
@@ -2416,6 +2525,7 @@ impl<P> Core<P> {
                 e.seq,
                 e.lst,
                 e.fixed.as_ref().map(|f| f.at),
+                e.vtag,
             )
         };
         let p = &mut self.pools[pool];
@@ -2430,6 +2540,11 @@ impl<P> Core<P> {
             }
             Loc::Due => {
                 p.due.remove(&(at.unwrap(), seq));
+            }
+            Loc::Fair => {
+                if let Some(f) = &mut p.fair {
+                    f.queues[class].remove(&(vtag, seq));
+                }
             }
         }
         self.entry_mut(k).loc = Loc::None;
@@ -2780,6 +2895,9 @@ impl<P> Core<P> {
             let heads = [
                 p.lanes[c].first(),
                 p.edf[c].first_key_value().map(|(_, k)| *k),
+                p.fair
+                    .as_ref()
+                    .and_then(|f| f.queues[c].first_key_value().map(|(_, k)| *k)),
             ];
             for k in heads.into_iter().flatten() {
                 let e = self.entry(k);
@@ -2879,25 +2997,7 @@ impl<P> Core<P> {
             }
             self.resources[r as usize].waiters.pop_front();
             budget -= need as f64;
-            let (pool, class, seq, has_deadline, lst) = {
-                let e = self.entry(k);
-                (
-                    e.pool,
-                    e.class as usize,
-                    e.seq,
-                    e.deadline != Time::MAX,
-                    e.lst,
-                )
-            };
-            let p = &mut self.pools[pool as usize];
-            if has_deadline {
-                p.edf[class].insert((lst, seq), k);
-                self.entry_mut(k).loc = Loc::Edf;
-            } else {
-                p.lanes[class].insert(seq, k);
-                self.entry_mut(k).loc = Loc::Lane;
-            }
-            self.mark_dirty(pool);
+            self.requeue_ready(k);
         }
     }
 
@@ -2908,8 +3008,19 @@ impl<P> Core<P> {
         let higher_waiting = {
             let p = &self.pools[pool as usize];
             let c = self.entry(k).class as usize;
-            (0..c).any(|h| !p.lanes[h].is_empty() || !p.edf[h].is_empty())
+            (0..c).any(|h| {
+                !p.lanes[h].is_empty()
+                    || !p.edf[h].is_empty()
+                    || p.fair.as_ref().is_some_and(|f| !f.queues[h].is_empty())
+            })
         };
+        let (vtag, class) = {
+            let e = self.entry(k);
+            (e.vtag, e.class as usize)
+        };
+        if let Some(f) = &mut self.pools[pool as usize].fair {
+            f.vtime[class] = f.vtime[class].max(vtag);
+        }
         let (id, attempt, timeout_ns, first, arrival, fixed) = {
             let e = self.entry_mut(k);
             e.attempt += 1;
@@ -3011,7 +3122,8 @@ impl<P> Core<P> {
         p.last_eval = now;
         let mut backlog = [0u64; Priority::COUNT];
         for (c, b) in backlog.iter_mut().enumerate() {
-            *b = (p.lanes[c].len() + p.edf[c].len() + p.retrying[c]) as u64;
+            let fair = p.fair.as_ref().map_or(0, |f| f.queues[c].len());
+            *b = (p.lanes[c].len() + p.edf[c].len() + fair + p.retrying[c]) as u64;
         }
         backlog[0] += p.due.len() as u64;
         let signals = Signals {
@@ -3254,6 +3366,11 @@ impl<P> Core<P> {
                     assert_eq!(p.due.get(&(e.fixed.as_ref().unwrap().at, e.seq)), Some(k));
                     queued[e.pool as usize] += 1;
                 }
+                Loc::Fair => {
+                    let f = p.fair.as_ref().expect("fair queue in a fair pool");
+                    assert_eq!(f.queues[e.class as usize].get(&(e.vtag, e.seq)), Some(k));
+                    queued[e.pool as usize] += 1;
+                }
                 Loc::LabelWait => assert!(
                     p.label_waiters
                         .get(&e.constraint)
@@ -3264,7 +3381,7 @@ impl<P> Core<P> {
             }
             if matches!(
                 e.loc,
-                Loc::Lane | Loc::Edf | Loc::Due | Loc::Parked(_) | Loc::LabelWait
+                Loc::Lane | Loc::Edf | Loc::Due | Loc::Parked(_) | Loc::LabelWait | Loc::Fair
             ) {
                 assert_eq!(e.status, TaskStatus::Ready);
             }

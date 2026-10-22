@@ -558,7 +558,7 @@ overrides.
    hardening before going public.
 
 ## 19. Deferred (post v0.1)
-Multi-tenant weighted fairness, Go/TS SDKs, active-active sharding,
+Go/TS SDKs, active-active sharding,
 Kubernetes operator.
 
 ## 20. Resolved defaults

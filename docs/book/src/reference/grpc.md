@@ -60,6 +60,7 @@ This page describes **worker protocol version 3**.
 | `resources` | map<string, uint32> | Units of each named resource per attempt. |
 | `tags` | map<string, string> | Labels passed to the worker. |
 | `labels` | map<string, string> | Worker labels the task requires ([Worker labels](../concepts/labels.md)). |
+| `tenant` | string | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
 
 The fields match the [HTTP task object](http.md#task-object), which documents them in detail.
 `TaskRef` is a `oneof` of `id` (uint64) and `key` (string).

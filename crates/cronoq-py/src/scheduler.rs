@@ -368,7 +368,7 @@ impl Scheduler {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None
+        tags=None, labels=None, tenant=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn submit<'py>(
@@ -393,6 +393,7 @@ impl Scheduler {
         resources: Option<&Bound<'py, PyDict>>,
         tags: Option<&Bound<'py, PyDict>>,
         labels: Option<&Bound<'py, PyDict>>,
+        tenant: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -413,6 +414,7 @@ impl Scheduler {
             resources,
             tags,
             labels,
+            tenant,
         )?;
         let s = self.sched(py)?;
         let task = self.task(py, &opts, payload)?;
@@ -427,7 +429,7 @@ impl Scheduler {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None
+        tags=None, labels=None, tenant=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn enqueue<'py>(
@@ -452,6 +454,7 @@ impl Scheduler {
         resources: Option<&Bound<'py, PyDict>>,
         tags: Option<&Bound<'py, PyDict>>,
         labels: Option<&Bound<'py, PyDict>>,
+        tenant: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -472,6 +475,7 @@ impl Scheduler {
             resources,
             tags,
             labels,
+            tenant,
         )?;
         let s = self.sched(py)?;
         let task = self.task(py, &opts, payload)?;
@@ -591,7 +595,7 @@ impl Scheduler {
     #[pyo3(signature = (
         name, cron, payload, *, tz=None, overlap="skip", tolerance=1.0, on_miss="run_late",
         priority=None, pool=None, kind=None, key=None, deadline_in=None, duration_hint=None,
-        timeout=None, retry=None, resources=None, tags=None, labels=None
+        timeout=None, retry=None, resources=None, tags=None, labels=None, tenant=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn add_recurring<'py>(
@@ -615,6 +619,7 @@ impl Scheduler {
         resources: Option<&Bound<'py, PyDict>>,
         tags: Option<&Bound<'py, PyDict>>,
         labels: Option<&Bound<'py, PyDict>>,
+        tenant: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -635,6 +640,7 @@ impl Scheduler {
             resources,
             tags,
             labels,
+            tenant,
         )?;
         let mut r = Recurring::new(name, cron, self.task(py, &opts, payload)?)
             .overlap(parse_overlap(overlap)?)

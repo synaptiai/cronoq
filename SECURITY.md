@@ -71,6 +71,8 @@ limited to a list of pools.
   are kept only as SHA-256 digests, compared in constant time, and never logged.
 - **Pool scoping.** Scoped credentials cannot submit into, serve, watch or look up tasks of other
   pools; such tasks are reported as not found rather than forbidden, so ids do not leak.
+- **Tenant pinning.** Credentials with a `tenant` submit only for that tenant, so a client
+  cannot spend another tenant's fair share. Without it, callers name their tenant freely.
 - **Label scoping.** Worker credentials with a `labels` allow-list may only register with those
   labels, so they receive only tasks meant for such workers.
 - **Safe defaults.** Both listeners bind to `127.0.0.1` by default. Without any configured

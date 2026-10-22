@@ -141,6 +141,13 @@ impl Config {
                     at("reservable_fraction")
                 );
             }
+            for (t, w) in &p.tenant_weights {
+                ensure!(
+                    w.is_finite() && *w > 0.0,
+                    "{} must be finite and > 0",
+                    at(&format!("tenant_weights.{t}"))
+                );
+            }
             if let Some(u) = p.target_utilization {
                 ensure!(
                     u.is_finite() && u > 0.0 && u <= 1.0,
@@ -392,6 +399,8 @@ pub struct TokenConfig {
     pub pools: Option<Vec<String>>,
     /// Worker labels (`"name=value"`) a worker with this token may claim (default: any).
     pub labels: Option<Vec<String>>,
+    /// Tenant of every task submitted with this token; submitting for another tenant is refused.
+    pub tenant: Option<String>,
 }
 
 impl fmt::Debug for TokenConfig {
@@ -417,6 +426,8 @@ pub struct CertRoleConfig {
     pub pools: Option<Vec<String>>,
     /// Worker labels (`"name=value"`) a worker with this certificate may claim (default: any).
     pub labels: Option<Vec<String>>,
+    /// Tenant of every task submitted with this certificate.
+    pub tenant: Option<String>,
 }
 
 /// Scheduler state storage.
@@ -728,6 +739,12 @@ pub struct PoolSection {
     /// Slots a single worker may register in this pool (default `limits.max_slots_per_worker`,
     /// never above `max`).
     pub max_slots_per_worker: Option<u32>,
+    /// Share the pool fairly between tenants (implied by `tenant_weights`).
+    #[serde(default)]
+    pub fair_share: bool,
+    /// Weight of each tenant in the fair share (others weigh 1).
+    #[serde(default)]
+    pub tenant_weights: std::collections::BTreeMap<String, f64>,
 }
 
 fn default_max() -> u32 {
@@ -764,6 +781,8 @@ impl PoolSection {
             cooldown_s: None,
             cost_per_worker_second: None,
             max_slots_per_worker: None,
+            fair_share: false,
+            tenant_weights: Default::default(),
         }
     }
 
@@ -797,6 +816,11 @@ impl PoolSection {
             c.unknown_dependency = cronoq::UnknownDependency::Await {
                 timeout: Some(Duration::from_secs_f64(t)),
             };
+        }
+        if self.fair_share || !self.tenant_weights.is_empty() {
+            c.fairness = Some(cronoq::Fairness::weights(
+                self.tenant_weights.iter().map(|(t, w)| (t.as_str(), *w)),
+            ));
         }
         c.autoscale = self.autoscale.then(|| {
             let mut a = AutoscaleConfig::default();

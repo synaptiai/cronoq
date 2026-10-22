@@ -286,6 +286,24 @@ async fn check_cross_pool(
     Ok(())
 }
 
+/// Credentials with a tenant submit for that tenant only: fill it in, or refuse another one.
+fn pin_tenant(principal: &Principal, spec: &mut pb::TaskSpec) -> Result<(), Status> {
+    let Some(t) = &principal.tenant else {
+        return Ok(());
+    };
+    if spec.tenant.is_empty() {
+        spec.tenant = t.to_string();
+        Ok(())
+    } else if spec.tenant == **t {
+        Ok(())
+    } else {
+        Err(Status::permission_denied(format!(
+            "credentials do not allow tenant '{}'",
+            spec.tenant
+        )))
+    }
+}
+
 /// A duplicate submission must not reveal a task of a pool the caller may not use.
 async fn check_duplicate(app: &AppState, principal: &Principal, id: TaskId) -> Result<(), Status> {
     if principal.pools.is_none() {
@@ -301,10 +319,11 @@ async fn check_duplicate(app: &AppState, principal: &Principal, id: TaskId) -> R
 pub async fn submit_one(
     app: &AppState,
     principal: &Principal,
-    spec: pb::TaskSpec,
+    mut spec: pb::TaskSpec,
     wait: Option<Duration>,
     stop: &CancellationToken,
 ) -> Result<pb::SubmitResponse, Status> {
+    pin_tenant(principal, &mut spec)?;
     check_pool(principal, convert::spec_pool(&spec))?;
     check_cross_pool(app, principal, &spec, &[]).await?;
     let meta = pb::TaskSpec {
@@ -349,13 +368,16 @@ pub async fn submit_one(
 pub async fn submit_batch(
     app: &AppState,
     principal: &Principal,
-    specs: Vec<pb::TaskSpec>,
+    mut specs: Vec<pb::TaskSpec>,
 ) -> Result<pb::SubmitBatchResponse, Status> {
     let max = app.limits.max_tasks_per_batch;
     if specs.len() > max {
         return Err(Status::invalid_argument(format!(
             "at most {max} tasks per batch"
         )));
+    }
+    for s in &mut specs {
+        pin_tenant(principal, s)?;
     }
     // Only keys the batch introduces count as batch-local: a key that already names a task
     // (possibly of another pool) is checked like any other duplicate or dependency, before

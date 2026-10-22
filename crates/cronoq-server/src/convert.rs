@@ -320,6 +320,10 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
         }
         t = t.tag(k, v);
     }
+    check_str("tenant", &spec.tenant, limits.max_key_len)?;
+    if !spec.tenant.is_empty() {
+        t = t.tenant(spec.tenant);
+    }
     let mut labels: Vec<_> = spec.labels.into_iter().collect();
     labels.sort();
     for (k, v) in labels {
