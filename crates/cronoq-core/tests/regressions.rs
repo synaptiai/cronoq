@@ -365,3 +365,27 @@ fn recovered_task_over_lowered_capacity_fails_instead_of_blocking() {
     s.drain();
     assert_eq!(s.status(TaskId(1)), Some(TaskStatus::Failed));
 }
+
+// Lease ids restarted at 1 with every leader, so a report from an earlier leader's worker could
+// name a lease the new leader had just issued. They carry the epoch now, like task ids.
+#[test]
+fn lease_ids_carry_the_epoch_and_stale_completions_are_counted() {
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 1)],
+        id_epoch: 3,
+        ..Default::default()
+    });
+    let id = s.submit(TaskSpec::new(Job::ok(1.0)));
+    assert_eq!(id.0 >> 48, 3);
+    let lease = s.running_leases()[0];
+    assert_eq!(lease.0 >> 48, 3);
+    // A lease of the same number from epoch 2 is unknown here.
+    let old = LeaseId((2 << 48) | (lease.0 & ((1 << 48) - 1)));
+    assert!(!s.core.complete(s.now, old, Outcome::Success));
+    assert_eq!(s.core.totals().stale_completions, 1);
+    assert_eq!(s.status(id), Some(TaskStatus::Running));
+    assert!(s.core.complete(s.now, lease, Outcome::Success));
+    assert!(!s.core.complete(s.now, lease, Outcome::Success)); // duplicate
+    assert_eq!(s.core.totals().stale_completions, 2);
+    assert_eq!(s.status(id), Some(TaskStatus::Succeeded));
+}

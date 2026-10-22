@@ -206,7 +206,8 @@ still holds them.
             "workers_connected": 2}],
  "totals": {"submitted": 130, "dispatched": 124, "succeeded": 118, "failed": 1,
             "dead_lettered": 0, "cancelled": 2, "skipped": 0, "missed": 0, "shed": 0,
-            "retries": 4, "timeouts": 1, "lease_expiries": 0}}
+            "retries": 4, "timeouts": 1, "lease_expiries": 0,
+            "stale_completions": 0}}
 ```
 
 | Field | Description |

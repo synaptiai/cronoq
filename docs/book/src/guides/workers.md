@@ -42,7 +42,8 @@ and `traceparent()`.
 
 Guidelines:
 
-- **Be idempotent.** Execution is at-least-once.
+- **Be idempotent.** Execution is at-least-once; record `(ctx.id, ctx.attempt)` with side
+  effects that must happen once ([fencing tokens](../concepts/reliability.md#exactly-once-side-effects)).
 - **Classify errors.** Use `permanent` for errors a retry cannot fix (validation, 4xx), and
   `retry_after` when the remote side says when to come back.
 - **Do not block the runtime.** Use `tokio::task::spawn_blocking` for CPU-heavy or blocking work.

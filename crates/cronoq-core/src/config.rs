@@ -269,7 +269,8 @@ pub struct CoreConfig {
     pub persist: bool,
     /// Unix time (ns) corresponding to `Time::ZERO`; used for cron schedules.
     pub epoch_unix_nanos: i64,
-    /// High bits mixed into task ids (leader epoch in HA mode).
+    /// High bits mixed into task and lease ids (leader epoch in HA mode), so ids issued by
+    /// different leaders never collide.
     pub id_epoch: u16,
     /// Window for snapshot metrics.
     pub metrics_window: Duration,

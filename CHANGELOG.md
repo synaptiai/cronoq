@@ -30,6 +30,10 @@ First public release.
   unknown keys with a timeout, cycle detection, atomic batches and idempotent keys.
 - Leases with heartbeats, per-attempt timeouts, retries with exponential backoff, jitter and
   `retry_after`, dead-lettering and cancellation.
+- What effectively-once side effects need: attempt numbers that never repeat for a task (the
+  fencing token, also across failovers), lease ids that carry the leader epoch, stale reports
+  ignored and counted (`stale_completions`), and key deduplication of finished tasks within the
+  retention window.
 - Shared semaphores and token buckets, with tasks waiting for a resource parked without holding
   a worker.
 - Bounded queues per pool, per class and globally, with `Wait`, `Reject`, `ShedLowest` and
@@ -85,6 +89,8 @@ First public release.
   leadership changes.
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
   results; waits bounded by `limits.max_wait_s`.
+- `limits.key_retention_s` and `key_retention_max` set how long finished keys deduplicate
+  submissions; the same window bounds what a new leader recovers.
 - Webhook and external scalers, Prometheus metrics, health and readiness endpoints, and
   active-passive HA with Postgres or SQLite.
 - Rust worker client (`worker::run_worker`) with slot enforcement, heartbeats, panic isolation,

@@ -2,9 +2,11 @@
 
 ### Is execution exactly-once?
 
-No, at-least-once. An attempt can run again if its worker crashes, misses heartbeats, or the
-leader fails over mid-attempt. Make handlers idempotent; use task keys to make *submission*
-idempotent.
+Execution is at-least-once: an attempt can run again if its worker crashes, misses heartbeats, or
+the leader fails over mid-attempt. Side effects can still be exactly-once: record the task id and
+attempt number (a fencing token) with each effect and let only the newest attempt write. See
+[Exactly-once side effects](concepts/reliability.md#exactly-once-side-effects). Task keys make
+*submission* idempotent.
 
 ### Does a deadline cancel the task when it passes?
 

@@ -513,6 +513,12 @@ pub struct LimitsConfig {
     pub keepalive_interval_s: f64,
     /// HTTP/2 keepalive ping timeout.
     pub keepalive_timeout_s: f64,
+    /// How long a finished task's key keeps deduplicating submissions: resubmitting it returns
+    /// the finished task (and its stored output). Also how far back a new leader loads
+    /// finished tasks from the store.
+    pub key_retention_s: f64,
+    /// Most finished tasks kept for key deduplication (bounds memory).
+    pub key_retention_max: usize,
 }
 
 impl Default for LimitsConfig {
@@ -536,6 +542,8 @@ impl Default for LimitsConfig {
             max_slots_per_worker: 1024,
             keepalive_interval_s: 20.0,
             keepalive_timeout_s: 20.0,
+            key_retention_s: 3600.0,
+            key_retention_max: 1_000_000,
         }
     }
 }
@@ -590,7 +598,13 @@ impl LimitsConfig {
             0.1,
         )?;
         finite_secs("limits.keepalive_timeout_s", self.keepalive_timeout_s, 0.1)?;
+        finite_secs("limits.key_retention_s", self.key_retention_s, 0.0)?;
         Ok(())
+    }
+
+    /// `key_retention_s` as a duration.
+    pub fn key_retention(&self) -> Duration {
+        Duration::from_secs_f64(self.key_retention_s)
     }
 
     /// `max_wait_s` as a duration.

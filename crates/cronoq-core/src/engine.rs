@@ -253,6 +253,9 @@ pub struct Totals {
     /// Recovered recurring schedules not armed because the configuration no longer supports
     /// their template (a removed pool or resource).
     pub recurring_invalid: u64,
+    /// Completions reported for leases that are no longer valid (late, duplicate, or from an
+    /// earlier leader); they were ignored.
+    pub stale_completions: u64,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -386,9 +389,10 @@ impl<P> Core<P> {
             })
             .collect();
         let timer_seq = pools.len() as u64;
+        let id_epoch = cfg.id_epoch as u64;
         Core {
             rng: Rng::new(cfg.seed),
-            next_id: (cfg.id_epoch as u64) << 48 | 1,
+            next_id: id_epoch << 48 | 1,
             cfg,
             pools,
             pool_index,
@@ -411,7 +415,7 @@ impl<P> Core<P> {
             recurring: BTreeMap::new(),
             actions: VecDeque::new(),
             next_seq: 0,
-            next_lease: 1,
+            next_lease: id_epoch << 48 | 1,
             now: Time::ZERO,
             dirty: Vec::new(),
             total_pending: 0,
@@ -1323,6 +1327,9 @@ impl<P> Core<P> {
     pub fn complete(&mut self, now: Time, lease: LeaseId, outcome: Outcome) -> bool {
         self.advance(now);
         let Some(l) = self.leases.remove(&lease) else {
+            // A late or duplicate report (the attempt timed out, was aborted, or belongs to an
+            // earlier leader): it changes nothing.
+            self.totals.stale_completions += 1;
             return false;
         };
         self.end_attempt(&l);

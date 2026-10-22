@@ -1,7 +1,9 @@
 # Retries, timeouts and leases
 
 cronoq executes tasks **at least once**: an attempt that may have been lost is retried. Make
-handlers idempotent, or deduplicate with [keys](dependencies.md#keys).
+handlers idempotent, or make their side effects exactly-once with
+[fencing tokens](#exactly-once-side-effects), and deduplicate submissions with
+[keys](dependencies.md#keys).
 
 ## Attempts and outcomes
 
@@ -15,6 +17,37 @@ Each dispatch starts an **attempt** identified by a **lease**. An attempt ends w
 | Permanent failure | `TaskError::permanent(msg)` | `raise cronoq.Permanent(msg)` | `Failed` |
 | Cancelled | `TaskError::Cancelled` | (task cancelled) | `Cancelled` |
 | Panic (Rust executor) | | | permanent failure (`Failed`); the scheduler and other attempts keep running |
+
+## Exactly-once side effects
+
+No scheduler can stop a handler from running twice: a worker can lose its connection after
+charging a card but before reporting success. What cronoq guarantees is enough to make the
+*effect* happen once:
+
+- **Attempt numbers never repeat for a task**, also across failovers: an attempt is dispatched
+  only after it is durably recorded, and a new leader continues from the recorded number. So
+  `(task id, attempt)` is a fencing token: a later attempt always has a higher number.
+- **Stale reports change nothing.** A completion or failure for an attempt that timed out, was
+  aborted, was already reported or came from a previous leader is ignored, and counted in
+  `stale_completions` (metric `cronoq_stale_completions_total`). Lease ids carry the leader
+  epoch, so they never repeat across leaders either.
+- **Resubmitting a finished keyed task returns it.** Within the key retention window
+  (`limits.key_retention_s`, default 1 hour; `CoreConfig::retention` in the library), a
+  submission with the key of a finished task is a duplicate: it returns that task and its
+  stored output instead of running again.
+
+Record the token with the side effect, in the same transaction, and let the write succeed only
+for the newest attempt:
+
+```sql
+INSERT INTO charges (task_id, attempt, amount) VALUES ($1, $2, $3)
+ON CONFLICT (task_id) DO UPDATE SET attempt = excluded.attempt, amount = excluded.amount
+WHERE charges.attempt < excluded.attempt;   -- an older attempt arriving late changes nothing
+```
+
+For effects that must happen once at all (not "last attempt wins"), insert on `task_id` alone
+and skip when the row exists. The token is `ctx.id` and `ctx.attempt` in Rust and Python
+executors, and `Lease.task_id` and `Lease.attempt` for remote workers.
 
 ## Retry policy
 

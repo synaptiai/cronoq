@@ -49,7 +49,8 @@ pub struct Bound {
     pub metrics: Option<SocketAddr>,
 }
 
-async fn open_store(cfg: &StoreConfig) -> anyhow::Result<Opened> {
+/// Open the configured store; `retention` is how far back finished tasks are recovered.
+async fn open_store(cfg: &StoreConfig, retention: Duration) -> anyhow::Result<Opened> {
     match cfg {
         StoreConfig::Memory => Ok(Opened::memory()),
         StoreConfig::Postgres {
@@ -68,10 +69,14 @@ async fn open_store(cfg: &StoreConfig) -> anyhow::Result<Opened> {
                 }
             };
             crate::pg::warn_insecure_url(&url, inline.is_some());
-            crate::pg::open(&url, schema.as_deref()).await
+            crate::pg::open(&url, schema.as_deref(), retention).await
         }
         StoreConfig::Sqlite { path, .. } => {
-            let store = cronoq_store_sqlite::SqliteStore::open(path)
+            let cfg = cronoq_store_sqlite::SqliteStoreConfig {
+                retention,
+                ..Default::default()
+            };
+            let store = cronoq_store_sqlite::SqliteStore::open_with(path, cfg)
                 .await
                 .map_err(|e| anyhow::anyhow!("sqlite {}: {e}", path.display()))?;
             Ok(Opened::durable(store))
@@ -293,7 +298,7 @@ async fn lead(
     let limits = &cfg.limits;
     tokio::pin!(shutdown);
     let Opened { store, queries } = tokio::select! {
-        s = open_store(&cfg.store) => s?,
+        s = open_store(&cfg.store, cfg.limits.key_retention()) => s?,
         _ = &mut shutdown => return Ok(()),
     };
     let registry = WorkerRegistry::new();
@@ -305,7 +310,11 @@ async fn lead(
         // runtime's count-only cache would hold up to 1024 maximum-size outputs.
         .output_cache(0)
         .emit_transitions(true)
-        .configure(|c| c.global_bounds.max_pending = Some(limits.max_pending_total));
+        .configure(|c| {
+            c.global_bounds.max_pending = Some(limits.max_pending_total);
+            c.retention = limits.key_retention();
+            c.retention_max = limits.key_retention_max;
+        });
     let mut pools = FxHashMap::default();
     for p in &cfg.pools {
         let pc = p.to_pool_config(limits);

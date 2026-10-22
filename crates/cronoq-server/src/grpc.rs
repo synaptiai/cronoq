@@ -793,7 +793,12 @@ pub struct AdminService {
 pub async fn snapshot(app: &AppState) -> Result<pb::SnapshotResponse, Status> {
     let s = app.sched.snapshot().await.map_err(convert::error)?;
     let registry = app.registry.clone();
-    Ok(convert::snapshot(&s, &|p| registry.pool_worker_count(p)))
+    let mut r = convert::snapshot(&s, &|p| registry.pool_worker_count(p));
+    // Remote workers' stale reports are dropped before they reach the engine.
+    if let Some(t) = &mut r.totals {
+        t.stale_completions += registry.stale_reports();
+    }
+    Ok(r)
 }
 
 #[tonic::async_trait]

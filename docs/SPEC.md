@@ -31,7 +31,10 @@ is needed; *where* work runs is pluggable.
 ### Non-goals (v0.1)
 - Active-active multi-leader scheduling (we provide active-passive HA).
 - Label/constraint bin-packing (we provide pools + counted resources).
-- Effectively-once execution (we provide at-least-once with leases; idempotency keys come later).
+- Exactly-once execution of arbitrary code. We provide at-least-once with leases, plus what
+  effectively-once side effects need: attempt numbers that never repeat for a task (a fencing
+  token), lease ids unique across leaders, stale reports ignored and counted, and key
+  deduplication of finished tasks within a configurable window.
 - Being a workflow engine (no durable step state or replay of user code).
 
 ### Performance acceptance targets (CI-gated)
@@ -549,7 +552,7 @@ overrides.
    hardening before going public.
 
 ## 19. Deferred (post v0.1)
-Effectively-once (idempotent completion), multi-tenant weighted fairness,
+Multi-tenant weighted fairness,
 label/constraint matching, Go/TS SDKs, active-active sharding,
 Kubernetes operator.
 

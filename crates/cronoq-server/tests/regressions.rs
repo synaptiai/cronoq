@@ -1377,3 +1377,120 @@ async fn worker_refuses_tls_settings_on_plain_http() {
         "{err}"
     );
 }
+
+// Reports for leases a worker does not hold (late, duplicate, or invented) change nothing and
+// are counted.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_completions_are_ignored_and_counted() {
+    let s = TestServer::start("").await;
+    let mut w = raw_worker(&s, WORKER, register("default", 1))
+        .await
+        .unwrap();
+    let _ = w.inbound.message().await.unwrap();
+    s.wait_capacity(1).await;
+    let id = s
+        .tasks(CLIENT)
+        .await
+        .submit(submit(spec(b"x"), false))
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+    let l = next_lease(&mut w).await;
+    let complete = |lease| pb::WorkerMessage {
+        msg: Some(pb::worker_message::Msg::Complete(pb::Complete {
+            lease,
+            output: b"done".to_vec(),
+            content_type: String::new(),
+        })),
+    };
+    w.tx.send(complete(l.lease + 1000)).await.unwrap(); // never issued
+    w.tx.send(complete(l.lease)).await.unwrap();
+    w.tx.send(complete(l.lease)).await.unwrap(); // duplicate
+    let r = wait(&s, id).await;
+    assert_eq!(r.output.as_deref(), Some(&b"done"[..]));
+    for _ in 0..50 {
+        if s.snapshot().await["totals"]["stale_completions"] == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(s.snapshot().await["totals"]["stale_completions"], 2);
+    s.stop().await;
+}
+
+// Resubmitting the key of a finished task returns that task and its output, within
+// limits.key_retention_s; with no retention the key is free again.
+#[tokio::test(flavor = "multi_thread")]
+async fn finished_keys_deduplicate_within_key_retention() {
+    for (retention, expect_duplicate) in [("3600", true), ("0", false)] {
+        let s = TestServer::start(&format!("[limits]\nkey_retention_s = {retention}\n")).await;
+        let _w = spawn_worker(&s, 1, Arc::new(AtomicU32::new(0)));
+        s.wait_capacity(1).await;
+        let mut c = s.tasks(CLIENT).await;
+        let mut keyed = spec(b"first");
+        keyed.key = "once".into();
+        let first = c
+            .submit(submit(keyed.clone(), true))
+            .await
+            .unwrap()
+            .into_inner();
+        let first_out = first.result.unwrap().output;
+        keyed.payload = b"second".to_vec();
+        let again = c.submit(submit(keyed, true)).await.unwrap().into_inner();
+        assert_eq!(again.duplicate, expect_duplicate, "retention {retention}");
+        if expect_duplicate {
+            assert_eq!(again.id, first.id);
+            assert_eq!(again.result.unwrap().output, first_out);
+        } else {
+            assert_ne!(again.id, first.id);
+        }
+        s.stop().await;
+    }
+}
+
+// The dedupe window survives a restart: the store loads finished tasks as far back as
+// limits.key_retention_s, so a resubmitted key still returns the finished task and its output.
+#[tokio::test(flavor = "multi_thread")]
+async fn finished_keys_deduplicate_across_a_restart() {
+    let dir = std::env::temp_dir().join(format!("cronoq-dedupe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let extra = format!(
+        "[store]\nkind = \"sqlite\"\npath = \"{}\"\n[limits]\nkey_retention_s = 3600\n",
+        dir.join("state.db").display()
+    );
+    let mut keyed = spec(b"first");
+    keyed.key = "once".into();
+    let first = {
+        let s = TestServer::start(&extra).await;
+        let _w = spawn_worker(&s, 1, Arc::new(AtomicU32::new(0)));
+        s.wait_capacity(1).await;
+        let r = s
+            .tasks(CLIENT)
+            .await
+            .submit(submit(keyed.clone(), true))
+            .await
+            .unwrap()
+            .into_inner();
+        s.stop().await;
+        r
+    };
+    let s = TestServer::start(&extra).await;
+    // A worker, so a regression (a new task instead of the duplicate) fails fast.
+    let _w = spawn_worker(&s, 1, Arc::new(AtomicU32::new(0)));
+    s.wait_capacity(1).await;
+    keyed.payload = b"second".to_vec();
+    let again = s
+        .tasks(CLIENT)
+        .await
+        .submit(submit(keyed, true))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(again.duplicate);
+    assert_eq!(again.id, first.id);
+    assert_eq!(again.result.unwrap().output, first.result.unwrap().output);
+    s.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
