@@ -1656,6 +1656,19 @@ impl<P> Core<P> {
         Ok(())
     }
 
+    /// Whether live task `id` is an occurrence of schedule `name` in `pool`.
+    fn is_occurrence_of(&self, id: TaskId, pool: u16, name: &str) -> bool {
+        let Some(&k) = self.index.get(&id) else {
+            return false;
+        };
+        let e = self.entry(k);
+        e.pool == pool
+            && e.tags.as_ref().is_some_and(|t| {
+                t.iter()
+                    .any(|(k, v)| &**k == "cronoq.recurring" && &**v == name)
+            })
+    }
+
     /// Remove a recurring schedule. An occurrence already materialized still runs.
     pub fn remove_recurring(&mut self, now: Time, name: &str) -> bool {
         self.advance(now);
@@ -1771,10 +1784,16 @@ impl<P> Core<P> {
         let fits = self.pools[pool as usize].reservations.max_overlap(s, e)
             < self.pools[pool as usize].cfg.reservation_limit();
         let mut task = None;
-        if let Some(existing) = self.existing_key(spec.key.as_deref()) {
+        let existing = self.existing_key(spec.key.as_deref());
+        if let Some(id) = existing.filter(|id| self.is_occurrence_of(*id, pool, &name)) {
             // Already created (e.g. before a failover): the occurrence is that task.
-            task = Some(existing);
+            task = Some(id);
         } else if fits {
+            if existing.is_some() {
+                // Another task holds the key: run the occurrence without it rather than let that
+                // task stand in for the schedule.
+                spec.key = None;
+            }
             let id = self.alloc_id();
             let seq = self.alloc_seq();
             spec.tags.push(("cronoq.recurring".into(), name.clone()));

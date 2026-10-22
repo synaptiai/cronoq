@@ -448,3 +448,19 @@ async fn recurring_schedules_via_admin() {
     assert!(r.into_inner().removed);
     server.stop().await;
 }
+
+// Keys of the form `<prefix>@<UTC time>` belong to recurring occurrences; a client taking one in
+// advance could stand in for a scheduled run.
+#[tokio::test]
+async fn occurrence_shaped_keys_are_reserved() {
+    let server = TestServer::start("").await;
+    let mut c = server.tasks(CLIENT).await;
+    let mut squat = spec(b"x");
+    squat.key = "nightly@2026-10-23T03:00:00Z".into();
+    let e = c.submit(submit(squat, false)).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::InvalidArgument);
+    let mut ok = spec(b"x");
+    ok.key = "user@example.com".into();
+    assert!(c.submit(submit(ok, false)).await.is_ok());
+    server.stop().await;
+}

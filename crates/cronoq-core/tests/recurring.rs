@@ -135,6 +135,7 @@ fn keyed_occurrences_are_not_duplicated_after_recovery() {
     spec.template.key = Some("k".into());
     let existing = TaskSpec::new(Job::ok(1.0))
         .key("k@1970-01-01T00:01:00Z")
+        .tag("cronoq.recurring", "r")
         .fixed_start(FixedStart {
             at: t(60.0),
             tolerance: Duration::from_secs(1),
@@ -161,4 +162,37 @@ fn keyed_occurrences_are_not_duplicated_after_recovery() {
     s.run_until(t(61.5));
     assert_eq!(s.started.len(), 1);
     assert_eq!(s.started[0].id, TaskId(3));
+}
+
+// A task that is not the schedule's own occurrence (another pool, or untagged) cannot stand in
+// for an occurrence by taking its key first: the occurrence runs without the key.
+#[test]
+fn a_foreign_task_holding_the_key_does_not_replace_the_occurrence() {
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![
+            PoolConfig::fixed("default", 2),
+            PoolConfig::fixed("other", 1),
+        ],
+        ..Default::default()
+    });
+    let squatter = s.submit(
+        TaskSpec::new(Job::ok(1000.0))
+            .pool("other")
+            .key("q@1970-01-01T00:01:00Z"),
+    );
+    let mut spec = every_minute(Job::ok(1.0), OverlapPolicy::Queue);
+    spec.template.key = Some("q".into());
+    s.core.add_recurring(s.now, spec).unwrap();
+    s.run_until(t(125.0));
+    let runs: Vec<_> = s
+        .started
+        .iter()
+        .filter(|x| x.id != squatter)
+        .map(|x| x.at)
+        .collect();
+    assert_eq!(
+        runs,
+        vec![t(60.0), t(120.0)],
+        "occurrences ran despite the squatter"
+    );
 }

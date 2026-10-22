@@ -79,7 +79,7 @@ and tags are copied to every occurrence. Two options apply per occurrence:
 | Template option | Effect on each occurrence |
 |---|---|
 | Relative deadline (`Task::deadline_in`, Python `deadline_in=`, gRPC `deadline_in_s`) | The deadline is that long after the occurrence's start. |
-| Key (`Task::key`, `key=`, `key`) | A prefix: the occurrence's key is `<key>@<start in UTC, RFC 3339>`, for example `nightly-export@2026-10-22T06:30:00Z`. Look occurrences up by it; an occurrence whose key already exists (for example one created before a failover) is not created again. |
+| Key (`Task::key`, `key=`, `key`) | A prefix: the occurrence's key is `<key>@<start in UTC, RFC 3339>`, for example `nightly-export@2026-10-22T06:30:00Z`. Look occurrences up by it. An occurrence that already exists under its key (for example one created before a failover) is not created again; if a task that is not this schedule's occurrence holds the key, the occurrence runs without a key. The server refuses client keys of this form, so they cannot be taken in advance. |
 
 A template may **not** set an absolute deadline, a fixed start or dependencies: they describe a
 single task, so `add_recurring` rejects them (`Error::Config` in Rust, `SchedulerError` in

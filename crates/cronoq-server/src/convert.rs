@@ -190,11 +190,33 @@ pub fn spec_pool(spec: &pb::TaskSpec) -> &str {
     }
 }
 
+/// Whether `key` has the form of a recurring occurrence's key, `<prefix>@<UTC RFC 3339 time>`.
+pub fn is_occurrence_key(key: &str) -> bool {
+    let Some((_, ts)) = key.rsplit_once('@') else {
+        return false;
+    };
+    let b = ts.as_bytes();
+    b.len() == 20
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b'T',
+            13 | 16 => *c == b':',
+            19 => *c == b'Z',
+            _ => c.is_ascii_digit(),
+        })
+}
+
 /// Build a task from its wire form, enforcing `limits`.
 pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, Status> {
     check_str("kind", &spec.kind, limits.max_kind_len)?;
     check_str("pool", &spec.pool, 64)?;
     check_str("key", &spec.key, limits.max_key_len)?;
+    if is_occurrence_key(&spec.key) {
+        // Reserved, so a client cannot take a future occurrence's key in advance.
+        return Err(Status::invalid_argument(
+            "keys ending in '@<UTC time>' are reserved for recurring occurrences",
+        ));
+    }
     check_str("content_type", &spec.content_type, MAX_CONTENT_TYPE_LEN)?;
     if spec.tags.len() > limits.max_tags {
         return Err(Status::invalid_argument(format!(
