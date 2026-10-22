@@ -125,8 +125,8 @@ async fn database_files_are_private() {
 }
 
 #[tokio::test]
-async fn in_memory_and_empty_paths_are_refused() {
-    for p in [":memory:", ""] {
+async fn special_and_empty_paths_are_refused() {
+    for p in [":memory:", "", "file:x.db?nolock=1", "FILE:x.db"] {
         let r = SqliteStore::open_with(p, SqliteStoreConfig::default()).await;
         assert!(r.is_err(), "{p:?}");
     }

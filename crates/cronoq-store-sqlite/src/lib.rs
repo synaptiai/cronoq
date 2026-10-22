@@ -236,9 +236,17 @@ impl SqliteStore {
         cfg: SqliteStoreConfig,
     ) -> Result<SqliteStore, StoreError> {
         let path = path.as_ref();
-        if path.as_os_str().is_empty() || path.to_string_lossy().starts_with(':') {
+        // SQLite treats ":..." names and "file:" URIs specially (in-memory databases, options
+        // that turn off the locking fencing relies on); only plain file paths are accepted.
+        let text = path.to_string_lossy();
+        if text.is_empty()
+            || text.starts_with(':')
+            || text
+                .get(..5)
+                .is_some_and(|p| p.eq_ignore_ascii_case("file:"))
+        {
             return Err(StoreError::Other(format!(
-                "invalid SQLite path {path:?}: use a file on a local filesystem"
+                "invalid SQLite path {path:?}: use a plain file path on a local filesystem"
             )));
         }
         create_private(path)
