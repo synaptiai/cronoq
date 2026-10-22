@@ -34,7 +34,11 @@ pub fn layers(cfg: &GrpcWebConfig, loopback_only: bool) -> GrpcWebStack {
     let origins: Vec<HeaderValue> = cfg
         .allowed_origins
         .iter()
-        .map(|o| HeaderValue::from_str(o).expect("origins are validated with the configuration"))
+        // Browsers send origins in lower case; schemes and hosts are case-insensitive.
+        .map(|o| {
+            HeaderValue::from_str(&o.to_ascii_lowercase())
+                .expect("origins are validated with the configuration")
+        })
         .collect();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))

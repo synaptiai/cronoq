@@ -6,7 +6,8 @@ use common::*;
 use cronoq_proto::v1 as pb;
 use prost::Message;
 
-const WEB: &str = "[server.grpc_web]\nallowed_origins = [\"https://dash.example.com\"]\n";
+// Written in mixed case: browsers send origins in lower case.
+const WEB: &str = "[server.grpc_web]\nallowed_origins = [\"https://Dash.Example.com\"]\n";
 const ORIGIN: &str = "https://dash.example.com";
 
 /// A gRPC-Web reply: HTTP status, the message frames and the `grpc-status`.

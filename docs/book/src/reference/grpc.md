@@ -243,7 +243,9 @@ transport, over HTTP/1.1 or HTTP/2.
 - **HTTP/1.1** carries only gRPC-Web: a plain gRPC request over HTTP/1.1 gets `UNIMPLEMENTED`.
 - **Without credentials** (loopback-only mode), every request on the gRPC listener must name a
   loopback host (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`), or it gets
-  `PERMISSION_DENIED`, as on the HTTP API.
+  `PERMISSION_DENIED`, as on the HTTP API. With `--insecure-no-auth` this rule is off, as it is
+  for the HTTP API, so a page on a machine that can reach the server could call every service,
+  `Admin` included: do not enable gRPC-Web without credentials outside a trusted network.
 
 ## Status codes
 
