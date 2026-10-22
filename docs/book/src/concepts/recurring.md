@@ -34,7 +34,7 @@ rules:
 | Transition | Daily job (e.g. `0 30 2 * * *`) | Hourly job (`0 0 * * * *`) |
 |---|---|---|
 | Spring forward (a local hour is skipped) | A time inside the gap runs at the first valid time after it (02:30 → 03:00). | Runs every real hour. |
-| Fall back (a local hour repeats) | Runs once. | Does not repeat the hour: one run is left out, leaving a two-hour gap in UTC. |
+| Fall back (a local hour repeats) | Runs once. | Runs every real hour, including both occurrences of the repeated local hour. |
 
 Use UTC for schedules that must run at exact intervals.
 

@@ -471,9 +471,9 @@ fn dst_fall_back_daily_job_runs_once() {
 }
 
 #[test]
-fn dst_fall_back_hourly_job_skips_the_repeated_hour() {
-    // Documented croner behaviour: on fall-back an hourly schedule does not repeat the
-    // 01:00 hour (local), so there is a two-hour gap in UTC.
+fn dst_fall_back_hourly_job_runs_every_real_hour() {
+    // On fall-back 01:00 (local) occurs twice in New York, at 05:00 and 06:00 UTC. An hourly
+    // schedule runs in both, so there is no gap in UTC.
     let v = recurring_starts(
         "0 0 * * * *",
         "America/New_York",
@@ -485,6 +485,7 @@ fn dst_fall_back_hourly_job_skips_the_repeated_hour() {
         vec![
             "2026-11-01T04:00:00+00:00",
             "2026-11-01T05:00:00+00:00",
+            "2026-11-01T06:00:00+00:00",
             "2026-11-01T07:00:00+00:00",
         ],
     );
