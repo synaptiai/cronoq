@@ -116,3 +116,49 @@ fn invalid_weights_are_rejected() {
     };
     assert!(cfg.validate().unwrap_err().contains("tenant weights"));
 }
+
+#[test]
+fn deadline_tasks_keep_earliest_deadline_order() {
+    let mut s = fair_pool(&[]);
+    s.submit(TaskSpec::new(Job::ok(1.0)).tenant("other"));
+    // By fair order acme would run second; by deadline it runs after globex's three.
+    let mut want = Vec::new();
+    for d in [10.0, 11.0, 12.0] {
+        want.push(s.submit(TaskSpec::new(Job::ok(1.0)).tenant("globex").deadline(t(d))));
+    }
+    want.push(s.submit(TaskSpec::new(Job::ok(1.0)).tenant("acme").deadline(t(13.0))));
+    s.run_until(t(10.0));
+    let got: Vec<TaskId> = s.started[1..].iter().map(|x| x.id).collect();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn a_task_woken_from_a_resource_wait_keeps_its_place() {
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![
+            {
+                let mut p = PoolConfig::fixed("default", 1);
+                p.fairness = Some(Fairness::weights::<&str>([]));
+                p
+            },
+            PoolConfig::fixed("other", 1),
+        ],
+        resources: vec![ResourceConfig::semaphore("api", 1)],
+        ..Default::default()
+    });
+    // Another pool holds the resource until 5s.
+    s.submit(TaskSpec::new(Job::ok(5.0)).pool("other").resource("api", 1));
+    let woken = s.submit(
+        TaskSpec::new(Job::ok(1.0))
+            .tenant("acme")
+            .resource("api", 1),
+    );
+    for _ in 0..10 {
+        s.submit(TaskSpec::new(Job::ok(1.0)).tenant("globex"));
+        s.submit(TaskSpec::new(Job::ok(1.0)).tenant("acme"));
+    }
+    s.run_until(t(20.0));
+    // Its tag is older than everything still queued at 5s, so it runs as soon as the resource
+    // frees; a fresh tag would put it behind several globex tasks.
+    assert_eq!(s.start_of(woken), Some(t(5.0)));
+}
