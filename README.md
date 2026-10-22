@@ -133,9 +133,10 @@ await Worker("localhost:7070", "default", handle, slots=4,
              token=os.environ["CRONOQ_WORKER_TOKEN"]).run()
 ```
 
-Submit from anywhere:
+Submit from anywhere, with the `cronoq` command-line tool or plain HTTP:
 
 ```sh
+CRONOQ_TOKEN=$CRONOQ_CLIENT_TOKEN cronoq submit '{"hello": "world"}' --json --priority high --wait
 curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TOKEN" \
      -H 'content-type: application/json' \
      -d '{"payload": {"hello": "world"}, "priority": "high", "wait": true}'
@@ -222,6 +223,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`cronoq-store-sqlite`](crates/cronoq-store-sqlite) | Durable store in a local file, with standby processes and fencing |
 | [`cronoq-proto`](crates/cronoq-proto) | Protobuf definitions and generated gRPC code |
 | [`cronoq-server`](crates/cronoq-server) | gRPC/HTTP server, remote workers, Rust worker client |
+| [`cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
 | [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |
 
 ## Community

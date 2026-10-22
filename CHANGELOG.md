@@ -115,6 +115,15 @@ First public release.
   reconnect with backoff, TLS/mTLS and graceful drain.
 - `--check` to validate configuration, `--print-proto` to print the API.
 
+#### Command-line tool (`cronoq-cli`)
+
+- `cronoq` submits, inspects, cancels and waits for tasks, lists tasks, workers and schedules,
+  manages schedules, streams status events, and prints JSON for scripts with `-o json`.
+- `cronoq top` shows pools, workers, schedules and live tasks, refreshed every second; panes the
+  token's role cannot read say which role they need.
+- The token comes from `CRONOQ_TOKEN` or `--token-file`, never the command line; TLS options
+  are refused with an `http://` server.
+
 #### Python (`cronoq` on PyPI)
 
 - Asyncio-native bindings for the engine with Python payloads (never serialized), sync and
