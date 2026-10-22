@@ -135,7 +135,8 @@ run_worker(opts, |lease| async move {
 (`initial_backoff` 200 ms up to `max_backoff` 10 s), and when `shutdown` resolves drains running
 handlers for up to `drain_timeout` (30 s). It returns an error only for problems retrying cannot
 fix, such as a rejected token or an unknown pool. Use `identity: Some((cert_pem, key_pem))` for
-mTLS.
+mTLS. TLS settings need an `https://` endpoint: with `http://` the worker returns an error
+rather than connecting in plaintext.
 
 ## Any language over gRPC
 

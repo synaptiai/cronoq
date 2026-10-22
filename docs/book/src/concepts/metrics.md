@@ -30,7 +30,7 @@ cronoq reports two kinds of telemetry:
 
 Snapshots also include totals since start (`submitted`, `succeeded`, `failed`, `dead_lettered`,
 `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`,
-`recurring_conflicts`).
+`recurring_conflicts`, `recurring_invalid`).
 
 ## Reading the signals
 

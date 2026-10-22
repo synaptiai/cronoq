@@ -88,19 +88,21 @@ fn store_error(e: cronoq::StoreError) -> Status {
     convert::error(cronoq::Error::Store(e))
 }
 
-/// Check that `principal` may see the task `target` refers to. Unrestricted principals pass
-/// without a lookup; restricted ones get `NOT_FOUND` for tasks of other (or unknown) pools.
+/// Check that `principal` may see the task `target` refers to, and return the reference to act
+/// on. Unrestricted principals pass without a lookup; restricted ones get `NOT_FOUND` for tasks
+/// of other (or unknown) pools, and the id that was checked, so a key cannot resolve to a
+/// different task between the check and the action.
 pub async fn authorize_task(
     app: &AppState,
     principal: &Principal,
-    target: &TaskRef,
-) -> Result<(), Status> {
+    target: TaskRef,
+) -> Result<TaskRef, Status> {
     if principal.pools.is_none() {
-        return Ok(());
+        return Ok(target);
     }
-    let id = resolve_id(app, target).await?.ok_or_else(not_found)?;
+    let id = resolve_id(app, &target).await?.ok_or_else(not_found)?;
     match app.pool_of(id).await {
-        Some(pool) if principal.may_use_pool(&pool) => Ok(()),
+        Some(pool) if principal.may_use_pool(&pool) => Ok(TaskRef::Id(id)),
         _ => Err(not_found()),
     }
 }
@@ -252,8 +254,8 @@ fn record_submit(app: &AppState, id: TaskId, spec: &pb::TaskSpec) {
 
 /// For pool-restricted callers, refuse task keys and dependencies that belong to tasks of
 /// other pools: a duplicate key would otherwise hand back that task's id and result, and a
-/// dependency would expose its outcome. Keys defined in the same batch (`batch_keys`) and
-/// dependencies on keys that do not exist yet are allowed.
+/// dependency would expose its outcome. Keys the same batch introduces (`batch_keys`, which
+/// excludes keys of existing tasks) and dependencies on keys that do not exist yet are allowed.
 async fn check_cross_pool(
     app: &AppState,
     principal: &Principal,
@@ -357,12 +359,18 @@ pub async fn submit_batch(
             "at most {max} tasks per batch"
         )));
     }
-    let batch_keys: Vec<String> = specs
-        .iter()
-        .filter(|s| !s.key.is_empty())
-        .map(|s| s.key.clone())
-        .collect();
-    let batch_keys: Vec<&str> = batch_keys.iter().map(String::as_str).collect();
+    // Only keys the batch introduces count as batch-local: a key that already names a task
+    // (possibly of another pool) is checked like any other duplicate or dependency, before
+    // anything is submitted.
+    let mut batch_keys: Vec<&str> = Vec::new();
+    if principal.pools.is_some() {
+        for s in specs.iter().filter(|s| !s.key.is_empty()) {
+            let key = TaskRef::Key(s.key.as_str().into());
+            if resolve_id(app, &key).await?.is_none() {
+                batch_keys.push(&s.key);
+            }
+        }
+    }
     for spec in &specs {
         check_pool(principal, convert::spec_pool(spec))?;
         check_cross_pool(app, principal, spec, &batch_keys).await?;
@@ -608,7 +616,7 @@ impl pb::tasks_server::Tasks for TasksService {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
         let target = convert::task_ref(req.into_inner().task, &app.limits)?;
-        authorize_task(app, &p, &target).await?;
+        let target = authorize_task(app, &p, target).await?;
         Ok(Response::new(pb::CancelResponse {
             cancelled: cancel(app, target).await?,
         }))
@@ -618,7 +626,7 @@ impl pb::tasks_server::Tasks for TasksService {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
         let target = convert::task_ref(req.into_inner().task, &app.limits)?;
-        authorize_task(app, &p, &target).await?;
+        let target = authorize_task(app, &p, target).await?;
         Ok(Response::new(task_info(app, target).await?))
     }
 
@@ -631,7 +639,7 @@ impl pb::tasks_server::Tasks for TasksService {
         let r = req.into_inner();
         let target = convert::task_ref(r.task, &app.limits)?;
         let timeout = wait_bound(r.timeout_s, &app.limits)?;
-        authorize_task(app, &p, &target).await?;
+        let target = authorize_task(app, &p, target).await?;
         Ok(Response::new(
             wait_result(app, target, timeout, &self.shared.stop).await?,
         ))

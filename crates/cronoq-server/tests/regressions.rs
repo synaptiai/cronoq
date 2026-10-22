@@ -1277,3 +1277,103 @@ async fn pool_scoped_tokens_cannot_reach_other_pools_through_keys_or_deps() {
     assert_eq!(r.tasks.len(), 2);
     s.stop().await;
 }
+
+// A batch member reusing another pool's key used to make that key count as batch-local, so a
+// sibling's dependency on it skipped the pool check and was committed before the duplicate was
+// noticed, exposing the other task's outcome.
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_cannot_bind_to_another_pools_key() {
+    let s = TestServer::start(SCOPED).await;
+    let mut admin = s.tasks(ADMIN).await;
+    let mut in_b = spec(b"x");
+    in_b.pool = "b".into();
+    in_b.key = "kb".into();
+    admin.submit(submit(in_b, false)).await.unwrap();
+
+    let mut a = s.tasks(CLIENT_A).await;
+    let mut probe = spec(b"probe");
+    probe.pool = "a".into();
+    probe.key = "probe".into();
+    probe.deps.push(pb::Dep {
+        target: by_key("kb"),
+        cond: pb::EdgeCond::OnSuccess as i32,
+    });
+    let mut reuse = spec(b"reuse");
+    reuse.pool = "a".into();
+    reuse.key = "kb".into();
+    for tasks in [vec![probe.clone(), reuse.clone()], vec![reuse, probe]] {
+        let e = a
+            .submit_batch(pb::SubmitBatchRequest { tasks })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e.code(), tonic::Code::AlreadyExists | tonic::Code::NotFound),
+            "{e:?}"
+        );
+    }
+    let probe = a
+        .get(pb::GetRequest {
+            task: by_key("probe"),
+        })
+        .await;
+    assert_eq!(probe.unwrap_err().code(), tonic::Code::NotFound);
+    s.stop().await;
+}
+
+// Without auth, the HTTP API accepted any Host, so a web page could rebind its own name to
+// 127.0.0.1 and use the API same-origin.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_auth_http_requires_a_loopback_host() {
+    let s = TestServer::start_open("").await;
+    let port = s.bound.http.port();
+    let http = reqwest::Client::new();
+    for (host, want) in [
+        (format!("evil.example:{port}"), 403),
+        (format!("127.0.0.1.evil.example:{port}"), 403),
+        (format!("localhost:{port}"), 404),
+        (format!("app.localhost:{port}"), 404),
+        (format!("127.0.0.1:{port}"), 404),
+        (format!("[::1]:{port}"), 404),
+    ] {
+        let r = http
+            .get(s.http("/v1/tasks/999999"))
+            .header("host", &host)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), want, "{host}");
+    }
+    s.stop().await;
+
+    // With auth the Host is not restricted (tokens already stop a rebinding page).
+    let s = TestServer::start("").await;
+    let r = http
+        .get(s.http("/v1/tasks/999999"))
+        .header("host", "cronoq.internal")
+        .bearer_auth(CLIENT)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    s.stop().await;
+}
+
+// TLS settings on an http:// endpoint were ignored: the worker connected in plaintext.
+#[tokio::test]
+async fn worker_refuses_tls_settings_on_plain_http() {
+    let opts = WorkerOptions::new("http://127.0.0.1:1", "default")
+        .tls(cronoq_server::worker::WorkerTls::default());
+    let run = run_worker(
+        opts,
+        |_l| async { Ok::<Bytes, TaskError>(Bytes::new()) },
+        std::future::pending::<()>(),
+    );
+    let err = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("the worker must refuse the options instead of connecting")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("need an https:// endpoint"),
+        "{err}"
+    );
+}

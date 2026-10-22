@@ -274,3 +274,94 @@ fn huge_timeout_saturates() {
     s.run_until(t(100.0));
     assert_eq!(s.status(id), Some(TaskStatus::Running));
 }
+
+// --- Recurring templates are checked against the configuration -------------------------------
+// An unknown resource in a template used to panic in `insert` when the occurrence fired, and the
+// persisted schedule made every restart panic again.
+
+fn gpu_sim() -> Sim {
+    Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 2)],
+        resources: vec![ResourceConfig::semaphore("gpu", 1)],
+        ..Default::default()
+    })
+}
+
+fn every_minute(template: TaskSpec<Job>) -> RecurringSpec<Job> {
+    RecurringSpec {
+        name: "r".into(),
+        cron: "0 * * * * *".into(),
+        tz: None,
+        template,
+        overlap: OverlapPolicy::Allow,
+        tolerance: Duration::from_secs(1),
+        on_miss: MissPolicy::Skip,
+    }
+}
+
+#[test]
+fn recurring_template_with_unknown_resource_is_rejected() {
+    let mut s = gpu_sim();
+    let spec = every_minute(TaskSpec::new(Job::ok(1.0)).resource("missing", 1));
+    let err = s.core.add_recurring(s.now, spec).unwrap_err();
+    assert!(err.contains("unknown resource 'missing'"), "{err}");
+    s.run_until(t(130.0));
+    assert!(s.started.is_empty());
+}
+
+#[test]
+fn recurring_template_over_capacity_is_rejected() {
+    let mut s = gpu_sim();
+    let spec = every_minute(TaskSpec::new(Job::ok(1.0)).resource("gpu", 2));
+    let err = s.core.add_recurring(s.now, spec).unwrap_err();
+    assert!(err.contains("exceeds capacity"), "{err}");
+}
+
+#[test]
+fn recurring_template_with_zero_attempts_is_rejected() {
+    let mut s = gpu_sim();
+    let template = TaskSpec::new(Job::ok(1.0)).retry(RetryPolicy {
+        max_attempts: 0,
+        ..Default::default()
+    });
+    assert!(s.core.add_recurring(s.now, every_minute(template)).is_err());
+}
+
+#[test]
+fn recovered_schedule_with_removed_resource_is_not_armed() {
+    let mut s = gpu_sim();
+    let rec = Recovered {
+        tasks: vec![],
+        terminal: vec![],
+        recurring: vec![(
+            every_minute(TaskSpec::new(Job::ok(1.0)).resource("removed", 1)),
+            None,
+        )],
+        next_id: 1,
+    };
+    s.core.recover(s.now, rec);
+    s.run_until(t(130.0));
+    assert!(s.started.is_empty());
+    assert_eq!(s.core.totals().recurring_invalid, 1);
+    assert!(s.core.recurring_names().is_empty());
+}
+
+#[test]
+fn recovered_task_over_lowered_capacity_fails_instead_of_blocking() {
+    let mut s = gpu_sim();
+    let rec = Recovered {
+        tasks: vec![RecoveredTask {
+            id: TaskId(1),
+            seq: 0,
+            arrival: Time::ZERO,
+            spec: TaskSpec::new(Job::ok(1.0)).resource("gpu", 2),
+            attempt: 0,
+        }],
+        terminal: vec![],
+        recurring: vec![],
+        next_id: 2,
+    };
+    s.core.recover(s.now, rec);
+    s.drain();
+    assert_eq!(s.status(TaskId(1)), Some(TaskStatus::Failed));
+}

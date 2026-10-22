@@ -7,11 +7,18 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use cronoq::Store;
-use cronoq_store_postgres::PgStore;
+use cronoq_store_postgres::{PgStore, PgStoreConfig};
 
 /// Connect (applying migrations) and return the store both as a trait object and concretely.
-pub async fn open(url: &str) -> anyhow::Result<(Arc<dyn Store<Bytes, Bytes>>, PgStore)> {
-    let pg = PgStore::connect(url)
+pub async fn open(
+    url: &str,
+    schema: Option<&str>,
+) -> anyhow::Result<(Arc<dyn Store<Bytes, Bytes>>, PgStore)> {
+    let mut cfg = PgStoreConfig::default();
+    if let Some(s) = schema {
+        cfg.schema = s.into();
+    }
+    let pg = PgStore::connect_with(url, cfg)
         .await
         .map_err(|e| anyhow::anyhow!("postgres: {e}"))?;
     Ok((Arc::new(pg.clone()), pg))

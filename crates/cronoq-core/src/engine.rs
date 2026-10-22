@@ -11,6 +11,11 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// Maps and sets keyed by caller-supplied strings (task keys, kinds, schedule names) use std's
+/// randomly seeded SipHash: FxHash is unseeded, so crafted keys could all collide.
+type StrMap<V> = std::collections::HashMap<Arc<str>, V>;
+type StrSet = std::collections::HashSet<Arc<str>>;
+
 use crate::autoscale::{AutoscaleState, Signals};
 use crate::config::{CoreConfig, OverflowPolicy, PoolConfig, ResourceKind, UnknownDependency};
 use crate::io::*;
@@ -245,6 +250,9 @@ pub struct Totals {
     pub lease_expiries: u64,
     /// Recurring occurrences not created because the reservation limit was reached.
     pub recurring_conflicts: u64,
+    /// Recovered recurring schedules not armed because the configuration no longer supports
+    /// their template (a removed pool or resource).
+    pub recurring_invalid: u64,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -261,16 +269,16 @@ pub struct Core<P> {
     slots: Vec<Slot<P>>,
     free_slots: Vec<u32>,
     index: FxHashMap<TaskId, Key>,
-    keys: FxHashMap<Arc<str>, TaskId>,
-    awaits: FxHashMap<Arc<str>, Vec<(TaskId, EdgeCond)>>,
+    keys: StrMap<TaskId>,
+    awaits: StrMap<Vec<(TaskId, EdgeCond)>>,
     retained: FxHashMap<TaskId, (TaskStatus, Time)>,
-    retained_keys: FxHashMap<Arc<str>, TaskId>,
+    retained_keys: StrMap<TaskId>,
     retention_q: VecDeque<(Time, TaskId, Option<Arc<str>>)>,
     leases: FxHashMap<LeaseId, Lease>,
     timers: BinaryHeap<Reverse<(Time, u64, Timer)>>,
     timer_seq: u64,
     kinds: Vec<Arc<str>>,
-    kind_index: FxHashMap<Arc<str>, u32>,
+    kind_index: StrMap<u32>,
     dur: FxHashMap<(u16, u32), DurStats>,
     recurring: BTreeMap<Arc<str>, Recurring<P>>,
     actions: VecDeque<Action<P>>,
@@ -287,10 +295,10 @@ pub struct Core<P> {
     totals: Totals,
     empty_tags: Tags,
     /// Keys of tasks being recovered (only set while `recover` runs).
-    recovering_keys: Option<FxHashSet<Arc<str>>>,
+    recovering_keys: Option<StrSet>,
     /// Overlap guard and materialization state of removed recurring schedules, so re-adding
     /// one does not duplicate an occurrence that already exists.
-    recurring_history: FxHashMap<Arc<str>, (Option<TaskId>, Option<Time>)>,
+    recurring_history: StrMap<(Option<TaskId>, Option<Time>)>,
     /// Whether time-based accounting has been anchored to the first observed `now`.
     started: bool,
     /// Unknown keys each awaiting task registered for, so they can be cleaned up when it ends.
@@ -389,16 +397,16 @@ impl<P> Core<P> {
             slots: Vec::new(),
             free_slots: Vec::new(),
             index: FxHashMap::default(),
-            keys: FxHashMap::default(),
-            awaits: FxHashMap::default(),
+            keys: StrMap::default(),
+            awaits: StrMap::default(),
             retained: FxHashMap::default(),
-            retained_keys: FxHashMap::default(),
+            retained_keys: StrMap::default(),
             retention_q: VecDeque::new(),
             leases: FxHashMap::default(),
             timers,
             timer_seq,
             kinds: Vec::new(),
-            kind_index: FxHashMap::default(),
+            kind_index: StrMap::default(),
             dur: FxHashMap::default(),
             recurring: BTreeMap::new(),
             actions: VecDeque::new(),
@@ -413,7 +421,7 @@ impl<P> Core<P> {
             totals: Totals::default(),
             empty_tags: Arc::from(Vec::new()),
             recovering_keys: None,
-            recurring_history: FxHashMap::default(),
+            recurring_history: StrMap::default(),
             started: false,
             awaited_by: FxHashMap::default(),
         }
@@ -500,7 +508,7 @@ impl<P> Core<P> {
                 duplicate: true,
             });
         }
-        let pool = match self.validate(&spec, &FxHashSet::default()) {
+        let pool = match self.validate(&spec, &StrSet::default()) {
             Ok(p) => p,
             Err(e) => return Err((e, spec)),
         };
@@ -541,7 +549,7 @@ impl<P> Core<P> {
     ) -> Result<Vec<Submitted>, (usize, SubmitError)> {
         self.advance(now);
         // Keys defined in the batch.
-        let mut batch_keys: FxHashMap<Arc<str>, usize> = FxHashMap::default();
+        let mut batch_keys: StrMap<usize> = StrMap::default();
         for (i, s) in specs.iter().enumerate() {
             if let Some(k) = &s.key
                 && self.existing_key(Some(k)).is_none()
@@ -550,7 +558,7 @@ impl<P> Core<P> {
                 return Err((i, SubmitError::DuplicateKeyInBatch(k.clone())));
             }
         }
-        let key_set: FxHashSet<Arc<str>> = batch_keys.keys().cloned().collect();
+        let key_set: StrSet = batch_keys.keys().cloned().collect();
         let mut pools = Vec::with_capacity(specs.len());
         for (i, s) in specs.iter().enumerate() {
             if self.existing_key(s.key.as_deref()).is_some() {
@@ -669,7 +677,7 @@ impl<P> Core<P> {
         &self,
         specs: &[TaskSpec<P>],
         pools: &[u16],
-        batch_keys: &FxHashMap<Arc<str>, usize>,
+        batch_keys: &StrMap<usize>,
     ) -> Option<usize> {
         #[derive(Copy, Clone, PartialEq, Eq, Hash)]
         enum N {
@@ -788,11 +796,15 @@ impl<P> Core<P> {
     }
 
     /// Static validation; returns the pool index.
-    fn validate(
-        &self,
-        spec: &TaskSpec<P>,
-        batch_keys: &FxHashSet<Arc<str>>,
-    ) -> Result<u16, SubmitError> {
+    fn validate(&self, spec: &TaskSpec<P>, batch_keys: &StrSet) -> Result<u16, SubmitError> {
+        let pool = self.check_config(spec)?;
+        self.check_deps(spec, pool, batch_keys)?;
+        Ok(pool)
+    }
+
+    /// The checks that depend only on the configuration (pool, resources, retry policy);
+    /// returns the pool index. `insert` relies on them, so recurring templates pass them too.
+    fn check_config(&self, spec: &TaskSpec<P>) -> Result<u16, SubmitError> {
         let pool = *self
             .pool_index
             .get(&spec.pool)
@@ -814,6 +826,15 @@ impl<P> Core<P> {
         {
             return Err(SubmitError::Invalid("retry.max_attempts must be >= 1"));
         }
+        Ok(pool)
+    }
+
+    fn check_deps(
+        &self,
+        spec: &TaskSpec<P>,
+        pool: u16,
+        batch_keys: &StrSet,
+    ) -> Result<(), SubmitError> {
         let await_ok = matches!(
             self.pools[pool as usize].cfg.unknown_dependency,
             UnknownDependency::Await { .. }
@@ -851,7 +872,7 @@ impl<P> Core<P> {
         {
             return Err(SubmitError::Cycle);
         }
-        Ok(pool)
+        Ok(())
     }
 
     fn reaches_any(
@@ -1582,9 +1603,8 @@ impl<P> Core<P> {
             Some(t) => t.parse().map_err(|_| format!("unknown time zone '{t}'"))?,
             None => chrono_tz::UTC,
         };
-        if !self.pool_index.contains_key(&spec.template.pool) {
-            return Err(format!("unknown pool '{}'", spec.template.pool));
-        }
+        self.check_config(&spec.template)
+            .map_err(|e| format!("invalid template: {e}"))?;
         if self.cfg.persist {
             self.actions
                 .push_back(Action::Persist(Box::new(Mutation::RecurringUpsert {
@@ -1766,15 +1786,19 @@ impl<P> Core<P> {
             self.next_id = self.next_id.max(t.id.0 + 1);
             self.next_seq = self.next_seq.max(t.seq + 1);
             let pool = self.pool_index.get(&t.spec.pool).copied();
-            let missing = match pool {
-                None => Some(format!("pool '{}' no longer exists", t.spec.pool)),
-                Some(_) => t
-                    .spec
-                    .resources
-                    .iter()
-                    .find(|(n, _)| !self.resource_index.contains_key(n))
-                    .map(|(n, _)| format!("resource '{n}' no longer exists")),
-            };
+            let missing =
+                match pool {
+                    None => Some(format!("pool '{}' no longer exists", t.spec.pool)),
+                    Some(_) => t.spec.resources.iter().find_map(|(n, a)| {
+                        match self.resource_index.get(n) {
+                            None => Some(format!("resource '{n}' no longer exists")),
+                            Some(&r) if *a as f64 > self.resources[r as usize].capacity => Some(
+                                format!("resource '{n}' no longer has capacity for this task"),
+                            ),
+                            Some(_) => None,
+                        }
+                    }),
+                };
             if let Some(reason) = missing {
                 // Close it out durably so its key is released and it is not recovered again.
                 self.totals.failed += 1;
@@ -1803,7 +1827,7 @@ impl<P> Core<P> {
         }
         self.recovering_keys = None;
         // The latest live occurrence of each schedule restores its overlap guard.
-        let mut latest: FxHashMap<Arc<str>, (TaskId, Time)> = FxHashMap::default();
+        let mut latest: StrMap<(TaskId, Time)> = StrMap::default();
         for k in self.index.values() {
             let e = self.entry(*k);
             let (Some(tags), Some(f)) = (&e.tags, &e.fixed) else {
@@ -1821,7 +1845,11 @@ impl<P> Core<P> {
             if let Some(&(id, at)) = latest.get(&name) {
                 self.recurring_history.insert(name, (Some(id), Some(at)));
             }
-            let _ = self.add_recurring_inner(now, spec, next);
+            // A schedule the configuration no longer supports (removed pool or resource) is not
+            // armed; it stays stored and comes back once the configuration supports it again.
+            if self.add_recurring_inner(now, spec, next).is_err() {
+                self.totals.recurring_invalid += 1;
+            }
         }
         // Timers already in the past (missed fixed starts, expired awaits) apply before
         // anything is dispatched.

@@ -1091,6 +1091,7 @@ impl From<cronoq::Snapshot> for Snapshot {
             ("timeouts", t.timeouts),
             ("lease_expiries", t.lease_expiries),
             ("recurring_conflicts", t.recurring_conflicts),
+            ("recurring_invalid", t.recurring_invalid),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))

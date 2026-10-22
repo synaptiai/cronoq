@@ -59,6 +59,7 @@ async fn open_store(cfg: &StoreConfig) -> anyhow::Result<OpenedStore> {
         StoreConfig::Postgres {
             url: inline,
             url_env,
+            schema,
             ..
         } => {
             let url = match (inline, url_env) {
@@ -71,7 +72,7 @@ async fn open_store(cfg: &StoreConfig) -> anyhow::Result<OpenedStore> {
                 }
             };
             crate::pg::warn_insecure_url(&url, inline.is_some());
-            let (store, pg) = crate::pg::open(&url).await?;
+            let (store, pg) = crate::pg::open(&url, schema.as_deref()).await?;
             Ok((store, Some(pg)))
         }
     }
@@ -186,6 +187,7 @@ pub async fn run(
     };
 
     let shared = Arc::new(Shared {
+        loopback_hosts_only: !auth.enabled() && !cfg.server.insecure_no_auth,
         auth,
         limits: limits.clone(),
         ready: Arc::new(AtomicBool::new(false)),

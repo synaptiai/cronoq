@@ -72,7 +72,8 @@ pub struct WorkerOptions {
     pub token: Option<String>,
     /// Name shown in server logs.
     pub name: String,
-    /// TLS settings (used for `https://` endpoints).
+    /// TLS settings; they need an `https://` endpoint (an `https://` endpoint without them uses
+    /// the system roots).
     pub tls: Option<WorkerTls>,
     /// Reconnect after the connection drops or the server steps down (default `true`).
     pub reconnect: bool,
@@ -267,7 +268,11 @@ where
 {
     let endpoint = endpoint(&opts)?;
     let auth: Option<MetadataValue<_>> = match &opts.token {
-        Some(t) => Some(format!("Bearer {t}").parse()?),
+        Some(t) => {
+            let mut v: MetadataValue<_> = format!("Bearer {t}").parse()?;
+            v.set_sensitive(true);
+            Some(v)
+        }
         None => None,
     };
     let handler = Arc::new(handler);
@@ -341,7 +346,16 @@ fn endpoint(opts: &WorkerOptions) -> anyhow::Result<Endpoint> {
         .keep_alive_timeout(Duration::from_secs(20))
         .keep_alive_while_idle(true);
     let https = opts.endpoint.starts_with("https://");
-    if https || opts.tls.is_some() {
+    // tonic only applies TLS to https:// endpoints; anything else would silently be plaintext.
+    anyhow::ensure!(
+        https || opts.tls.is_none(),
+        "worker TLS settings need an https:// endpoint, not '{}'",
+        opts.endpoint
+    );
+    if !https && opts.token.is_some() && !is_loopback_endpoint(&opts.endpoint) {
+        tracing::warn!(endpoint = %opts.endpoint, "the worker token is sent over plain http; use https outside a trusted network");
+    }
+    if https {
         let tls = opts.tls.clone().unwrap_or_default();
         let mut cfg = ClientTlsConfig::new();
         cfg = match &tls.ca_pem {
@@ -357,6 +371,19 @@ fn endpoint(opts: &WorkerOptions) -> anyhow::Result<Endpoint> {
         ep = ep.tls_config(cfg)?;
     }
     Ok(ep)
+}
+
+fn is_loopback_endpoint(endpoint: &str) -> bool {
+    let rest = endpoint.split_once("://").map_or(endpoint, |(_, r)| r);
+    let host = rest.split(['/', '?']).next().unwrap_or("");
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[allow(clippy::too_many_arguments)]
