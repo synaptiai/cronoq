@@ -63,6 +63,9 @@ First public release.
 - Executors from closures or the `Executor` trait, with cancellation tokens, heartbeats and
   `TaskContext::for_test` for unit tests. Executor panics are isolated.
 - Pluggable scalers (in-process slots, external) and stores.
+- Listing: `Scheduler::list_tasks` pages through live tasks by pool and status,
+  `Scheduler::list_recurring` shows schedules with their next occurrence, and durable stores
+  list finished tasks (`StoreQueries::list_finished`; `TaskRecord` carries the tenant).
 - Durable acknowledgements: with a persistent store, submissions, cancellations and schedule
   changes return only after they are committed, and work is dispatched only once durable.
 - Store error handling: transient outages are ridden out for up to `max_store_outage`
