@@ -400,7 +400,18 @@ with lazy invalidation.
     async fn commit(&self, epoch: Epoch, batch: &[Mutation]) -> Result<()>; // fenced
     async fn recover(&self) -> Result<RecoveredState<Bytes>>;
 }
+// What a server needs beyond the scheduler's use: lookups, pruning, leadership state.
+#[async_trait] pub trait StoreQueries<O>: Send + Sync {
+    async fn get_task(&self, target: &TaskRef) -> Result<Option<TaskRecord<O>>>;
+    async fn prune(&self, older_than: Duration) -> Result<u64>;
+    fn is_leader(&self) -> bool;
+    async fn leadership_lost(&self);
+}
 ```
+Every durable store passes one shared conformance suite (`cronoq-store-tests`): round trips of
+every mutation and field, time rebasing, fencing and handover, key reuse within a batch,
+dependencies on pruned parents, missed starts after restart, batching-independent messages,
+output loading, id high-water marks after pruning, and restart without rerunning finished work.
 **Postgres schema** (sqlx migrations): `tasks` (spec, status, attempt, timestamps, result
 ref), `deps`, `crons`, `leader(epoch)`.
 - **Leader election**: `pg_try_advisory_lock` on a dedicated session; on success,

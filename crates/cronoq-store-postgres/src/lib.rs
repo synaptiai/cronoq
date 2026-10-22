@@ -52,7 +52,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use cronoq::{Store, StoreError, TimeBase};
+use cronoq::{Store, StoreError, StoreQueries, TimeBase};
 use cronoq_core::{
     Mutation, Priority, Recovered, RecoveredTask, RecoveredTerminal, TaskId, TaskRef, TaskSpec,
     TaskStatus,
@@ -122,29 +122,7 @@ impl Default for PgStoreConfig {
 }
 
 /// Persisted view of a task, for lookups by id or key.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TaskRecord {
-    /// Task id.
-    pub id: TaskId,
-    /// Deduplication key, if any.
-    pub key: Option<String>,
-    /// Pool the task runs in.
-    pub pool: String,
-    /// Task kind.
-    pub kind: String,
-    /// Priority.
-    pub priority: Priority,
-    /// `None` while queued: the store does not track blocked/scheduled/ready separately.
-    pub status: Option<TaskStatus>,
-    /// Number of attempts started.
-    pub attempt: u32,
-    /// Last message recorded for the task (e.g. the latest error).
-    pub message: Option<String>,
-    /// Output, once the task succeeded.
-    pub output: Option<Bytes>,
-    /// Time of the last recorded transition.
-    pub updated: SystemTime,
-}
+pub type TaskRecord = cronoq::TaskRecord<Bytes>;
 
 struct Leader {
     epoch: u16,
@@ -774,6 +752,22 @@ fn terminal_from(base: TimeBase, r: &sqlx::postgres::PgRow) -> Option<RecoveredT
         status: TaskStatus::from_name(&status)?,
         at: from_unix(base, r.get("updated_unix_ns")),
     })
+}
+
+#[async_trait]
+impl StoreQueries<Bytes> for PgStore {
+    async fn get_task(&self, target: &TaskRef) -> Result<Option<TaskRecord>, StoreError> {
+        PgStore::get_task(self, target).await
+    }
+    async fn prune(&self, older_than: Duration) -> Result<u64, StoreError> {
+        PgStore::prune(self, older_than).await
+    }
+    fn is_leader(&self) -> bool {
+        PgStore::is_leader(self)
+    }
+    async fn leadership_lost(&self) {
+        PgStore::leadership_lost(self).await
+    }
 }
 
 #[async_trait]

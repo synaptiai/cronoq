@@ -685,11 +685,23 @@ dependencies = [
  "bytes",
  "cronoq",
  "cronoq-core",
+ "cronoq-store-tests",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cronoq-store-tests"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "cronoq",
+ "cronoq-core",
+ "tokio",
 ]
 
 [[package]]

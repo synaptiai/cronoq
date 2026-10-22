@@ -72,12 +72,8 @@ async fn resolve_id(app: &AppState, target: &TaskRef) -> Result<Option<TaskId>, 
             if let Some(id) = app.info.id_for_key(k) {
                 return Ok(Some(TaskId(id)));
             }
-            match &app.pg {
-                Some(pg) => Ok(pg
-                    .get_task(target)
-                    .await
-                    .map_err(store_error)?
-                    .map(|r| r.id)),
+            match &app.queries {
+                Some(q) => Ok(q.get_task(target).await.map_err(store_error)?.map(|r| r.id)),
                 None => Ok(None),
             }
         }
@@ -131,8 +127,10 @@ async fn finished_result(
     app: &AppState,
     target: &TaskRef,
 ) -> Result<Option<pb::TaskResult>, Status> {
-    let Some(pg) = &app.pg else { return Ok(None) };
-    let Some(r) = pg.get_task(target).await.map_err(store_error)? else {
+    let Some(q) = &app.queries else {
+        return Ok(None);
+    };
+    let Some(r) = q.get_task(target).await.map_err(store_error)? else {
         return Ok(None);
     };
     let Some(status) = r.status.filter(|s| s.is_terminal()) else {
@@ -417,8 +415,8 @@ pub async fn task_info(app: &AppState, target: TaskRef) -> Result<pb::TaskInfo, 
         .await
         .map_err(convert::error)?;
     let meta = app.info.get(id.0);
-    let rec = match (&app.pg, live.is_some() && meta.is_some()) {
-        (Some(pg), false) => pg.get_task(&TaskRef::Id(id)).await.map_err(store_error)?,
+    let rec = match (&app.queries, live.is_some() && meta.is_some()) {
+        (Some(q), false) => q.get_task(&TaskRef::Id(id)).await.map_err(store_error)?,
         _ => None,
     };
     if live.is_none() && meta.as_ref().and_then(|m| m.status).is_none() && rec.is_none() {

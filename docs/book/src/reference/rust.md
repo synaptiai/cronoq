@@ -170,7 +170,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `PgStore::connect(url)` / `connect_with(url, PgStoreConfig)` | Connect and migrate. |
 | `PgStoreConfig` | `schema` (default `public`), `retention`, `lock_poll`, `keepalive`, `session_timeout`, `commit_timeout`, `max_connections`. |
 | `migrate()` | Apply pending schema migrations (versioned in `cronoq_schema_version`). |
-| `get_task(target)` | Read a stored task (`TaskRecord`). |
+| `get_task(target)` | Read a stored task (`TaskRecord`). Also available through the `cronoq::StoreQueries` trait, with `prune`, `is_leader` and `leadership_lost`. |
 | `prune(older_than)` | Delete finished tasks older than the given age. |
 | `is_leader()`, `epoch()`, `leadership_lost().await`, `release_leadership().await` | Leadership state. |
 

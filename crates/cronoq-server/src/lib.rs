@@ -24,6 +24,7 @@ pub mod remote;
 pub mod scaler;
 pub mod server;
 pub mod state;
+mod store;
 pub mod worker;
 
 pub use config::Config;

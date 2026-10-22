@@ -72,7 +72,7 @@ pub struct AppState {
     /// Request limits.
     pub limits: LimitsConfig,
     /// Durable store, for outputs and details no longer cached.
-    pub pg: Option<cronoq_store_postgres::PgStore>,
+    pub queries: Option<Arc<dyn cronoq::StoreQueries<Bytes>>>,
 }
 
 impl AppState {
@@ -81,8 +81,8 @@ impl AppState {
         if let Some(o) = self.outputs.get(id) {
             return Some(o);
         }
-        let pg = self.pg.as_ref()?;
-        pg.get_task(&cronoq::TaskRef::Id(id))
+        let q = self.queries.as_ref()?;
+        q.get_task(&cronoq::TaskRef::Id(id))
             .await
             .ok()
             .flatten()
@@ -94,8 +94,8 @@ impl AppState {
         if let Some(m) = self.info.get(id.0) {
             return Some(m.pool);
         }
-        let pg = self.pg.as_ref()?;
-        pg.get_task(&cronoq::TaskRef::Id(id))
+        let q = self.queries.as_ref()?;
+        q.get_task(&cronoq::TaskRef::Id(id))
             .await
             .ok()
             .flatten()

@@ -1,0 +1,18 @@
+[package]
+name = "cronoq-store-tests"
+description = "Shared conformance tests for cronoq stores"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+cronoq = { path = "../cronoq", default-features = false }
+cronoq-core.workspace = true
+async-trait = "0.1"
+bytes = "1"
+tokio = { version = "1.47", features = ["full"] }
