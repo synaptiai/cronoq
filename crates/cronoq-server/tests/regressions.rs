@@ -823,12 +823,13 @@ async fn http_authenticates_before_reading_the_body() {
     if let Ok(r) = r {
         assert_eq!(r.status(), 401);
     }
-    // Authenticated but too large.
+    // Authenticated but too large. The body is only slightly over the limit, so the client has
+    // sent all of it before the server answers and always reads the 413.
     let r = http
         .post(s.http("/v1/tasks"))
         .bearer_auth(CLIENT)
         .header("content-type", "application/json")
-        .body(vec![b' '; 1 << 20])
+        .body(vec![b' '; 65536 + 4096])
         .send()
         .await
         .unwrap();
