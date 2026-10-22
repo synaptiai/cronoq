@@ -1,0 +1,33 @@
+[package]
+name = "cronoq-cli"
+description = "Command-line client for cronoq-server, with a live top view"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["scheduler", "task-queue", "cli", "grpc"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "cronoq"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+cronoq-proto = { path = "../cronoq-proto", version = "0.1.0" }
+futures-util = "0.3"
+ratatui = "0.30"
+serde_json = "1"
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
+
+[dev-dependencies]
+anyhow = "1"
+bytes = "1"
+cronoq-server = { path = "../cronoq-server" }

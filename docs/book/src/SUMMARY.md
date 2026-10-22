@@ -45,6 +45,7 @@
 
 - [Writing executors and workers](guides/workers.md)
 - [Using the HTTP API](guides/http-api.md)
+- [Command-line tool](guides/cli.md)
 - [Deploying the server](guides/deployment.md)
 - [Observability](guides/observability.md)
 - [Security hardening](guides/security.md)

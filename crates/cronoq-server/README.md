@@ -7,15 +7,19 @@ Runs the [cronoq](https://crates.io/crates/cronoq) scheduler as a service:
 
 - clients submit tasks over **gRPC** or **HTTP/JSON**;
 - **remote workers** in any language lease tasks over a bidirectional gRPC stream (worker
-  protocol v2), with heartbeats, aborts, hand-backs and automatic retry of lost attempts;
+  protocol v3), with heartbeats, aborts, hand-backs, worker labels and automatic retry of lost
+  attempts;
 - pools autoscale on queue pressure and export the desired worker count for KEDA/HPA, or call a
   webhook;
 - bearer tokens and client certificates mapped to `client` / `worker` / `metrics` / `admin`
   roles, optionally limited to pools; TLS and mTLS on both listeners;
 - request limits on everything (queues, batch and message sizes, waits, connections);
 - Prometheus `/metrics` (authenticated, or on a separate internal port), `/healthz`, `/readyz`;
-- with the Postgres store, durable state and active-passive **high availability** with leader
-  election and fencing.
+- with the Postgres or SQLite store, durable state and active-passive **high availability** with
+  leader election and fencing.
+
+The [`cronoq`](https://crates.io/crates/cronoq-cli) command-line client submits and inspects
+tasks and shows the server live with `cronoq top`.
 
 ```sh
 cargo install cronoq-server
