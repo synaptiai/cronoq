@@ -176,7 +176,7 @@ async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next
 
 /// Whether the request's host (the `Host` header, or the HTTP/2 authority) is `localhost`, a
 /// `*.localhost` name or a loopback address.
-fn loopback_host(req: &Request) -> bool {
+pub(crate) fn loopback_host<B>(req: &::http::Request<B>) -> bool {
     let host = req
         .headers()
         .get(header::HOST)

@@ -82,7 +82,11 @@ limited to a list of pools.
   credentials, authentication is off and the server refuses to listen on a non-loopback address
   unless started with `--insecure-no-auth`. In that loopback-only mode the HTTP API answers only
   requests for a loopback host (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`), so a web page
-  cannot reach it by rebinding its own name to `127.0.0.1`.
+  cannot reach it by rebinding its own name to `127.0.0.1`. With gRPC-Web enabled, the gRPC
+  listener applies the same rule.
+- **Browsers.** gRPC-Web is off unless `[server.grpc_web]` lists the origins allowed to call
+  the API; CORS is never credentialed, so pages must hold a token explicitly, and HTTP/1.1 on the
+  gRPC listener carries only gRPC-Web.
 - **Transport security.** `[server.tls]` enables TLS on the gRPC and HTTP listeners alike;
   with `client_ca` every client must present a certificate signed by that CA (mTLS).
 - **Resource limits.** `[limits]` bounds batch sizes, queue lengths (per pool and in total),

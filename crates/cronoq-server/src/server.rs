@@ -216,10 +216,19 @@ pub async fn run(
                 .tls_config(t.grpc.clone())
                 .context("configuring gRPC TLS")?;
         }
+        let web = cfg
+            .server
+            .grpc_web
+            .as_ref()
+            .map(|w| crate::grpc_web::layers(w, shared.loopback_hosts_only));
+        if web.is_some() {
+            // Browsers without TLS (or without HTTP/2) send gRPC-Web over HTTP/1.1.
+            grpc = grpc.accept_http1(true);
+        }
         let semaphore = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests));
         let router = grpc
-            .layer(tower::limit::GlobalConcurrencyLimitLayer::with_semaphore(
-                semaphore,
+            .layer(tower::ServiceBuilder::new().option_layer(web).layer(
+                tower::limit::GlobalConcurrencyLimitLayer::with_semaphore(semaphore),
             ))
             .add_service(
                 pb::tasks_server::TasksServer::new(TasksService {
