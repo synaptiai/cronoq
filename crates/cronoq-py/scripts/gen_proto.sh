@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the Python protobuf/gRPC stubs for cronoq.client.
 # Requires: pip install 'grpcio-tools==1.66.2'   (set PYTHON to choose the interpreter)
-# That version emits protobuf 5.27 gencode, which runs on protobuf 5.27-7.x and Python 3.9+.
+# That version emits protobuf 5.27 gencode, which runs on protobuf 5.27-7.x.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 proto_root="$here/../cronoq-proto/proto"

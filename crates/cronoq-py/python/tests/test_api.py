@@ -3,9 +3,8 @@
 import asyncio
 import time
 
-import pytest
-
 import cronoq
+import pytest
 from cronoq import Dep, Pool, Priority, Resource, RetryPolicy, Scheduler, Task
 
 

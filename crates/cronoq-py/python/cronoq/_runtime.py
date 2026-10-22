@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 
 async def _invoke(fn: Callable[[Any, Any], Awaitable[Any]], ctx: Any, payload: Any) -> Any:

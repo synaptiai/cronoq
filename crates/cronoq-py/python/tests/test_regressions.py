@@ -10,11 +10,10 @@ import sys
 import textwrap
 import time
 import weakref
-from typing import Any, List
-
-import pytest
+from typing import Any
 
 import cronoq
+import pytest
 from cronoq.compat import ElasticPriorityScheduler
 from cronoq.compat import Task as CompatTask
 
@@ -33,7 +32,7 @@ class Big:
 
 
 async def test_failed_attempts_do_not_leak_frames() -> None:
-    refs: List[weakref.ref] = []
+    refs: list[weakref.ref] = []
 
     async def bad(ctx: Any, p: Any) -> Any:
         big = Big()
@@ -53,7 +52,7 @@ async def test_failed_attempts_do_not_leak_frames() -> None:
 
 async def test_api_usable_while_shutting_down() -> None:
     s: Any = None
-    seen: List[Any] = []
+    seen: list[Any] = []
 
     async def run(ctx: Any, p: Any) -> Any:
         await asyncio.sleep(0.3)
@@ -248,7 +247,7 @@ async def test_context_exposes_deadline() -> None:
 
 
 async def test_user_cancelled_error_is_retryable() -> None:
-    attempts: List[int] = []
+    attempts: list[int] = []
 
     async def run(ctx: Any, p: Any) -> Any:
         attempts.append(ctx.attempt)
@@ -297,7 +296,7 @@ async def test_events_terminal_only_by_default() -> None:
 async def test_events_all_transitions_and_stop_on_shutdown() -> None:
     s = cronoq.Scheduler([cronoq.Pool("default", echo)], emit_transitions=True)
     await s.start()
-    seen: List[str] = []
+    seen: list[str] = []
 
     async def consume() -> None:
         async for e in s.events():

@@ -29,21 +29,18 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import (
     Any,
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Dict,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
     cast,
 )
 
@@ -80,11 +77,11 @@ PROTOCOL_VERSION = 2
 
 log = logging.getLogger("cronoq.client")
 
-Payload = Union[bytes, bytearray, memoryview, str, dict, list, int, float, bool, None]
-TaskRef = Union[int, str]
+Payload = bytes | bytearray | memoryview | str | dict | list | int | float | bool | None
+TaskRef = int | str
 
 
-def _is_deadline(e: "grpc.aio.AioRpcError") -> bool:
+def _is_deadline(e: grpc.aio.AioRpcError) -> bool:
     """Whether an RPC failed because a deadline expired. grpcio reports a client-side deadline
     as ``DEADLINE_EXCEEDED`` or, in some versions and platforms, as ``CANCELLED`` with the
     details "Timeout expired"."""
@@ -106,7 +103,7 @@ class ClientError(CronoqError):
         self.code = code
         self.message = message
 
-    def __reduce__(self) -> Tuple[Any, ...]:
+    def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (self.code, self.message))
 
     @property
@@ -115,7 +112,7 @@ class ClientError(CronoqError):
         return self.code in ("unavailable", "resource_exhausted")
 
     @classmethod
-    def from_rpc(cls, e: grpc.RpcError) -> "ClientError":
+    def from_rpc(cls, e: grpc.RpcError) -> ClientError:
         code = e.code() if hasattr(e, "code") else None
         details = e.details() if hasattr(e, "details") else str(e)
         return cls(code.name.lower() if code is not None else "unknown", details or "")
@@ -131,7 +128,7 @@ class Reject(CronoqError):
         super().__init__(reason)
         self.reason = reason
 
-    def __reduce__(self) -> Tuple[Any, ...]:
+    def __reduce__(self) -> tuple[Any, ...]:
         return (type(self), (self.reason,))
 
 
@@ -148,7 +145,7 @@ def _status_name(value: int) -> str:
 # Results
 
 
-def _decode_json(data: Optional[bytes]) -> Any:
+def _decode_json(data: bytes | None) -> Any:
     if data is None:
         raise ValueError("no output")
     if not data:
@@ -164,7 +161,7 @@ class Result:
 
     id: int
     status: str
-    output: Optional[bytes]
+    output: bytes | None
     message: str = ""
     output_available: bool = False
 
@@ -181,7 +178,7 @@ class Result:
         return (self.output or b"").decode()
 
     @classmethod
-    def _from_pb(cls, r: "pb.TaskResult") -> "Result":
+    def _from_pb(cls, r: pb.TaskResult) -> Result:
         return cls(
             id=r.id,
             status=_status_name(r.status),
@@ -195,10 +192,10 @@ class Result:
 class Submitted:
     id: int
     duplicate: bool
-    result: Optional[Result] = None
+    result: Result | None = None
 
 
-def _opt_secs(msg: Any, field_name: str) -> Optional[float]:
+def _opt_secs(msg: Any, field_name: str) -> float | None:
     return getattr(msg, field_name) / 1e9 if msg.HasField(field_name) else None
 
 
@@ -216,9 +213,9 @@ class TaskInfo:
     attempt: int = 0
     #: 0 if unknown.
     max_attempts: int = 0
-    created_at: Optional[float] = None
-    started_at: Optional[float] = None
-    finished_at: Optional[float] = None
+    created_at: float | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
     #: Last error or status message.
     message: str = ""
     output_available: bool = False
@@ -228,7 +225,7 @@ class TaskInfo:
         return self.status in _TERMINAL
 
     @classmethod
-    def _from_pb(cls, r: "pb.TaskInfo") -> "TaskInfo":
+    def _from_pb(cls, r: pb.TaskInfo) -> TaskInfo:
         return cls(
             id=r.id,
             status=_status_name(r.status),
@@ -268,7 +265,7 @@ class PoolSnapshot:
     busy: int
     held: int
     desired: int
-    pending_by_class: Tuple[int, ...]
+    pending_by_class: tuple[int, ...]
     reservations: int
     dispatched: int
     succeeded: int
@@ -308,14 +305,14 @@ class Totals:
 
 @dataclass(frozen=True)
 class Snapshot:
-    pools: Tuple[PoolSnapshot, ...]
+    pools: tuple[PoolSnapshot, ...]
     live_tasks: int
     running: int
     pending: int
     totals: Totals = field(default_factory=Totals)
     workers_connected: int = 0
 
-    def pool(self, name: str) -> Optional[PoolSnapshot]:
+    def pool(self, name: str) -> PoolSnapshot | None:
         return next((p for p in self.pools if p.name == name), None)
 
 
@@ -357,7 +354,7 @@ def _priority(p: Any) -> int:
     return _PRIORITY_BY_INDEX[i]
 
 
-def _encode(payload: Payload, content_type: Optional[str]) -> Tuple[bytes, str]:
+def _encode(payload: Payload, content_type: str | None) -> tuple[bytes, str]:
     if isinstance(payload, (bytes, bytearray, memoryview)):
         return bytes(payload), content_type or "application/octet-stream"
     if isinstance(payload, str):
@@ -367,7 +364,7 @@ def _encode(payload: Payload, content_type: Optional[str]) -> Tuple[bytes, str]:
     return json.dumps(payload).encode(), content_type or "application/json"
 
 
-def _ref(r: TaskRef) -> "pb.TaskRef":
+def _ref(r: TaskRef) -> pb.TaskRef:
     if isinstance(r, bool):
         raise TypeError("task reference must be an id (int) or key (str)")
     if isinstance(r, int):
@@ -377,13 +374,13 @@ def _ref(r: TaskRef) -> "pb.TaskRef":
     raise TypeError("task reference must be an id (int) or key (str)")
 
 
-def _unix_ns(t: Union[datetime, float, int]) -> int:
+def _unix_ns(t: datetime | float | int) -> int:
     if isinstance(t, datetime):
         return int(t.timestamp() * 1e9)
     return int(float(t) * 1e9)
 
 
-def _retry(r: Any) -> "pb.RetryPolicy":
+def _retry(r: Any) -> pb.RetryPolicy:
     if isinstance(r, Mapping):
         get = r.get
     else:
@@ -402,25 +399,25 @@ def _retry(r: Any) -> "pb.RetryPolicy":
 def task(
     payload: Payload = None,
     *,
-    pool: Optional[str] = None,
-    kind: Optional[str] = None,
+    pool: str | None = None,
+    kind: str | None = None,
     priority: Any = None,
-    key: Optional[str] = None,
-    deadline_in: Optional[float] = None,
-    deadline_at: Union[datetime, float, None] = None,
-    start_in: Optional[float] = None,
-    start_at: Union[datetime, float, None] = None,
-    tolerance: Optional[float] = None,
-    on_miss: Optional[str] = None,
-    duration_hint: Optional[float] = None,
-    timeout: Optional[float] = None,
+    key: str | None = None,
+    deadline_in: float | None = None,
+    deadline_at: datetime | float | None = None,
+    start_in: float | None = None,
+    start_at: datetime | float | None = None,
+    tolerance: float | None = None,
+    on_miss: str | None = None,
+    duration_hint: float | None = None,
+    timeout: float | None = None,
     retry: Any = None,
-    after: Union[TaskRef, Iterable[TaskRef], None] = None,
-    deps: Iterable[Union[Tuple[TaskRef, str], Mapping[str, Any]]] = (),
-    resources: Optional[Mapping[str, int]] = None,
-    tags: Optional[Mapping[str, str]] = None,
-    content_type: Optional[str] = None,
-) -> "pb.TaskSpec":
+    after: TaskRef | Iterable[TaskRef] | None = None,
+    deps: Iterable[tuple[TaskRef, str] | Mapping[str, Any]] = (),
+    resources: Mapping[str, int] | None = None,
+    tags: Mapping[str, str] | None = None,
+    content_type: str | None = None,
+) -> pb.TaskSpec:
     """Build a wire task spec (for :meth:`Client.submit_batch` and :meth:`Client.add_recurring`).
 
     Times are seconds: ``*_in`` relative to now, ``*_at`` absolute (Unix seconds or a
@@ -502,8 +499,8 @@ def _target(t: str) -> str:
 def _channel(
     target: str,
     tls: bool,
-    credentials: Optional[grpc.ChannelCredentials],
-    options: Optional[Sequence[Tuple[str, Any]]],
+    credentials: grpc.ChannelCredentials | None,
+    options: Sequence[tuple[str, Any]] | None,
 ) -> grpc.aio.Channel:
     opts = list(options or [])
     if credentials is not None or tls or target.startswith("https://"):
@@ -518,13 +515,13 @@ _WAIT_DEADLINE_MARGIN = 5.0
 _MESSAGE_OVERHEAD = 1024
 
 
-def _priority_name(value: int) -> Optional[str]:
+def _priority_name(value: int) -> str | None:
     if value == pb.PRIORITY_UNSPECIFIED:
         return None
     return pb.Priority.Name(value)[len("PRIORITY_"):].lower()
 
 
-def _metadata(token: Optional[str]) -> Tuple[Tuple[str, str], ...]:
+def _metadata(token: str | None) -> tuple[tuple[str, str], ...]:
     return (("authorization", f"Bearer {token}"),) if token else ()
 
 
@@ -547,18 +544,18 @@ class Client:
         self,
         target: str,
         *,
-        token: Optional[str] = None,
+        token: str | None = None,
         tls: bool = False,
-        credentials: Optional[grpc.ChannelCredentials] = None,
-        options: Optional[Sequence[Tuple[str, Any]]] = None,
+        credentials: grpc.ChannelCredentials | None = None,
+        options: Sequence[tuple[str, Any]] | None = None,
     ) -> None:
         self.target = target
         self._tls = tls
         self._credentials = credentials
         self._options = options
         self._md = _metadata(token)
-        self._channel: Optional[grpc.aio.Channel] = None
-        self._channel_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._channel: grpc.aio.Channel | None = None
+        self._channel_loop: asyncio.AbstractEventLoop | None = None
         self._tasks_stub: Any = None
         self._admin_stub: Any = None
 
@@ -580,7 +577,7 @@ class Client:
         self._ensure_channel()
         return self._admin_stub
 
-    async def __aenter__(self) -> "Client":
+    async def __aenter__(self) -> Client:
         self._ensure_channel()
         return self
 
@@ -593,7 +590,7 @@ class Client:
             await channel.close()
         self._channel_loop = None
 
-    async def _call(self, fn: Callable[..., Awaitable[Any]], req: Any, timeout: Optional[float] = None) -> Any:
+    async def _call(self, fn: Callable[..., Awaitable[Any]], req: Any, timeout: float | None = None) -> Any:
         try:
             return await fn(req, metadata=self._md, timeout=timeout)
         except grpc.aio.AioRpcError as e:
@@ -607,8 +604,8 @@ class Client:
         payload: Payload = None,
         *,
         wait: bool = False,
-        wait_timeout: Optional[float] = None,
-        call_timeout: Optional[float] = None,
+        wait_timeout: float | None = None,
+        call_timeout: float | None = None,
         **opts: Any,
     ) -> Submitted:
         """Submit one task (see :func:`task` for options; ``timeout`` there is the task's
@@ -630,7 +627,7 @@ class Client:
         r = await self._call(self._tasks.Submit, req, call_timeout)
         return Submitted(r.id, r.duplicate, Result._from_pb(r.result) if r.HasField("result") else None)
 
-    async def submit_batch(self, tasks: Sequence["pb.TaskSpec"]) -> List[Submitted]:
+    async def submit_batch(self, tasks: Sequence[pb.TaskSpec]) -> list[Submitted]:
         """Submit specs built with :func:`task` atomically; they may reference each other's keys."""
         r = await self._call(self._tasks.SubmitBatch, pb.SubmitBatchRequest(tasks=list(tasks)))
         return [Submitted(t.id, t.duplicate) for t in r.tasks]
@@ -646,7 +643,7 @@ class Client:
         r = await self._call(self._tasks.Get, pb.GetRequest(task=_ref(ref)))
         return TaskInfo._from_pb(r)
 
-    async def wait(self, ref: TaskRef, timeout: Optional[float] = None) -> Result:
+    async def wait(self, ref: TaskRef, timeout: float | None = None) -> Result:
         """Wait for a task to finish and return its :class:`Result`.
 
         Raises :class:`TimeoutError` if it is still running after ``timeout`` seconds (or the
@@ -669,10 +666,10 @@ class Client:
 
     async def watch(
         self,
-        pools: Optional[Iterable[str]] = None,
+        pools: Iterable[str] | None = None,
         *,
-        ids: Optional[Iterable[int]] = None,
-        keys: Optional[Iterable[str]] = None,
+        ids: Iterable[int] | None = None,
+        keys: Iterable[str] | None = None,
         all_transitions: bool = False,
     ) -> AsyncIterator[Event]:
         """Stream status events, optionally filtered by pool, task id or key.
@@ -759,11 +756,11 @@ class Client:
         self,
         name: str,
         cron: str,
-        payload: Union[Payload, "pb.TaskSpec"] = None,
+        payload: Payload | pb.TaskSpec = None,
         *,
-        tz: Optional[str] = None,
+        tz: str | None = None,
         overlap: str = "skip",
-        allow_overlap: Optional[bool] = None,
+        allow_overlap: bool | None = None,
         **opts: Any,
     ) -> None:
         """Add a cron schedule (requires an admin token).
@@ -803,14 +800,14 @@ class Lease:
     content_type: str
     kind: str
     key: str
-    tags: Dict[str, str]
-    timeout: Optional[float]
-    deadline: Optional[float]  # Unix seconds
+    tags: dict[str, str]
+    timeout: float | None
+    deadline: float | None  # Unix seconds
     pool: str = ""
     #: ``critical``/``high``/``normal``/``low``, or ``None`` if the server did not say.
-    priority: Optional[str] = None
+    priority: str | None = None
     #: Heartbeat at least this often (seconds); sent automatically by the worker.
-    lease_ttl: Optional[float] = None
+    lease_ttl: float | None = None
     #: Set when the server aborts this attempt (timeout, lease loss, cancellation).
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -869,14 +866,14 @@ class Worker:
         handler: Handler,
         *,
         slots: int = 1,
-        token: Optional[str] = None,
+        token: str | None = None,
         name: str = "",
         tls: bool = False,
-        credentials: Optional[grpc.ChannelCredentials] = None,
+        credentials: grpc.ChannelCredentials | None = None,
         reconnect: bool = True,
-        backoff: Tuple[float, float] = (0.1, 5.0),
+        backoff: tuple[float, float] = (0.1, 5.0),
         grace: float = 10.0,
-        options: Optional[Sequence[Tuple[str, Any]]] = None,
+        options: Sequence[tuple[str, Any]] | None = None,
     ) -> None:
         if slots < 1:
             raise ValueError("slots must be >= 1")
@@ -892,27 +889,27 @@ class Worker:
         self._credentials = credentials
         self._options = options
         self._md = _metadata(token)
-        # Created lazily on the running loop (asyncio primitives bind to a loop on Python 3.9).
-        self._events_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._stopping_ev: Optional[asyncio.Event] = None
-        self._registered_ev: Optional[asyncio.Event] = None
-        self._closed_ev: Optional[asyncio.Event] = None
-        self._stop_task: Optional["asyncio.Future[None]"] = None
+        # Created on the loop that runs the worker, so a Worker can run again on a new loop.
+        self._events_loop: asyncio.AbstractEventLoop | None = None
+        self._stopping_ev: asyncio.Event | None = None
+        self._registered_ev: asyncio.Event | None = None
+        self._closed_ev: asyncio.Event | None = None
+        self._stop_task: asyncio.Future[None] | None = None
         self._draining = False
         self._finished = False
-        self._outbox: Optional[asyncio.Queue] = None
-        self._running: Dict[int, Tuple[asyncio.Task, Lease]] = {}
+        self._outbox: asyncio.Queue | None = None
+        self._running: dict[int, tuple[asyncio.Task, Lease]] = {}
         self._call: Any = None
-        self.worker_id: Optional[int] = None
-        self.lease_ttl: Optional[float] = None
+        self.worker_id: int | None = None
+        self.lease_ttl: float | None = None
         #: Slots the server granted (may be lower than requested), once registered.
-        self.granted_slots: Optional[int] = None
+        self.granted_slots: int | None = None
         #: Worker protocol version the server speaks, once registered.
-        self.server_protocol: Optional[int] = None
+        self.server_protocol: int | None = None
         #: Largest message the server accepts (outputs must fit), once registered.
-        self.max_message_bytes: Optional[int] = None
+        self.max_message_bytes: int | None = None
         #: Reason given by the server in its last ``Shutdown`` message, if any.
-        self.last_shutdown: Optional[str] = None
+        self.last_shutdown: str | None = None
         self._reconnect_now = False
         #: Number of (re)connections made, for monitoring.
         self.connections = 0
@@ -948,7 +945,7 @@ class Worker:
     def running(self) -> int:
         return len(self._running)
 
-    async def wait_registered(self, timeout: Optional[float] = None) -> None:
+    async def wait_registered(self, timeout: float | None = None) -> None:
         """Wait until the worker is registered with the server."""
         await asyncio.wait_for(self._registered.wait(), timeout)
 
@@ -993,11 +990,11 @@ class Worker:
             self._reconnect_now = False
             try:
                 await asyncio.wait_for(self._stopping.wait(), delay)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             delay = min(delay * 2, self.backoff[1])
 
-    async def stop(self, grace: Optional[float] = None) -> None:
+    async def stop(self, grace: float | None = None) -> None:
         """Stop taking leases, let running ones finish for up to ``grace`` seconds, then
         cancel the rest and disconnect. Concurrent calls wait for the same shutdown."""
         self._ensure_events()
@@ -1027,7 +1024,7 @@ class Worker:
         if self._call is not None:
             try:
                 await asyncio.wait_for(self._closed.wait(), 5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if self._call is not None:
                     self._call.cancel()
 
@@ -1052,7 +1049,7 @@ class Worker:
             )
         )
 
-        async def requests() -> AsyncIterator["pb.WorkerMessage"]:
+        async def requests() -> AsyncIterator[pb.WorkerMessage]:
             while True:
                 msg = await outbox.get()
                 if msg is _STOP:
@@ -1104,7 +1101,7 @@ class Worker:
         else:
             outbox.put_nowait(pb.WorkerMessage(fail=pb.Fail(lease=lease_id, message=reason, permanent=False)))
 
-    def _start(self, m: "pb.Lease", outbox: asyncio.Queue) -> None:
+    def _start(self, m: pb.Lease, outbox: asyncio.Queue) -> None:
         if self._draining or self._stopping.is_set():
             self._give_back(m.lease, "worker is stopping", outbox)
             return
@@ -1140,7 +1137,7 @@ class Worker:
 
     async def _run_lease(self, lease: Lease, outbox: asyncio.Queue) -> None:
         beat = asyncio.get_running_loop().create_task(self._heartbeat(lease, outbox))
-        msg: Optional[pb.WorkerMessage] = None
+        msg: pb.WorkerMessage | None = None
         try:
             out = await self.handler(lease)
             try:

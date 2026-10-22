@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Awaitable, Callable, Generator, Literal, Mapping, Optional, Sequence, Union
-
-from typing_extensions import Self, TypeAlias, final
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+from typing import (
+    Any,
+    Literal,
+    Self,
+    TypeAlias,
+    Union,
+    final,
+)
 
 __version__: str
 __all__ = [
@@ -27,8 +33,8 @@ __all__ = [
 ]
 
 _PriorityLike: TypeAlias = Union["Priority", int, str]
-_TaskRefLike: TypeAlias = Union[str, int]
-_TimeLike: TypeAlias = Union[datetime.datetime, float]
+_TaskRefLike: TypeAlias = str | int
+_TimeLike: TypeAlias = datetime.datetime | float
 _Executor: TypeAlias = Callable[["TaskContext", Any], Any]
 _MissPolicy: TypeAlias = Literal["run_late", "skip", "fail"]
 _DepCondition: TypeAlias = Literal["success", "failure", "complete", "on_success", "on_failure", "on_complete"]
@@ -85,7 +91,7 @@ class AutoscaleConfig:
         interval: float = 1.0,
         target_utilization: float = 0.75,
         drain_time: float = 30.0,
-        slo: Optional[Mapping[_PriorityLike, float]] = None,
+        slo: Mapping[_PriorityLike, float] | None = None,
         reservation_horizon: float = 60.0,
         stabilization_window: float = 60.0,
         cooldown: float = 30.0,
@@ -115,14 +121,14 @@ class Pool:
         *,
         min: int = 1,
         max: int = 10,
-        initial: Optional[int] = None,
-        autoscale: Union[bool, AutoscaleConfig, None] = None,
-        lease_ttl: Optional[float] = None,
-        max_pending: Optional[int] = None,
+        initial: int | None = None,
+        autoscale: bool | AutoscaleConfig | None = None,
+        lease_ttl: float | None = None,
+        max_pending: int | None = None,
         overflow: Literal["wait", "reject", "shed_lowest", "shed_oldest"] = "wait",
-        retry: Optional[RetryPolicy] = None,
+        retry: RetryPolicy | None = None,
         unknown_dependency: Literal["reject", "await"] = "reject",
-        await_timeout: Optional[float] = None,
+        await_timeout: float | None = None,
         default_duration: float = 1.0,
         reservable_fraction: float = 0.5,
     ) -> Self: ...
@@ -130,28 +136,28 @@ class Pool:
 @final
 class Task:
     payload: Any
-    key: Optional[str]
+    key: str | None
     def __new__(
         cls,
         payload: Any,
         *,
-        priority: Optional[_PriorityLike] = None,
-        pool: Optional[str] = None,
-        kind: Optional[str] = None,
-        key: Optional[str] = None,
-        deadline_in: Optional[float] = None,
-        deadline_at: Optional[_TimeLike] = None,
-        start_in: Optional[float] = None,
-        start_at: Optional[_TimeLike] = None,
-        tolerance: Optional[float] = None,
-        on_miss: Optional[_MissPolicy] = None,
-        duration_hint: Optional[float] = None,
-        timeout: Optional[float] = None,
-        retry: Optional[RetryPolicy] = None,
-        after: Union[_TaskRefLike, Sequence[_TaskRefLike], None] = None,
-        deps: Optional[Sequence[Dep]] = None,
-        resources: Optional[Mapping[str, int]] = None,
-        tags: Optional[Mapping[str, Any]] = None,
+        priority: _PriorityLike | None = None,
+        pool: str | None = None,
+        kind: str | None = None,
+        key: str | None = None,
+        deadline_in: float | None = None,
+        deadline_at: _TimeLike | None = None,
+        start_in: float | None = None,
+        start_at: _TimeLike | None = None,
+        tolerance: float | None = None,
+        on_miss: _MissPolicy | None = None,
+        duration_hint: float | None = None,
+        timeout: float | None = None,
+        retry: RetryPolicy | None = None,
+        after: _TaskRefLike | Sequence[_TaskRefLike] | None = None,
+        deps: Sequence[Dep] | None = None,
+        resources: Mapping[str, int] | None = None,
+        tags: Mapping[str, Any] | None = None,
     ) -> Self: ...
 
 @final
@@ -159,13 +165,13 @@ class TaskContext:
     id: int
     attempt: int
     kind: str
-    key: Optional[str]
+    key: str | None
     pool: str
     tags: dict[str, str]
-    timeout: Optional[float]
+    timeout: float | None
     def is_cancelled(self) -> bool: ...
     @property
-    def deadline(self) -> Optional[float]: ...
+    def deadline(self) -> float | None: ...
     def heartbeat(self) -> None: ...
 
 @final
@@ -213,17 +219,17 @@ class Snapshot:
     running: int
     pending: int
     totals: dict[str, int]
-    def pool(self, name: str) -> Optional[PoolSnapshot]: ...
+    def pool(self, name: str) -> PoolSnapshot | None: ...
 
 @final
 class StatusEvent:
     id: int
     pool: str
-    key: Optional[str]
+    key: str | None
     status: str
     attempt: int
     at: float
-    message: Optional[str]
+    message: str | None
 
 @final
 class EventStream:
@@ -249,7 +255,7 @@ class Scheduler:
     def __new__(
         cls,
         pools: Sequence[Pool],
-        resources: Optional[Sequence[Resource]] = None,
+        resources: Sequence[Resource] | None = None,
         emit_transitions: bool = False,
         *,
         shutdown_grace: float = 5.0,
@@ -260,50 +266,50 @@ class Scheduler:
         self,
         payload: Any,
         *,
-        priority: Optional[_PriorityLike] = None,
-        pool: Optional[str] = None,
-        kind: Optional[str] = None,
-        key: Optional[str] = None,
-        deadline_in: Optional[float] = None,
-        deadline_at: Optional[_TimeLike] = None,
-        start_in: Optional[float] = None,
-        start_at: Optional[_TimeLike] = None,
-        tolerance: Optional[float] = None,
-        on_miss: Optional[_MissPolicy] = None,
-        duration_hint: Optional[float] = None,
-        timeout: Optional[float] = None,
-        retry: Optional[RetryPolicy] = None,
-        after: Union[_TaskRefLike, Sequence[_TaskRefLike], None] = None,
-        deps: Optional[Sequence[Dep]] = None,
-        resources: Optional[Mapping[str, int]] = None,
-        tags: Optional[Mapping[str, Any]] = None,
+        priority: _PriorityLike | None = None,
+        pool: str | None = None,
+        kind: str | None = None,
+        key: str | None = None,
+        deadline_in: float | None = None,
+        deadline_at: _TimeLike | None = None,
+        start_in: float | None = None,
+        start_at: _TimeLike | None = None,
+        tolerance: float | None = None,
+        on_miss: _MissPolicy | None = None,
+        duration_hint: float | None = None,
+        timeout: float | None = None,
+        retry: RetryPolicy | None = None,
+        after: _TaskRefLike | Sequence[_TaskRefLike] | None = None,
+        deps: Sequence[Dep] | None = None,
+        resources: Mapping[str, int] | None = None,
+        tags: Mapping[str, Any] | None = None,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
         payload: Any,
         *,
-        priority: Optional[_PriorityLike] = None,
-        pool: Optional[str] = None,
-        kind: Optional[str] = None,
-        key: Optional[str] = None,
-        deadline_in: Optional[float] = None,
-        deadline_at: Optional[_TimeLike] = None,
-        start_in: Optional[float] = None,
-        start_at: Optional[_TimeLike] = None,
-        tolerance: Optional[float] = None,
-        on_miss: Optional[_MissPolicy] = None,
-        duration_hint: Optional[float] = None,
-        timeout: Optional[float] = None,
-        retry: Optional[RetryPolicy] = None,
-        after: Union[_TaskRefLike, Sequence[_TaskRefLike], None] = None,
-        deps: Optional[Sequence[Dep]] = None,
-        resources: Optional[Mapping[str, int]] = None,
-        tags: Optional[Mapping[str, Any]] = None,
+        priority: _PriorityLike | None = None,
+        pool: str | None = None,
+        kind: str | None = None,
+        key: str | None = None,
+        deadline_in: float | None = None,
+        deadline_at: _TimeLike | None = None,
+        start_in: float | None = None,
+        start_at: _TimeLike | None = None,
+        tolerance: float | None = None,
+        on_miss: _MissPolicy | None = None,
+        duration_hint: float | None = None,
+        timeout: float | None = None,
+        retry: RetryPolicy | None = None,
+        after: _TaskRefLike | Sequence[_TaskRefLike] | None = None,
+        deps: Sequence[Dep] | None = None,
+        resources: Mapping[str, int] | None = None,
+        tags: Mapping[str, Any] | None = None,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
-    def status(self, target: _TaskRefLike) -> Awaitable[Optional[str]]: ...
-    def handle(self, target: _TaskRefLike) -> Awaitable[Optional[TaskHandle]]: ...
+    def status(self, target: _TaskRefLike) -> Awaitable[str | None]: ...
+    def handle(self, target: _TaskRefLike) -> Awaitable[TaskHandle | None]: ...
     def snapshot(self) -> Awaitable[Snapshot]: ...
     def set_capacity(self, pool: str, capacity: int) -> Awaitable[None]: ...
     def add_recurring(
@@ -312,18 +318,18 @@ class Scheduler:
         cron: str,
         payload: Any,
         *,
-        tz: Optional[str] = None,
+        tz: str | None = None,
         overlap: Literal["skip", "allow"] = "skip",
         tolerance: float = 1.0,
         on_miss: _MissPolicy = "run_late",
-        priority: Optional[_PriorityLike] = None,
-        pool: Optional[str] = None,
-        kind: Optional[str] = None,
-        duration_hint: Optional[float] = None,
-        timeout: Optional[float] = None,
-        retry: Optional[RetryPolicy] = None,
-        resources: Optional[Mapping[str, int]] = None,
-        tags: Optional[Mapping[str, Any]] = None,
+        priority: _PriorityLike | None = None,
+        pool: str | None = None,
+        kind: str | None = None,
+        duration_hint: float | None = None,
+        timeout: float | None = None,
+        retry: RetryPolicy | None = None,
+        resources: Mapping[str, int] | None = None,
+        tags: Mapping[str, Any] | None = None,
     ) -> Awaitable[None]: ...
     def remove_recurring(self, name: str) -> Awaitable[bool]: ...
     def events(self, on_lag: Literal["skip", "raise"] = "skip") -> EventStream: ...

@@ -10,8 +10,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, List, Optional
+from typing import Any
 
 import pytest
 
@@ -32,10 +33,10 @@ MAX_SLOTS_PER_WORKER = 4
 MAX_MESSAGE_BYTES = 256 * 1024
 # The source checkout, when the tests run from it (wheel tests run from a copy elsewhere).
 _HERE = Path(__file__).resolve()
-REPO: Optional[Path] = _HERE.parents[4] if len(_HERE.parents) > 4 else None
+REPO: Path | None = _HERE.parents[4] if len(_HERE.parents) > 4 else None
 
 
-def _server_binary() -> Optional[Path]:
+def _server_binary() -> Path | None:
     env = os.environ.get("CRONOQ_SERVER_BIN")
     if env:
         return Path(env)
@@ -67,7 +68,7 @@ class Server:
         self.dir = tempfile.TemporaryDirectory()
         self.config = Path(self.dir.name) / "cronoq.toml"
         self._new_ports()
-        self.proc: Optional[subprocess.Popen] = None
+        self.proc: subprocess.Popen | None = None
 
     def _new_ports(self) -> None:
         self.grpc_port, self.http_port = _free_port(), _free_port()
@@ -180,8 +181,8 @@ class Running:
     """Start workers in the background and stop them on exit."""
 
     def __init__(self) -> None:
-        self.workers: List[Worker] = []
-        self.tasks: List[asyncio.Task] = []
+        self.workers: list[Worker] = []
+        self.tasks: list[asyncio.Task] = []
 
     async def add(self, server: Server, handler: Any, **kw: Any) -> Worker:
         kw.setdefault("token", WORKER)
@@ -192,7 +193,7 @@ class Running:
         await w.wait_registered(10)
         return w
 
-    async def __aenter__(self) -> "Running":
+    async def __aenter__(self) -> Running:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -287,7 +288,7 @@ async def test_wait_timeout(client: Client) -> None:
 
 
 async def test_batch_with_key_dependencies(server: Server, client: Client) -> None:
-    order: List[str] = []
+    order: list[str] = []
 
     async def record(lease: Lease) -> Any:
         await asyncio.sleep(0.02)
@@ -366,7 +367,7 @@ async def test_auth_errors(server: Server) -> None:
 
 
 async def test_timeout_aborts_running_handler(server: Server, client: Client) -> None:
-    aborted: List[int] = []
+    aborted: list[int] = []
 
     async def slow(lease: Lease) -> Any:
         try:
@@ -403,7 +404,7 @@ async def test_heartbeats_keep_long_leases_alive(server: Server, client: Client)
 
 
 async def test_two_workers_share_load(server: Server, client: Client) -> None:
-    seen: List[str] = []
+    seen: list[str] = []
 
     def make(name: str) -> Any:
         async def h(lease: Lease) -> Any:
@@ -647,8 +648,8 @@ async def test_submit_wait_timeout(client: Client) -> None:
 
 
 async def test_watch_filters_and_transitions(server: Server, client: Client) -> None:
-    async def collect(**kw: Any) -> List[str]:
-        out: List[str] = []
+    async def collect(**kw: Any) -> list[str]:
+        out: list[str] = []
         async for e in client.watch(**kw):
             out.append(e.status)
             if e.status == "succeeded":
@@ -672,7 +673,7 @@ async def test_watch_filters_and_transitions(server: Server, client: Client) -> 
 
 async def test_server_grants_capped_slots(server: Server, client: Client) -> None:
     gate = asyncio.Event()
-    started: List[int] = []
+    started: list[int] = []
 
     async def held(lease: Lease) -> Any:
         started.append(lease.task_id)
@@ -697,7 +698,7 @@ async def test_server_grants_capped_slots(server: Server, client: Client) -> Non
 
 
 async def test_reject_hands_the_lease_to_another_worker(server: Server, client: Client) -> None:
-    refused: List[int] = []
+    refused: list[int] = []
 
     async def picky(lease: Lease) -> Any:
         refused.append(lease.task_id)
@@ -743,7 +744,7 @@ async def test_oversized_output_fails_permanently(server: Server, client: Client
 
 
 async def test_lease_metadata(server: Server, client: Client) -> None:
-    seen: List[Lease] = []
+    seen: list[Lease] = []
 
     async def record(lease: Lease) -> Any:
         seen.append(lease)
