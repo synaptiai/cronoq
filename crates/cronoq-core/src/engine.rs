@@ -245,6 +245,9 @@ pub struct Totals {
     pub lease_expiries: u64,
     /// Recurring occurrences not created because the reservation limit was reached.
     pub recurring_conflicts: u64,
+    /// Recovered recurring schedules not armed because the configuration no longer supports
+    /// their template (a removed pool or resource).
+    pub recurring_invalid: u64,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -793,6 +796,14 @@ impl<P> Core<P> {
         spec: &TaskSpec<P>,
         batch_keys: &FxHashSet<Arc<str>>,
     ) -> Result<u16, SubmitError> {
+        let pool = self.check_config(spec)?;
+        self.check_deps(spec, pool, batch_keys)?;
+        Ok(pool)
+    }
+
+    /// The checks that depend only on the configuration (pool, resources, retry policy);
+    /// returns the pool index. `insert` relies on them, so recurring templates pass them too.
+    fn check_config(&self, spec: &TaskSpec<P>) -> Result<u16, SubmitError> {
         let pool = *self
             .pool_index
             .get(&spec.pool)
@@ -814,6 +825,15 @@ impl<P> Core<P> {
         {
             return Err(SubmitError::Invalid("retry.max_attempts must be >= 1"));
         }
+        Ok(pool)
+    }
+
+    fn check_deps(
+        &self,
+        spec: &TaskSpec<P>,
+        pool: u16,
+        batch_keys: &FxHashSet<Arc<str>>,
+    ) -> Result<(), SubmitError> {
         let await_ok = matches!(
             self.pools[pool as usize].cfg.unknown_dependency,
             UnknownDependency::Await { .. }
@@ -851,7 +871,7 @@ impl<P> Core<P> {
         {
             return Err(SubmitError::Cycle);
         }
-        Ok(pool)
+        Ok(())
     }
 
     fn reaches_any(
@@ -1582,9 +1602,8 @@ impl<P> Core<P> {
             Some(t) => t.parse().map_err(|_| format!("unknown time zone '{t}'"))?,
             None => chrono_tz::UTC,
         };
-        if !self.pool_index.contains_key(&spec.template.pool) {
-            return Err(format!("unknown pool '{}'", spec.template.pool));
-        }
+        self.check_config(&spec.template)
+            .map_err(|e| format!("invalid template: {e}"))?;
         if self.cfg.persist {
             self.actions
                 .push_back(Action::Persist(Box::new(Mutation::RecurringUpsert {
@@ -1768,12 +1787,15 @@ impl<P> Core<P> {
             let pool = self.pool_index.get(&t.spec.pool).copied();
             let missing = match pool {
                 None => Some(format!("pool '{}' no longer exists", t.spec.pool)),
-                Some(_) => t
-                    .spec
-                    .resources
-                    .iter()
-                    .find(|(n, _)| !self.resource_index.contains_key(n))
-                    .map(|(n, _)| format!("resource '{n}' no longer exists")),
+                Some(_) => t.spec.resources.iter().find_map(|(n, a)| {
+                    match self.resource_index.get(n) {
+                        None => Some(format!("resource '{n}' no longer exists")),
+                        Some(&r) if *a as f64 > self.resources[r as usize].capacity => Some(
+                            format!("resource '{n}' no longer has capacity for this task"),
+                        ),
+                        Some(_) => None,
+                    }
+                }),
             };
             if let Some(reason) = missing {
                 // Close it out durably so its key is released and it is not recovered again.
@@ -1821,7 +1843,11 @@ impl<P> Core<P> {
             if let Some(&(id, at)) = latest.get(&name) {
                 self.recurring_history.insert(name, (Some(id), Some(at)));
             }
-            let _ = self.add_recurring_inner(now, spec, next);
+            // A schedule the configuration no longer supports (removed pool or resource) is not
+            // armed; it stays stored and comes back once the configuration supports it again.
+            if self.add_recurring_inner(now, spec, next).is_err() {
+                self.totals.recurring_invalid += 1;
+            }
         }
         // Timers already in the past (missed fixed starts, expired awaits) apply before
         // anything is dispatched.
