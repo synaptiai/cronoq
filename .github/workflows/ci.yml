@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly run on main catches breakage from new toolchains and dependency releases.
+  schedule:
+    - cron: "41 5 * * 1"
 
 permissions:
   contents: read
