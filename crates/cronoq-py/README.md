@@ -100,6 +100,12 @@ async with sched.events() as events:          # or: events = sched.events(); ...
   `cronoq.EventsLagged` (`.skipped`); iterating again continues with the buffered events.
 * A stream ends (`StopAsyncIteration`) when the scheduler shuts down or the stream is closed.
 
+### Durable state
+
+`Scheduler(pools, store=cronoq.SqliteStore("state.db"))` keeps queued work, schedules and
+results in a SQLite file across restarts. Payloads and results are stored as JSON unless you pass
+`codec=`; several processes can share the file, with one leading and the others standing by.
+
 More: [Python quickstart](https://synaptiai.github.io/cronoq/guides/python-quickstart.html) ·
 [use cases](https://synaptiai.github.io/cronoq/use-cases/index.html) ·
 [API reference](https://synaptiai.github.io/cronoq/reference/python.html).

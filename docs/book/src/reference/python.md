@@ -15,7 +15,8 @@ configuration (negative, NaN, out of range) raise `ValueError`.
 ```python
 Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
           emit_transitions: bool = False, *, shutdown_grace: float = 5.0,
-          event_capacity: int = 1024)
+          event_capacity: int = 1024, store: SqliteStore | None = None,
+          codec: Codec | None = None)
 ```
 
 | Argument | Description |
@@ -25,6 +26,8 @@ Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
 | `emit_transitions` | Deliver every status transition on `events()`, not only terminal ones. |
 | `shutdown_grace` | Seconds running attempts get when leaving `async with`. |
 | `event_capacity` | Buffer of each `events()` stream. |
+| `store` | Keep state in a SQLite file so it survives restarts; see [`SqliteStore`](#cronoqsqlitestore). |
+| `codec` | How payloads and results are turned into bytes for the store (an object with `encode(obj) -> bytes` and `decode(bytes) -> obj`). Default: `JsonCodec`. Needs `store`. |
 
 A scheduler is bound to the event loop that starts it. If that loop closes without a shutdown,
 the scheduler stops and further calls raise `SchedulerError`; calls before `start()` raise
@@ -86,6 +89,35 @@ async with sched.events() as events:
   `EventsLagged` (`.skipped`); iterating again continues with the buffered events.
 - The stream ends (`StopAsyncIteration`) when the scheduler shuts down or the stream is closed
   (`close()`, `await aclose()`, or leaving `async with`). `closed` tells whether it ended.
+
+## `cronoq.SqliteStore`
+
+```python
+SqliteStore(path, *, lease_ttl=10.0, lease_renew=2.0, lock_poll=0.5, retention=3600.0,
+            full_sync=True)
+```
+
+Durable state in a local SQLite file, created with owner-only permissions. Submissions,
+cancellations and schedule changes return only once they are stored. After a restart, queued
+and interrupted tasks run again (an attempt that was running counts as used), recurring
+schedules resume, and results of finished tasks stay available through `handle()`.
+
+| Argument | Description |
+|---|---|
+| `path` | Database file; keep it on a local filesystem. |
+| `lease_ttl`, `lease_renew`, `lock_poll` | Several processes may share the file: one leads and the others wait in `start()`. The leader renews its lease every `lease_renew` seconds; a standby takes over `lease_ttl` seconds after the leader stopped renewing (at once after a clean shutdown) and checks every `lock_poll` seconds. |
+| `retention` | How long finished tasks are kept in memory after a restart, for key deduplication. |
+| `full_sync` | Sync to disk on every commit. Off is faster but a power loss can drop the latest commits. |
+
+With a store, payloads and results are encoded by the scheduler's codec:
+
+- `cronoq.JsonCodec` (the default) stores JSON. Payloads it cannot encode (bytes, sets, arbitrary
+  objects) are refused at submit with `TypeError`, before anything is stored. Decoding JSON never
+  runs code, so a tampered file cannot execute anything in your process.
+- Pass your own codec for other types, for example msgpack. A pickle codec works, but anyone who
+  can write the file can then run code in your process.
+- A result the codec cannot encode is not stored (a warning is logged on the `cronoq` logger);
+  the task still succeeds.
 
 ## `cronoq.Pool`
 

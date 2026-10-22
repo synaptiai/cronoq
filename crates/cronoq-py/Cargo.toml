@@ -15,6 +15,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 cronoq = { path = "../cronoq", default-features = false }
+cronoq-store-sqlite = { path = "../cronoq-store-sqlite" }
+async-trait = "0.1"
+bytes = "1"
 pyo3 = { version = "0.30", features = ["abi3-py314"] }
 pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
 tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }

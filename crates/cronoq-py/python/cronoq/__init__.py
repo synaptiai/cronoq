@@ -15,6 +15,7 @@ Example::
     asyncio.run(main())
 """
 
+from ._codec import Codec, JsonCodec
 from ._cronoq import (
     AutoscaleConfig,
     Dep,
@@ -26,6 +27,7 @@ from ._cronoq import (
     RetryPolicy,
     Scheduler,
     Snapshot,
+    SqliteStore,
     StatusEvent,
     Task,
     TaskContext,
@@ -44,10 +46,12 @@ from .errors import (
 
 __all__ = [
     "AutoscaleConfig",
+    "Codec",
     "CronoqError",
     "Dep",
     "EventStream",
     "EventsLagged",
+    "JsonCodec",
     "Permanent",
     "Pool",
     "PoolSnapshot",
@@ -58,6 +62,7 @@ __all__ = [
     "Scheduler",
     "SchedulerError",
     "Snapshot",
+    "SqliteStore",
     "StatusEvent",
     "SubmitError",
     "Task",

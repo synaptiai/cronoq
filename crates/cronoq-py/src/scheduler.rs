@@ -6,13 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use cronoq::{Recurring, ResourceConfig, StatusEvent as CoreEvent, TaskFailure, TaskId, TaskRef};
-use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use tokio::sync::{Notify, broadcast, watch};
 
 use crate::errors::{failure_to_pyerr, not_started, py_error, stopped, to_pyerr};
 use crate::executor::{LoopClosed, PyExecutor};
+use crate::store::{Codec, CodecStore, SqliteStore};
 use crate::types::{
     Dep, Opts, Pool, PyObj, Resource, RetryPolicy, Task, extract_ref, parse_miss, parse_overlap,
     secs,
@@ -108,6 +109,12 @@ pub struct Scheduler {
     event_capacity: usize,
     default_pool: Arc<str>,
     pool_names: Arc<[Arc<str>]>,
+    /// Durable store and the codec for payloads and results, if state is kept on disk.
+    durable: Option<(
+        std::path::PathBuf,
+        cronoq_store_sqlite::SqliteStoreConfig,
+        Arc<Codec>,
+    )>,
     shared: Arc<Shared>,
 }
 
@@ -145,8 +152,15 @@ impl Scheduler {
         Ok(s)
     }
 
-    fn task(&self, opts: &Opts, payload: PyObj) -> cronoq::Task<PyObj> {
-        opts.to_task(payload, &self.default_pool)
+    /// A task for `payload`; with a durable store, the payload must be encodable.
+    fn task(&self, py: Python<'_>, opts: &Opts, payload: PyObj) -> PyResult<cronoq::Task<PyObj>> {
+        if let Some((_, _, codec)) = &self.durable {
+            codec.encode(py, &payload).map_err(|e| {
+                let msg = format!("payload cannot be stored by the scheduler's codec: {e}");
+                PyTypeError::new_err(msg)
+            })?;
+        }
+        Ok(opts.to_task(payload, &self.default_pool))
     }
 }
 
@@ -172,14 +186,22 @@ impl Scheduler {
     ///
     /// `shutdown_grace` is the grace period used by `async with`; `event_capacity` bounds the
     /// buffer of each `events()` stream.
+    ///
+    /// With `store=SqliteStore(path)`, queued work, schedules and results survive restarts.
+    /// Payloads and results are then encoded with `codec` (an object with `encode(obj) ->
+    /// bytes` and `decode(bytes) -> obj`), JSON by default.
     #[new]
-    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024))]
+    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         pools: Vec<Py<Pool>>,
         resources: Option<Vec<Resource>>,
         emit_transitions: bool,
         shutdown_grace: f64,
         event_capacity: usize,
+        store: Option<Py<SqliteStore>>,
+        codec: Option<PyObj>,
     ) -> PyResult<Self> {
         if pools.is_empty() {
             return Err(PyValueError::new_err("at least one pool is required"));
@@ -200,6 +222,39 @@ impl Scheduler {
             .find(|n| &***n == "default")
             .unwrap_or(&names[0])
             .clone();
+        let durable = match (store, codec) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(PyValueError::new_err("codec= needs store="));
+            }
+            (Some(st), codec) => {
+                let codec = match codec {
+                    Some(c) => c,
+                    None => py
+                        .import("cronoq._codec")?
+                        .getattr("JsonCodec")?
+                        .call0()?
+                        .unbind(),
+                };
+                let attr = |name: &str| -> PyResult<PyObj> {
+                    let f = codec.getattr(py, name).map_err(|_| {
+                        PyTypeError::new_err(format!("codec must have an {name}() method"))
+                    })?;
+                    if !f.bind(py).is_callable() {
+                        return Err(PyTypeError::new_err(format!(
+                            "codec.{name} must be callable"
+                        )));
+                    }
+                    Ok(f)
+                };
+                let codec = Codec {
+                    encode: attr("encode")?,
+                    decode: attr("decode")?,
+                };
+                let st = st.get();
+                Some((st.path.clone(), st.cfg.clone(), Arc::new(codec)))
+            }
+        };
         Ok(Scheduler {
             pools,
             resources: resources
@@ -212,6 +267,7 @@ impl Scheduler {
             event_capacity,
             default_pool,
             pool_names: names.into(),
+            durable,
             shared: Arc::new(Shared {
                 life: Mutex::new(Life::Idle),
                 changed: Notify::new(),
@@ -269,8 +325,16 @@ impl Scheduler {
             b = b.resource(r.clone());
         }
         let shared = self.shared.clone();
+        let durable = self.durable.clone();
         spawn_py(py, async move {
-            let built = b.build().await;
+            let built = match durable {
+                None => b.build().await,
+                Some((path, cfg, codec)) => match CodecStore::open(path, cfg, codec).await {
+                    // Blocks until this process leads (other processes may share the file).
+                    Ok(store) => b.store(store).build().await,
+                    Err(e) => Err(cronoq::Error::Store(e)),
+                },
+            };
             let current = {
                 let mut life = shared.life.lock().unwrap();
                 let current = matches!(&*life, Life::Starting(i) if *i == id);
@@ -349,7 +413,7 @@ impl Scheduler {
             tags,
         )?;
         let s = self.sched(py)?;
-        let task = self.task(&opts, payload);
+        let task = self.task(py, &opts, payload)?;
         spawn_py(py, async move {
             let h = s.submit(task).await.map_err(to_pyerr)?;
             Ok(TaskHandle::new(h, s))
@@ -406,7 +470,7 @@ impl Scheduler {
             tags,
         )?;
         let s = self.sched(py)?;
-        let task = self.task(&opts, payload);
+        let task = self.task(py, &opts, payload)?;
         spawn_py(py, async move {
             let sub = s.enqueue(task).await.map_err(to_pyerr)?;
             Ok(sub.id.0)
@@ -420,13 +484,13 @@ impl Scheduler {
         tasks: Vec<Py<Task>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let s = self.sched(py)?;
-        let tasks: Vec<_> = tasks
+        let tasks = tasks
             .iter()
             .map(|t| {
                 let t = t.get();
-                self.task(&t.opts, t.payload.clone_ref(py))
+                self.task(py, &t.opts, t.payload.clone_ref(py))
             })
-            .collect();
+            .collect::<PyResult<Vec<_>>>()?;
         spawn_py(py, async move {
             let hs = s.submit_batch(tasks).await.map_err(to_pyerr)?;
             Ok(hs
@@ -541,7 +605,7 @@ impl Scheduler {
             resources,
             tags,
         )?;
-        let mut r = Recurring::new(name, cron, self.task(&opts, payload))
+        let mut r = Recurring::new(name, cron, self.task(py, &opts, payload)?)
             .overlap(parse_overlap(overlap)?)
             .on_miss(parse_miss(on_miss)?)
             .tolerance(secs(tolerance, "tolerance")?);

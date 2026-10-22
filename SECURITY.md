@@ -58,7 +58,7 @@ team or trust domain); run separate servers for mutually untrusted tenants.
 | `admin` credentials | Everything, including recurring schedules. |
 | Unauthenticated network peers | `/healthz` and `/readyz`; `/metrics` only on the optional `server.metrics_addr` listener. |
 | PostgreSQL | Fully trusted: it stores payloads, outputs and schedules. |
-| SQLite file | Fully trusted, like PostgreSQL: anyone who can write it can change tasks and schedules. It is created readable and writable by its owner only (on Unix). |
+| SQLite file | Fully trusted, like PostgreSQL: anyone who can write it can change tasks and schedules. It is created readable and writable by its owner only (on Unix). The Python library decodes payloads with JSON by default, so the file cannot make it run code; a custom codec such as pickle gives up that property. |
 
 Credentials are bearer tokens (`[[auth.tokens]]`) or client certificates mapped to a role by DNS
 subject alternative name (`[[auth.certs]]`, which requires `server.tls.client_ca`). Both can be

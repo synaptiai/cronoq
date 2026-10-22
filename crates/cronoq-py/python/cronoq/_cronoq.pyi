@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from typing import (
     Any,
@@ -25,6 +26,7 @@ __all__ = [
     "RetryPolicy",
     "Scheduler",
     "Snapshot",
+    "SqliteStore",
     "StatusEvent",
     "Task",
     "TaskContext",
@@ -245,6 +247,19 @@ class EventStream:
     def __aexit__(self, *args: Any) -> Awaitable[None]: ...
 
 @final
+class SqliteStore:
+    def __new__(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        lease_ttl: float = 10.0,
+        lease_renew: float = 2.0,
+        lock_poll: float = 0.5,
+        retention: float = 3600.0,
+        full_sync: bool = True,
+    ) -> Self: ...
+
+@final
 class Scheduler:
     @property
     def started(self) -> bool: ...
@@ -260,6 +275,8 @@ class Scheduler:
         *,
         shutdown_grace: float = 5.0,
         event_capacity: int = 1024,
+        store: SqliteStore | None = None,
+        codec: Any = None,
     ) -> Self: ...
     def start(self) -> Awaitable[None]: ...
     def submit(
