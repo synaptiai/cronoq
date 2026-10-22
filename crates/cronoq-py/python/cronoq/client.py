@@ -301,6 +301,7 @@ class Totals:
     retries: int = 0
     timeouts: int = 0
     lease_expiries: int = 0
+    stale_completions: int = 0
 
 
 @dataclass(frozen=True)
@@ -748,6 +749,7 @@ class Client:
                 retries=t.retries,
                 timeouts=t.timeouts,
                 lease_expiries=t.lease_expiries,
+                stale_completions=t.stale_completions,
             ),
             workers_connected=r.workers_connected,
         )

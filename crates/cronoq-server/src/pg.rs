@@ -3,8 +3,15 @@
 use cronoq_store_postgres::{PgStore, PgStoreConfig};
 
 /// Connect (applying migrations).
-pub async fn open(url: &str, schema: Option<&str>) -> anyhow::Result<crate::store::Opened> {
-    let mut cfg = PgStoreConfig::default();
+pub async fn open(
+    url: &str,
+    schema: Option<&str>,
+    retention: std::time::Duration,
+) -> anyhow::Result<crate::store::Opened> {
+    let mut cfg = PgStoreConfig {
+        retention,
+        ..Default::default()
+    };
     if let Some(s) = schema {
         cfg.schema = s.into();
     }

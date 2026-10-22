@@ -238,6 +238,11 @@ pub fn render(s: &pb::SnapshotResponse) -> String {
             "Leases that expired without a heartbeat",
             t.lease_expiries,
         ),
+        (
+            "cronoq_stale_completions_total",
+            "Completions for leases that were no longer valid, ignored",
+            t.stale_completions,
+        ),
     ] {
         o.family(name, "counter", help);
         o.sample(name, &[], v as f64);

@@ -488,7 +488,7 @@ class PoolSnapshot(_message.Message):
     def __init__(self, name: _Optional[str] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ..., held: _Optional[int] = ..., desired: _Optional[int] = ..., pending_by_class: _Optional[_Iterable[int]] = ..., reservations: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., priority_adherence: _Optional[float] = ..., fixed_start_hit_rate: _Optional[float] = ..., utilization: _Optional[float] = ..., schedule_efficiency: _Optional[float] = ..., wait_p50_s: _Optional[float] = ..., wait_p90_s: _Optional[float] = ..., wait_p99_s: _Optional[float] = ..., cost: _Optional[float] = ..., workers_connected: _Optional[int] = ...) -> None: ...
 
 class Totals(_message.Message):
-    __slots__ = ("submitted", "dispatched", "succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed", "retries", "timeouts", "lease_expiries")
+    __slots__ = ("submitted", "dispatched", "succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed", "retries", "timeouts", "lease_expiries", "stale_completions")
     SUBMITTED_FIELD_NUMBER: _ClassVar[int]
     DISPATCHED_FIELD_NUMBER: _ClassVar[int]
     SUCCEEDED_FIELD_NUMBER: _ClassVar[int]
@@ -501,6 +501,7 @@ class Totals(_message.Message):
     RETRIES_FIELD_NUMBER: _ClassVar[int]
     TIMEOUTS_FIELD_NUMBER: _ClassVar[int]
     LEASE_EXPIRIES_FIELD_NUMBER: _ClassVar[int]
+    STALE_COMPLETIONS_FIELD_NUMBER: _ClassVar[int]
     submitted: int
     dispatched: int
     succeeded: int
@@ -513,7 +514,8 @@ class Totals(_message.Message):
     retries: int
     timeouts: int
     lease_expiries: int
-    def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ...) -> None: ...
+    stale_completions: int
+    def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ..., stale_completions: _Optional[int] = ...) -> None: ...
 
 class SnapshotResponse(_message.Message):
     __slots__ = ("pools", "live_tasks", "running", "pending", "totals", "workers_connected")

@@ -337,6 +337,9 @@ message Totals {
   uint64 retries = 10;
   uint64 timeouts = 11;
   uint64 lease_expiries = 12;
+  // Completions and failures reported for leases that were no longer valid (late, duplicate,
+  // or from an earlier leader); they were ignored.
+  uint64 stale_completions = 13;
 }
 
 message SnapshotResponse {

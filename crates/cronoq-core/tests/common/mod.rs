@@ -212,6 +212,10 @@ impl Sim {
         self.running.len()
     }
 
+    pub fn running_leases(&self) -> Vec<LeaseId> {
+        self.running.keys().map(|(_, l)| *l).collect()
+    }
+
     pub fn complete_all_running_now(&mut self, outcome: Outcome) {
         let all: Vec<_> = std::mem::take(&mut self.running).into_iter().collect();
         for ((_, lease), _) in all {

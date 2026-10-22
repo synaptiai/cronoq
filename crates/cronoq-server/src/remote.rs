@@ -68,6 +68,8 @@ pub struct WorkerRegistry {
     state: Mutex<State>,
     /// Capacity totals, applied to the scheduler in the order they were computed.
     capacity_tx: OnceLock<mpsc::UnboundedSender<(Arc<str>, u32)>>,
+    /// Reports for leases the reporting worker does not hold (late, duplicate, aborted).
+    stale_reports: std::sync::atomic::AtomicU64,
 }
 
 /// Outcome of trying to send a lease to one worker.
@@ -80,6 +82,12 @@ impl WorkerRegistry {
     /// An empty registry.
     pub fn new() -> Arc<Self> {
         Arc::new(WorkerRegistry::default())
+    }
+
+    /// Number of reports for leases the reporting worker did not hold, which were ignored.
+    pub fn stale_reports(&self) -> u64 {
+        self.stale_reports
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Start publishing capacity changes to `sched`.
@@ -249,7 +257,11 @@ impl WorkerRegistry {
             let mut st = self.state.lock().unwrap();
             match st.pending.get(&lease) {
                 Some(p) if p.worker == worker => {}
-                _ => return None,
+                _ => {
+                    self.stale_reports
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return None;
+                }
             }
             let p = st.pending.remove(&lease).unwrap();
             if let Some(w) = st.workers.get_mut(&worker) {

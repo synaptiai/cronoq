@@ -813,6 +813,7 @@ async fn snapshot(State(st): State<St>) -> Result<Json<Value>, ApiError> {
             "failed": t.failed, "dead_lettered": t.dead_lettered, "cancelled": t.cancelled,
             "skipped": t.skipped, "missed": t.missed, "shed": t.shed, "retries": t.retries,
             "timeouts": t.timeouts, "lease_expiries": t.lease_expiries,
+            "stale_completions": t.stale_completions,
         },
     })))
 }
