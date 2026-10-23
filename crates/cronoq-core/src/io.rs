@@ -486,7 +486,8 @@ pub struct Recovered<P> {
 
 impl<P> Recovered<P> {
     /// The first recovered task id that does not belong to `shard`, if any: the store holds
-    /// tasks of another shard, or of an unsharded server.
+    /// tasks of another shard. Ids of an unsharded server are caught only when their top byte
+    /// differs from `shard` (early epochs look like shard 0's), so give shards new stores.
     pub fn outside_shard(&self, shard: u8) -> Option<TaskId> {
         let last = (self.next_id > 0).then(|| TaskId(self.next_id - 1));
         last.into_iter()

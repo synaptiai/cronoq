@@ -101,7 +101,8 @@ fn sharded_engines_issue_ids_in_their_shard() {
     // The sequence carries into the epoch bits, not the shard's.
     let last_of_epoch = TaskId((3u64 << 56) | (7u64 << 40) | ((1u64 << 40) - 1));
     assert_eq!(TaskId(last_of_epoch.0 + 1).shard(), 3);
-    // Recovered state of another shard (or of an unsharded server) is recognised.
+    // Recovered state of another shard is recognised, and so are unsharded ids whose top byte
+    // is not the shard's; unsharded ids of early epochs look like shard 0's.
     let mut rec = Recovered::<Job> {
         next_id: b.0 + 1,
         ..Default::default()

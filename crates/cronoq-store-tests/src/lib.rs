@@ -846,7 +846,7 @@ pub async fn finished_tasks_are_listed_by_pool_status_and_page<H: Harness>(h: &H
 }
 
 /// A sharded scheduler issues ids in its shard across restarts, and refuses a store that holds
-/// another shard's (or an unsharded server's) tasks.
+/// another shard's tasks.
 pub async fn sharded_schedulers_keep_ids_in_their_shard<H: Harness>(h: &H) {
     let sharded = |store: H::Store, shard: u8| {
         Scheduler::<Bytes, Bytes>::builder()

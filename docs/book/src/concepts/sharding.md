@@ -41,7 +41,9 @@ cronoq-server --config cronoq.toml --shard gpu
   per shard.
 - **Its own store.** Postgres keeps each shard in its own schema (`store.schema` must contain
   `{shard}` and defaults to `cronoq_{shard}`); SQLite in its own file (`store.path` must contain
-  `{shard}`). A server refuses to start on a store that holds another shard's tasks.
+  `{shard}`). A server refuses to start on a store that holds another shard's tasks. Start a
+  sharded deployment on new stores: an unsharded server's tasks are not always recognised, and
+  moving them into a shard is not supported.
 - **Its own ids.** Task ids carry the shard's `number` in their top 8 bits, so ids never collide
   between shards, and any server can tell which shard a task belongs to.
 - **Its own keys.** Keys deduplicate within a shard; two shards can each have a task with the
