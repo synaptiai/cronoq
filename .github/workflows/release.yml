@@ -40,8 +40,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
+      # Any run on a tag checks the versions, including a manual run that publishes.
       - name: Tag matches workspace and package versions
-        if: github.event_name == 'push'
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ws=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="cronoq"))')
@@ -330,9 +331,11 @@ jobs:
         with:
           name: npm-package
           path: npm
-      - name: Refuse a version that is already on npm
+      - name: Refuse a tarball that does not match the tag, or a version already on npm
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(tar -xOzf npm/*.tgz package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
+          test "$version" = "$tag" || { echo "the tarball is version $version, the tag is $tag"; exit 1; }
           if npm view "cronoq@$version" version >/dev/null 2>&1; then
             echo "cronoq@$version is already on npm"; exit 1
           fi
