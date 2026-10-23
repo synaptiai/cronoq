@@ -18,6 +18,7 @@ cronoq-server --print-proto                  # print the gRPC API definition
 | `--check` | Validate the configuration and exit (`configuration is valid`). |
 | `--insecure-no-auth` | Allow running without auth on non-loopback addresses (same as `server.insecure_no_auth`). Trusted networks only. |
 | `--print-proto` | Print `cronoq/v1/cronoq.proto` and exit. |
+| `--shard NAME` | The shard this server serves (also `CRONOQ_SHARD`; overrides `server.shard`). |
 
 The log level comes from `RUST_LOG` (default `info`).
 
@@ -36,6 +37,7 @@ Durations are seconds (floats). They must be finite and between their minimum an
 | `metrics_addr` | socket address, optional | unset | Extra **unauthenticated** listener serving only `/metrics`, `/healthz` and `/readyz`. Bind it to an internal network for scrapers. Without it, `/metrics` on `http_addr` needs a `metrics` or `admin` token. |
 | `insecure_no_auth` | bool | `false` | Allow starting with no tokens and no certificate mappings while listening on a non-loopback address. Without it the server refuses to start in that situation. |
 | `shutdown_grace_s` | float ≥ 0 | `10` | On shutdown (or loss of leadership), running attempts may finish for this long before they are aborted. |
+| `shard` | string, optional | unset | With [`[[shards]]`](#shards), the shard this server serves. Usually set per deployment with `--shard` or `CRONOQ_SHARD`, so all shards share one file. |
 
 ### `[server.tls]`
 
@@ -251,6 +253,26 @@ permits = 8
 | `permits` | `semaphore` | Units held concurrently (≥ 1); released when each attempt ends. |
 | `rate` | `token_bucket` | Refill per second (> 0). |
 | `burst` | `token_bucket` | Bucket size (≥ 1). |
+| `shard` | both | With [`[[shards]]`](#shards), required: the shard that owns the resource. Only that shard's tasks may use it; others are refused with `INVALID_ARGUMENT`. Without shards it must be unset. |
+
+## `[[shards]]`
+
+Optional. Splits the pools between shards, each served by its own leader and standbys with a
+store of its own ([Sharding](../concepts/sharding.md)). Every shard's servers use the same list
+and pick their own with `server.shard`.
+
+| Key | Type | Description |
+|---|---|---|
+| `name` | string | 1–32 lower-case letters, digits and `_`, starting with a letter. |
+| `number` | int, 0–255 | Unique; carried in the top 8 bits of the shard's task ids. Do not change it once the shard has tasks. |
+| `pools` | list of pool names | The pools this shard serves. Every `[[pools]]` entry belongs to exactly one shard. |
+| `endpoint` | URL | `http://` or `https://` address that reaches the shard's leader (for example a Kubernetes service in front of its replicas). Servers name it when they refuse another shard's work. |
+
+With shards, each shard keeps its own state: a Postgres `store.schema` must contain `{shard}`
+(default `cronoq_{shard}`), and a SQLite `store.path` must contain `{shard}`; the server fills
+in its shard's name. Each resource belongs to one shard (its `shard` key), because shards do not share counts: a
+resource shared by two shards would have its full capacity in each. `[limits]` apply to each
+shard separately.
 
 ## `[outputs]`
 
@@ -275,4 +297,7 @@ outputs that are no longer cached are read from the database.
 - `server.grpc_web.allowed_origins` that is empty, has more than 64 entries, or holds anything
   other than exact origins;
 - both `store.url` and `store.url_env`;
-- non-loopback listeners with no credentials, unless `insecure_no_auth` is set.
+- non-loopback listeners with no credentials, unless `insecure_no_auth` is set;
+- `[[shards]]` with duplicate names, numbers or endpoints, unknown pools, pools in no shard or in
+  two, a missing or unknown `server.shard`, a store namespace without `{shard}`, or a resource
+  without a known `shard`.

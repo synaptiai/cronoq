@@ -24,6 +24,7 @@ mod pg;
 pub mod remote;
 pub mod scaler;
 pub mod server;
+pub mod shard;
 pub mod state;
 mod store;
 pub mod worker;

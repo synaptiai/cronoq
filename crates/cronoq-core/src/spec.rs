@@ -9,8 +9,24 @@ use smallvec::SmallVec;
 use crate::time::Time;
 
 /// Engine-assigned task identifier (monotonic; the high 16 bits carry the leader epoch).
+///
+/// With sharding ([`CoreConfig::id_shard`](crate::CoreConfig::id_shard)) the top 8 bits carry
+/// the shard number and the leader epoch sits below them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskId(pub u64);
+
+impl TaskId {
+    /// The shard number of an id issued by a sharded engine (its top 8 bits).
+    pub fn shard(self) -> u8 {
+        (self.0 >> 56) as u8
+    }
+
+    /// The first id a sharded engine issues in `epoch`. Ids then grow by one; the
+    /// sequence carries into the epoch bits, never into the shard's.
+    pub fn first_in_shard(shard: u8, epoch: u16) -> TaskId {
+        TaskId((shard as u64) << 56 | (epoch as u64) << 40 | 1)
+    }
+}
 
 impl fmt::Display for TaskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

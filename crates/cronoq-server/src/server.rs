@@ -167,6 +167,14 @@ pub async fn run(
     on_bound: impl FnOnce(Bound),
 ) -> anyhow::Result<()> {
     cfg.validate()?;
+    let shards = cfg
+        .shard_plan()
+        .map(|p| Arc::new(crate::shard::ShardMap::new(&p)));
+    // From here on: this shard's pools and store only.
+    let cfg = cfg.for_own_shard();
+    if let Some(s) = &shards {
+        tracing::info!(shard = %s.own().name, number = s.own().number, "serving one shard");
+    }
     let auth = Auth::from_config(&cfg.auth)?;
     cfg.check_auth_exposure(auth.enabled())?;
     if !auth.enabled() {
@@ -281,7 +289,7 @@ pub async fn run(
         )));
     }
 
-    let result = lead(&cfg, &shared, shutdown, bound, on_bound).await;
+    let result = lead(&cfg, shards, &shared, shutdown, bound, on_bound).await;
     shared.ready.store(false, Ordering::SeqCst);
     shared.stop.cancel();
     for mut s in servers {
@@ -299,6 +307,7 @@ pub async fn run(
 /// Acquire leadership, serve, and stop. Returns when `shutdown` resolves or leadership is lost.
 async fn lead(
     cfg: &Config,
+    shards: Option<Arc<crate::shard::ShardMap>>,
     shared: &Arc<Shared>,
     shutdown: impl Future<Output = ()>,
     bound: Bound,
@@ -323,6 +332,7 @@ async fn lead(
             c.global_bounds.max_pending = Some(limits.max_pending_total);
             c.retention = limits.key_retention();
             c.retention_max = limits.key_retention_max;
+            c.id_shard = shards.as_ref().map(|s| s.own().number);
         });
     let mut pools = FxHashMap::default();
     for p in &cfg.pools {
@@ -400,6 +410,7 @@ async fn lead(
         pools,
         limits: limits.clone(),
         queries: queries.clone(),
+        shards,
     });
     let _ = shared.app.set(app);
     shared.ready.store(true, Ordering::SeqCst);

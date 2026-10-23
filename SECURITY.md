@@ -72,6 +72,11 @@ limited to a list of pools.
 - **Pool scoping.** Scoped credentials cannot submit into, serve, watch, list or look up tasks
   of other pools; such tasks are reported as not found rather than forbidden, so ids do not
   leak. Listings of workers and recurring schedules are limited the same way.
+- **Shards.** A server refuses another shard's work naming that shard and its endpoint, but only
+  after the credentials' pool check, so a scoped caller learns where its own pools are served.
+  Task ids show their shard's number; a lookup by another shard's id names that shard without
+  saying whether the task exists. Each shard has its own store, so one shard's leader cannot
+  read or change another shard's tasks.
 - **Tenant pinning.** Credentials with a `tenant` submit only for that tenant, so a client
   cannot spend another tenant's fair share. Without it, callers name their tenant freely.
   Pinning does not hide tasks: within the pools it may use, a client can look up and list other

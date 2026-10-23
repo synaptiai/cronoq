@@ -58,6 +58,55 @@ pub fn check_pool(principal: &Principal, pool: &str) -> Result<(), Status> {
     }
 }
 
+/// Refuse a pool that another shard serves, naming that shard.
+pub fn check_pool_shard(app: &AppState, pool: &str) -> Result<(), Status> {
+    match app.shards.as_ref().and_then(|m| m.other_for_pool(pool)) {
+        Some(s) => Err(crate::shard::elsewhere(s, &format!("pool '{pool}'"))),
+        None => Ok(()),
+    }
+}
+
+/// Refuse a task id that another shard issued, naming that shard.
+fn check_id_shard(app: &AppState, target: &TaskRef) -> Result<(), Status> {
+    let TaskRef::Id(id) = target else {
+        return Ok(());
+    };
+    match app.shards.as_ref().and_then(|m| m.other_for_id(*id)) {
+        Some(s) => Err(crate::shard::elsewhere(s, &format!("task {id}"))),
+        None => Ok(()),
+    }
+}
+
+/// Refuse a task for another shard's pool, or one that depends on another shard's task:
+/// dependencies across shards are not supported.
+fn check_spec_shard(app: &AppState, spec: &pb::TaskSpec) -> Result<(), Status> {
+    let Some(map) = &app.shards else {
+        return Ok(());
+    };
+    check_pool_shard(app, convert::spec_pool(spec))?;
+    for r in spec.resources.keys() {
+        if let Some(s) = map.other_for_resource(r) {
+            return Err(Status::invalid_argument(format!(
+                "resource '{r}' belongs to shard '{}': a task can only use its own shard's \
+                 resources",
+                s.name
+            )));
+        }
+    }
+    for d in &spec.deps {
+        if let Some(pb::task_ref::Target::Id(id)) =
+            d.target.as_ref().and_then(|t| t.target.as_ref())
+            && let Some(s) = map.other_for_id(TaskId(*id))
+        {
+            return Err(Status::invalid_argument(format!(
+                "task {id} is in shard '{}': dependencies across shards are not supported",
+                s.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Resolve a reference to a task id (live in the engine, cached, or persisted).
 async fn resolve_id(app: &AppState, target: &TaskRef) -> Result<Option<TaskId>, Status> {
     match target {
@@ -95,6 +144,7 @@ pub async fn authorize_task(
     principal: &Principal,
     target: TaskRef,
 ) -> Result<TaskRef, Status> {
+    check_id_shard(app, &target)?;
     if principal.pools.is_none() {
         return Ok(target);
     }
@@ -329,6 +379,7 @@ pub async fn submit_one(
 ) -> Result<pb::SubmitResponse, Status> {
     pin_tenant(principal, &mut spec)?;
     check_pool(principal, convert::spec_pool(&spec))?;
+    check_spec_shard(app, &spec)?;
     check_cross_pool(app, principal, &spec, &[]).await?;
     let meta = pb::TaskSpec {
         payload: Vec::new(),
@@ -382,6 +433,9 @@ pub async fn submit_batch(
     }
     for s in &mut specs {
         pin_tenant(principal, s)?;
+        check_pool(principal, convert::spec_pool(s))?;
+        // A batch is atomic in one shard's store, so every task must be this shard's.
+        check_spec_shard(app, s)?;
     }
     // Only keys the batch introduces count as batch-local: a key that already names a task
     // (possibly of another pool) is checked like any other duplicate or dependency, before
@@ -515,6 +569,8 @@ fn listing_pools(
     for p in &requested {
         convert::check_str("pool", p, 64)?;
         if app.pool(p).is_none() {
+            check_pool(principal, p)?;
+            check_pool_shard(app, p)?;
             return Err(Status::not_found(format!("unknown pool '{p}'")));
         }
         check_pool(principal, p)?;
@@ -695,6 +751,8 @@ pub fn watch(
     for p in &filter.pools {
         convert::check_str("pool", p, 64)?;
         if app.pool(p).is_none() {
+            check_pool(principal, p)?;
+            check_pool_shard(app, p)?;
             return Err(Status::not_found(format!("unknown pool '{p}'")));
         }
         check_pool(principal, p)?;
@@ -915,6 +973,9 @@ impl pb::workers_server::Workers for WorkersService {
             ));
         }
         let Some(info) = app.pool(&reg.pool).cloned() else {
+            check_pool(&principal, &reg.pool)?;
+            // Workers of another shard's pool are sent to that shard's leader.
+            check_pool_shard(&app, &reg.pool)?;
             return Err(Status::not_found(format!("unknown pool '{}'", reg.pool)));
         };
         check_pool(&principal, &reg.pool)?;
@@ -1055,7 +1116,9 @@ impl pb::admin_server::Admin for AdminService {
         if r.name.is_empty() {
             return Err(Status::invalid_argument("recurring schedule needs a name"));
         }
-        let template = convert::task(r.template.unwrap_or_default(), &app.limits)?;
+        let template = r.template.unwrap_or_default();
+        check_spec_shard(app, &template)?;
+        let template = convert::task(template, &app.limits)?;
         let overlap = match pb::Overlap::try_from(r.overlap) {
             Ok(pb::Overlap::Unspecified | pb::Overlap::Skip) => OverlapPolicy::Skip,
             Ok(pb::Overlap::Allow) => OverlapPolicy::Allow,

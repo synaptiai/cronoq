@@ -14,6 +14,9 @@ struct Args {
     /// Allow running without authentication on non-loopback addresses (trusted networks only).
     #[arg(long)]
     insecure_no_auth: bool,
+    /// The shard this server serves (overrides `server.shard`).
+    #[arg(long, env = "CRONOQ_SHARD")]
+    shard: Option<String>,
     /// Validate the configuration and exit.
     #[arg(long)]
     check: bool,
@@ -36,11 +39,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let mut cfg = match &args.config {
-        Some(p) => cronoq_server::Config::load(p)?,
+        Some(p) => cronoq_server::Config::read(p)?,
         None => cronoq_server::Config::default(),
     };
     if args.insecure_no_auth {
         cfg.server.insecure_no_auth = true;
+    }
+    if let Some(s) = args.shard {
+        cfg.server.shard = Some(s);
     }
     if args.check {
         cfg.validate()?;

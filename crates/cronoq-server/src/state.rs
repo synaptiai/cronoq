@@ -73,6 +73,8 @@ pub struct AppState {
     pub limits: LimitsConfig,
     /// Durable store, for outputs and details no longer cached.
     pub queries: Option<Arc<dyn cronoq::StoreQueries<Bytes>>>,
+    /// The shard layout, when pools are split between shards.
+    pub shards: Option<Arc<crate::shard::ShardMap>>,
 }
 
 impl AppState {

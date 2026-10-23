@@ -40,6 +40,7 @@
 - [Backpressure](concepts/backpressure.md)
 - [Metrics and quality signals](concepts/metrics.md)
 - [Durability and high availability](concepts/durability.md)
+- [Sharding](concepts/sharding.md)
 
 # Guides
 
