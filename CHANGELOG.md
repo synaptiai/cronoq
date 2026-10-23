@@ -59,7 +59,8 @@ First public release.
 
 - Tokio driver with an async API (`Scheduler`, `TaskHandle`, `submit`, `enqueue`,
   `enqueue_many`, `submit_batch`, `cancel`, `status`, `snapshot`, `events`) and a blocking
-  facade (`BlockingScheduler`).
+  facade (`BlockingScheduler`). Blocking handles wait on their own thread, without the
+  runtime's timer, so waiting while the scheduler shuts down cannot panic.
 - Executors from closures or the `Executor` trait, with cancellation tokens, heartbeats and
   `TaskContext::for_test` for unit tests. Executor panics are isolated.
 - Pluggable scalers (in-process slots, external) and stores.
