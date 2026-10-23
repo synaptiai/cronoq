@@ -26,9 +26,11 @@ Serving a pool::
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import time
+import urllib.parse
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -1004,6 +1006,71 @@ _FATAL = {
 
 _STOP = object()
 
+#: Redirects to other shards a worker follows in a row before it gives up.
+MAX_REDIRECTS = 3
+
+#: Channel options that name the original server, dropped when following a redirect.
+_SERVER_NAME_OPTIONS = ("grpc.ssl_target_name_override", "grpc.default_authority")
+
+
+def _is_loopback(target: str) -> bool:
+    try:
+        host = urllib.parse.urlsplit(target if "://" in target else f"//{target}").hostname or ""
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _redirect(
+    e: grpc.aio.AioRpcError, secure: bool, has_token: bool, insecure_http: bool
+) -> str | None:
+    """The shard endpoint a refusal sends the worker to, or ``None`` if it is not a redirect.
+    Raises :class:`ClientError` for an endpoint that may not be followed: plain http after TLS,
+    or a token over plain http to another host without ``insecure_redirect_http``."""
+    if e.code() != grpc.StatusCode.FAILED_PRECONDITION:
+        return None
+    target = None
+    for md in (e.trailing_metadata(), e.initial_metadata()):
+        for k, v in md or ():
+            if k == "cronoq-shard-endpoint" and isinstance(v, str):
+                target = v
+    if target is None:
+        return None
+    if not target.startswith(("http://", "https://")):
+        raise ClientError(
+            "failed_precondition",
+            f"the server redirected the worker to {target!r}, which is not an http(s) endpoint",
+        )
+    try:
+        netloc = urllib.parse.urlsplit(target).netloc
+    except ValueError:
+        netloc = "@"  # unparseable: refused like userinfo
+    if "@" in netloc:
+        raise ClientError(
+            "failed_precondition",
+            f"the server redirected the worker to {target!r}, which is not a plain host and port",
+        )
+    plain = target.startswith("http://")
+    if plain and secure:
+        raise ClientError(
+            "failed_precondition",
+            f"the server redirected the worker from TLS to plain http ({target!r}); refusing",
+        )
+    if plain and has_token and not _is_loopback(target):
+        if not insecure_http:
+            raise ClientError(
+                "failed_precondition",
+                f"the server redirected the worker to {target!r}, which would send its token over plain http "
+                "to another host; refusing (insecure_redirect_http=True allows it)",
+            )
+        log.warning("following a redirect that sends the worker token over plain http to %s", target)
+    return target
+
 
 class Worker:
     """Serve a pool: lease tasks from the server and run ``handler`` on them.
@@ -1022,6 +1089,12 @@ class Worker:
     leases beyond the grant are handed back. If the stream drops, or the server announces it is
     shutting down or no longer the leader, the worker reconnects with exponential backoff
     (unless ``reconnect=False``); attempts in flight at that moment are retried by the server.
+
+    If another shard serves the pool, the server names that shard's endpoint and the worker
+    connects there (up to :data:`MAX_REDIRECTS` times in a row), keeping its TLS credentials.
+    It never follows a redirect from TLS to plain http, and sends its token over plain http
+    only to loopback unless ``insecure_redirect_http=True``. When that shard is unreachable,
+    the worker asks ``target`` again.
 
     A worker can be created outside a running event loop and run again after :meth:`stop`
     (also on a different loop).
@@ -1047,6 +1120,7 @@ class Worker:
         grace: float = 10.0,
         options: Sequence[tuple[str, Any]] | None = None,
         labels: Mapping[str, str] | None = None,
+        insecure_redirect_http: bool = False,
     ) -> None:
         if slots < 1:
             raise ValueError("slots must be >= 1")
@@ -1059,6 +1133,9 @@ class Worker:
         self.backoff = backoff
         self.grace = grace
         self._target = target
+        #: The endpoint connected to: ``target``, or the shard it redirected the worker to.
+        self._current = target
+        self._insecure_redirect_http = insecure_redirect_http
         self._tls = tls
         self._credentials = credentials
         self._options = options
@@ -1139,15 +1216,37 @@ class Worker:
         finally:
             self._finished = True
 
+    def _secure(self, target: str) -> bool:
+        return self._tls or self._credentials is not None or target.startswith("https://")
+
     async def _serve(self) -> None:
         delay = self.backoff[0]
+        redirects = 0
+        self._current = self._target
         while not self._stopping.is_set():
             started = time.monotonic()
             try:
                 await self._session()
+                redirects = 0
             except grpc.aio.AioRpcError as e:
                 if self._stopping.is_set():
                     break
+                to = _redirect(e, self._secure(self._current), bool(self._md), self._insecure_redirect_http)
+                if to is not None:
+                    redirects += 1
+                    if redirects > MAX_REDIRECTS:
+                        raise ClientError(
+                            "failed_precondition",
+                            f"worker redirected more than {MAX_REDIRECTS} times in a row: {e.details()}",
+                        ) from None
+                    log.info("pool %r is served by another shard; connecting to %s", self.pool, to)
+                    self._current = to
+                    continue
+                redirects = 0
+                if e.code() == grpc.StatusCode.UNAVAILABLE and self._current != self._target:
+                    # The shard is unreachable: ask the configured endpoint where the pool is.
+                    log.warning("shard at %s unreachable; returning to %s", self._current, self._target)
+                    self._current = self._target
                 if e.code() in _FATAL or not self.reconnect:
                     raise ClientError.from_rpc(e) from None
                 log.warning("worker stream failed (%s); reconnecting", e.code().name)
@@ -1231,7 +1330,11 @@ class Worker:
                     return
                 yield msg
 
-        async with _channel(self._target, self._tls, self._credentials, self._options) as channel:
+        options = self._options
+        if self._current != self._target and options:
+            # A fixed server name belongs to the configured endpoint, not to the shard's.
+            options = [o for o in options if o[0] not in _SERVER_NAME_OPTIONS]
+        async with _channel(self._current, self._tls, self._credentials, options) as channel:
             stub = pb_grpc.WorkersStub(channel)
             call = stub.Work(requests(), metadata=self._md)
             self._call = call

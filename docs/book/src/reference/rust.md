@@ -210,6 +210,7 @@ run_worker(opts, |lease| async move { Ok(lease.payload) }, shutdown_signal).awai
 | `tls` | none | `WorkerTls { ca_pem, identity, domain }` for TLS and mTLS. Needs an `https://` endpoint; with `http://` the worker returns an error. |
 | `label(name, value)` | none | A worker label; tasks that require labels are leased only to workers that have them. |
 | `reconnect` | `true` | Reconnect with backoff when the connection drops or the server steps down. |
+| `insecure_redirect_http` | `false` | Follow a shard redirect to plain `http://` on another host with the token. Redirects otherwise keep TLS and use plain http only on loopback; see [Sharding](../concepts/sharding.md). |
 | `initial_backoff`, `max_backoff` | 200 ms, 10 s | Reconnect backoff bounds. |
 | `drain_timeout` | 30 s | How long running handlers may finish after `shutdown` resolves. |
 | `max_message_bytes` | 64 MiB | Largest message accepted from the server. |

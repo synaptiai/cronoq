@@ -112,7 +112,9 @@ First public release.
   to one shard (`[[resources]] shard`), so shards cannot exceed a shared limit together.
   Any server forwards calls for another shard to it with the caller's token (re-checked there;
   never over plain HTTP to another host unless `insecure_peer_http`), and listings, `Watch` and
-  snapshots cover every shard, naming unreachable shards in `unavailable_shards`.
+  snapshots cover every shard, naming unreachable shards in `unavailable_shards`. The Rust and
+  Python workers follow a refusal to their pool's shard, never from TLS to plain HTTP, and with
+  a token over plain HTTP only to loopback unless `insecure_redirect_http` is set.
 - gRPC-Web for browser clients on the gRPC listener, off unless `[server.grpc_web]` lists the
   allowed origins: unary calls and `Watch`, the same authentication, CORS only for those origins,
   and in loopback-only mode only loopback hosts.

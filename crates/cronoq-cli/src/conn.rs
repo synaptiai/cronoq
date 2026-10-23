@@ -157,12 +157,12 @@ fn read(p: &PathBuf) -> anyhow::Result<Vec<u8>> {
 
 /// Whether the endpoint's host is loopback (a copy of the check in cronoq-server's worker).
 fn is_loopback_endpoint(endpoint: &str) -> bool {
-    let rest = endpoint.split_once("://").map_or(endpoint, |(_, r)| r);
-    let host = rest.split(['/', '?']).next().unwrap_or("");
-    let host = match host.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    // Parsed as tonic connects, so userinfo (`http://127.0.0.1:1@host`) cannot hide the host.
+    let Ok(uri) = endpoint.parse::<tonic::transport::Uri>() else {
+        return false;
     };
+    let host = uri.host().unwrap_or("");
+    let host = host.trim_start_matches('[').trim_end_matches(']');
     host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()

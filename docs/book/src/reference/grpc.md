@@ -234,7 +234,8 @@ shards. The listing responses and `SnapshotResponse` name shards that could not 
 response metadata, and `Cancel` by key is refused while any shard cannot be asked. A call that
 is not forwarded (client-certificate callers, plain-HTTP
 endpoints on other hosts, workers) gets `FAILED_PRECONDITION` with the shard's name and endpoint
-in the `cronoq-shard` and `cronoq-shard-endpoint` metadata.
+in the `cronoq-shard` and `cronoq-shard-endpoint` metadata. Workers reconnect to that endpoint
+(see [Sharding](../concepts/sharding.md)).
 
 ## gRPC-Web
 

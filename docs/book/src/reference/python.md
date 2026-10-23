@@ -238,7 +238,7 @@ task requires), `tenant`, `content_type`.
 Payloads: `bytes` are sent as-is, `str` as UTF-8 text, other values as JSON
 (`application/json`). Worker outputs are encoded the same way.
 
-### `Worker(target, pool, handler, *, slots=1, token=None, name="", tls=False, credentials=None, reconnect=True, backoff=(0.1, 5.0), grace=10.0, options=None, labels=None)`
+### `Worker(target, pool, handler, *, slots=1, token=None, name="", tls=False, credentials=None, reconnect=True, backoff=(0.1, 5.0), grace=10.0, options=None, labels=None, insecure_redirect_http=False)`
 
 | Member | Description |
 |---|---|
@@ -265,7 +265,10 @@ The worker heartbeats each running lease every `lease_ttl / 3`. When the server 
 attempt (timeout, cancellation, lease expiry) the handler's task is cancelled and
 `lease.cancelled` is set. A handler that swallows `CancelledError` keeps running and may overlap
 with the retry of the same task. When the server announces `Shutdown` (restart or leadership
-change) the worker reconnects; attempts in flight are retried by the server.
+change) the worker reconnects; attempts in flight are retried by the server. When another
+shard serves the pool, the worker connects to that shard's endpoint, keeping its credentials
+(`insecure_redirect_http=True` allows plain `http://` to other hosts; see
+[Sharding](../concepts/sharding.md)).
 
 ## `cronoq.compat`
 
