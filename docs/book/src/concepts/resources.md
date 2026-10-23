@@ -39,3 +39,10 @@ Request units on the task: `.resource("gpu", 1)` (Rust), `resources={"gpu": 1}` 
 Parking happens after priority selection, so the most urgent task that *can* run is dispatched.
 A parked high-priority task gets the resource as soon as it is available, ahead of later
 waiters for that resource. Parked tasks are not counted as priority inversions.
+
+## Resources and shards
+
+With [sharding](sharding.md), each shard counts its resources on its own. A resource that tasks
+of several shards use gets its full capacity in every one of them, so an outside rate limit
+shared that way is exceeded. Keep a resource's users in one shard, or define one resource per
+shard with its share of the limit.

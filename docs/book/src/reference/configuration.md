@@ -269,8 +269,10 @@ and pick their own with `server.shard`.
 
 With shards, each shard keeps its own state: a Postgres `store.schema` must contain `{shard}`
 (default `cronoq_{shard}`), and a SQLite `store.path` must contain `{shard}`; the server fills
-in its shard's name. `[limits]` and `[[resources]]` apply per shard: a resource named in two
-shards' tasks has its capacity in each.
+in its shard's name. `[limits]` and `[[resources]]` apply per shard, with no counts shared between shards: a resource
+that tasks of two shards use has its full capacity in each, so its total doubles. Keep each
+resource's users in one shard, or split it into one resource per shard
+([Sharding](../concepts/sharding.md)).
 
 ## `[outputs]`
 

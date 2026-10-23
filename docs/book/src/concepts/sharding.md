@@ -37,8 +37,13 @@ cronoq-server --config cronoq.toml --shard gpu
 
 ## What a shard is
 
-- **Its own pools.** A server runs only its shard's pools. `[limits]` and `[[resources]]` apply
-  per shard.
+- **Its own pools.** A server runs only its shard's pools.
+- **Its own limits.** Each shard enforces `[[resources]]` and `[limits]` on its own; shards do
+  not share counts. A resource that tasks of two shards use is allowed in full in each: a
+  limit of 10 calls per second to an outside API becomes 20 per second across two shards, and
+  8 GPU slots become 16. Keep each resource's users in one shard, or give each shard its own
+  resource with its share of the limit (`api_cpu` with 6 per second, `api_gpu` with 4).
+  `limits.max_pending_total` also applies to each shard separately.
 - **Its own store.** Postgres keeps each shard in its own schema (`store.schema` must contain
   `{shard}` and defaults to `cronoq_{shard}`); SQLite in its own file (`store.path` must contain
   `{shard}`). A server refuses to start on a store that holds another shard's tasks. Start a
