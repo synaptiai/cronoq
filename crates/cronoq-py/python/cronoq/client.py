@@ -1237,7 +1237,8 @@ class Worker:
                     if redirects > MAX_REDIRECTS:
                         raise ClientError(
                             "failed_precondition",
-                            f"worker redirected more than {MAX_REDIRECTS} times in a row: {e.details()}",
+                            f"worker redirected {redirects} times in a row, more than the {MAX_REDIRECTS} it follows: "
+                            f"{e.details()}",
                         ) from None
                     log.info("pool %r is served by another shard; connecting to %s", self.pool, to)
                     self._current = to

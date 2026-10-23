@@ -573,10 +573,7 @@ async fn workers_follow_their_pool_to_its_shard() {
     .await
     .unwrap()
     .unwrap_err();
-    assert!(
-        e.to_string().contains("redirected more than 3 times"),
-        "{e}"
-    );
+    assert!(e.to_string().contains("redirected 4 times in a row"), "{e}");
     cpu.stop().await;
     gpu.stop().await;
 }

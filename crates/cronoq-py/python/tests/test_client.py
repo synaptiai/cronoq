@@ -880,7 +880,7 @@ async def test_worker_follows_its_pool_to_its_shard(server_binary: Path) -> None
     )
     try:
         w = Worker(servers[0].target, "llm", upper, token=WORKER)
-        with pytest.raises(ClientError, match="redirected more than 3 times"):
+        with pytest.raises(ClientError, match="redirected 4 times in a row"):
             await asyncio.wait_for(w.run(), 20)
     finally:
         for s in servers:
