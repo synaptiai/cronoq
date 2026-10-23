@@ -253,6 +253,7 @@ permits = 8
 | `permits` | `semaphore` | Units held concurrently (≥ 1); released when each attempt ends. |
 | `rate` | `token_bucket` | Refill per second (> 0). |
 | `burst` | `token_bucket` | Bucket size (≥ 1). |
+| `shard` | both | With [`[[shards]]`](#shards), required: the shard that owns the resource. Only that shard's tasks may use it; others are refused with `INVALID_ARGUMENT`. Without shards it must be unset. |
 
 ## `[[shards]]`
 
@@ -269,10 +270,9 @@ and pick their own with `server.shard`.
 
 With shards, each shard keeps its own state: a Postgres `store.schema` must contain `{shard}`
 (default `cronoq_{shard}`), and a SQLite `store.path` must contain `{shard}`; the server fills
-in its shard's name. `[limits]` and `[[resources]]` apply per shard, with no counts shared between shards: a resource
-that tasks of two shards use has its full capacity in each, so its total doubles. Keep each
-resource's users in one shard, or split it into one resource per shard
-([Sharding](../concepts/sharding.md)).
+in its shard's name. Each resource belongs to one shard (its `shard` key), because shards do not share counts: a
+resource shared by two shards would have its full capacity in each. `[limits]` apply to each
+shard separately.
 
 ## `[outputs]`
 
@@ -299,4 +299,5 @@ outputs that are no longer cached are read from the database.
 - both `store.url` and `store.url_env`;
 - non-loopback listeners with no credentials, unless `insecure_no_auth` is set;
 - `[[shards]]` with duplicate names, numbers or endpoints, unknown pools, pools in no shard or in
-  two, a missing or unknown `server.shard`, or a store namespace without `{shard}`.
+  two, a missing or unknown `server.shard`, a store namespace without `{shard}`, or a resource
+  without a known `shard`.

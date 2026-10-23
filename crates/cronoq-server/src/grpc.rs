@@ -84,6 +84,15 @@ fn check_spec_shard(app: &AppState, spec: &pb::TaskSpec) -> Result<(), Status> {
         return Ok(());
     };
     check_pool_shard(app, convert::spec_pool(spec))?;
+    for r in spec.resources.keys() {
+        if let Some(s) = map.other_for_resource(r) {
+            return Err(Status::invalid_argument(format!(
+                "resource '{r}' belongs to shard '{}': a task can only use its own shard's \
+                 resources",
+                s.name
+            )));
+        }
+    }
     for d in &spec.deps {
         if let Some(pb::task_ref::Target::Id(id)) =
             d.target.as_ref().and_then(|t| t.target.as_ref())

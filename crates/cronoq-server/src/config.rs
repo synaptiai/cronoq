@@ -76,6 +76,8 @@ pub struct ShardPlan {
     pub own: ShardSection,
     /// All shards, including this one.
     pub all: Vec<ShardSection>,
+    /// Resource name to owning shard name.
+    pub resources: Vec<(String, String)>,
 }
 
 impl Default for Config {
@@ -334,6 +336,12 @@ impl Config {
                 self.server.shard.is_none(),
                 "server.shard is set but no [[shards]] are configured"
             );
+            if let Some(r) = self.resources.iter().find(|r| r.shard().is_some()) {
+                bail!(
+                    "resource '{}' names a shard but no [[shards]] are configured",
+                    r.name()
+                );
+            }
             return Ok(());
         }
         let mut names = HashSet::new();
@@ -395,6 +403,20 @@ impl Config {
                 p.name
             );
         }
+        // Shards count resources separately: a resource of several shards would have its full
+        // capacity in each.
+        for r in &self.resources {
+            match r.shard() {
+                Some(s) if names.contains(s) => {}
+                Some(s) => bail!("resource '{}' names unknown shard '{s}'", r.name()),
+                None => bail!(
+                    "resource '{}' needs a shard: with [[shards]], each resource belongs to one \
+                     (shards count resources separately; split a shared limit into one \
+                     resource per shard)",
+                    r.name()
+                ),
+            }
+        }
         let Some(own) = &self.server.shard else {
             bail!(
                 "[[shards]] are configured: choose this server's shard with server.shard or --shard"
@@ -426,6 +448,11 @@ impl Config {
         Some(ShardPlan {
             own: self.shards.iter().find(|s| &s.name == own)?.clone(),
             all: self.shards.clone(),
+            resources: self
+                .resources
+                .iter()
+                .filter_map(|r| Some((r.name().to_string(), r.shard()?.to_string())))
+                .collect(),
         })
     }
 
@@ -437,6 +464,8 @@ impl Config {
         };
         let mut cfg = self.clone();
         cfg.pools.retain(|p| plan.own.pools.contains(&p.name));
+        cfg.resources
+            .retain(|r| r.shard() == Some(plan.own.name.as_str()));
         let fill = |s: &str| s.replace("{shard}", &plan.own.name);
         cfg.store = match &self.store {
             StoreConfig::Memory => StoreConfig::Memory,
@@ -1187,6 +1216,9 @@ pub enum ResourceSection {
         name: String,
         /// Concurrent units.
         permits: u32,
+        /// With `[[shards]]`, the shard that owns the resource.
+        #[serde(default)]
+        shard: Option<String>,
     },
     /// Units refill at `rate` per second up to `burst`.
     TokenBucket {
@@ -1196,6 +1228,9 @@ pub enum ResourceSection {
         rate: f64,
         /// Bucket size.
         burst: u32,
+        /// With `[[shards]]`, the shard that owns the resource.
+        #[serde(default)]
+        shard: Option<String>,
     },
 }
 
@@ -1209,15 +1244,23 @@ impl ResourceSection {
         }
     }
 
+    /// The shard that owns the resource, if set.
+    pub fn shard(&self) -> Option<&str> {
+        match self {
+            ResourceSection::Semaphore { shard, .. }
+            | ResourceSection::TokenBucket { shard, .. } => shard.as_deref(),
+        }
+    }
+
     /// Engine configuration.
     pub fn to_config(&self) -> ResourceConfig {
         match self {
-            ResourceSection::Semaphore { name, permits } => {
+            ResourceSection::Semaphore { name, permits, .. } => {
                 ResourceConfig::semaphore(name.as_str(), *permits)
             }
-            ResourceSection::TokenBucket { name, rate, burst } => {
-                ResourceConfig::token_bucket(name.as_str(), *rate, *burst)
-            }
+            ResourceSection::TokenBucket {
+                name, rate, burst, ..
+            } => ResourceConfig::token_bucket(name.as_str(), *rate, *burst),
         }
     }
 }
@@ -1322,6 +1365,22 @@ mod tests {
                 ),
                 "store.path must contain {shard}",
             ),
+            (
+                cfg(
+                    "",
+                    "[[resources]]\nkind = \"semaphore\"\nname = \"api\"\npermits = 2\n",
+                    &ok,
+                ),
+                "resource 'api' needs a shard",
+            ),
+            (
+                cfg(
+                    "",
+                    "[[resources]]\nkind = \"semaphore\"\nname = \"api\"\npermits = 2\nshard = \"tpu\"\n",
+                    &ok,
+                ),
+                "unknown shard 'tpu'",
+            ),
         ] {
             let e = c.validate().unwrap_err().to_string();
             assert!(e.contains(want), "{e:?} lacks {want:?}");
@@ -1340,6 +1399,28 @@ mod tests {
         assert!(stray.validate().is_err());
         stray.server.shard = None;
         stray.validate().unwrap();
+        let bound: Config = toml::from_str(&format!(
+            "{POOLS}[[resources]]\nkind = \"semaphore\"\nname = \"api\"\npermits = 2\nshard = \"gpu\"\n"
+        ))
+        .unwrap();
+        assert!(
+            bound
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("no [[shards]]")
+        );
+        // A shard runs only its own resources.
+        let two = cfg(
+            "",
+            "[[resources]]\nkind = \"semaphore\"\nname = \"a\"\npermits = 1\nshard = \"cpu\"\n\
+             [[resources]]\nkind = \"token_bucket\"\nname = \"b\"\nrate = 1.0\nburst = 1\nshard = \"gpu\"\n",
+            &ok,
+        );
+        two.validate().unwrap();
+        let own = two.for_own_shard();
+        assert_eq!(own.resources.len(), 1);
+        assert_eq!(own.resources[0].name(), "b");
         assert_eq!(stray.for_own_shard().pools.len(), 2);
     }
 

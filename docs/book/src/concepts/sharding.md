@@ -38,12 +38,12 @@ cronoq-server --config cronoq.toml --shard gpu
 ## What a shard is
 
 - **Its own pools.** A server runs only its shard's pools.
-- **Its own limits.** Each shard enforces `[[resources]]` and `[limits]` on its own; shards do
-  not share counts. A resource that tasks of two shards use is allowed in full in each: a
-  limit of 10 calls per second to an outside API becomes 20 per second across two shards, and
-  8 GPU slots become 16. Keep each resource's users in one shard, or give each shard its own
-  resource with its share of the limit (`api_cpu` with 6 per second, `api_gpu` with 4).
-  `limits.max_pending_total` also applies to each shard separately.
+- **Its own resources.** Shards do not share counts, so each `[[resources]]` entry names the
+  shard that owns it (`shard = "gpu"`), and only that shard's tasks may use it; a task of
+  another shard asking for it is refused. To share an outside limit between shards, split it
+  into one resource per shard with its share: `api_cpu` with 6 calls per second in `cpu`,
+  `api_gpu` with 4 in `gpu`. `[limits]`, such as `max_pending_total`, apply to each shard
+  separately.
 - **Its own store.** Postgres keeps each shard in its own schema (`store.schema` must contain
   `{shard}` and defaults to `cronoq_{shard}`); SQLite in its own file (`store.path` must contain
   `{shard}`). A server refuses to start on a store that holds another shard's tasks. Start a
@@ -73,3 +73,4 @@ Some requests cannot span shards and are refused with `INVALID_ARGUMENT` or the 
 - **Dependencies** on another shard's task: a task can only wait for tasks of its own shard.
   Dependencies by key refer to keys of the task's own shard.
 - **Batches** with tasks of several shards: a batch is admitted atomically by one shard.
+- **Resources** of another shard (`INVALID_ARGUMENT`).

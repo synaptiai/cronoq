@@ -22,6 +22,12 @@ name = "llm"
 max = 4
 lease_ttl_s = 2
 
+[[resources]]
+kind = "semaphore"
+name = "gpu_mem"
+permits = 8
+shard = "gpu"
+
 [[shards]]
 name = "cpu"
 number = 1
@@ -147,6 +153,19 @@ async fn each_server_serves_its_shard_and_names_the_others() {
     let e = c.submit(submit(dependent, false)).await.unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
     assert!(e.message().contains("across shards"), "{}", e.message());
+    // Resources belong to one shard: other shards' tasks cannot use them.
+    let mut needs = in_pool("default");
+    needs.resources.insert("gpu_mem".into(), 1);
+    let e = c.submit(submit(needs, false)).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::InvalidArgument);
+    assert!(
+        e.message().contains("belongs to shard 'gpu'"),
+        "{}",
+        e.message()
+    );
+    let mut needs = in_pool("llm");
+    needs.resources.insert("gpu_mem".into(), 1);
+    assert!(g.submit(submit(needs, false)).await.is_ok());
     // Schedules belong to the shard of their pool.
     let e = cpu
         .admin(ADMIN)

@@ -32,6 +32,7 @@ pub struct ShardMap {
     shards: Vec<Shard>,
     by_pool: HashMap<String, usize>,
     by_number: HashMap<u8, usize>,
+    by_resource: HashMap<String, usize>,
 }
 
 impl ShardMap {
@@ -42,6 +43,7 @@ impl ShardMap {
             shards: Vec::new(),
             by_pool: HashMap::new(),
             by_number: HashMap::new(),
+            by_resource: HashMap::new(),
         };
         for (i, s) in plan.all.iter().enumerate() {
             if s.name == plan.own.name {
@@ -57,6 +59,11 @@ impl ShardMap {
                 map.by_pool.insert(p.clone(), i);
             }
         }
+        for (res, shard) in &plan.resources {
+            if let Some(i) = map.shards.iter().position(|s| *s.name == **shard) {
+                map.by_resource.insert(res.clone(), i);
+            }
+        }
         map
     }
 
@@ -68,6 +75,12 @@ impl ShardMap {
     /// The other shard that serves `pool`, if another one does.
     pub fn other_for_pool(&self, pool: &str) -> Option<&Shard> {
         let i = *self.by_pool.get(pool)?;
+        (i != self.own).then(|| &self.shards[i])
+    }
+
+    /// The other shard that owns resource `name`, if another one does.
+    pub fn other_for_resource(&self, name: &str) -> Option<&Shard> {
+        let i = *self.by_resource.get(name)?;
         (i != self.own).then(|| &self.shards[i])
     }
 
@@ -119,7 +132,10 @@ mod tests {
         let map = ShardMap::new(&ShardPlan {
             own: all[0].clone(),
             all,
+            resources: vec![("api".into(), "gpu".into())],
         });
+        assert_eq!(map.other_for_resource("api").map(|s| s.number), Some(2));
+        assert_eq!(map.other_for_resource("other"), None);
         assert_eq!(&*map.own().name, "cpu");
         assert_eq!(map.other_for_pool("default"), None);
         assert_eq!(map.other_for_pool("unknown"), None);

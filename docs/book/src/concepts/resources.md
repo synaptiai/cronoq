@@ -42,7 +42,6 @@ waiters for that resource. Parked tasks are not counted as priority inversions.
 
 ## Resources and shards
 
-With [sharding](sharding.md), each shard counts its resources on its own. A resource that tasks
-of several shards use gets its full capacity in every one of them, so an outside rate limit
-shared that way is exceeded. Keep a resource's users in one shard, or define one resource per
-shard with its share of the limit.
+With [sharding](sharding.md), each shard counts its resources on its own, so every resource
+belongs to one shard (`shard = "..."`) and only that shard's tasks may use it. To share an
+outside limit between shards, define one resource per shard with its share of the limit.

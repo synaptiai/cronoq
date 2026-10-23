@@ -108,7 +108,8 @@ First public release.
 - Sharding: `[[shards]]` split the pools between shards, each with its own leader, standbys and
   store (a Postgres schema or SQLite file per shard, from one shared configuration), started
   with `--shard`. Task ids carry the shard's number. Work for another shard is refused with its
-  name and endpoint; dependencies and batches across shards are refused.
+  name and endpoint; dependencies and batches across shards are refused. Each resource belongs
+  to one shard (`[[resources]] shard`), so shards cannot exceed a shared limit together.
 - gRPC-Web for browser clients on the gRPC listener, off unless `[server.grpc_web]` lists the
   allowed origins: unary calls and `Watch`, the same authentication, CORS only for those origins,
   and in loopback-only mode only loopback hosts.
