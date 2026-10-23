@@ -218,12 +218,16 @@ export async function runWorker(opts: WorkerOptions, handler: Handler, transport
           throw new CronoqError("failed_precondition", `worker redirected more than ${MAX_REDIRECTS} times in a row: ${(end.error as Error).message}`);
         }
         log.info(`cronoq: pool '${o.pool}' is served by another shard; connecting to ${to}`);
+        if (to.startsWith("http://") && o.token && !isLoopback(to)) {
+          log.warn(`cronoq: following a redirect that sends the worker token over plain http to ${to}`);
+        }
         current = to;
         if (o.signal?.aborted) return;
         continue;
       }
     }
     redirects = 0;
+    if (o.signal?.aborted) return;
     if (end.kind === "failed" && end.connectFailed && current !== o.target) {
       log.warn(`cronoq: shard at ${current} unreachable; returning to ${o.target}`);
       current = o.target;
@@ -299,10 +303,18 @@ async function session(
     unref(setTimeout(() => stream.abort(), 5000));
   };
   let drained: Promise<void> | undefined;
+  let stopped = false;
   const onStop = () => {
-    if (registered && !drained) drained = drain();
+    if (drained) return;
+    if (registered) drained = drain();
+    else {
+      // Nothing runs yet: stop connecting or waiting for the server's answer.
+      stopped = true;
+      stream.abort();
+    }
   };
   o.signal?.addEventListener("abort", onStop, { once: true });
+  if (o.signal?.aborted) return { kind: "shutdown" };
 
   try {
     for await (const m of client.work(outbox, { headers, signal: stream.signal })) {
@@ -314,7 +326,8 @@ async function session(
           // Version-1 servers do not report a grant.
           slots = r.slots || o.slots;
           ttl = r.leaseTtlS ?? 0;
-          maxOutput = Number(r.maxMessageBytes) - 1024;
+          // Room for the message envelope; no check when the server reports no limit.
+          maxOutput = r.maxMessageBytes > 1024n ? Number(r.maxMessageBytes) - 1024 : 0;
           log.info(`cronoq: worker ${r.workerId} registered for pool '${o.pool}' with ${slots} slots`);
           o.onRegistered?.({ workerId: r.workerId, slots, endpoint });
           if (o.signal?.aborted) onStop();
@@ -357,6 +370,7 @@ async function session(
     }
     return { kind: "ended", reason: "server closed the stream", now: false };
   } catch (e) {
+    if (stopped) return { kind: "shutdown" };
     if (drained) {
       await drained;
       return { kind: "shutdown" };

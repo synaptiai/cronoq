@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
 import { after, afterEach, before, describe, test } from "node:test";
 
 import { CancelTask, CronoqError, Permanent, Retryable, connect, runWorker, text, type Handler, type WorkerOptions } from "../src/node.js";
@@ -185,6 +186,23 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     const t0 = Date.now();
     await stop();
     assert.ok(Date.now() - t0 < 8000, `stopping took ${Date.now() - t0} ms`);
+  });
+
+  test("stopping works before the server answers", async () => {
+    // Accepts connections and never answers.
+    const sockets: Array<{ destroy(): void }> = [];
+    const silent = createServer((socket) => void sockets.push(socket));
+    await new Promise<void>((r) => silent.listen(0, "127.0.0.1", r));
+    const port = (silent.address() as { port: number }).port;
+    const ac = new AbortController();
+    const done = runWorker({ target: `http://127.0.0.1:${port}`, pool: "default", token: WORKER, logger: quiet, signal: ac.signal }, upper);
+    await new Promise((r) => setTimeout(r, 300));
+    ac.abort();
+    const t0 = Date.now();
+    await done;
+    assert.ok(Date.now() - t0 < 2000, `stopping took ${Date.now() - t0} ms`);
+    for (const socket of sockets) socket.destroy();
+    silent.close();
   });
 
   test("workers reconnect after a restart", async () => {
