@@ -46,10 +46,17 @@ SHARD=cpu valid --set auth.existingSecret=t -f "$here/sharded.yaml"
 SHARD=gpu valid --set auth.existingSecret=t -f "$here/sharded.yaml" --set insecurePeerHttp=false \
   --set tls.secretName=tls --set tls.requireClientCerts=true
 
+# With client certificates required, the kubelet cannot probe over TLS.
+helm template r "$chart" --set auth.existingSecret=t --set store.postgres.urlSecret.name=db \
+  --set tls.secretName=tls --set tls.requireClientCerts=true | grep -q "tcpSocket: {port: http}"
+
 refused "auth.existingSecret is required" --set store.kind=memory --set replicas=1
 refused "every replica would lead" --set auth.existingSecret=t --set store.kind=memory
 refused "urlSecret.name is required" --set auth.existingSecret=t
 refused "over plain http" --set auth.existingSecret=t -f "$here/sharded.yaml" --set insecurePeerHttp=false
 refused "must contain {shard}" --set auth.existingSecret=t -f "$here/sharded.yaml" \
   --set store.kind=postgres --set store.postgres.urlSecret.name=db --set replicas=2
+refused "does not match pattern" --set auth.existingSecret=t --set store.kind=memory --set replicas=1 \
+  --set insecurePeerHttp=true --set 'shards[0].name=gpu_a' --set 'shards[0].number=1' --set 'shards[0].pools={llm}'
+refused "minimum" --set auth.existingSecret=t --set store.kind=memory --set replicas=0
 echo "template checks passed"

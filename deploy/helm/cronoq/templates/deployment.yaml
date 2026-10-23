@@ -82,12 +82,15 @@ spec:
             - name: http
               containerPort: 7071
           # /healthz on every pod: standbys stay ready, so rollouts proceed. A standby answers
-          # UNAVAILABLE, which clients and workers retry until they reach the leader.
+          # UNAVAILABLE and closes its connections, so clients and workers reach the leader.
+          # With client certificates required, the kubelet cannot pass the TLS handshake, so
+          # the probes only check that the port accepts connections.
+          {{- $probe := ternary "tcpSocket: {port: http}" (printf "httpGet: {path: /healthz, port: http%s}" (ternary ", scheme: HTTPS" "" (not (empty $.Values.tls.secretName)))) $.Values.tls.requireClientCerts }}
           readinessProbe:
-            httpGet: {path: /healthz, port: http{{ if $.Values.tls.secretName }}, scheme: HTTPS{{ end }}}
+            {{ $probe }}
             periodSeconds: 5
           livenessProbe:
-            httpGet: {path: /healthz, port: http{{ if $.Values.tls.secretName }}, scheme: HTTPS{{ end }}}
+            {{ $probe }}
             periodSeconds: 10
             failureThreshold: 6
           {{- with $.Values.resources }}

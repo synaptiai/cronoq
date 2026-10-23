@@ -67,10 +67,10 @@ config: |
 | `store.postgres.urlSecret` | required | `{name, key}` of the connection URL. `schema` (default `cronoq`) holds the tables. |
 | `config` | one pool | TOML for `[[pools]]`, `[[resources]]`, `[limits]` and the rest. Start it with a table header. |
 | `shards` | none | `[{name, number, pools}]`; see below. |
-| `tls.secretName` | none | A `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) for both listeners; `tls.requireClientCerts` turns on mTLS. |
+| `tls.secretName` | none | A `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) for both listeners; `tls.requireClientCerts` turns on mTLS (the probes then only check that the HTTP port accepts connections, since the kubelet has no client certificate). |
 | `grpcWeb.allowedOrigins` | none | Browser origins for [gRPC-Web](../reference/grpc.md#grpc-web). |
 | `podDisruptionBudget` | `maxUnavailable: 1` | Per server group. |
-| `serviceMonitor.enabled` | `false` | A Prometheus Operator ServiceMonitor scraping `/metrics` with the metrics token. |
+| `serviceMonitor.enabled` | `false` | A Prometheus Operator ServiceMonitor scraping `/metrics` with the metrics token; `serviceMonitor.tlsConfig` for a private CA or a client certificate. |
 
 Every pod is ready as soon as it is up (readiness uses `/healthz`), so the Service routes to the
 leader and the standbys, and rolling updates proceed. A standby answers `UNAVAILABLE` (503 over
