@@ -106,7 +106,10 @@ limited to a list of pools.
   `CronoqWorkerScaler` can only name a configured server, so a resource cannot send a token
   elsewhere. Its ClusterRole allows reading scalers, writing their status, and reading and
   changing `deployments/scale`: whoever may create a scaler in a namespace can have it scale any
-  Deployment there, within the scaler's bounds, so grant that resource accordingly.
+  Deployment there, within the scaler's bounds, so grant that resource accordingly. A scaler's
+  status shows what the operator read with its metrics token: the named pool's desired slots,
+  unreachable shard names, or the server's error. Anyone who may create a scaler can therefore
+  read those counters for any pool on any configured server, whichever namespace uses it.
 - **Tenant pinning.** Credentials with a `tenant` submit only for that tenant, so a client
   cannot spend another tenant's fair share. Without it, callers name their tenant freely.
   Pinning does not hide tasks: within the pools it may use, a client can look up and list other

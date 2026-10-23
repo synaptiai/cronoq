@@ -203,7 +203,9 @@ configured server; the operator has no access to Secrets through the API. Its Cl
 allows reading scalers, writing their status, and reading and changing `deployments/scale`.
 Anyone who may create a scaler in a namespace can therefore have the operator scale any
 Deployment in that namespace, within the scaler's bounds: grant `cronoqworkerscalers` only to
-those who may scale the Deployments there.
+those who may scale the Deployments there. A scaler's status also shows the desired slots of
+the pool it names, read with the operator's metrics token, so such users can read that counter
+for any pool on the configured servers.
 
 ### Autoscaling workers with KEDA
 
