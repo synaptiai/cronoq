@@ -35,6 +35,11 @@ updates:
     directory: /sdks/typescript
     schedule:
       interval: weekly
+    ignore:
+      # The types follow the oldest supported Node (package.json engines), so the compiler
+      # rejects APIs that Node does not have yet.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       typescript:
         patterns: ["*"]

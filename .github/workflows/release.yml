@@ -5,8 +5,10 @@ name: Release
 #   - crates to crates.io (trusted publishing, environment `crates-io`)
 #   - cronoq-server binaries and wheels to a GitHub release
 #   - multi-arch container images to ghcr.io/<owner>/cronoq and ghcr.io/<owner>/cronoq-operator
-# Before the first release, configure trusted publishers on PyPI and crates.io for this
-# repository and workflow (see RELEASING.md).
+#   - the TypeScript SDK to npm as `cronoq` (environment `npm`, with provenance)
+#   - the Helm charts to oci://ghcr.io/<owner>/charts
+# Before the first release, set up the registries as RELEASING.md describes. A dry run builds,
+# tests and packages everything and publishes nothing.
 on:
   push:
     tags: ["v*.*.*"]
@@ -45,6 +47,12 @@ jobs:
           ws=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="cronoq"))')
           test "$tag" = "$ws" || { echo "tag $tag != crate version $ws"; exit 1; }
           grep -q "^## \[$tag\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$tag] section"; exit 1; }
+          npm=$(python3 -c 'import json; print(json.load(open("sdks/typescript/package.json"))["version"])')
+          test "$tag" = "$npm" || { echo "tag $tag != sdks/typescript/package.json version $npm"; exit 1; }
+          for chart in deploy/helm/cronoq deploy/helm/cronoq-operator; do
+            grep -qx "version: $tag" "$chart/Chart.yaml" || { echo "$chart: version is not $tag"; exit 1; }
+            grep -qx "appVersion: \"$tag\"" "$chart/Chart.yaml" || { echo "$chart: appVersion is not $tag"; exit 1; }
+          done
       - run: cargo test --workspace
       - run: cargo publish --workspace --dry-run
 
@@ -272,8 +280,94 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+  npm-package:
+    needs: verify
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+      - run: npm ci
+      # Builds through `prepack`; the tarball is what `npm publish` uploads. It is renamed so that
+      # it cannot collide with the server chart's cronoq-X.Y.Z.tgz in the release assets.
+      - run: |
+          npm pack --pack-destination "$RUNNER_TEMP/npm"
+          for f in "$RUNNER_TEMP"/npm/cronoq-*.tgz; do mv "$f" "$RUNNER_TEMP/npm/npm-$(basename "$f")"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm/*.tgz
+
+  publish-npm:
+    needs: [npm-package, test-wheels]
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.dry_run == false)
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # npm trusted publishing can only be configured for a package that exists, so the first
+      # release uses a token stored as the environment secret NPM_TOKEN. Delete the secret once
+      # trusted publishing is configured (see RELEASING.md).
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing (OIDC) needs npm 11.5.1 or newer.
+      - run: npm install -g npm@11.21.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-package
+          path: npm
+      - name: Refuse a version that is already on npm
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "cronoq@$version" version >/dev/null 2>&1; then
+            echo "cronoq@$version is already on npm"; exit 1
+          fi
+      - run: npm publish npm/*.tgz --access public --provenance
+
+  charts:
+    needs: [verify, container]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - run: helm package deploy/helm/cronoq deploy/helm/cronoq-operator --destination charts
+      - name: Push to oci://ghcr.io/<owner>/charts
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+          for c in charts/*.tgz; do helm push "$c" "oci://ghcr.io/${OWNER,,}/charts"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: charts
+          path: charts/*.tgz
+
   github-release:
-    needs: [publish-pypi, publish-crates, server-binaries, container]
+    needs: [publish-pypi, publish-crates, publish-npm, server-binaries, container, charts]
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
@@ -296,4 +390,6 @@ jobs:
           files: |
             artifacts/cronoq-server-*
             artifacts/*.whl
+            artifacts/cronoq-[0-9]*.tgz
+            artifacts/cronoq-operator-[0-9]*.tgz
             artifacts/*.tar.gz
