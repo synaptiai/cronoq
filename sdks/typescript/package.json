@@ -1,0 +1,60 @@
+{
+  "name": "cronoq",
+  "version": "0.1.0",
+  "description": "TypeScript client and worker for the cronoq task scheduler server (Node and browsers)",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synaptiai/cronoq.git",
+    "directory": "sdks/typescript"
+  },
+  "homepage": "https://synaptiai.github.io/cronoq/reference/typescript.html",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./node": {
+      "types": "./dist/src/node.d.ts",
+      "default": "./dist/src/node.js"
+    },
+    "./web": {
+      "types": "./dist/src/web.d.ts",
+      "default": "./dist/src/web.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "src",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "scripts": {
+    "generate": "buf generate",
+    "check:generated": "buf generate && git diff --exit-code -- src/gen",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-concurrency=1 \"dist/test/*.test.js\"",
+    "test:browser": "npm run build && node dist/test/browser/run.js",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0",
+    "@connectrpc/connect-web": "2.2.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "1.72.0",
+    "@bufbuild/protoc-gen-es": "2.16.0",
+    "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
+    "playwright": "1.64.0",
+    "typescript": "7.0.2"
+  }
+}

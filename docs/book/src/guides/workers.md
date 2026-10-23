@@ -163,6 +163,22 @@ It enforces the granted slots, heartbeats each lease, ends the handler's context
 turns a panic into a retryable failure, reconnects with backoff, follows its pool to the right
 shard, and when `ctx` ends drains running handlers for up to `DrainTimeout` (30 s).
 
+## TypeScript workers
+
+The [TypeScript SDK](../reference/typescript.md#workers-node) runs workers in Node with
+`runWorker` from `cronoq/node`:
+
+```ts
+await runWorker(
+  { target: "http://127.0.0.1:7070", pool: "default", slots: 8, token, signal: stop.signal },
+  async (lease) => handle(lease.json()),
+);
+```
+
+It enforces the granted slots, heartbeats each lease, aborts `lease.signal` on `Abort`, reconnects
+with backoff, follows its pool to the right shard, and when `signal` aborts drains running
+handlers for up to `drainTimeout` (30 s).
+
 ## Any language over gRPC
 
 Workers in other languages implement one bidirectional stream, `cronoq.v1.Workers/Work`, from

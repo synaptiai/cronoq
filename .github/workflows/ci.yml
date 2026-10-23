@@ -174,6 +174,47 @@ jobs:
         working-directory: sdks/go
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+  typescript:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    env:
+      CRONOQ_REQUIRE_SERVER: "1"
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+      - run: cargo build -p cronoq-server
+        working-directory: .
+      - run: npm ci
+      - name: Generated code matches the protocol
+        if: matrix.node == '24'
+        run: npm run check:generated
+      - name: Type-check, build and test against a real server
+        run: npm test
+      - name: Browser client over gRPC-Web (headless Chromium)
+        if: matrix.node == '24'
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
+      - name: Known vulnerabilities in runtime dependencies
+        if: matrix.node == '24'
+        run: npm audit --omit=dev --audit-level=moderate
+
   # Build a real wheel on each platform and test it installed into a clean environment, outside
   # the source tree, exactly as users get it from PyPI.
   wheel:

@@ -541,6 +541,16 @@ cronoq.RunWorker(ctx, cronoq.WorkerOptions{Target: "https://cronoq:7070", Pool: 
 A gRPC client (generated stubs in `cronoqpb`) and a worker loop with slots, heartbeats, reconnects,
 draining and shard redirects; the handler's context ends when the server aborts the attempt.
 
+### TypeScript (`cronoq` on npm, `sdks/typescript`)
+```ts
+const c = connect("https://cronoq:7070", { token });             // cronoq/node; connectWeb in cronoq/web
+const sub = await c.submitAndWait({ payload: { to: "ada" }, key: "job-1" }, 30);
+await runWorker({ target: "https://cronoq:7070", pool: "default", slots: 8, token, signal }, (lease) => handle(lease.json()));
+```
+Connect-ES clients over gRPC (Node) or gRPC-Web (browsers; unary calls and `Watch`), and a Node
+worker loop with the same behaviour as the Go one; the handler's `lease.signal` aborts when the
+server aborts the attempt. Ids are `bigint`s.
+
 ### Server (`cronoq-server --config cronoq.toml`)
 gRPC (`cronoq.v1`):
 - `Tasks`: Submit, SubmitBatch, Cancel, Get, ListTasks (pages of live and finished tasks),
@@ -594,7 +604,7 @@ overrides.
    hardening before going public.
 
 ## 19. Not yet built
-TypeScript SDK; Helm chart and Kubernetes worker-scaling operator.
+Helm chart and Kubernetes worker-scaling operator.
 
 ## 20. Resolved defaults
 - Reservable fraction of max workers for fixed tasks: **0.5** (per pool, configurable)

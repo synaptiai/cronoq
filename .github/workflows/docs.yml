@@ -32,7 +32,7 @@ jobs:
           echo "${MDBOOK_SHA256}  mdbook.tgz" | sha256sum -c -
           tar xzf mdbook.tgz -C /usr/local/bin mdbook
       - name: Check internal links
-        run: python3 .github/scripts/check_doc_links.py docs/book/src README.md CONTRIBUTING.md SECURITY.md RELEASING.md crates/cronoq-py/README.md sdks/go/README.md
+        run: python3 .github/scripts/check_doc_links.py docs/book/src README.md CONTRIBUTING.md SECURITY.md RELEASING.md crates/cronoq-py/README.md sdks/go/README.md sdks/typescript/README.md
       - name: Build the book (warnings are errors)
         run: |
           mdbook build docs/book 2>&1 | tee build.log
