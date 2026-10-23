@@ -122,8 +122,8 @@ First public release.
 
 - `cronoq` submits, inspects, cancels and waits for tasks, lists tasks, workers and schedules,
   manages schedules, streams status events, and prints JSON for scripts with `-o json`.
-- `cronoq top` shows pools, workers, schedules and live tasks, refreshed every second; panes the
-  token's role cannot read say which role they need.
+- `cronoq top` shows pools, workers, schedules, live tasks and recent status events, refreshed
+  every second; panes the token's role cannot read say which role they need.
 - The token comes from `CRONOQ_TOKEN` or `--token-file`, never the command line; TLS options
   are refused with an `http://` server. Control characters in text from the server are shown as
   escapes, so other clients' task keys or messages cannot drive the operator's terminal.

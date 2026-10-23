@@ -82,11 +82,18 @@ pub fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX)
 }
 
-/// `s` with control characters (escape sequences, carriage returns, ...) shown as `\u{1b}`
-/// escapes, so that text from other clients cannot drive the terminal. `keep_lines` keeps
-/// newlines and tabs.
+/// Unicode bidirectional controls, which can make text read differently from what it is.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `s` with control characters (escape sequences, carriage returns, ...) and bidirectional
+/// controls shown as `\u{1b}` escapes, so that text from other clients cannot drive the
+/// terminal or disguise itself. `keep_lines` keeps newlines and tabs.
 pub fn clean(s: &str, keep_lines: bool) -> std::borrow::Cow<'_, str> {
-    let bad = |c: char| c.is_control() && !(keep_lines && (c == '\n' || c == '\t'));
+    let bad = |c: char| {
+        (c.is_control() && !(keep_lines && (c == '\n' || c == '\t'))) || is_bidi_control(c)
+    };
     if !s.chars().any(bad) {
         return s.into();
     }
@@ -338,6 +345,8 @@ mod tests {
         assert_eq!(clean("a\x1b]52;c;x\x07b", false), "a\\u{1b}]52;c;x\\u{7}b");
         assert_eq!(clean("a\r\u{9b}b", false), "a\\u{d}\\u{9b}b");
         assert_eq!(clean("line\n\tx\x1b", true), "line\n\tx\\u{1b}");
+        assert_eq!(clean("job\u{202e}gnp.exe", false), "job\\u{202e}gnp.exe");
+        assert_eq!(clean("ok\u{2066}x\u{2069}", true), "ok\\u{2066}x\\u{2069}");
         let details = task_details(&pb::TaskInfo {
             key: "\x1b[1Afake".into(),
             message: "boom\x1b[0m".into(),
