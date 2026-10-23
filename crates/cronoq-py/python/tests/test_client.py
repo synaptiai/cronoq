@@ -900,7 +900,7 @@ def test_redirects_never_weaken_the_connection() -> None:
     assert _redirect(Refusal(fp, "https://gpu:7070"), True, True, False) == "https://gpu:7070"
     assert _redirect(Refusal(grpc.StatusCode.NOT_FOUND, "https://gpu:7070"), True, True, False) is None
     assert _redirect(Refusal(fp, None), True, True, False) is None
-    for bad in ("http://127.0.0.1:7070", "unix:/tmp/s", "https://u:p@gpu:7070"):
+    for bad in ("http://127.0.0.1:7070", "unix:/tmp/s", "https://u:p@gpu:7070", "https://gpu[::1]:7070"):
         with pytest.raises(ClientError):
             _redirect(Refusal(fp, bad), True, True, False)
     # From plain http: loopback is fine, another host only without a token or with the opt-in.

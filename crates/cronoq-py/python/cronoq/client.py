@@ -1014,7 +1014,10 @@ _SERVER_NAME_OPTIONS = ("grpc.ssl_target_name_override", "grpc.default_authority
 
 
 def _is_loopback(target: str) -> bool:
-    host = urllib.parse.urlsplit(target if "://" in target else f"//{target}").hostname or ""
+    try:
+        host = urllib.parse.urlsplit(target if "://" in target else f"//{target}").hostname or ""
+    except ValueError:
+        return False
     if host == "localhost":
         return True
     try:
@@ -1043,7 +1046,11 @@ def _redirect(
             "failed_precondition",
             f"the server redirected the worker to {target!r}, which is not an http(s) endpoint",
         )
-    if "@" in urllib.parse.urlsplit(target).netloc:
+    try:
+        netloc = urllib.parse.urlsplit(target).netloc
+    except ValueError:
+        netloc = "@"  # unparseable: refused like userinfo
+    if "@" in netloc:
         raise ClientError(
             "failed_precondition",
             f"the server redirected the worker to {target!r}, which is not a plain host and port",
