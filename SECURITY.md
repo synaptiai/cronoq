@@ -95,6 +95,12 @@ limited to a list of pools.
   TLS to plain http, send the token over plain http only to loopback unless
   `insecure_redirect_http` is set, drop a fixed TLS server name for the new host, and stop
   after three redirects in a row.
+- **Helm chart.** Tokens and the database URL come from Secrets the operator of the cluster
+  creates; the chart never generates or stores them. Pods run as non-root with a read-only root
+  filesystem, no privilege escalation, all capabilities dropped and no service-account token.
+  Shards without TLS are refused unless `insecurePeerHttp` is set, which lets callers' tokens
+  cross the pod network unencrypted. Every pod is ready, so the Service also routes to
+  standbys; they refuse work with `UNAVAILABLE` and hold no state a caller can read.
 - **Tenant pinning.** Credentials with a `tenant` submit only for that tenant, so a client
   cannot spend another tenant's fair share. Without it, callers name their tenant freely.
   Pinning does not hide tasks: within the pools it may use, a client can look up and list other

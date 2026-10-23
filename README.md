@@ -229,6 +229,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |
 | [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
 | [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `cronoq`) |
+| [`deploy/helm`](deploy/helm) | Helm chart for the server |
 
 ## Community
 

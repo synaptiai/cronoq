@@ -97,7 +97,8 @@ second case a standby answers each call with `UNAVAILABLE`, and closes every con
 second after accepting it (and a leader that steps down closes its connections the same way),
 so a client that retries opens a new connection and the balancer picks a replica again. Workers
 reconnect on their own. During a graceful shutdown connections stay open, so running attempts
-can still report.
+can still report. The [Helm chart](../guides/deployment.md#kubernetes) routes to
+every replica, so that rolling updates can proceed.
 
 ## Leader election and fencing (SQLite)
 

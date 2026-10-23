@@ -29,55 +29,91 @@ docker run --rm -v $PWD/cronoq.toml:/c.toml:ro cronoq --config /c.toml --check
 
 ## Kubernetes
 
-A single replica with in-memory state:
+The Helm chart in [`deploy/helm/cronoq`](https://github.com/synaptiai/cronoq/tree/main/deploy/helm/cronoq)
+deploys the server with standbys, a store, tokens, probes and, if you use them, shards. Charts are
+not published to a repository yet; install from a checkout.
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata: { name: cronoq }
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: cronoq } }
-  template:
-    metadata: { labels: { app: cronoq } }
-    spec:
-      terminationGracePeriodSeconds: 30     # > shutdown_grace_s
-      containers:
-        - name: cronoq
-          image: ghcr.io/synaptiai/cronoq:0.1
-          ports:
-            - { name: grpc, containerPort: 7070 }
-            - { name: http, containerPort: 7071 }
-            - { name: metrics, containerPort: 9090 }
-          envFrom: [{ secretRef: { name: cronoq-tokens } }]
-          volumeMounts: [{ name: config, mountPath: /etc/cronoq }]
-          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 2 }
-          livenessProbe:  { httpGet: { path: /healthz, port: http }, periodSeconds: 10 }
-          resources: { requests: { cpu: 250m, memory: 256Mi } }
-          securityContext:
-            runAsNonRoot: true
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities: { drop: [ALL] }
-      volumes: [{ name: config, configMap: { name: cronoq-config } }]
----
-apiVersion: v1
-kind: Service
-metadata: { name: cronoq }
-spec:
-  selector: { app: cronoq }
-  ports:
-    - { name: grpc, port: 7070, targetPort: grpc }
-    - { name: http, port: 7071, targetPort: http }
+Create the tokens (one key per role) and a Secret with the database URL
+(`postgres://USER:PASSWORD@HOST:5432/DB?sslmode=verify-full`, key `url`), then install:
+
+```sh
+kubectl create secret generic cronoq-tokens \
+  --from-literal=client="$(openssl rand -hex 24)" --from-literal=worker="$(openssl rand -hex 24)" \
+  --from-literal=metrics="$(openssl rand -hex 24)" --from-literal=admin="$(openssl rand -hex 24)"
+kubectl create secret generic cronoq-db --from-file=url=./database-url
+helm install cronoq deploy/helm/cronoq \
+  --set auth.existingSecret=cronoq-tokens --set store.postgres.urlSecret.name=cronoq-db
 ```
 
-The configuration must bind to all interfaces inside the pod (`grpc_addr = "0.0.0.0:7070"`,
-`http_addr = "0.0.0.0:7071"`), which requires credentials. If HTTPS is enabled
-(`[server.tls]`), set `scheme: HTTPS` on the probes.
+Pools, resources and limits go in `config`, as the TOML that follows the chart's own tables:
+
+```yaml
+config: |
+  [[pools]]
+  name = "default"
+  max = 50
+  lease_ttl_s = 30
+  [[pools]]
+  name = "llm"
+  max = 200
+  lease_ttl_s = 120
+```
+
+| Value | Default | Description |
+|---|---|---|
+| `replicas` | 2 | Server pods (per shard). One leads; the others stand by and take over. |
+| `auth.existingSecret` | required | Secret with keys `client`, `worker`, `metrics` and `admin`, each at least 16 characters. `auth.insecureNoAuth: true` runs without tokens, on trusted networks only. |
+| `store.kind` | `postgres` | `postgres`, or `memory` with `replicas: 1` (each memory-store pod would lead on its own, so the chart refuses more). |
+| `store.postgres.urlSecret` | required | `{name, key}` of the connection URL. `schema` (default `cronoq`) holds the tables. |
+| `config` | one pool | TOML for `[[pools]]`, `[[resources]]`, `[limits]` and the rest. Start it with a table header. |
+| `shards` | none | `[{name, number, pools}]`; see below. |
+| `tls.secretName` | none | A `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) for both listeners; `tls.requireClientCerts` turns on mTLS. |
+| `grpcWeb.allowedOrigins` | none | Browser origins for [gRPC-Web](../reference/grpc.md#grpc-web). |
+| `podDisruptionBudget` | `maxUnavailable: 1` | Per server group. |
+| `serviceMonitor.enabled` | `false` | A Prometheus Operator ServiceMonitor scraping `/metrics` with the metrics token. |
+
+Every pod is ready as soon as it is up (readiness uses `/healthz`), so the Service routes to the
+leader and the standbys, and rolling updates proceed. A standby answers `UNAVAILABLE` (503 over
+HTTP) and closes each connection about a second after accepting it, so a client that retries
+reconnects and the Service picks a pod again until it reaches the leader; workers reconnect on
+their own. `/readyz` still answers 200 only on the leader, for your own checks. The pods run as
+non-root with a read-only root filesystem and no service-account token.
 
 gRPC streams are long-lived. If an ingress or L7 load balancer sits in front, enable HTTP/2
 (gRPC) and raise idle timeouts above your longest wait; the server sends HTTP/2 keepalive pings
 every 20 s (`limits.keepalive_interval_s`).
+
+### Shards in the chart
+
+```yaml
+shards:
+  - { name: cpu, number: 1, pools: [default] }
+  - { name: gpu, number: 2, pools: [llm] }
+store:
+  postgres:
+    schema: "cronoq_{shard}"   # each shard gets its own tables
+```
+
+Each shard gets its own Deployment, Service (`<release>-cronoq-<shard>`, the shard's endpoint)
+and disruption budget, from one shared configuration. The main Service reaches every shard's
+servers, and any server answers for every shard ([Sharding](../concepts/sharding.md)).
+
+Servers forward callers' tokens to other shards, and workers follow redirects to them, so shard
+endpoints must be encrypted or explicitly trusted:
+
+- with `tls.secretName`, the endpoints use `https://` and the servers verify each other with
+  `ca.crt`; the certificate must name every shard's Service;
+- without TLS, set `insecurePeerHttp: true` (trusted cluster networks only); workers then need
+  their own insecure-redirect option (`insecure_redirect_http`, `InsecureRedirectHTTP`,
+  `insecureRedirectHttp`). The chart refuses shards with neither.
+
+### Without the chart
+
+Write the configuration yourself (bind to `0.0.0.0` inside the pod, which requires credentials)
+and run the image with probes on the HTTP port: `/healthz` for liveness, and for readiness either
+`/healthz` (all pods ready, as in the chart) or `/readyz` (only the leader; rolling updates of a
+Deployment with standbys then stall, so use `strategy: Recreate`). With `[server.tls]`, set
+`scheme: HTTPS` on the probes.
 
 ### Durable state on one host with SQLite
 
@@ -111,8 +147,7 @@ spec:
   replicas: 2
 ```
 
-Only the leader becomes ready, so the Service routes traffic to it alone. Standbys poll for the
-leader lock every 0.5 s. The leader checks its lock session every second and steps down if the
+Standbys poll for the leader lock every 0.5 s. The leader checks its lock session every second and steps down if the
 session stays unresponsive for 10 s; when its session ends (process exit, pod deletion, a
 connection terminated by Postgres, or that timeout), a standby takes the lock, recovers all
 accepted work and becomes ready. Clients retry on `UNAVAILABLE` / 503; workers receive
@@ -165,7 +200,8 @@ step batched together; replies wait for that commit.
 
 - [ ] One token per role and consumer, delivered through secrets (`token_env`), scoped to pools.
 - [ ] TLS on both listeners (or a service mesh), and mTLS for workers if required.
-- [ ] `/readyz` for readiness, `/healthz` for liveness; only the leader serves.
+- [ ] `/healthz` for liveness; for readiness `/healthz` with rolling updates (standbys answer
+      `UNAVAILABLE`, which clients retry) or `/readyz` (only the leader) with `strategy: Recreate`.
 - [ ] Prometheus scraping `/metrics` with a metrics token or on `metrics_addr`; alerts on dead
       letters, wait times and missing workers.
 - [ ] `max_pending` and `overflow` set on pools fed by untrusted producers.
