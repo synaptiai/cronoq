@@ -1,0 +1,33 @@
+# A throwaway PostgreSQL for the end-to-end run.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+          env:
+            - {name: POSTGRES_USER, value: cronoq}
+            - {name: POSTGRES_DB, value: cronoq}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: e2e-db, key: password}}
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, cronoq]}
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432}]

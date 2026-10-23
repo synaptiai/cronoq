@@ -1,0 +1,51 @@
+{{- $full := include "cronoq.fullname" . -}}
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cronoq.serviceAccount" . }}
+  labels:
+    {{- include "cronoq.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $shard := (include "cronoq.groups" . | fromYamlArray) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ ternary $full (printf "%s-%s" $full $shard) (eq $shard "") }}
+  labels:
+    {{- include "cronoq.labels" $ | nindent 4 }}
+spec:
+  maxUnavailable: {{ $.Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "cronoq.selector" $ | nindent 6 }}
+      cronoq.io/shard: {{ $shard | default "none" | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "cronoq.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "cronoq.selector" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      {{- if .Values.tls.secretName }}
+      scheme: https
+      {{- end }}
+      authorization:
+        credentials:
+          name: {{ .Values.auth.existingSecret }}
+          key: metrics
+{{- end }}

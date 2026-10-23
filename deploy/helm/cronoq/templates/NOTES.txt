@@ -1,0 +1,15 @@
+cronoq is running as {{ include "cronoq.fullname" . }}{{ if .Values.shards }} with {{ len .Values.shards }} shards{{ end }}.
+
+  gRPC: {{ include "cronoq.scheme" . }}://{{ include "cronoq.fullname" . }}.{{ .Release.Namespace }}:{{ .Values.service.grpcPort }}
+  HTTP: {{ include "cronoq.scheme" . }}://{{ include "cronoq.fullname" . }}.{{ .Release.Namespace }}:{{ .Values.service.httpPort }}
+
+Every pod is ready once it is up; one per {{ if .Values.shards }}shard{{ else }}release{{ end }} leads and the others answer UNAVAILABLE
+until they take over, which the clients and workers retry. See which pod leads:
+
+  kubectl exec deploy/{{ include "cronoq.fullname" . }}{{ with .Values.shards }}-{{ (first .).name }}{{ end }} -- cronoq --server http://127.0.0.1:7070 snapshot
+{{- if and .Values.shards .Values.insecurePeerHttp }}
+
+Shards talk over plain http (insecurePeerHttp). Workers need their insecure-redirect option to
+follow redirects to other shards: insecure_redirect_http (Rust, Python), InsecureRedirectHTTP
+(Go), insecureRedirectHttp (TypeScript).
+{{- end }}

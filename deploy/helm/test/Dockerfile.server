@@ -1,0 +1,6 @@
+# Test image for the chart's end-to-end run: the server and CLI built by cargo on the CI runner
+# (Ubuntu 24.04), on a base with a newer glibc. Releases use the repository's Dockerfile.
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+COPY cronoq-server cronoq /usr/local/bin/
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/cronoq-server"]

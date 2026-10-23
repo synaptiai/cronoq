@@ -1,0 +1,16 @@
+# Two shards with memory stores; plain http between them is allowed for the test cluster.
+replicas: 1
+store: {kind: memory}
+insecurePeerHttp: true
+shards:
+  - {name: cpu, number: 1, pools: [default]}
+  - {name: gpu, number: 2, pools: [llm]}
+config: |
+  [[pools]]
+  name = "default"
+  max = 8
+  lease_ttl_s = 10
+  [[pools]]
+  name = "llm"
+  max = 4
+  lease_ttl_s = 10

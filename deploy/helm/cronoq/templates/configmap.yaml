@@ -1,0 +1,67 @@
+{{- include "cronoq.validate" . -}}
+{{- $full := include "cronoq.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "cronoq.labels" . | nindent 4 }}
+data:
+  cronoq.toml: |
+    # Written by the cronoq Helm chart. Pools, resources and limits come from .Values.config.
+    [server]
+    grpc_addr = "0.0.0.0:7070"
+    http_addr = "0.0.0.0:7071"
+    shutdown_grace_s = {{ .Values.shutdownGraceSeconds }}
+    {{- if .Values.insecurePeerHttp }}
+    insecure_peer_http = true
+    {{- end }}
+    {{- with .Values.grpcWeb.allowedOrigins }}
+
+    [server.grpc_web]
+    allowed_origins = [{{ range $i, $o := . }}{{ if $i }}, {{ end }}{{ $o | quote }}{{ end }}]
+    {{- end }}
+    {{- if .Values.tls.secretName }}
+
+    [server.tls]
+    cert = "/etc/cronoq/tls/tls.crt"
+    key = "/etc/cronoq/tls/tls.key"
+    {{- if .Values.tls.requireClientCerts }}
+    client_ca = "/etc/cronoq/tls/ca.crt"
+    {{- end }}
+    {{- if .Values.shards }}
+
+    [server.peer_tls]
+    ca = "/etc/cronoq/tls/ca.crt"
+    {{- if .Values.tls.requireClientCerts }}
+    cert = "/etc/cronoq/tls/tls.crt"
+    key = "/etc/cronoq/tls/tls.key"
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- if .Values.auth.existingSecret }}
+    {{- range $role := list "client" "worker" "metrics" "admin" }}
+
+    [[auth.tokens]]
+    token_env = "CRONOQ_{{ upper $role }}_TOKEN"
+    role = "{{ $role }}"
+    {{- end }}
+    {{- end }}
+    {{- if eq .Values.store.kind "postgres" }}
+
+    [store]
+    kind = "postgres"
+    url_env = "DATABASE_URL"
+    schema = {{ .Values.store.postgres.schema | quote }}
+    keep_finished_s = {{ int .Values.store.postgres.keepFinishedSeconds }}
+    {{- end }}
+    {{- range .Values.shards }}
+
+    [[shards]]
+    name = {{ .name | quote }}
+    number = {{ int .number }}
+    pools = [{{ range $i, $p := .pools }}{{ if $i }}, {{ end }}{{ $p | quote }}{{ end }}]
+    endpoint = "{{ include "cronoq.scheme" $ }}://{{ $full }}-{{ .name }}:{{ $.Values.service.grpcPort }}"
+    {{- end }}
+
+    {{- .Values.config | nindent 4 }}
