@@ -394,7 +394,7 @@ where
                     redirects += 1;
                     if redirects > MAX_REDIRECTS {
                         break Err(anyhow::anyhow!(
-                            "worker redirected more than {MAX_REDIRECTS} times in a row: {s}"
+                            "worker redirected {redirects} times in a row, more than the {MAX_REDIRECTS} it follows: {s}"
                         ));
                     }
                     tracing::info!(from = %current, to = %target, "pool is served by another shard; reconnecting there");

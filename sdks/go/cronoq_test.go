@@ -272,6 +272,28 @@ func TestDrainFinishesRunningLeases(t *testing.T) {
 	}
 }
 
+func TestAHandlerIgnoringItsContextDoesNotBlockStopping(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	started := make(chan struct{})
+	stop := worker(t, s.target(), cronoq.WorkerOptions{DrainTimeout: 100 * time.Millisecond}, func(ctx context.Context, l *cronoq.Lease) ([]byte, error) {
+		close(started)
+		time.Sleep(30 * time.Second) // ignores ctx
+		return nil, nil
+	})
+	if _, err := c.Submit(ctxFor(t), cronoq.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	t0 := time.Now()
+	if err := stop(); err != nil {
+		t.Fatalf("RunWorker: %v", err)
+	}
+	if d := time.Since(t0); d > 8*time.Second {
+		t.Fatalf("stopping took %v", d)
+	}
+}
+
 func TestWorkerReconnectsAfterRestart(t *testing.T) {
 	s := startServer(t)
 	worker(t, s.target(), cronoq.WorkerOptions{InitialBackoff: 50 * time.Millisecond, MaxBackoff: 200 * time.Millisecond}, upper)
@@ -353,7 +375,7 @@ func TestWorkersFollowTheirPoolToItsShard(t *testing.T) {
 	cpu.start()
 	gpu.start()
 	err = cronoq.RunWorker(ctxFor(t), cronoq.WorkerOptions{Target: cpu.target(), Pool: "llm", Token: workerToken}, upper)
-	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("redirected more than 3 times")) {
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("redirected 4 times in a row")) {
 		t.Fatalf("redirect loop: %v", err)
 	}
 }

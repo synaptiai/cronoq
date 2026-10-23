@@ -173,7 +173,7 @@ func RunWorker(ctx context.Context, opts WorkerOptions, handler Handler) error {
 			if to != "" {
 				redirects++
 				if redirects > MaxRedirects {
-					return fmt.Errorf("cronoq: worker redirected more than %d times in a row: %w", MaxRedirects, wrap(end.err))
+					return fmt.Errorf("cronoq: worker redirected %d times in a row, more than the %d it follows: %w", redirects, MaxRedirects, wrap(end.err))
 				}
 				w.log.Info("cronoq: pool is served by another shard; connecting there", "pool", opts.Pool, "from", current, "to", to)
 				current = to
@@ -213,6 +213,23 @@ func RunWorker(ctx context.Context, opts WorkerOptions, handler Handler) error {
 		case <-time.After(delay):
 		}
 		backoff = min(backoff*2, opts.MaxBackoff)
+	}
+}
+
+// handlerGrace is how long cancelled handlers may take to return before the worker moves on.
+const handlerGrace = 5 * time.Second
+
+// waitAtMost waits for wg, but no longer than d: a handler that ignores the cancellation of its
+// context must not block the worker.
+func waitAtMost(wg *sync.WaitGroup, d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
 	}
 }
 
@@ -354,13 +371,16 @@ func (w *worker) session(ctx context.Context, target string, backoff *time.Durat
 	var wg sync.WaitGroup
 	idle := make(chan struct{}, 1)
 	handlerBase, cancelHandlers := context.WithCancel(context.WithoutCancel(ctx))
-	defer func() {
-		cancelHandlers()
-		wg.Wait()
-	}()
-
 	// When ctx ends: take no more leases, let running ones finish, then half-close.
 	drained := make(chan struct{})
+	defer func() {
+		cancelHandlers()
+		select {
+		case <-drained: // the drain already gave handlers their time
+		default:
+			waitAtMost(&wg, handlerGrace)
+		}
+	}()
 	draining := make(chan struct{})
 	go func() {
 		select {
@@ -387,9 +407,10 @@ func (w *worker) session(ctx context.Context, target string, backoff *time.Durat
 			}
 			break
 		}
-		// Handlers still running report a retryable failure as they end.
+		// Handlers still running report a retryable failure as they end; one that ignores its
+		// context gets handlerGrace more, then its outcome is dropped (the server retries).
 		cancelHandlers()
-		wg.Wait()
+		waitAtMost(&wg, handlerGrace)
 		sendMu.Lock()
 		_ = stream.CloseSend()
 		sendMu.Unlock()
@@ -498,6 +519,9 @@ func (w *worker) run(ctx context.Context, l *pb.Lease, ttl time.Duration, maxOut
 				case <-beat.C:
 					_ = send(&pb.WorkerMessage{Msg: &pb.WorkerMessage_Heartbeat{Heartbeat: &pb.Heartbeat{Lease: id}}})
 				case <-done:
+					return
+				case <-ctx.Done():
+					// An aborted attempt is over for the server, even while its handler runs on.
 					return
 				}
 			}

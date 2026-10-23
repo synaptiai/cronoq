@@ -82,7 +82,7 @@ test("workers follow their pool to its shard", { skip: bin === undefined && "cro
     const counting = { ...quiet, info: (m: string) => void (m.includes("served by another shard") && followed++) };
     await assert.rejects(
       runWorker({ target: cpu.target, pool: "llm", token: WORKER, logger: counting }, (l) => l.payload),
-      /redirected more than 3 times/,
+      /redirected 4 times in a row/,
     );
     assert.equal(followed, 3);
   } finally {

@@ -98,7 +98,8 @@ time (or fewer if the server grants fewer). It heartbeats every running lease, a
 with backoff when the connection drops (right away when the server announces a leadership
 change). When the pool belongs to another shard, it connects to that shard's endpoint; see
 below. When `ctx` ends, it stops taking leases and lets running handlers finish for up to
-`DrainTimeout`, then cancels the rest and returns `nil`. It returns an error only for failures
+`DrainTimeout`, then cancels the rest and returns `nil`; a handler that ignores the cancellation
+gets 5 more seconds, then its outcome is dropped (the server retries the task). It returns an error only for failures
 that retrying cannot fix, such as a rejected token or an unknown pool.
 
 | Option | Default | Description |

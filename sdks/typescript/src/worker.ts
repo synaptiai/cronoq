@@ -215,7 +215,7 @@ export async function runWorker(opts: WorkerOptions, handler: Handler, transport
       const to = redirect(o, current, end.error);
       if (to !== undefined) {
         if (++redirects > MAX_REDIRECTS) {
-          throw new CronoqError("failed_precondition", `worker redirected more than ${MAX_REDIRECTS} times in a row: ${(end.error as Error).message}`);
+          throw new CronoqError("failed_precondition", `worker redirected ${redirects} times in a row, more than the ${MAX_REDIRECTS} it follows: ${(end.error as Error).message}`);
         }
         log.info(`cronoq: pool '${o.pool}' is served by another shard; connecting to ${to}`);
         if (to.startsWith("http://") && o.token && !isLoopback(to)) {
