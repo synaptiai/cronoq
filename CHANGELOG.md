@@ -7,9 +7,9 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
+## [0.2.0] - Unreleased
 
-First public release.
+First public release. No 0.1.0 was published.
 
 ### Added
 
@@ -207,7 +207,7 @@ First public release.
   complete configuration, HTTP, gRPC, metrics, Python, Rust and error references.
 - Examples, a distroless container image, CI with deterministic simulation, fuzzing and
   benchmark gates, wheel tests on every platform, and a release pipeline for crates.io, PyPI,
-  GitHub releases and GHCR.
+  npm (with provenance), GitHub releases, GHCR images and OCI Helm charts.
 
 ### Security
 
@@ -238,5 +238,5 @@ First public release.
 - Database errors are logged rather than returned to clients; messages from workers are
   sanitized; the server warns about database URLs without `sslmode=verify-full`.
 
-[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.1.0
+[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.2.0

@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -23,7 +23,7 @@ homepage = "https://synaptiai.github.io/cronoq/"
 authors = ["Daniel Bentes <daniel.bentes@synapti.ai>"]
 
 [workspace.dependencies]
-cronoq-core = { path = "crates/cronoq-core", version = "0.1.0" }
+cronoq-core = { path = "crates/cronoq-core", version = "0.2.0" }
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union", "const_generics"] }
 croner = "4"

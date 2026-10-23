@@ -1,6 +1,6 @@
-# cronoq — Specification v0.1
+# cronoq — Specification
 
-> Status: **Accepted (v0.1 baseline)** · Owner: Daniel Bentes · License: MIT OR Apache-2.0
+> Status: **Accepted; describes 0.2.0** · Owner: Daniel Bentes · License: MIT OR Apache-2.0
 > Predecessor: the Python `ElasticPriorityScheduler` in `docs/prototype/`, whose API is preserved
 > by `cronoq.compat`.
 
@@ -28,7 +28,7 @@ is needed; *where* work runs is pluggable.
 - Be deterministic and testable: the core is a pure state machine run under a virtual clock.
 - Ship as a Rust library, a Python wheel and a server binary.
 
-### Non-goals (v0.1)
+### Non-goals
 - Several leaders for one pool. Each shard (a group of pools) has one leader with standbys
   (§13); shards run side by side, but a pool never has two leaders.
 - General constraint solving or bin-packing. We provide pools, counted resources, and worker
@@ -73,7 +73,7 @@ is needed; *where* work runs is pluggable.
 | D18 | Telemetry | OpenTelemetry native (traces + metrics); cargo feature `otel` on by default |
 | D19 | Python | asyncio-native PyO3/maturin abi3 wheel, `import cronoq` |
 | D20 | HA | Active-passive: Postgres advisory-lock leader election + fencing epoch |
-| D21 | Scope | Everything (core, runtime, Python, server, Postgres, HA) in v0.1 |
+| D21 | Scope | Everything (core, runtime, Python, server, Postgres, HA) in the first milestone |
 | D22 | Name / repo | `cronoq` everywhere; `github.com/Synaptiai/cronoq` (private, then public) |
 | D23 | Sharding | Shards are groups of pools, one server process per shard with its own store; servers forward client calls with the caller's token and redirect workers; ids carry the shard number |
 | D24 | SDKs | Rust and Python in their crates; Go (grpc-go) and TypeScript in `sdks/`, generated from the proto with buf plus a hand-written client and worker loop |
@@ -592,7 +592,7 @@ overrides.
 
 ---
 
-## 18. Delivery plan (v0.1, built in this order)
+## 18. Delivery plan (first milestone, built in this order)
 1. Workspace skeleton, CI, license, README.
 2. `cronoq-core`: model, lanes/EDF, timers, DAG, leases/retries, pools/resources,
    reservations/holds/cron, backpressure, autoscale policy, duration stats, metrics. DST suite.
@@ -614,7 +614,7 @@ Nothing from the 0.2.0 plan; see the issue tracker for later work.
 - Server auth: **bearer tokens or mapped client certificates with roles** (client / worker / metrics / admin), optionally limited to pools, + optional **mTLS**
 - Terminal status retention: **1 h / 1 M entries**
 
-## 21. Implementation notes (v0.1)
+## 21. Implementation notes
 Differences from, and clarifications of, the sections above:
 - **Lanes** are sorted `VecDeque`s keyed by submission sequence. Fresh tasks append in O(1);
   retries and resource wake-ups use binary insertion. Deadline queues are `BTreeMap`s keyed

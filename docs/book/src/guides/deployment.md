@@ -3,7 +3,7 @@
 ## Container image
 
 Releases publish a multi-architecture image (`linux/amd64`, `linux/arm64`) to
-`ghcr.io/synaptiai/cronoq`, tagged with the version (`0.1.0`) and the minor series (`0.1`).
+`ghcr.io/synaptiai/cronoq`, tagged with the version (`0.2.0`) and the minor series (`0.2`).
 The image is distroless: it contains the `cronoq-server` binary and the example configuration,
 runs as a non-root user, and has no shell or curl. Build it yourself with:
 
@@ -30,8 +30,10 @@ docker run --rm -v $PWD/cronoq.toml:/c.toml:ro cronoq --config /c.toml --check
 ## Kubernetes
 
 The Helm chart in [`deploy/helm/cronoq`](https://github.com/synaptiai/cronoq/tree/main/deploy/helm/cronoq)
-deploys the server with standbys, a store, tokens, probes and, if you use them, shards. Charts are
-not published to a repository yet; install from a checkout.
+deploys the server with standbys, a store, tokens, probes and, if you use them, shards. Releases
+publish it, and the operator's chart, to `oci://ghcr.io/synaptiai/charts`; the examples below
+install from a checkout (`deploy/helm/cronoq`), and `oci://ghcr.io/synaptiai/charts/cronoq
+--version 0.2.0` works the same way.
 
 Create the tokens (one key per role) and a Secret with the database URL
 (`postgres://USER:PASSWORD@HOST:5432/DB?sslmode=verify-full`, key `url`), then install:

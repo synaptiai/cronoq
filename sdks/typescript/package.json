@@ -1,6 +1,6 @@
 {
   "name": "cronoq",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript client and worker for the cronoq task scheduler server (Node and browsers)",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -14,6 +14,10 @@
     "node": ">=22"
   },
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",

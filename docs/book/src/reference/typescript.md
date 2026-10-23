@@ -8,8 +8,9 @@ The TypeScript SDK (npm package `cronoq`, in `sdks/typescript`) is a client for 
 | `cronoq/node` | gRPC over HTTP/2 (Node 22 or newer) | The client and workers. |
 | `cronoq/web` | gRPC-Web from a browser | The client: unary calls and `watch`. Workers need a bidirectional stream, which gRPC-Web cannot carry. |
 
-The package is not on npm yet; build it from the repository (`npm ci && npm run build` in
-`sdks/typescript`).
+```sh
+npm install cronoq
+```
 
 ## Submitting and waiting
 

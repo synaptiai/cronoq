@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-cronoq-proto = { path = "../cronoq-proto", version = "0.1.0" }
+cronoq-proto = { path = "../cronoq-proto", version = "0.2.0" }
 futures-util = "0.3"
 k8s-openapi = { version = "0.28", features = ["earliest", "schemars"] }
 kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring", "runtime", "derive"] }
