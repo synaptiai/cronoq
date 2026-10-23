@@ -3,7 +3,7 @@
 //! Every numeric option is validated by [`Config::validate`], which [`crate::run`] also calls,
 //! so a bad value is reported as an error at startup instead of panicking later.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,41 @@ pub struct Config {
     /// In-memory cache of recent task outputs.
     #[serde(default)]
     pub outputs: OutputsConfig,
+    /// Groups of pools served by separate leaders. Every shard's servers read the same list
+    /// and pick their own with `server.shard`.
+    #[serde(default)]
+    pub shards: Vec<ShardSection>,
+}
+
+/// A group of pools served by its own leader (and standbys).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShardSection {
+    /// Name: lower-case letters, digits and `_`, starting with a letter (at most 32).
+    pub name: String,
+    /// Number carried in the shard's task ids (0-255, unique).
+    pub number: u8,
+    /// The pools this shard serves; every pool belongs to exactly one shard.
+    pub pools: Vec<String>,
+    /// gRPC endpoint (`https://...` or `http://...`) that reaches the shard's leader, for other
+    /// servers and for workers.
+    pub endpoint: String,
+}
+
+fn valid_shard_name(s: &str) -> bool {
+    s.len() <= 32
+        && s.starts_with(|c: char| c.is_ascii_lowercase())
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// The shard this process serves, and where every shard is.
+#[derive(Clone, Debug)]
+pub struct ShardPlan {
+    /// This process's shard.
+    pub own: ShardSection,
+    /// All shards, including this one.
+    pub all: Vec<ShardSection>,
 }
 
 impl Default for Config {
@@ -50,6 +85,7 @@ impl Default for Config {
             auth: AuthConfig::default(),
             store: StoreConfig::default(),
             limits: LimitsConfig::default(),
+            shards: Vec::new(),
             pools: default_pools(),
             resources: Vec::new(),
             outputs: OutputsConfig::default(),
@@ -87,9 +123,18 @@ pub(crate) fn valid_name(s: &str) -> bool {
 impl Config {
     /// Read and validate a TOML file.
     pub fn load(path: &Path) -> anyhow::Result<Config> {
+        let cfg = Self::read(path)?;
+        cfg.validate()
+            .with_context(|| format!("in config file {}", path.display()))?;
+        Ok(cfg)
+    }
+
+    /// Read a TOML file without validating it, to apply command-line overrides first; call
+    /// [`Config::validate`] afterwards ([`crate::run`] does).
+    pub fn read(path: &Path) -> anyhow::Result<Config> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file {}", path.display()))?;
-        Self::parse(&text).with_context(|| format!("in config file {}", path.display()))
+        toml::from_str(&text).with_context(|| format!("in config file {}", path.display()))
     }
 
     /// Parse and validate TOML text.
@@ -279,7 +324,142 @@ impl Config {
                 );
             }
         }
+        self.validate_shards()?;
         Ok(())
+    }
+
+    fn validate_shards(&self) -> anyhow::Result<()> {
+        if self.shards.is_empty() {
+            ensure!(
+                self.server.shard.is_none(),
+                "server.shard is set but no [[shards]] are configured"
+            );
+            return Ok(());
+        }
+        let mut names = HashSet::new();
+        let mut numbers = HashSet::new();
+        let mut endpoints = HashSet::new();
+        let mut owner: HashMap<&str, &str> = HashMap::new();
+        for sh in &self.shards {
+            ensure!(
+                valid_shard_name(&sh.name),
+                "shard name {:?} is invalid: use 1-32 lower-case letters, digits and '_', \
+                 starting with a letter",
+                sh.name
+            );
+            ensure!(
+                names.insert(sh.name.as_str()),
+                "duplicate shard '{}'",
+                sh.name
+            );
+            ensure!(
+                numbers.insert(sh.number),
+                "shards '{}' and another share number {}",
+                sh.name,
+                sh.number
+            );
+            ensure!(
+                (sh.endpoint.starts_with("https://") || sh.endpoint.starts_with("http://"))
+                    && sh.endpoint.len() <= 256
+                    && !sh
+                        .endpoint
+                        .chars()
+                        .any(|c| c.is_whitespace() || c.is_control())
+                    && http::Uri::try_from(sh.endpoint.as_str()).is_ok_and(|u| u.host().is_some()),
+                "shard '{}': endpoint {:?} must be an http:// or https:// URL",
+                sh.name,
+                sh.endpoint
+            );
+            ensure!(
+                endpoints.insert(sh.endpoint.as_str()),
+                "shard '{}' repeats the endpoint {}",
+                sh.name,
+                sh.endpoint
+            );
+            ensure!(!sh.pools.is_empty(), "shard '{}' has no pools", sh.name);
+            for p in &sh.pools {
+                ensure!(
+                    self.pools.iter().any(|q| q.name == *p),
+                    "shard '{}' names unknown pool '{p}'",
+                    sh.name
+                );
+                if let Some(other) = owner.insert(p.as_str(), sh.name.as_str()) {
+                    bail!("pool '{p}' is in shards '{other}' and '{}'", sh.name);
+                }
+            }
+        }
+        for p in &self.pools {
+            ensure!(
+                owner.contains_key(p.name.as_str()),
+                "pool '{}' is in no shard: with [[shards]], every pool belongs to one",
+                p.name
+            );
+        }
+        let Some(own) = &self.server.shard else {
+            bail!(
+                "[[shards]] are configured: choose this server's shard with server.shard or --shard"
+            );
+        };
+        ensure!(
+            names.contains(own.as_str()),
+            "server.shard '{own}' is not one of the configured [[shards]]"
+        );
+        match &self.store {
+            StoreConfig::Memory => {}
+            StoreConfig::Postgres { schema, .. } => ensure!(
+                schema.as_deref().is_none_or(|s| s.contains("{shard}")),
+                "store.schema must contain {{shard}} with [[shards]], so that each shard has \
+                 its own tables (the default is cronoq_{{shard}})"
+            ),
+            StoreConfig::Sqlite { path, .. } => ensure!(
+                path.to_string_lossy().contains("{shard}"),
+                "store.path must contain {{shard}} with [[shards]], so that each shard has its \
+                 own file"
+            ),
+        }
+        Ok(())
+    }
+
+    /// This server's shard and the full shard list, if the configuration has shards.
+    pub fn shard_plan(&self) -> Option<ShardPlan> {
+        let own = self.server.shard.as_ref()?;
+        Some(ShardPlan {
+            own: self.shards.iter().find(|s| &s.name == own)?.clone(),
+            all: self.shards.clone(),
+        })
+    }
+
+    /// The configuration this server runs: only its shard's pools, and the store namespace
+    /// (`{shard}` in the schema or path) filled in. Unchanged without shards.
+    pub fn for_own_shard(&self) -> Config {
+        let Some(plan) = self.shard_plan() else {
+            return self.clone();
+        };
+        let mut cfg = self.clone();
+        cfg.pools.retain(|p| plan.own.pools.contains(&p.name));
+        let fill = |s: &str| s.replace("{shard}", &plan.own.name);
+        cfg.store = match &self.store {
+            StoreConfig::Memory => StoreConfig::Memory,
+            StoreConfig::Postgres {
+                url,
+                url_env,
+                keep_finished_s,
+                schema,
+            } => StoreConfig::Postgres {
+                url: url.clone(),
+                url_env: url_env.clone(),
+                keep_finished_s: *keep_finished_s,
+                schema: Some(fill(schema.as_deref().unwrap_or("cronoq_{shard}"))),
+            },
+            StoreConfig::Sqlite {
+                path,
+                keep_finished_s,
+            } => StoreConfig::Sqlite {
+                path: fill(&path.to_string_lossy()).into(),
+                keep_finished_s: *keep_finished_s,
+            },
+        };
+        cfg
     }
 
     /// Validation that depends on the environment (token values) and the bind addresses.
@@ -325,6 +505,8 @@ pub struct ServerConfig {
     pub shutdown_grace_s: f64,
     /// Serve gRPC-Web for browsers on the gRPC listener (off unless set).
     pub grpc_web: Option<GrpcWebConfig>,
+    /// The shard this server serves, one of `[[shards]]` (also `--shard`).
+    pub shard: Option<String>,
 }
 
 /// gRPC-Web for browser clients.
@@ -380,6 +562,7 @@ impl Default for ServerConfig {
             insecure_no_auth: false,
             shutdown_grace_s: default_grace(),
             grpc_web: None,
+            shard: None,
         }
     }
 }
@@ -1042,6 +1225,123 @@ impl ResourceSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shard_layouts_are_checked() {
+        const POOLS: &str = "[[pools]]\nname = \"default\"\n[[pools]]\nname = \"llm\"\n";
+        let shards = |a: &str, b: &str| {
+            format!(
+                "[[shards]]\nname = \"cpu\"\nnumber = 1\npools = [{a}]\nendpoint = \"http://cpu:7070\"\n\
+                 [[shards]]\nname = \"gpu\"\nnumber = 2\npools = [{b}]\nendpoint = \"http://gpu:7070\"\n"
+            )
+        };
+        let ok = shards("\"default\"", "\"llm\"");
+        let cfg = |server: &str, store: &str, sh: &str| {
+            let mut c: Config = toml::from_str(&format!("{server}{store}{POOLS}{sh}")).unwrap();
+            if c.server.shard.is_none() {
+                c.server.shard = Some("gpu".into());
+            }
+            c
+        };
+        let good = cfg("", "", &ok);
+        good.validate().unwrap();
+        let own = good.for_own_shard();
+        assert_eq!(own.pools.len(), 1);
+        assert_eq!(own.pools[0].name, "llm");
+        assert_eq!(good.shard_plan().unwrap().own.number, 2);
+
+        // Store namespaces are filled in per shard.
+        let pg = cfg("", "[store]\nkind = \"postgres\"\nurl_env = \"X\"\n", &ok).for_own_shard();
+        assert!(
+            matches!(pg.store, StoreConfig::Postgres { schema: Some(ref s), .. } if s == "cronoq_gpu")
+        );
+        let pg = cfg(
+            "",
+            "[store]\nkind = \"postgres\"\nurl_env = \"X\"\nschema = \"q_{shard}\"\n",
+            &ok,
+        )
+        .for_own_shard();
+        assert!(
+            matches!(pg.store, StoreConfig::Postgres { schema: Some(ref s), .. } if s == "q_gpu")
+        );
+        let lite = cfg(
+            "",
+            "[store]\nkind = \"sqlite\"\npath = \"/d/{shard}.db\"\n",
+            &ok,
+        )
+        .for_own_shard();
+        assert!(
+            matches!(lite.store, StoreConfig::Sqlite { ref path, .. } if path.to_str() == Some("/d/gpu.db"))
+        );
+
+        let extra_pool = "[[pools]]\nname = \"extra\"\n";
+        for (c, want) in [
+            (
+                cfg("", "", &shards("\"default\"", "\"llm\", \"nope\"")),
+                "unknown pool 'nope'",
+            ),
+            (
+                cfg("", "", &shards("\"default\", \"llm\"", "\"llm\"")),
+                "is in shards",
+            ),
+            (cfg("", extra_pool, &ok), "pool 'extra' is in no shard"),
+            (
+                cfg("", "", &shards("\"default\", \"llm\"", "")),
+                "has no pools",
+            ),
+            (
+                cfg("", "", &ok.replace("number = 2", "number = 1")),
+                "share number",
+            ),
+            (
+                cfg("", "", &ok.replace("http://gpu:7070", "http://cpu:7070")),
+                "repeats the endpoint",
+            ),
+            (
+                cfg("", "", &ok.replace("http://gpu:7070", "gpu:7070")),
+                "must be an http",
+            ),
+            (cfg("", "", &ok.replace("\"gpu\"", "\"GPU\"")), "is invalid"),
+            (
+                cfg("[server]\nshard = \"tpu\"\n", "", &ok),
+                "not one of the configured",
+            ),
+            (
+                cfg(
+                    "",
+                    "[store]\nkind = \"postgres\"\nurl_env = \"X\"\nschema = \"one\"\n",
+                    &ok,
+                ),
+                "store.schema must contain {shard}",
+            ),
+            (
+                cfg(
+                    "",
+                    "[store]\nkind = \"sqlite\"\npath = \"/d/one.db\"\n",
+                    &ok,
+                ),
+                "store.path must contain {shard}",
+            ),
+        ] {
+            let e = c.validate().unwrap_err().to_string();
+            assert!(e.contains(want), "{e:?} lacks {want:?}");
+        }
+        let mut no_shard = cfg("", "", &ok);
+        no_shard.server.shard = None;
+        assert!(
+            no_shard
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("--shard")
+        );
+        let mut stray: Config =
+            toml::from_str(&format!("[server]\nshard = \"x\"\n{POOLS}")).unwrap();
+        assert!(stray.validate().is_err());
+        stray.server.shard = None;
+        stray.validate().unwrap();
+        assert_eq!(stray.for_own_shard().pools.len(), 2);
+    }
 
     #[test]
     fn grpc_web_origins_must_be_exact() {

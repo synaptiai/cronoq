@@ -257,6 +257,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
             core.persist = true;
             core.id_epoch = epoch;
         }
+        let id_shard = core.id_shard;
         let (tx, rx) = mpsc::channel(queue);
         let (cancel_tx, cancel_rx) = mpsc::unbounded_channel();
         let (events_tx, _) = broadcast::channel(events.max(1));
@@ -273,7 +274,17 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         );
         if persists {
             match store.recover(base).await {
-                Ok(rec) => driver.recover(rec),
+                Ok(rec) => {
+                    if let Some(id) = id_shard.and_then(|s| rec.outside_shard(s)) {
+                        store.release_leadership().await;
+                        return Err(Error::Config(format!(
+                            "the store holds task {id}, which is not in shard {}: a sharded \
+                             server needs a store (schema or file) of its own",
+                            id_shard.unwrap_or_default()
+                        )));
+                    }
+                    driver.recover(rec)
+                }
                 Err(e) => {
                     // Let a standby take over instead of holding leadership while broken.
                     store.release_leadership().await;

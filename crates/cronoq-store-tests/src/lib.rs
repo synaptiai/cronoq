@@ -40,6 +40,7 @@ macro_rules! suite {
             ids_are_not_reused_after_prune,
             scheduler_resumes_after_restart_without_rerunning_finished_work,
             finished_tasks_are_listed_by_pool_status_and_page,
+            sharded_schedulers_keep_ids_in_their_shard,
         );
     };
     (@tests $setup:expr; $($name:ident),* $(,)?) => {
@@ -842,4 +843,33 @@ pub async fn finished_tasks_are_listed_by_pool_status_and_page<H: Harness>(h: &H
             .is_empty()
     );
     store.release_leadership().await;
+}
+
+/// A sharded scheduler issues ids in its shard across restarts, and refuses a store that holds
+/// another shard's (or an unsharded server's) tasks.
+pub async fn sharded_schedulers_keep_ids_in_their_shard<H: Harness>(h: &H) {
+    let sharded = |store: H::Store, shard: u8| {
+        Scheduler::<Bytes, Bytes>::builder()
+            .pool(pool(Runs::default(), Duration::from_millis(1)))
+            .store(store)
+            .configure(move |c| c.id_shard = Some(shard))
+            .build()
+    };
+    let s = sharded(h.open().await, 5).await.unwrap();
+    let first = s.enqueue(Task::new(Bytes::from("a"))).await.unwrap().id;
+    assert_eq!(first.shard(), 5);
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
+    let s = sharded(h.open().await, 5).await.unwrap();
+    let second = s.enqueue(Task::new(Bytes::from("b"))).await.unwrap().id;
+    assert_eq!(second.shard(), 5);
+    assert!(second > first);
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
+    // The same store opened as another shard is refused, and leadership is released.
+    match sharded(h.open().await, 6).await {
+        Err(cronoq::Error::Config(m)) => assert!(m.contains("not in shard 6"), "{m}"),
+        Err(e) => panic!("unexpected error: {e}"),
+        Ok(_) => panic!("a store of shard 5 was accepted by shard 6"),
+    }
+    let s = scheduler(h.open().await, Runs::default(), Duration::from_millis(1)).await;
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
 }

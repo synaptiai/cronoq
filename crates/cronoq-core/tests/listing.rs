@@ -85,3 +85,30 @@ fn recurring_schedules_are_listed() {
     assert_eq!(r.next, Some(t(120.0)));
     assert_eq!(r.last_task, Some(s.started[0].id));
 }
+
+#[test]
+fn sharded_engines_issue_ids_in_their_shard() {
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("a", 1)],
+        id_epoch: 7,
+        id_shard: Some(3),
+        ..Default::default()
+    });
+    let a = s.submit(TaskSpec::new(Job::ok(1.0)).pool("a"));
+    let b = s.submit(TaskSpec::new(Job::ok(1.0)).pool("a"));
+    assert_eq!(a, TaskId::first_in_shard(3, 7));
+    assert_eq!((a.shard(), b.shard(), b.0 - a.0), (3, 3, 1));
+    // The sequence carries into the epoch bits, not the shard's.
+    let last_of_epoch = TaskId((3u64 << 56) | (7u64 << 40) | ((1u64 << 40) - 1));
+    assert_eq!(TaskId(last_of_epoch.0 + 1).shard(), 3);
+    // Recovered state of another shard (or of an unsharded server) is recognised.
+    let mut rec = Recovered::<Job> {
+        next_id: b.0 + 1,
+        ..Default::default()
+    };
+    assert_eq!(rec.outside_shard(3), None);
+    assert_eq!(rec.outside_shard(4), Some(b));
+    rec.next_id = (7u64 << 48) | 9;
+    assert_eq!(rec.outside_shard(3), Some(TaskId((7u64 << 48) | 8)));
+    assert_eq!(Recovered::<Job>::default().outside_shard(3), None);
+}

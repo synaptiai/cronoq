@@ -309,6 +309,10 @@ pub struct CoreConfig {
     /// High bits mixed into task and lease ids (leader epoch in HA mode), so ids issued by
     /// different leaders never collide.
     pub id_epoch: u16,
+    /// Shard number, for servers that split pools between shards. When set, task ids carry it
+    /// in their top 8 bits (`shard << 56`, with the epoch and a sequence below it), so ids of
+    /// different shards never collide and name their shard ([`TaskId::shard`](crate::TaskId::shard)).
+    pub id_shard: Option<u8>,
     /// Window for snapshot metrics.
     pub metrics_window: Duration,
     /// Seed for retry jitter.
@@ -328,6 +332,7 @@ impl Default for CoreConfig {
             persist: false,
             epoch_unix_nanos: 0,
             id_epoch: 0,
+            id_shard: None,
             metrics_window: Duration::from_secs(60),
             seed: 0x5eed_c0de,
         }

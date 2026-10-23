@@ -63,6 +63,8 @@ First public release.
 - Executors from closures or the `Executor` trait, with cancellation tokens, heartbeats and
   `TaskContext::for_test` for unit tests. Executor panics are isolated.
 - Pluggable scalers (in-process slots, external) and stores.
+- `CoreConfig::id_shard` puts a shard number in the top 8 bits of task ids (`TaskId::shard`), and
+  a sharded scheduler refuses a store that holds another shard's tasks.
 - Listing: `Scheduler::list_tasks` pages through live tasks by pool and status,
   `Scheduler::list_recurring` shows schedules with their next occurrence, and durable stores
   list finished tasks (`StoreQueries::list_finished`; `TaskRecord` carries the tenant).
@@ -103,6 +105,10 @@ First public release.
   (`labels = ["name=value", ...]`).
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`
   results; waits bounded by `limits.max_wait_s`.
+- Sharding: `[[shards]]` split the pools between shards, each with its own leader, standbys and
+  store (a Postgres schema or SQLite file per shard, from one shared configuration), started
+  with `--shard`. Task ids carry the shard's number. Work for another shard is refused with its
+  name and endpoint; dependencies and batches across shards are refused.
 - gRPC-Web for browser clients on the gRPC listener, off unless `[server.grpc_web]` lists the
   allowed origins: unary calls and `Watch`, the same authentication, CORS only for those origins,
   and in loopback-only mode only loopback hosts.

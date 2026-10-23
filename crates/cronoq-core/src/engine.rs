@@ -489,7 +489,10 @@ impl<P> Core<P> {
         let id_epoch = cfg.id_epoch as u64;
         Core {
             rng: Rng::new(cfg.seed),
-            next_id: id_epoch << 48 | 1,
+            next_id: match cfg.id_shard {
+                Some(s) => TaskId::first_in_shard(s, cfg.id_epoch).0,
+                None => id_epoch << 48 | 1,
+            },
             cfg,
             pools,
             pool_index,
