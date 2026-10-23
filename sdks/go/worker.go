@@ -177,6 +177,9 @@ func RunWorker(ctx context.Context, opts WorkerOptions, handler Handler) error {
 				}
 				w.log.Info("cronoq: pool is served by another shard; connecting there", "pool", opts.Pool, "from", current, "to", to)
 				current = to
+				if ctx.Err() != nil {
+					return nil
+				}
 				continue
 			}
 		}
@@ -339,6 +342,10 @@ func (w *worker) session(ctx context.Context, target string, backoff *time.Durat
 	*backoff = opts.InitialBackoff
 	ttl := time.Duration(reg.GetLeaseTtlS() * float64(time.Second))
 	slots := int(reg.GetSlots())
+	if slots == 0 {
+		// Version-1 servers do not report a grant.
+		slots = opts.Slots
+	}
 	maxOutput := int(reg.GetMaxMessageBytes()) - 1024
 	w.log.Info("cronoq: worker registered", "worker", reg.GetWorkerId(), "pool", opts.Pool, "slots", slots)
 
