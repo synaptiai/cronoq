@@ -1,0 +1,137 @@
+{{- $full := include "cronoq.fullname" . -}}
+{{- range $shard := (include "cronoq.groups" . | fromYamlArray) }}
+{{- $name := ternary $full (printf "%s-%s" $full $shard) (eq $shard "") }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "cronoq.labels" $ | nindent 4 }}
+    {{- if $shard }}
+    cronoq.io/shard: {{ $shard }}
+    {{- end }}
+spec:
+  replicas: {{ int $.Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "cronoq.selector" $ | nindent 6 }}
+      cronoq.io/shard: {{ $shard | default "none" | quote }}
+  strategy:
+    # Standbys are ready (readiness is /healthz), so a new pod can come up before an old one
+    # goes; leadership moves when the old leader stops.
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "cronoq.selector" $ | nindent 8 }}
+        cronoq.io/shard: {{ $shard | default "none" | quote }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "cronoq.serviceAccount" $ }}
+      automountServiceAccountToken: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ add (int $.Values.shutdownGraceSeconds) 15 }}
+      containers:
+        - name: server
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - --config=/etc/cronoq/cronoq.toml
+            {{- if $shard }}
+            - --shard={{ $shard }}
+            {{- end }}
+            {{- if $.Values.auth.insecureNoAuth }}
+            - --insecure-no-auth
+            {{- end }}
+          env:
+            {{- if $.Values.auth.existingSecret }}
+            {{- range $role := list "client" "worker" "metrics" "admin" }}
+            - name: CRONOQ_{{ upper $role }}_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.auth.existingSecret }}
+                  key: {{ $role }}
+            {{- end }}
+            {{- end }}
+            {{- if eq $.Values.store.kind "postgres" }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.store.postgres.urlSecret.name }}
+                  key: {{ $.Values.store.postgres.urlSecret.key }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: 7070
+            - name: http
+              containerPort: 7071
+          # /healthz on every pod: standbys stay ready, so rollouts proceed. A standby answers
+          # UNAVAILABLE and closes its connections, so clients and workers reach the leader.
+          # With client certificates required, the kubelet cannot pass the TLS handshake, so
+          # the probes only check that the port accepts connections.
+          {{- $probe := ternary "tcpSocket: {port: http}" (printf "httpGet: {path: /healthz, port: http%s}" (ternary ", scheme: HTTPS" "" (not (empty $.Values.tls.secretName)))) $.Values.tls.requireClientCerts }}
+          readinessProbe:
+            {{ $probe }}
+            periodSeconds: 5
+          livenessProbe:
+            {{ $probe }}
+            periodSeconds: 10
+            failureThreshold: 6
+          {{- with $.Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cronoq/cronoq.toml
+              subPath: cronoq.toml
+              readOnly: true
+            {{- if $.Values.tls.secretName }}
+            - name: tls
+              mountPath: /etc/cronoq/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $full }}
+        {{- if $.Values.tls.secretName }}
+        - name: tls
+          secret:
+            secretName: {{ $.Values.tls.secretName }}
+        {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

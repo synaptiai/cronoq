@@ -77,6 +77,7 @@ is needed; *where* work runs is pluggable.
 | D22 | Name / repo | `cronoq` everywhere; `github.com/Synaptiai/cronoq` (private, then public) |
 | D23 | Sharding | Shards are groups of pools, one server process per shard with its own store; servers forward client calls with the caller's token and redirect workers; ids carry the shard number |
 | D24 | SDKs | Rust and Python in their crates; Go (grpc-go) and TypeScript in `sdks/`, generated from the proto with buf plus a hand-written client and worker loop |
+| D25 | Kubernetes | A Helm chart for the server (all shards in one release, readiness on `/healthz` so standbys stay ready) and a separate operator chart that scales worker Deployments from the server's desired capacity |
 
 ---
 
@@ -604,7 +605,7 @@ overrides.
    hardening before going public.
 
 ## 19. Not yet built
-Helm chart and Kubernetes worker-scaling operator.
+Kubernetes worker-scaling operator.
 
 ## 20. Resolved defaults
 - Reservable fraction of max workers for fixed tasks: **0.5** (per pool, configurable)

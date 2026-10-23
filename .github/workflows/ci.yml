@@ -215,6 +215,43 @@ jobs:
         if: matrix.node == '24'
         run: npm audit --omit=dev --audit-level=moderate
 
+  helm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: deploy/helm/test/e2e/go.sum
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - run: cargo build --release -p cronoq-server -p cronoq-cli
+      - name: Lint and render the chart; check every rendered configuration
+        run: deploy/helm/test/template.sh
+        env:
+          CRONOQ_SERVER_BIN: target/release/cronoq-server
+      - name: Build the test images
+        run: |
+          mkdir -p "$RUNNER_TEMP/server" "$RUNNER_TEMP/e2e"
+          cp target/release/cronoq-server target/release/cronoq "$RUNNER_TEMP/server/"
+          docker build -t cronoq-server:e2e -f deploy/helm/test/Dockerfile.server "$RUNNER_TEMP/server"
+          (cd deploy/helm/test/e2e && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/e2e/e2e" .)
+          docker build -t cronoq-e2e:e2e -f deploy/helm/test/Dockerfile.e2e "$RUNNER_TEMP/e2e"
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: cronoq
+      - name: High availability, failover, upgrade and shards on kind
+        run: |
+          kind load docker-image cronoq-server:e2e cronoq-e2e:e2e --name cronoq
+          deploy/helm/test/e2e.sh
+
   # Build a real wheel on each platform and test it installed into a clean environment, outside
   # the source tree, exactly as users get it from PyPI.
   wheel:

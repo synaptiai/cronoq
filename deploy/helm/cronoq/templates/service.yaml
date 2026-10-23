@@ -1,0 +1,48 @@
+{{- $full := include "cronoq.fullname" . -}}
+# The main Service reaches every server; with shards, any server answers for every shard.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "cronoq.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "cronoq.selector" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      appProtocol: grpc
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+{{- range .Values.shards }}
+---
+# The endpoint of shard {{ .name }}: forwarded calls and redirected workers go here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-{{ .name }}
+  labels:
+    {{- include "cronoq.labels" $ | nindent 4 }}
+    cronoq.io/shard: {{ .name }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "cronoq.selector" $ | nindent 4 }}
+    cronoq.io/shard: {{ .name | quote }}
+  ports:
+    - name: grpc
+      port: {{ $.Values.service.grpcPort }}
+      targetPort: grpc
+      appProtocol: grpc
+    - name: http
+      port: {{ $.Values.service.httpPort }}
+      targetPort: http
+{{- end }}

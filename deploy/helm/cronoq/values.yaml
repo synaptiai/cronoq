@@ -1,0 +1,107 @@
+# Values for the cronoq server chart. See the deployment guide:
+# https://synaptiai.github.io/cronoq/guides/deployment.html#helm
+
+image:
+  repository: ghcr.io/synaptiai/cronoq
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Server pods per shard (or in total, without shards). With a durable store, one leads and the
+# others stand by and take over; with the memory store, use exactly 1.
+replicas: 2
+
+auth:
+  # Name of an existing Secret with the bearer tokens, one key per role: client, worker,
+  # metrics, admin (each at least 16 characters). Required unless insecureNoAuth is true.
+  existingSecret: ""
+  # Run without authentication (the server's --insecure-no-auth). Trusted networks only.
+  insecureNoAuth: false
+
+store:
+  # memory (no state survives a restart; replicas must be 1) or postgres.
+  kind: postgres
+  postgres:
+    # Secret holding the connection URL (use sslmode=verify-full for a remote database).
+    urlSecret:
+      name: ""
+      key: url
+    # Schema for the server's tables. With shards, each shard gets its own: `{shard}` is
+    # replaced by the shard's name.
+    schema: cronoq
+    keepFinishedSeconds: 604800
+
+# Shards: groups of pools, each with its own leader, standbys and store schema. Each shard gets
+# its own Deployment and Service; the main Service reaches every shard's servers, and any
+# server answers for every shard. Empty: one unsharded server group.
+#   - name: gpu
+#     number: 2
+#     pools: [llm]
+shards: []
+
+tls:
+  # Secret of type kubernetes.io/tls (tls.crt, tls.key, and ca.crt for verifying the other
+  # shards). Serves both listeners over TLS; shard endpoints then use https://. The
+  # certificate must name every shard's Service (<release>-cronoq-<shard>).
+  secretName: ""
+  # Require client certificates signed by ca.crt (mTLS). The kubelet's probes then only check
+  # that the HTTP port accepts connections, since they cannot present a certificate.
+  requireClientCerts: false
+
+# Without TLS, shard endpoints are plain http:// Service names, and servers refuse to forward
+# callers' tokens to them, and workers to follow redirects to them. Set this to allow both on
+# a trusted cluster network (the server's server.insecure_peer_http; workers also need their
+# insecure-redirect option). Required for shards without TLS.
+insecurePeerHttp: false
+
+grpcWeb:
+  # Browser origins allowed to call the gRPC listener over gRPC-Web. Empty: off.
+  allowedOrigins: []
+
+# Pools, resources, limits and anything else for cronoq.toml, as TOML. The chart writes
+# [server], [[auth.tokens]], [store] and [[shards]] itself.
+config: |
+  [[pools]]
+  name = "default"
+  max = 50
+  lease_ttl_s = 30
+
+service:
+  type: ClusterIP
+  grpcPort: 7070
+  httpPort: 7071
+  annotations: {}
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+serviceMonitor:
+  # Create a Prometheus Operator ServiceMonitor scraping /metrics with the metrics token.
+  enabled: false
+  interval: 30s
+  # With TLS: the ServiceMonitor's tlsConfig (for example a CA for the server certificate, and
+  # a client certificate when tls.requireClientCerts is set).
+  tlsConfig: {}
+
+shutdownGraceSeconds: 10
+resources: {}
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+serviceAccount:
+  create: true
+  name: ""
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
