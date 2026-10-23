@@ -30,6 +30,7 @@ import ipaddress
 import json
 import logging
 import time
+import urllib.parse
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -1013,12 +1014,8 @@ _SERVER_NAME_OPTIONS = ("grpc.ssl_target_name_override", "grpc.default_authority
 
 
 def _is_loopback(target: str) -> bool:
-    rest = target.split("://", 1)[-1].split("/", 1)[0]
-    if rest.startswith("["):
-        host = rest[1:].split("]", 1)[0]
-    else:
-        host = rest.rsplit(":", 1)[0]
-    if host.lower() == "localhost":
+    host = urllib.parse.urlsplit(target if "://" in target else f"//{target}").hostname or ""
+    if host == "localhost":
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -1045,6 +1042,11 @@ def _redirect(
         raise ClientError(
             "failed_precondition",
             f"the server redirected the worker to {target!r}, which is not an http(s) endpoint",
+        )
+    if "@" in urllib.parse.urlsplit(target).netloc:
+        raise ClientError(
+            "failed_precondition",
+            f"the server redirected the worker to {target!r}, which is not a plain host and port",
         )
     plain = target.startswith("http://")
     if plain and secure:

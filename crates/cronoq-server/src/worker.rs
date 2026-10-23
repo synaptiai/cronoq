@@ -241,6 +241,11 @@ fn redirect(
         https || !current.starts_with("https://"),
         "the server redirected the worker from https to plain http ('{target}'); refusing"
     );
+    let uri = target.parse::<tonic::transport::Uri>()?;
+    anyhow::ensure!(
+        uri.authority().is_some_and(|a| !a.as_str().contains('@')),
+        "the server redirected the worker to '{target}', which is not a plain host and port"
+    );
     let plain_remote = target.starts_with("http://") && !is_loopback_endpoint(target);
     if opts.token.is_some() && plain_remote {
         anyhow::ensure!(
@@ -250,7 +255,6 @@ fn redirect(
         );
         tracing::warn!(endpoint = %target, "following a redirect that sends the worker token over plain http");
     }
-    target.parse::<tonic::transport::Uri>()?;
     Ok(Some(target.to_string()))
 }
 
@@ -478,12 +482,12 @@ fn endpoint(opts: &WorkerOptions, url: &str) -> anyhow::Result<Endpoint> {
 }
 
 fn is_loopback_endpoint(endpoint: &str) -> bool {
-    let rest = endpoint.split_once("://").map_or(endpoint, |(_, r)| r);
-    let host = rest.split(['/', '?']).next().unwrap_or("");
-    let host = match host.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => host.rsplit_once(':').map_or(host, |(h, _)| h),
+    // Parsed as tonic connects, so userinfo (`http://127.0.0.1:1@host`) cannot hide the host.
+    let Ok(uri) = endpoint.parse::<tonic::transport::Uri>() else {
+        return false;
     };
+    let host = uri.host().unwrap_or("");
+    let host = host.trim_start_matches('[').trim_end_matches(']');
     host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()
@@ -811,6 +815,13 @@ mod tests {
         // No downgrade from https, not even to loopback.
         assert!(follow(current(&opts), refusal(fp, Some("http://127.0.0.1:7070"))).is_err());
         assert!(follow(current(&opts), refusal(fp, Some("unix:/tmp/s"))).is_err());
+        assert!(
+            follow(
+                current(&opts),
+                refusal(fp, Some("https://u:p@gpu.internal:7070"))
+            )
+            .is_err()
+        );
 
         // From plain http on loopback, a token never goes over plain http to another host.
         let local = WorkerOptions::new("http://127.0.0.1:7070", "llm").token("t");
@@ -818,6 +829,12 @@ mod tests {
         assert!(r("http://127.0.0.1:7071").unwrap().is_some());
         assert!(r("https://gpu.internal:7070").unwrap().is_some());
         assert!(r("http://gpu.internal:7070").is_err());
+        // Userinfo does not make another host look like loopback.
+        assert!(r("http://127.0.0.1:1@gpu.internal:7070").is_err());
+        assert!(!is_loopback_endpoint(
+            "http://127.0.0.1:1@gpu.internal:7070"
+        ));
+        assert!(is_loopback_endpoint("http://[::1]:7070"));
         // Without a token there is nothing to leak.
         let anon = WorkerOptions::new("http://127.0.0.1:7070", "llm");
         let to_remote = refusal(fp, Some("http://gpu.internal:7070"));
