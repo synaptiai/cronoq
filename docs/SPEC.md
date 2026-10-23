@@ -29,7 +29,8 @@ is needed; *where* work runs is pluggable.
 - Ship as a Rust library, a Python wheel and a server binary.
 
 ### Non-goals (v0.1)
-- Active-active multi-leader scheduling (we provide active-passive HA).
+- Several leaders for one pool. Each shard (a group of pools) has one leader with standbys
+  (§13); shards run side by side, but a pool never has two leaders.
 - General constraint solving or bin-packing. We provide pools, counted resources, and worker
   labels: a task can require labels, and runs only in a group of workers that has them.
 - Exactly-once execution of arbitrary code. We provide at-least-once with leases, plus what
@@ -74,6 +75,8 @@ is needed; *where* work runs is pluggable.
 | D20 | HA | Active-passive: Postgres advisory-lock leader election + fencing epoch |
 | D21 | Scope | Everything (core, runtime, Python, server, Postgres, HA) in v0.1 |
 | D22 | Name / repo | `cronoq` everywhere; `github.com/Synaptiai/cronoq` (private, then public) |
+| D23 | Sharding | Shards are groups of pools, one server process per shard with its own store; servers forward client calls with the caller's token and redirect workers; ids carry the shard number |
+| D24 | SDKs | Rust and Python in their crates; Go (grpc-go) and TypeScript in `sdks/`, generated from the proto with buf plus a hand-written client and worker loop |
 
 ---
 
@@ -442,6 +445,27 @@ sync by default, owner-only permissions), for a single host.
 - **Fencing**: every commit reads the epoch and holder inside its write transaction; SQLite
   admits one writer at a time, so the check is exact.
 
+**Sharding** (`[[shards]]`): the pools are split into shards, each served by its own leader,
+standbys and store (a Postgres schema or SQLite file per shard, named from `{shard}`). One shared
+configuration lists every shard's name, number (0–255), pools and endpoint; a process serves the
+shard named by `--shard`.
+- **Ids**: a sharded task id is `shard << 56 | epoch << 40 | seq`, so the owning shard is read
+  from the id. A shard refuses a store that holds another shard's ids.
+- **What cannot span shards**: dependencies, batches with tasks of several shards, and
+  resources (each `[[resources]]` entry names its shard). Keys are unique per shard.
+- **Clients** may call any server. Calls for another shard are forwarded to its endpoint with
+  the caller's own bearer token, and authorized again there; forwarded calls carry
+  `cronoq-forwarded` and are never forwarded again. Tokens are not forwarded over plain http to
+  another host unless `server.insecure_peer_http`. Listings, `Watch` and snapshots cover every
+  shard and name unreachable ones in `unavailable_shards`. Lookups by key ask every shard and
+  refuse a key held by two; while a shard is down, get and wait by key still answer (naming the
+  missing shard) and cancel by key is refused.
+- **Calls that are not forwarded** (client certificates, unsafe endpoints, workers) get
+  `FAILED_PRECONDITION` with `cronoq-shard` and `cronoq-shard-endpoint` metadata. Workers
+  reconnect to that endpoint: never from https to http, with a token over plain http only to
+  loopback unless the worker allows it, at most three times in a row, and back to their
+  configured endpoint when the shard is unreachable.
+
 ---
 
 ## 14. Prototype defects fixed (for traceability)
@@ -507,6 +531,16 @@ results are arbitrary Python objects (`P = Py<PyAny>`). A migration shim
 `cronoq.client` (an optional extra) is a pure-Python gRPC client for submitting tasks and
 running remote workers in server mode.
 
+### Go (`github.com/synaptiai/cronoq/sdks/go`)
+```go
+c, _ := cronoq.Dial("https://cronoq:7070", cronoq.Options{Token: token})
+sub, _ := c.SubmitAndWait(ctx, cronoq.Task{Payload: body, Key: "job-1"}, 30*time.Second)
+cronoq.RunWorker(ctx, cronoq.WorkerOptions{Target: "https://cronoq:7070", Pool: "default", Slots: 8, Token: wtoken},
+	func(ctx context.Context, l *cronoq.Lease) ([]byte, error) { return handle(ctx, l.Payload) })
+```
+A gRPC client (generated stubs in `cronoqpb`) and a worker loop with slots, heartbeats, reconnects,
+draining and shard redirects; the handler's context ends when the server aborts the attempt.
+
 ### Server (`cronoq-server --config cronoq.toml`)
 gRPC (`cronoq.v1`):
 - `Tasks`: Submit, SubmitBatch, Cancel, Get, ListTasks (pages of live and finished tasks),
@@ -559,9 +593,8 @@ overrides.
 7. Documentation, examples (LLM rate-limited agent, DAG batch, microtask firehose), and
    hardening before going public.
 
-## 19. Deferred (post v0.1)
-Go/TS SDKs, active-active sharding,
-Kubernetes operator.
+## 19. Not yet built
+TypeScript SDK; Helm chart and Kubernetes worker-scaling operator.
 
 ## 20. Resolved defaults
 - Reservable fraction of max workers for fixed tasks: **0.5** (per pool, configurable)
@@ -651,12 +684,13 @@ Differences from, and clarifications of, the sections above:
   credentials unless `--insecure-no-auth` is given. Requests are authenticated before their
   body is read. TLS applies to gRPC and HTTP; with a client CA, certificates are required and
   their DNS names can map to roles. Tokens are stored as SHA-256 digests and compared in
-  constant time, and can be limited to pools (submissions, lookups, watches and workers). The
-  server is single-tenant: keys and resources share one namespace. Limits (`[limits]`) bound
+  constant time, and can be limited to pools (submissions, lookups, watches and workers). Tenants
+  share capacity, not namespaces: keys and resources share one namespace per shard. Limits (`[limits]`) bound
   batch sizes, pending tasks, message and body sizes, string lengths, waits, concurrent
   requests and worker slots; HTTP/2 keepalive detects dead connections.
-- **Worker protocol (v2).** `Register` carries `protocol_version`; `Registered` returns the
-  granted slots and the largest accepted message. Workers may `Nack` a lease (offered to
+- **Worker protocol (v3).** `Register` carries `protocol_version` and the worker's labels;
+  older workers are refused with the version they need. `Registered` returns the granted slots
+  and the largest accepted message, and lease ids carry the leader epoch. Workers may `Nack` a lease (offered to
   another worker) or report `Cancelled`. On shutdown or loss of leadership the server sends
   `Shutdown` (with `not_leader`) and workers reconnect with backoff. A worker whose stream
   backs up (it stopped reading) is disconnected.

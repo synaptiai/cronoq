@@ -1,0 +1,17 @@
+# Regenerate with `buf generate` from this directory (protoc-gen-go and protoc-gen-go-grpc on
+# PATH, versions as in CONTRIBUTING.md). CI checks that the checked-in code is current.
+version: v2
+inputs:
+  - directory: ../../crates/cronoq-proto/proto
+managed:
+  enabled: true
+  override:
+    - file_option: go_package
+      value: github.com/synaptiai/cronoq/sdks/go/cronoqpb
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/synaptiai/cronoq/sdks/go
+  - local: protoc-gen-go-grpc
+    out: .
+    opt: module=github.com/synaptiai/cronoq/sdks/go

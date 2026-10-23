@@ -4,9 +4,9 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths: ["docs/**", "README.md", "CHANGELOG.md", "crates/*/README.md", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "README.md", "CHANGELOG.md", "crates/*/README.md", "sdks/*/README.md", ".github/workflows/docs.yml"]
   pull_request:
-    paths: ["docs/**", "README.md", "CHANGELOG.md", "crates/*/README.md", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "README.md", "CHANGELOG.md", "crates/*/README.md", "sdks/*/README.md", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
           echo "${MDBOOK_SHA256}  mdbook.tgz" | sha256sum -c -
           tar xzf mdbook.tgz -C /usr/local/bin mdbook
       - name: Check internal links
-        run: python3 .github/scripts/check_doc_links.py docs/book/src README.md CONTRIBUTING.md SECURITY.md RELEASING.md crates/cronoq-py/README.md
+        run: python3 .github/scripts/check_doc_links.py docs/book/src README.md CONTRIBUTING.md SECURITY.md RELEASING.md crates/cronoq-py/README.md sdks/go/README.md
       - name: Build the book (warnings are errors)
         run: |
           mdbook build docs/book 2>&1 | tee build.log

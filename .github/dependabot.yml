@@ -23,6 +23,14 @@ updates:
       ci-python:
         patterns: ["*"]
 
+  - package-ecosystem: gomod
+    directory: /sdks/go
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

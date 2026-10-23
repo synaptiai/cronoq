@@ -167,7 +167,7 @@ curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TO
 | Limits | Semaphores and token buckets shared across pools, bounded queues (wait / reject / shed) |
 | Elasticity | Per-pool queue-pressure autoscaling, wait-time SLOs, reservation pre-warming, cost reporting |
 | Durability | Postgres and SQLite stores, leader election, epoch fencing, recovery, at-least-once execution |
-| Interfaces | Rust (async + blocking), Python (asyncio), gRPC, HTTP/JSON |
+| Interfaces | Rust (async + blocking), Python (asyncio), Go, gRPC, HTTP/JSON |
 | Observability | OpenTelemetry metrics and trace propagation, Prometheus, windowed quality metrics |
 
 ## Performance
@@ -210,6 +210,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
   [security hardening](https://synaptiai.github.io/cronoq/guides/security.html)
 - 🦀 **Rust API**: [docs.rs/cronoq](https://docs.rs/cronoq)
 - 🐍 **Python**: [`crates/cronoq-py`](crates/cronoq-py/README.md)
+- 🐹 **Go**: [`sdks/go`](sdks/go/README.md)
 - 🔌 **gRPC API**: [`cronoq.proto`](crates/cronoq-proto/proto/cronoq/v1/cronoq.proto)
 - 📐 **Design document**: [`docs/SPEC.md`](docs/SPEC.md)
 
@@ -225,6 +226,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`cronoq-server`](crates/cronoq-server) | gRPC/HTTP server, remote workers, Rust worker client |
 | [`cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
 | [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |
+| [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
 
 ## Community
 

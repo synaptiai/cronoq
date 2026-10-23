@@ -77,7 +77,8 @@ python -m mypy.stubtest cronoq._cronoq             # type stubs match the extens
 
 The client tests build and start `cronoq-server` automatically (or use `CRONOQ_SERVER_BIN`; set
 `CRONOQ_REQUIRE_SERVER=1` to fail instead of skipping when it cannot start). After changing the
-`.proto`, regenerate the Python stubs with `scripts/gen_proto.sh`.
+`.proto`, regenerate the Python stubs with `scripts/gen_proto.sh` and the Go stubs with
+`buf generate` in `sdks/go` (see its README for the plugin versions).
 
 To test a built wheel the way users install it (outside the source tree, in a fresh
 virtualenv), as CI does on Linux, macOS and Windows:
