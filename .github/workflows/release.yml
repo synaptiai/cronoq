@@ -332,9 +332,14 @@ jobs:
           name: npm-package
           path: npm
       - name: Refuse a tarball that does not match the tag, or a version already on npm
+        # bash with pipefail: a failing tar stops the step.
+        shell: bash
         run: |
+          shopt -s nullglob
+          tarballs=(npm/*.tgz)
+          test "${#tarballs[@]}" -eq 1 || { echo "expected one npm tarball, found ${#tarballs[@]}"; exit 1; }
           tag="${GITHUB_REF_NAME#v}"
-          version=$(tar -xOzf npm/*.tgz package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
+          version=$(tar -xOzf "${tarballs[0]}" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
           test "$version" = "$tag" || { echo "the tarball is version $version, the tag is $tag"; exit 1; }
           if npm view "cronoq@$version" version >/dev/null 2>&1; then
             echo "cronoq@$version is already on npm"; exit 1
