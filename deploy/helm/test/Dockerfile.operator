@@ -1,0 +1,6 @@
+# Test image for the operator's end-to-end run: the binary built by cargo on the CI runner.
+# Releases use the repository's Dockerfile.operator.
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+COPY cronoq-operator /usr/local/bin/
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/cronoq-operator"]

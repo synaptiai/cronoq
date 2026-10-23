@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "op.fullname" . }}
+  labels:
+    {{- include "op.labels" . | nindent 4 }}
+spec:
+  # One operator at a time: two would write the same scales.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "op.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "op.selector" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "op.serviceAccount" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [--config=/etc/cronoq-operator/config.toml]
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cronoq-operator
+              readOnly: true
+            {{- range .Values.servers }}
+            {{- if or .tokenSecret .caSecret }}
+            - name: server-{{ .name }}
+              mountPath: /var/run/cronoq/{{ .name }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "op.fullname" . }}
+        {{- range .Values.servers }}
+        {{- if or .tokenSecret .caSecret }}
+        - name: server-{{ .name }}
+          projected:
+            sources:
+              {{- with .tokenSecret }}
+              - secret:
+                  name: {{ .name }}
+                  items: [{key: {{ .key | quote }}, path: token}]
+              {{- end }}
+              {{- with .caSecret }}
+              - secret:
+                  name: {{ .name }}
+                  items: [{key: {{ .key | quote }}, path: ca.crt}]
+              {{- end }}
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

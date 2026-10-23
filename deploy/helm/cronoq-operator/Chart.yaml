@@ -1,0 +1,10 @@
+apiVersion: v2
+name: cronoq-operator
+description: Scales cronoq worker Deployments to their pool's desired capacity
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://synaptiai.github.io/cronoq/
+sources:
+  - https://github.com/synaptiai/cronoq
+keywords: [scheduler, autoscaling, operator]

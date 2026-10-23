@@ -157,10 +157,57 @@ The database role needs permission to create tables in the `public` schema on fi
 Migrations are versioned and applied automatically, under a lock, by whichever replica starts
 first; replicas of an older version refuse to run against a newer schema.
 
+### Scaling workers with the operator
+
+Run workers as their own Deployment (one worker process per pod, with several slots each). The
+operator in [`deploy/helm/cronoq-operator`](https://github.com/synaptiai/cronoq/tree/main/deploy/helm/cronoq-operator)
+sets each Deployment's replicas from its pool's desired capacity. Install it once per cluster,
+naming the servers it may read and a token with the metrics role for each:
+
+```sh
+helm install cronoq-operator deploy/helm/cronoq-operator \
+  --set 'servers[0].name=main' --set 'servers[0].url=http://cronoq.cronoq:7070' \
+  --set 'servers[0].tokenSecret.name=cronoq-tokens' --set 'servers[0].tokenSecret.key=metrics'
+```
+
+Then add a scaler next to each worker Deployment:
+
+```yaml
+apiVersion: cronoq.io/v1alpha1
+kind: CronoqWorkerScaler
+metadata: { name: default-workers }
+spec:
+  server: main              # a server from the operator's configuration
+  pool: default
+  deployment: default-workers
+  slotsPerReplica: 4        # the slots each worker pod registers
+  minReplicas: 0
+  maxReplicas: 100
+```
+
+Every `intervalSeconds` (15 by default) the operator reads the pool's desired capacity in slots
+and sets the Deployment's replicas to `ceil(desired / slotsPerReplica)`, clamped to
+`[minReplicas, maxReplicas]`, through its `scale` subresource. When the server cannot be reached,
+or does not report the pool (for example while its shard is unreachable), the operator leaves the
+Deployment alone; `kubectl get cronoqworkerscalers` shows the desired slots, the replicas set
+and why. Give each Deployment one scaler, and no other autoscaler.
+
+| Value | Default | Description |
+|---|---|---|
+| `servers` | required | `[{name, url, tokenSecret: {name, key}, caSecret: {name, key}}]`. The Secrets are in the operator's namespace and are mounted into its pod. |
+| `intervalSeconds` | 15 | How often each scaler is reconciled. |
+| `image`, `resources`, `nodeSelector`, ... | | As usual. |
+
+The server URLs and tokens live in the operator's configuration, so a scaler can only name a
+configured server; the operator has no access to Secrets through the API. Its ClusterRole
+allows reading scalers, writing their status, and reading and changing `deployments/scale`.
+Anyone who may create a scaler in a namespace can therefore have the operator scale any
+Deployment in that namespace, within the scaler's bounds: grant `cronoqworkerscalers` only to
+those who may scale the Deployments there.
+
 ### Autoscaling workers with KEDA
 
-Run workers as their own Deployment (one worker process per pod, with several slots each) and
-scale it from the server's desired-capacity metric:
+Without the operator, scale a worker Deployment from the server's desired-capacity metric:
 
 ```yaml
 apiVersion: keda.sh/v1alpha1

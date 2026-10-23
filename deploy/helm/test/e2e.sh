@@ -8,6 +8,8 @@
 # 3. helm upgrade --wait with a changed pod template completes (standbys are ready).
 # 4. A sharded release (memory stores, plain http allowed): tasks for both shards through the
 #    main Service, with workers redirected to their shard.
+# 5. The operator (image cronoq-operator:e2e) scales a worker Deployment up while a pool has a
+#    backlog, and back to zero once the backlog is gone.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 chart="$here/../cronoq"
@@ -118,4 +120,35 @@ check http://ha-cronoq:7070 default
 echo "== 4. two shards"
 helm install sh "$chart" "${common[@]}" -f "$here/sharded.yaml" --wait --timeout 180s
 check http://sh-cronoq:7070 default,llm -insecure-redirect-http
+echo "== 5. the operator scales a worker Deployment"
+helm install op "$chart" "${common[@]}" -f "$here/operator-server.yaml" --wait --timeout 180s
+helm install scaler "$here/../cronoq-operator" --set image.repository=cronoq-operator \
+  --set image.tag=e2e --set image.pullPolicy=Never --set intervalSeconds=2 \
+  --set 'servers[0].name=main' --set 'servers[0].url=http://op-cronoq:7070' \
+  --set 'servers[0].tokenSecret.name=e2e-tokens' --set 'servers[0].tokenSecret.key=metrics' \
+  --wait --timeout 180s
+kubectl apply -f "$here/workers.yaml"
+
+# Waits up to $3 seconds until the workers Deployment's replicas compare with $2 by test
+# operator $1 (for example: replicas -ge 1 90).
+replicas() {
+  for _ in $(seq "$3"); do
+    n=$(kubectl get deploy workers -o jsonpath='{.spec.replicas}')
+    if test "${n:-0}" "$1" "$2"; then
+      echo "workers: $n replicas"
+      return
+    fi
+    sleep 1
+  done
+  kubectl get cronoqworkerscalers -o wide || true
+  kubectl logs deploy/scaler-cronoq-operator --tail=50 || true
+  return 1
+}
+check http://op-cronoq:7070 batch -backlog 8
+replicas -ge 1 90
+kubectl get cronoqworkerscalers -o wide
+check http://op-cronoq:7070 batch -clear 8
+# Scale-down waits out the server's 60 s stabilization window.
+replicas -eq 0 180
+kubectl get cronoqworkerscalers -o wide
 echo "all checks passed"

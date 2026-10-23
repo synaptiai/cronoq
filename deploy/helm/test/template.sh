@@ -59,4 +59,25 @@ refused "must contain {shard}" --set auth.existingSecret=t -f "$here/sharded.yam
 refused "does not match pattern" --set auth.existingSecret=t --set store.kind=memory --set replicas=1 \
   --set insecurePeerHttp=true --set 'shards[0].name=gpu_a' --set 'shards[0].number=1' --set 'shards[0].pools={llm}'
 refused "minimum" --set auth.existingSecret=t --set store.kind=memory --set replicas=0
+# The operator chart.
+operator="$here/../cronoq-operator"
+op=(--set 'servers[0].name=main' --set 'servers[0].url=https://cronoq.cronoq:7070'
+  --set 'servers[0].tokenSecret.name=t' --set 'servers[0].tokenSecret.key=metrics'
+  --set 'servers[0].caSecret.name=ca' --set 'servers[0].caSecret.key=ca.crt')
+helm lint "$operator" "${op[@]}"
+helm template o "$operator" "${op[@]}" > "$work/op.yaml"
+grep -q 'token_file = "/var/run/cronoq/main/token"' "$work/op.yaml"
+# The operator may only scale Deployments and touch its own resources: no Secrets.
+if grep -q -i "secrets" <(sed -n '/kind: ClusterRole$/,/^---/p' "$work/op.yaml"); then
+  echo "the operator's ClusterRole mentions secrets"
+  exit 1
+fi
+if helm template o "$operator" >/dev/null 2>&1; then
+  echo "the operator chart rendered without servers"
+  exit 1
+fi
+if helm template o "$operator" --set 'servers[0].name=main' --set 'servers[0].url=http://x@evil:1' >/dev/null 2>&1; then
+  echo "the operator chart accepted a server url with userinfo"
+  exit 1
+fi
 echo "template checks passed"

@@ -87,5 +87,5 @@ Pool capacity is the sum of connected workers' slots.
 | Python | pytest suites for the bindings, the compat shim and the client against a real server, run against built wheels on Linux, macOS and Windows. |
 | Go | `go test -race` for the SDK against a real server, with the generated stubs checked against the protocol. |
 | TypeScript | `node:test` suites for the SDK against a real server on Node 22 and 24, and the gRPC-Web client in headless Chromium; the generated code is checked against the protocol. |
-| Kubernetes | The Helm chart rendered with several value sets, each configuration checked by `cronoq-server --check`; on a kind cluster, failover between two replicas on PostgreSQL, a rolling upgrade, and a two-shard release. |
+| Kubernetes | The Helm chart rendered with several value sets, each configuration checked by `cronoq-server --check`; on a kind cluster, failover between two replicas on PostgreSQL, a rolling upgrade, a two-shard release, and the operator scaling a worker Deployment. |
 | Performance | Criterion benchmarks with throughput gates in CI. |
