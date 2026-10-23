@@ -1,0 +1,10 @@
+# A server for the operator test: one replica, memory store, a pool whose desired capacity can
+# fall quickly (no cooldown between scale-down steps).
+replicas: 1
+store: {kind: memory}
+config: |
+  [[pools]]
+  name = "batch"
+  max = 20
+  lease_ttl_s = 10
+  cooldown_s = 0

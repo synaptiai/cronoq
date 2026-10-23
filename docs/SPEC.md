@@ -605,7 +605,7 @@ overrides.
    hardening before going public.
 
 ## 19. Not yet built
-Kubernetes worker-scaling operator.
+Nothing from the 0.2.0 plan; see the issue tracker for later work.
 
 ## 20. Resolved defaults
 - Reservable fraction of max workers for fixed tasks: **0.5** (per pool, configurable)

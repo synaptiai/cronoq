@@ -1,0 +1,41 @@
+{{- $full := include "op.fullname" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "op.serviceAccount" . }}
+  labels:
+    {{- include "op.labels" . | nindent 4 }}
+---
+# Only what scaling needs: read the scalers and write their status, and read and change the
+# scale of Deployments. No access to Secrets or to Deployments themselves.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "op.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [cronoq.io]
+    resources: [cronoqworkerscalers]
+    verbs: [get, list, watch]
+  - apiGroups: [cronoq.io]
+    resources: [cronoqworkerscalers/status]
+    verbs: [get, patch]
+  - apiGroups: [apps]
+    resources: [deployments/scale]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "op.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $full }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "op.serviceAccount" . }}
+    namespace: {{ .Release.Namespace }}

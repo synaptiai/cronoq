@@ -7,3 +7,4 @@ target
 **/*.pem
 **/*.key
 **/.env
+**/node_modules

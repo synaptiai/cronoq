@@ -1,0 +1,144 @@
+{
+  "apiVersion": "apiextensions.k8s.io/v1",
+  "kind": "CustomResourceDefinition",
+  "metadata": {
+    "name": "cronoqworkerscalers.cronoq.io"
+  },
+  "spec": {
+    "group": "cronoq.io",
+    "names": {
+      "kind": "CronoqWorkerScaler",
+      "plural": "cronoqworkerscalers",
+      "shortNames": [
+        "cws"
+      ],
+      "singular": "cronoqworkerscaler"
+    },
+    "scope": "Namespaced",
+    "versions": [
+      {
+        "additionalPrinterColumns": [
+          {
+            "jsonPath": ".spec.pool",
+            "name": "Pool",
+            "type": "string"
+          },
+          {
+            "jsonPath": ".spec.deployment",
+            "name": "Deployment",
+            "type": "string"
+          },
+          {
+            "jsonPath": ".status.desiredSlots",
+            "name": "Desired slots",
+            "type": "integer"
+          },
+          {
+            "jsonPath": ".status.replicas",
+            "name": "Replicas",
+            "type": "integer"
+          },
+          {
+            "jsonPath": ".status.message",
+            "name": "Message",
+            "type": "string"
+          }
+        ],
+        "name": "v1alpha1",
+        "schema": {
+          "openAPIV3Schema": {
+            "description": "Auto-generated derived type for ScalerSpec via `CustomResource`",
+            "properties": {
+              "spec": {
+                "description": "Scales a worker Deployment to its pool's desired capacity.\n\nThe operator reads the pool's desired capacity (in worker slots) from the named server and\nsets the Deployment's replicas to `ceil(desired / slotsPerReplica)`, clamped to\n`[minReplicas, maxReplicas]`.",
+                "properties": {
+                  "deployment": {
+                    "description": "The worker Deployment, in the scaler's namespace.",
+                    "type": "string"
+                  },
+                  "maxReplicas": {
+                    "description": "Most replicas.",
+                    "format": "uint32",
+                    "minimum": 1.0,
+                    "type": "integer"
+                  },
+                  "minReplicas": {
+                    "default": 0,
+                    "description": "Fewest replicas.",
+                    "format": "uint32",
+                    "minimum": 0.0,
+                    "type": "integer"
+                  },
+                  "pool": {
+                    "description": "The pool whose desired capacity drives the Deployment.",
+                    "type": "string"
+                  },
+                  "server": {
+                    "description": "Name of a server in the operator's configuration.",
+                    "type": "string"
+                  },
+                  "slotsPerReplica": {
+                    "description": "Slots each worker replica serves.",
+                    "format": "uint32",
+                    "minimum": 1.0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "deployment",
+                  "maxReplicas",
+                  "pool",
+                  "server",
+                  "slotsPerReplica"
+                ],
+                "type": "object"
+              },
+              "status": {
+                "description": "What the operator last did.",
+                "nullable": true,
+                "properties": {
+                  "desiredSlots": {
+                    "description": "The pool's desired capacity in slots, as last read.",
+                    "format": "uint32",
+                    "minimum": 0.0,
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "message": {
+                    "default": "",
+                    "description": "`Scaled`, or why the Deployment was left alone.",
+                    "type": "string"
+                  },
+                  "observedGeneration": {
+                    "description": "The spec generation this status describes.",
+                    "format": "int64",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "replicas": {
+                    "description": "The replicas set on the Deployment.",
+                    "format": "uint32",
+                    "minimum": 0.0,
+                    "nullable": true,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "spec"
+            ],
+            "title": "CronoqWorkerScaler",
+            "type": "object"
+          }
+        },
+        "served": true,
+        "storage": true,
+        "subresources": {
+          "status": {}
+        }
+      }
+    ]
+  }
+}

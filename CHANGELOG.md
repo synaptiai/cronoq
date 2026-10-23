@@ -191,9 +191,15 @@ First public release.
   shards (one Deployment and Service per shard from one shared configuration, with each shard's
   endpoint filled in). Readiness uses `/healthz`, so rolling updates proceed while standbys
   answer `UNAVAILABLE`. Shards need TLS or an explicit `insecurePeerHttp`.
+- `cronoq-operator` (an image and a chart) scales worker Deployments to their pool's desired
+  capacity: a `CronoqWorkerScaler` names a configured server, a pool, a Deployment, the slots per
+  replica and replica bounds, and the operator sets `ceil(desired / slots)` replicas through the
+  `scale` subresource, holding them while the pool cannot be read. Server tokens stay in the
+  operator's configuration; its ClusterRole covers only the scalers and `deployments/scale`.
 - Tested in CI: every rendered configuration passes `cronoq-server --check`, and on a kind
-  cluster two replicas on PostgreSQL fail over, `helm upgrade --wait` completes, and a two-shard
-  release serves both shards through the main Service.
+  cluster two replicas on PostgreSQL fail over, `helm upgrade --wait` completes, a two-shard
+  release serves both shards through the main Service, and the operator scales a worker
+  Deployment up for a backlog and back to zero.
 
 #### Project
 

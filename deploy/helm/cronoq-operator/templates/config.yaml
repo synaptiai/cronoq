@@ -1,0 +1,24 @@
+{{- if not .Values.servers }}
+{{- fail "servers is required: the cronoq servers that scalers may name" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "op.fullname" . }}
+  labels:
+    {{- include "op.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    interval_s = {{ .Values.intervalSeconds }}
+    {{- range .Values.servers }}
+
+    [[servers]]
+    name = {{ .name | quote }}
+    url = {{ .url | quote }}
+    {{- if .tokenSecret }}
+    token_file = "/var/run/cronoq/{{ .name }}/token"
+    {{- end }}
+    {{- if .caSecret }}
+    ca_file = "/var/run/cronoq/{{ .name }}/ca.crt"
+    {{- end }}
+    {{- end }}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "intervalSeconds": { "type": "number", "minimum": 1 },
+    "servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "url"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,40}$" },
+          "url": { "type": "string", "pattern": "^https?://[^\\s\"@/]+$" },
+          "tokenSecret": {
+            "type": "object",
+            "required": ["name", "key"],
+            "properties": { "name": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 } }
+          },
+          "caSecret": {
+            "type": "object",
+            "required": ["name", "key"],
+            "properties": { "name": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+# A stand-in worker Deployment (it only needs to be scaled) and the scaler that drives it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workers
+spec:
+  replicas: 0
+  selector:
+    matchLabels: {app: workers}
+  template:
+    metadata:
+      labels: {app: workers}
+    spec:
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a
+---
+apiVersion: cronoq.io/v1alpha1
+kind: CronoqWorkerScaler
+metadata:
+  name: batch
+spec:
+  server: main
+  pool: batch
+  deployment: workers
+  slotsPerReplica: 2
+  minReplicas: 0
+  maxReplicas: 5

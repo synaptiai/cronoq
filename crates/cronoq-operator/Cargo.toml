@@ -1,0 +1,29 @@
+[package]
+name = "cronoq-operator"
+description = "Kubernetes operator that scales cronoq worker Deployments to their pool's desired capacity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme = "README.md"
+# Shipped as a container image and Helm chart, not on crates.io.
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+cronoq-proto = { path = "../cronoq-proto", version = "0.1.0" }
+futures-util = "0.3"
+k8s-openapi = { version = "0.28", features = ["earliest", "schemars"] }
+kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring", "runtime", "derive"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "time", "signal", "fs"] }
+toml = "1.1"
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

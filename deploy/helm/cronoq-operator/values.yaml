@@ -1,0 +1,38 @@
+# Values for the cronoq operator chart. See the deployment guide:
+# https://synaptiai.github.io/cronoq/guides/deployment.html#scaling-workers-with-the-operator
+
+image:
+  repository: ghcr.io/synaptiai/cronoq-operator
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# How often each CronoqWorkerScaler is reconciled, in seconds.
+intervalSeconds: 15
+
+# The cronoq servers scalers may name (spec.server). Each needs a token with the metrics role,
+# from a Secret in the operator's namespace; the operator reads no Secrets through the API.
+#   - name: main
+#     url: https://cronoq.cronoq:7070
+#     tokenSecret: {name: cronoq-tokens, key: metrics}
+#     caSecret: {name: cronoq-ca, key: ca.crt}   # optional, for https:// with a private CA
+servers: []
+
+resources: {}
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+serviceAccount:
+  name: ""
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]

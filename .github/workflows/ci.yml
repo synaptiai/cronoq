@@ -232,8 +232,12 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.3.1
-      - run: cargo build --release -p cronoq-server -p cronoq-cli
-      - name: Lint and render the chart; check every rendered configuration
+      - run: cargo build --release -p cronoq-server -p cronoq-cli -p cronoq-operator
+      - name: The operator chart's CRD matches the operator
+        run: |
+          target/release/cronoq-operator --print-crd > "$RUNNER_TEMP/crd.yaml"
+          diff -u deploy/helm/cronoq-operator/crds/cronoqworkerscalers.yaml "$RUNNER_TEMP/crd.yaml"
+      - name: Lint and render the charts; check every rendered configuration
         run: deploy/helm/test/template.sh
         env:
           CRONOQ_SERVER_BIN: target/release/cronoq-server
@@ -244,12 +248,15 @@ jobs:
           docker build -t cronoq-server:e2e -f deploy/helm/test/Dockerfile.server "$RUNNER_TEMP/server"
           (cd deploy/helm/test/e2e && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/e2e/e2e" .)
           docker build -t cronoq-e2e:e2e -f deploy/helm/test/Dockerfile.e2e "$RUNNER_TEMP/e2e"
+          mkdir -p "$RUNNER_TEMP/operator"
+          cp target/release/cronoq-operator "$RUNNER_TEMP/operator/"
+          docker build -t cronoq-operator:e2e -f deploy/helm/test/Dockerfile.operator "$RUNNER_TEMP/operator"
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: cronoq
-      - name: High availability, failover, upgrade and shards on kind
+      - name: High availability, failover, upgrade, shards and the operator on kind
         run: |
-          kind load docker-image cronoq-server:e2e cronoq-e2e:e2e --name cronoq
+          kind load docker-image cronoq-server:e2e cronoq-e2e:e2e cronoq-operator:e2e --name cronoq
           deploy/helm/test/e2e.sh
 
   # Build a real wheel on each platform and test it installed into a clean environment, outside

@@ -8,7 +8,8 @@ then verifies the tag, builds and tests everything, and publishes:
 - Python wheels (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x64/arm64) and the sdist to
   PyPI as `cronoq`;
 - `cronoq-server` binaries and wheels to a GitHub release, with notes taken from `CHANGELOG.md`;
-- a multi-architecture container image to `ghcr.io/synaptiai/cronoq`.
+- multi-architecture container images to `ghcr.io/synaptiai/cronoq` (the server and CLI) and
+  `ghcr.io/synaptiai/cronoq-operator`.
 
 The Go SDK is published by its own tag, `sdks/go/vX.Y.Z` (Go finds a module in a subdirectory
 by a tag with that prefix).
@@ -28,7 +29,7 @@ by a tag with that prefix).
    every crate (repository `synaptiai/cronoq`, workflow `release.yml`, environment `crates-io`),
    then delete the secret and revoke the token.
 4. **GHCR.** The workflow pushes with the built-in `GITHUB_TOKEN`; after the first push, make the
-   `cronoq` package public under *Packages* if desired.
+   `cronoq` and `cronoq-operator` packages public under *Packages* if desired.
 5. **Repository visibility.** ARM runners (`ubuntu-24.04-arm`, `windows-11-arm`) used by the
    release workflow are available to public repositories.
 6. **Documentation site.** Enable GitHub Pages with *Settings → Pages → Source: GitHub Actions*,
