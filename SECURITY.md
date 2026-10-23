@@ -89,6 +89,12 @@ limited to a list of pools.
   forwarded again. Tokens are not forwarded over plain `http://` to another host unless
   `server.insecure_peer_http` is set; use `https://` endpoints (with `[server.peer_tls]`)
   across networks.
+- **Worker redirects.** A worker refused because another shard serves its pool connects to the
+  endpoint the server names, with its own token, so it trusts the server it connected to as
+  much as that server's shard map. The Rust and Python workers never follow a redirect from
+  TLS to plain http, send the token over plain http only to loopback unless
+  `insecure_redirect_http` is set, drop a fixed TLS server name for the new host, and stop
+  after three redirects in a row.
 - **Tenant pinning.** Credentials with a `tenant` submit only for that tenant, so a client
   cannot spend another tenant's fair share. Without it, callers name their tenant freely.
   Pinning does not hide tasks: within the pools it may use, a client can look up and list other

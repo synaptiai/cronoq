@@ -101,6 +101,9 @@ The worker:
 - cancels the handler's task and sets `lease.cancelled` when the server aborts an attempt;
 - reconnects with exponential backoff when the stream drops, and right away when the server
   announces a leadership change;
+- connects to the right shard when the pool belongs to another one
+  ([Sharding](../concepts/sharding.md)); pass `insecure_redirect_http=True` only on trusted
+  networks where shards use plain `http://`;
 - on `stop()`, stops taking leases, lets running ones finish for up to `grace` seconds, then
   cancels the rest.
 
@@ -141,6 +144,8 @@ handlers for up to `drain_timeout` (30 s). It returns an error only for problems
 fix, such as a rejected token or an unknown pool. Use `identity: Some((cert_pem, key_pem))` for
 mTLS. TLS settings need an `https://` endpoint: with `http://` the worker returns an error
 rather than connecting in plaintext. `.label("gpu", "a100")` registers the worker with a label.
+When another shard serves the pool, the worker connects to that shard's endpoint
+(`.insecure_redirect_http(true)` allows plain `http://` to other hosts).
 
 ## Any language over gRPC
 
@@ -151,7 +156,9 @@ tooling.
 
 1. Open the stream with metadata `authorization: Bearer <worker token>` (or a client
    certificate).
-2. Send `register{pool, slots, worker_name, protocol_version: 2}` first.
+2. Send `register{pool, slots, worker_name, protocol_version: 3, labels}` first. If the
+   stream fails with `FAILED_PRECONDITION` and `cronoq-shard-endpoint` metadata, another shard
+   serves the pool: connect there instead, without moving from `https://` to `http://`.
 3. Receive `registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes}`; run
    at most the granted `slots` leases at once.
 4. For each `lease`:

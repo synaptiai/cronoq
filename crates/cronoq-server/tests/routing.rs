@@ -492,3 +492,91 @@ async fn forwarding_is_limited_to_safe_cases() {
     );
     cpu.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workers_follow_their_pool_to_its_shard() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use cronoq_server::worker::{WorkerOptions, run_worker};
+
+    let c = Cluster::start().await;
+    // A worker for pool `llm` pointed at the cpu shard ends up serving on gpu.
+    let seen = Arc::new(AtomicU32::new(0));
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let opts = WorkerOptions::new(c.cpu.grpc_url(), "llm").token(WORKER);
+    let counter = seen.clone();
+    let worker = tokio::spawn(run_worker(
+        opts,
+        move |lease| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(lease.payload) }
+        },
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    let mut tasks = c.cpu.tasks(CLIENT).await;
+    let id = tasks
+        .submit(submit(in_pool("llm", "redirected"), false))
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+    let done = tokio::time::timeout(
+        Duration::from_secs(20),
+        tasks.wait(pb::WaitRequest {
+            task: by_id(id),
+            timeout_s: Some(15.0),
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .into_inner();
+    assert_eq!(done.status, pb::TaskStatus::Succeeded as i32);
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    let _ = stop.send(());
+    worker.await.unwrap().unwrap();
+    c.stop().await;
+
+    // Two servers that each say the other serves `llm` send the worker back and forth until
+    // it gives up.
+    let ports = (free_port(), free_port());
+    let cpu = TestServer::start_cfg(config(
+        "cpu",
+        ports,
+        &format!("http://127.0.0.1:{}", ports.1),
+    ))
+    .await;
+    let swapped = format!(
+        "{LAYOUT}\n[[pools]]\nname = \"spare\"\nmax = 1\n\
+         [[shards]]\nname = \"cpu\"\nnumber = 1\npools = [\"default\", \"llm\"]\n\
+         endpoint = \"http://127.0.0.1:{}\"\n\
+         [[shards]]\nname = \"gpu\"\nnumber = 2\npools = [\"spare\"]\n\
+         endpoint = \"http://127.0.0.1:{}\"\n",
+        ports.0, ports.1
+    );
+    let mut cfg: Config = toml::from_str(&format!("{SERVER}\n{TOKENS}\n{swapped}")).unwrap();
+    cfg.server.shard = Some("gpu".into());
+    cfg.server.grpc_addr = format!("127.0.0.1:{}", ports.1).parse().unwrap();
+    let gpu = TestServer::start_cfg(cfg).await;
+    let opts = WorkerOptions::new(cpu.grpc_url(), "llm").token(WORKER);
+    let e = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_worker(
+            opts,
+            |l| async move { Ok(l.payload) },
+            std::future::pending(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(
+        e.to_string().contains("redirected more than 3 times"),
+        "{e}"
+    );
+    cpu.stop().await;
+    gpu.stop().await;
+}

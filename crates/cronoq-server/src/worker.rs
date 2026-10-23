@@ -15,6 +15,11 @@
 //!
 //! A handler that panics fails its attempt as retryable; an output larger than the server
 //! accepts fails it permanently.
+//!
+//! When the pool belongs to another shard, the server refuses the worker and names that
+//! shard's endpoint; the worker then connects there instead (see [`MAX_REDIRECTS`]). It never
+//! follows a redirect from `https://` to `http://`, and never sends its token over plain http
+//! to another host unless [`WorkerOptions::insecure_redirect_http`] allows it.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -88,6 +93,9 @@ pub struct WorkerOptions {
     /// Labels of this worker: tasks that require labels are leased only to workers that have
     /// all of them.
     pub labels: Vec<(String, String)>,
+    /// Follow redirects to plain `http://` endpoints on other hosts with the token (default
+    /// `false`: only loopback); for trusted networks without TLS.
+    pub insecure_redirect_http: bool,
 }
 
 impl fmt::Debug for WorkerOptions {
@@ -102,6 +110,7 @@ impl fmt::Debug for WorkerOptions {
             .field("reconnect", &self.reconnect)
             .field("drain_timeout", &self.drain_timeout)
             .field("labels", &self.labels)
+            .field("insecure_redirect_http", &self.insecure_redirect_http)
             .finish_non_exhaustive()
     }
 }
@@ -122,7 +131,13 @@ impl WorkerOptions {
             drain_timeout: Duration::from_secs(30),
             max_message_bytes: 64 << 20,
             labels: Vec::new(),
+            insecure_redirect_http: false,
         }
+    }
+    /// Allow redirects to plain `http://` endpoints on other hosts with the token.
+    pub fn insecure_redirect_http(mut self, on: bool) -> Self {
+        self.insecure_redirect_http = on;
+        self
     }
     /// Add a label (`name = value`) to this worker.
     pub fn label(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -192,6 +207,51 @@ pub struct LeaseInfo {
 
 fn duration(s: Option<f64>) -> Option<Duration> {
     s.and_then(|s| Duration::try_from_secs_f64(s).ok())
+}
+
+/// Redirects to other shards followed in a row before the worker gives up.
+pub const MAX_REDIRECTS: u32 = 3;
+
+/// Metadata naming the endpoint of the shard that serves a refused pool.
+const ENDPOINT_HEADER: &str = "cronoq-shard-endpoint";
+
+/// The endpoint a refusal sends the worker to, if it is a shard redirect: `Ok(None)` when it is
+/// not one, an error when the endpoint may not be followed from `current`.
+fn redirect(
+    opts: &WorkerOptions,
+    current: &str,
+    s: &tonic::Status,
+) -> anyhow::Result<Option<String>> {
+    if s.code() != Code::FailedPrecondition {
+        return Ok(None);
+    }
+    let Some(target) = s
+        .metadata()
+        .get(ENDPOINT_HEADER)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return Ok(None);
+    };
+    let https = target.starts_with("https://");
+    anyhow::ensure!(
+        https || target.starts_with("http://"),
+        "the server redirected the worker to '{target}', which is not an http(s) endpoint"
+    );
+    anyhow::ensure!(
+        https || !current.starts_with("https://"),
+        "the server redirected the worker from https to plain http ('{target}'); refusing"
+    );
+    let plain_remote = target.starts_with("http://") && !is_loopback_endpoint(target);
+    if opts.token.is_some() && plain_remote {
+        anyhow::ensure!(
+            opts.insecure_redirect_http,
+            "the server redirected the worker to '{target}', which would send its token over \
+             plain http to another host; refusing (insecure_redirect_http allows it)"
+        );
+        tracing::warn!(endpoint = %target, "following a redirect that sends the worker token over plain http");
+    }
+    target.parse::<tonic::transport::Uri>()?;
+    Ok(Some(target.to_string()))
 }
 
 /// Errors that retrying cannot fix.
@@ -276,7 +336,7 @@ where
     F: Fn(LeaseInfo) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Bytes, TaskError>> + Send + 'static,
 {
-    let endpoint = endpoint(&opts)?;
+    endpoint(&opts, &opts.endpoint)?;
     let auth: Option<MetadataValue<_>> = match &opts.token {
         Some(t) => {
             let mut v: MetadataValue<_> = format!("Bearer {t}").parse()?;
@@ -292,12 +352,20 @@ where
     let _stop_on_drop = stop.clone().drop_guard();
     tokio::pin!(shutdown);
     let mut backoff = opts.initial_backoff;
+    // The endpoint connected to: the configured one, or the shard it redirected the worker to.
+    let mut current = opts.endpoint.clone();
+    let mut redirects = 0;
     let result = loop {
+        let mut connect_failed = false;
         let session = async {
-            let channel = endpoint
+            let channel = endpoint(&opts, &current)
+                .map_err(|e| tonic::Status::invalid_argument(e.to_string()))?
                 .connect()
                 .await
-                .map_err(|e| tonic::Status::unavailable(format!("connect: {e}")))?;
+                .map_err(|e| {
+                    connect_failed = true;
+                    tonic::Status::unavailable(format!("connect: {e}"))
+                })?;
             let auth = auth.clone();
             let client =
                 WorkersClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
@@ -316,6 +384,29 @@ where
             },
             _ = &mut shutdown => SessionEnd::Shutdown,
         };
+        if let SessionEnd::Failed(s) = &end {
+            match redirect(&opts, &current, s) {
+                Ok(Some(target)) => {
+                    redirects += 1;
+                    if redirects > MAX_REDIRECTS {
+                        break Err(anyhow::anyhow!(
+                            "worker redirected more than {MAX_REDIRECTS} times in a row: {s}"
+                        ));
+                    }
+                    tracing::info!(from = %current, to = %target, "pool is served by another shard; reconnecting there");
+                    current = target;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => break Err(e),
+            }
+        }
+        redirects = 0;
+        if connect_failed && current != opts.endpoint {
+            // The shard is unreachable: ask the configured endpoint again where the pool is.
+            tracing::warn!(endpoint = %current, "shard unreachable; returning to the configured endpoint");
+            current = opts.endpoint.clone();
+        }
         match end {
             SessionEnd::Shutdown => break Ok(()),
             SessionEnd::Failed(s) if fatal(s.code()) => {
@@ -348,22 +439,23 @@ where
     result
 }
 
-fn endpoint(opts: &WorkerOptions) -> anyhow::Result<Endpoint> {
-    let mut ep = Endpoint::from_shared(opts.endpoint.clone())?
+/// The endpoint at `url`: the configured one, or a shard the server redirected the worker to
+/// (which keeps the TLS settings except a fixed server name).
+fn endpoint(opts: &WorkerOptions, url: &str) -> anyhow::Result<Endpoint> {
+    let mut ep = Endpoint::from_shared(url.to_string())?
         .connect_timeout(Duration::from_secs(10))
         .tcp_keepalive(Some(Duration::from_secs(20)))
         .http2_keep_alive_interval(Duration::from_secs(20))
         .keep_alive_timeout(Duration::from_secs(20))
         .keep_alive_while_idle(true);
-    let https = opts.endpoint.starts_with("https://");
+    let https = url.starts_with("https://");
     // tonic only applies TLS to https:// endpoints; anything else would silently be plaintext.
     anyhow::ensure!(
         https || opts.tls.is_none(),
-        "worker TLS settings need an https:// endpoint, not '{}'",
-        opts.endpoint
+        "worker TLS settings need an https:// endpoint, not '{url}'"
     );
-    if !https && opts.token.is_some() && !is_loopback_endpoint(&opts.endpoint) {
-        tracing::warn!(endpoint = %opts.endpoint, "the worker token is sent over plain http; use https outside a trusted network");
+    if !https && opts.token.is_some() && !is_loopback_endpoint(url) {
+        tracing::warn!(endpoint = %url, "the worker token is sent over plain http; use https outside a trusted network");
     }
     if https {
         let tls = opts.tls.clone().unwrap_or_default();
@@ -375,7 +467,9 @@ fn endpoint(opts: &WorkerOptions) -> anyhow::Result<Endpoint> {
         if let Some((cert, key)) = &tls.identity {
             cfg = cfg.identity(Identity::from_pem(cert, key));
         }
-        if let Some(d) = &tls.domain {
+        if let Some(d) = &tls.domain
+            && url == opts.endpoint
+        {
             cfg = cfg.domain_name(d.clone());
         }
         ep = ep.tls_config(cfg)?;
@@ -680,4 +774,71 @@ fn start_lease<F, Fut>(
         };
         let _ = tx.send(pb::WorkerMessage { msg: Some(msg) }).await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal(code: Code, endpoint: Option<&'static str>) -> tonic::Status {
+        let mut s = tonic::Status::new(code, "pool 'llm' is served by shard 'gpu'");
+        if let Some(e) = endpoint {
+            s.metadata_mut()
+                .insert(ENDPOINT_HEADER, MetadataValue::from_static(e));
+        }
+        s
+    }
+
+    #[test]
+    fn redirects_never_weaken_the_connection() {
+        let opts = WorkerOptions::new("https://cpu.internal:7070", "llm").token("t");
+        let follow = |current: &str, s| redirect(&opts, current, &s);
+        let fp = Code::FailedPrecondition;
+        assert_eq!(
+            follow(
+                current(&opts),
+                refusal(fp, Some("https://gpu.internal:7070"))
+            )
+            .unwrap(),
+            Some("https://gpu.internal:7070".into())
+        );
+        // Not a redirect: another code, or no endpoint.
+        assert_eq!(
+            follow(current(&opts), refusal(Code::NotFound, Some("https://x:1"))).unwrap(),
+            None
+        );
+        assert_eq!(follow(current(&opts), refusal(fp, None)).unwrap(), None);
+        // No downgrade from https, not even to loopback.
+        assert!(follow(current(&opts), refusal(fp, Some("http://127.0.0.1:7070"))).is_err());
+        assert!(follow(current(&opts), refusal(fp, Some("unix:/tmp/s"))).is_err());
+
+        // From plain http on loopback, a token never goes over plain http to another host.
+        let local = WorkerOptions::new("http://127.0.0.1:7070", "llm").token("t");
+        let r = |t| redirect(&local, "http://127.0.0.1:7070", &refusal(fp, Some(t)));
+        assert!(r("http://127.0.0.1:7071").unwrap().is_some());
+        assert!(r("https://gpu.internal:7070").unwrap().is_some());
+        assert!(r("http://gpu.internal:7070").is_err());
+        // Without a token there is nothing to leak.
+        let anon = WorkerOptions::new("http://127.0.0.1:7070", "llm");
+        let to_remote = refusal(fp, Some("http://gpu.internal:7070"));
+        assert!(
+            redirect(&anon, "http://127.0.0.1:7070", &to_remote)
+                .unwrap()
+                .is_some()
+        );
+        // A plain-http endpoint on another host does not by itself allow more of them.
+        let remote = WorkerOptions::new("http://cpu.internal:7070", "llm").token("t");
+        assert!(redirect(&remote, "http://cpu.internal:7070", &to_remote).is_err());
+        // Only the opt-in does.
+        let trusted = remote.insecure_redirect_http(true);
+        assert!(
+            redirect(&trusted, "http://cpu.internal:7070", &to_remote)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    fn current(opts: &WorkerOptions) -> &str {
+        &opts.endpoint
+    }
 }

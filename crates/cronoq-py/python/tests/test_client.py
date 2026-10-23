@@ -820,3 +820,92 @@ def test_reject_and_cancel_task_pickle() -> None:
 
     assert pickle.loads(pickle.dumps(Reject("busy"))).reason == "busy"
     assert str(pickle.loads(pickle.dumps(CancelTask("stop")))) == "stop"
+
+
+class ShardServer(Server):
+    """One shard of a two-shard layout: ``cpu`` serves pool ``default``, ``gpu`` pool ``llm``."""
+
+    def __init__(self, binary: Path, shard: str, ports: dict[str, int], layout: dict[str, list[str]]) -> None:
+        self.shard, self.ports, self.layout = shard, ports, layout
+        super().__init__(binary)
+
+    def _new_ports(self) -> None:
+        super()._new_ports()
+        self.grpc_port = self.ports[self.shard]
+        pools = "".join(f'\n[[pools]]\nname = "{p}"\nmax = 4\n' for p in ("default", "llm", "spare"))
+        shards = "".join(
+            f'\n[[shards]]\nname = "{name}"\nnumber = {n}\npools = {pools!r}\n'
+            f'endpoint = "http://127.0.0.1:{self.ports[name]}"\n'.replace("'", '"')
+            for n, (name, pools) in enumerate(self.layout.items(), start=1)
+        )
+        text = self.config.read_text()
+        text = text.replace("[server]\n", f'[server]\nshard = "{self.shard}"\n', 1)
+        text = text.replace('grpc_addr = "127.0.0.1:', f'grpc_addr = "127.0.0.1:{self.grpc_port}"\n#', 1)
+        head, _, _ = text.partition("[[pools]]")
+        self.config.write_text(head + pools + shards)
+
+
+def _shards(binary: Path, layouts: dict[str, dict[str, list[str]]]) -> list[ShardServer]:
+    ports = {name: _free_port() for name in layouts}
+    servers = [ShardServer(binary, name, ports, layout) for name, layout in layouts.items()]
+    for s in servers:
+        s._start_once()
+    return servers
+
+
+async def test_worker_follows_its_pool_to_its_shard(server_binary: Path) -> None:
+    layout = {"cpu": ["default", "spare"], "gpu": ["llm"]}
+    servers = _shards(server_binary, {"cpu": layout, "gpu": layout})
+    cpu = servers[0]
+    try:
+        # Pointed at cpu, the worker for pool `llm` registers with gpu and runs its tasks.
+        w = Worker(cpu.target, "llm", upper, token=WORKER)
+        run = asyncio.create_task(w.run())
+        await w.wait_registered(10)
+        assert w._current.endswith(f":{servers[1].grpc_port}")
+        async with Client(cpu.target, token=CLIENT) as c:
+            t = await c.submit("hi", pool="llm")
+            assert (await c.wait(t.id, timeout=10)).text() == "HI"
+        await w.stop()
+        await run
+    finally:
+        for s in servers:
+            s.stop()
+            s.dir.cleanup()
+
+    # Servers that each say the other serves `llm` send the worker back and forth until it stops.
+    servers = _shards(
+        server_binary,
+        {"cpu": {"cpu": ["default", "spare"], "gpu": ["llm"]}, "gpu": {"cpu": ["default", "llm"], "gpu": ["spare"]}},
+    )
+    try:
+        w = Worker(servers[0].target, "llm", upper, token=WORKER)
+        with pytest.raises(ClientError, match="redirected more than 3 times"):
+            await asyncio.wait_for(w.run(), 20)
+    finally:
+        for s in servers:
+            s.stop()
+            s.dir.cleanup()
+
+
+def test_redirects_never_weaken_the_connection() -> None:
+    from cronoq.client import _redirect
+
+    class Refusal(grpc.aio.AioRpcError):
+        def __init__(self, code: grpc.StatusCode, endpoint: str | None) -> None:
+            md = grpc.aio.Metadata(*([("cronoq-shard-endpoint", endpoint)] if endpoint else []))
+            super().__init__(code, grpc.aio.Metadata(), md, "pool 'llm' is served by shard 'gpu'")
+
+    fp = grpc.StatusCode.FAILED_PRECONDITION
+    assert _redirect(Refusal(fp, "https://gpu:7070"), True, True, False) == "https://gpu:7070"
+    assert _redirect(Refusal(grpc.StatusCode.NOT_FOUND, "https://gpu:7070"), True, True, False) is None
+    assert _redirect(Refusal(fp, None), True, True, False) is None
+    for bad in ("http://127.0.0.1:7070", "unix:/tmp/s"):
+        with pytest.raises(ClientError):
+            _redirect(Refusal(fp, bad), True, True, False)
+    # From plain http: loopback is fine, another host only without a token or with the opt-in.
+    assert _redirect(Refusal(fp, "http://127.0.0.1:7071"), False, True, False)
+    with pytest.raises(ClientError, match="insecure_redirect_http"):
+        _redirect(Refusal(fp, "http://gpu.internal:7070"), False, True, False)
+    assert _redirect(Refusal(fp, "http://gpu.internal:7070"), False, False, False)
+    assert _redirect(Refusal(fp, "http://gpu.internal:7070"), False, True, True)
