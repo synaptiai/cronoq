@@ -273,12 +273,14 @@ class ListTasksRequest(_message.Message):
     def __init__(self, pools: _Optional[_Iterable[str]] = ..., statuses: _Optional[_Iterable[_Union[TaskStatus, str]]] = ..., after: _Optional[int] = ..., limit: _Optional[int] = ...) -> None: ...
 
 class ListTasksResponse(_message.Message):
-    __slots__ = ("tasks", "next_after")
+    __slots__ = ("tasks", "next_after", "unavailable_shards")
     TASKS_FIELD_NUMBER: _ClassVar[int]
     NEXT_AFTER_FIELD_NUMBER: _ClassVar[int]
+    UNAVAILABLE_SHARDS_FIELD_NUMBER: _ClassVar[int]
     tasks: _containers.RepeatedCompositeFieldContainer[TaskInfo]
     next_after: int
-    def __init__(self, tasks: _Optional[_Iterable[_Union[TaskInfo, _Mapping]]] = ..., next_after: _Optional[int] = ...) -> None: ...
+    unavailable_shards: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, tasks: _Optional[_Iterable[_Union[TaskInfo, _Mapping]]] = ..., next_after: _Optional[int] = ..., unavailable_shards: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class TaskResult(_message.Message):
     __slots__ = ("id", "status", "output", "message", "output_available")
@@ -594,20 +596,22 @@ class Totals(_message.Message):
     def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ..., stale_completions: _Optional[int] = ...) -> None: ...
 
 class SnapshotResponse(_message.Message):
-    __slots__ = ("pools", "live_tasks", "running", "pending", "totals", "workers_connected")
+    __slots__ = ("pools", "live_tasks", "running", "pending", "totals", "workers_connected", "unavailable_shards")
     POOLS_FIELD_NUMBER: _ClassVar[int]
     LIVE_TASKS_FIELD_NUMBER: _ClassVar[int]
     RUNNING_FIELD_NUMBER: _ClassVar[int]
     PENDING_FIELD_NUMBER: _ClassVar[int]
     TOTALS_FIELD_NUMBER: _ClassVar[int]
     WORKERS_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    UNAVAILABLE_SHARDS_FIELD_NUMBER: _ClassVar[int]
     pools: _containers.RepeatedCompositeFieldContainer[PoolSnapshot]
     live_tasks: int
     running: int
     pending: int
     totals: Totals
     workers_connected: int
-    def __init__(self, pools: _Optional[_Iterable[_Union[PoolSnapshot, _Mapping]]] = ..., live_tasks: _Optional[int] = ..., running: _Optional[int] = ..., pending: _Optional[int] = ..., totals: _Optional[_Union[Totals, _Mapping]] = ..., workers_connected: _Optional[int] = ...) -> None: ...
+    unavailable_shards: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, pools: _Optional[_Iterable[_Union[PoolSnapshot, _Mapping]]] = ..., live_tasks: _Optional[int] = ..., running: _Optional[int] = ..., pending: _Optional[int] = ..., totals: _Optional[_Union[Totals, _Mapping]] = ..., workers_connected: _Optional[int] = ..., unavailable_shards: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class RecurringRequest(_message.Message):
     __slots__ = ("name", "cron", "tz", "template", "overlap")
@@ -661,10 +665,12 @@ class WorkerInfo(_message.Message):
     def __init__(self, id: _Optional[int] = ..., name: _Optional[str] = ..., pool: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., slots: _Optional[int] = ..., busy: _Optional[int] = ..., connected_unix_ns: _Optional[int] = ...) -> None: ...
 
 class ListWorkersResponse(_message.Message):
-    __slots__ = ("workers",)
+    __slots__ = ("workers", "unavailable_shards")
     WORKERS_FIELD_NUMBER: _ClassVar[int]
+    UNAVAILABLE_SHARDS_FIELD_NUMBER: _ClassVar[int]
     workers: _containers.RepeatedCompositeFieldContainer[WorkerInfo]
-    def __init__(self, workers: _Optional[_Iterable[_Union[WorkerInfo, _Mapping]]] = ...) -> None: ...
+    unavailable_shards: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, workers: _Optional[_Iterable[_Union[WorkerInfo, _Mapping]]] = ..., unavailable_shards: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class RecurringInfo(_message.Message):
     __slots__ = ("name", "cron", "tz", "pool", "kind", "overlap", "next_unix_ns", "last_task_id")
@@ -687,7 +693,9 @@ class RecurringInfo(_message.Message):
     def __init__(self, name: _Optional[str] = ..., cron: _Optional[str] = ..., tz: _Optional[str] = ..., pool: _Optional[str] = ..., kind: _Optional[str] = ..., overlap: _Optional[_Union[Overlap, str]] = ..., next_unix_ns: _Optional[int] = ..., last_task_id: _Optional[int] = ...) -> None: ...
 
 class ListRecurringResponse(_message.Message):
-    __slots__ = ("schedules",)
+    __slots__ = ("schedules", "unavailable_shards")
     SCHEDULES_FIELD_NUMBER: _ClassVar[int]
+    UNAVAILABLE_SHARDS_FIELD_NUMBER: _ClassVar[int]
     schedules: _containers.RepeatedCompositeFieldContainer[RecurringInfo]
-    def __init__(self, schedules: _Optional[_Iterable[_Union[RecurringInfo, _Mapping]]] = ...) -> None: ...
+    unavailable_shards: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, schedules: _Optional[_Iterable[_Union[RecurringInfo, _Mapping]]] = ..., unavailable_shards: _Optional[_Iterable[str]] = ...) -> None: ...

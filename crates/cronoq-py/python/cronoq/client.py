@@ -258,6 +258,8 @@ class TaskPage:
     tasks: tuple[TaskInfo, ...]
     #: Pass as ``after`` for the next page; ``None`` when this page is the last.
     next_after: int | None
+    #: With shards: shards that could not be reached, whose tasks are missing.
+    unavailable_shards: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,8 @@ class Snapshot:
     pending: int
     totals: Totals = field(default_factory=Totals)
     workers_connected: int = 0
+    #: With shards: shards that could not be reached, whose pools are missing.
+    unavailable_shards: tuple[str, ...] = ()
 
     def pool(self, name: str) -> PoolSnapshot | None:
         return next((p for p in self.pools if p.name == name), None)
@@ -742,6 +746,7 @@ class Client:
         return TaskPage(
             tasks=tuple(TaskInfo._from_pb(t) for t in r.tasks),
             next_after=r.next_after or None,
+            unavailable_shards=tuple(r.unavailable_shards),
         )
 
     async def iter_tasks(
@@ -873,6 +878,7 @@ class Client:
                 stale_completions=t.stale_completions,
             ),
             workers_connected=r.workers_connected,
+            unavailable_shards=tuple(r.unavailable_shards),
         )
 
     async def add_recurring(

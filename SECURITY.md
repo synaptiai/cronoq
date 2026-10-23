@@ -77,6 +77,13 @@ limited to a list of pools.
   Task ids show their shard's number; a lookup by another shard's id names that shard without
   saying whether the task exists. Each shard has its own store, so one shard's leader cannot
   read or change another shard's tasks.
+- **Forwarding between shards.** A server forwards a call for another shard with the caller's
+  own bearer token, which that shard authenticates and authorizes again; servers hold no
+  credentials of their own for each other. Calls are forwarded only to the configured shard
+  endpoints, never to an address a request names, and are marked so that they are not
+  forwarded again. Tokens are not forwarded over plain `http://` to another host unless
+  `server.insecure_peer_http` is set; use `https://` endpoints (with `[server.peer_tls]`)
+  across networks.
 - **Tenant pinning.** Credentials with a `tenant` submit only for that tenant, so a client
   cannot spend another tenant's fair share. Without it, callers name their tenant freely.
   Pinning does not hide tasks: within the pools it may use, a client can look up and list other

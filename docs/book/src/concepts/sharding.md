@@ -54,23 +54,54 @@ cronoq-server --config cronoq.toml --shard gpu
 - **Its own keys.** Keys deduplicate within a shard; two shards can each have a task with the
   same key.
 
-## Work for another shard
+## Calling any server
 
-A server refuses requests that belong to another shard with `FAILED_PRECONDITION` (HTTP 409),
-naming the shard and its endpoint in the message and in the response metadata
-(`cronoq-shard`, `cronoq-shard-endpoint`):
+Clients can call the server of any shard. It answers from every shard that the call concerns:
 
-- tasks submitted to, listed or watched in another shard's pool;
-- lookups, waits and cancellations by an id of another shard;
-- recurring schedules for another shard's pool;
-- workers registering for another shard's pool.
+- **Work for another shard is forwarded** to it: submissions and batches for its pools,
+  lookups, waits and cancellations of its tasks, and schedules for its pools. Lookups by key
+  ask every shard, so the answer does not depend on which server receives the call: a key that
+  names tasks in two shards is refused (`FAILED_PRECONDITION`, use the task id). While a shard
+  cannot be asked, `Get` and `Wait` by key still find a task that one reachable shard holds and
+  name the missing shards (`cronoq-unavailable-shards` metadata; `unavailable_shards` over
+  HTTP), but `Cancel` by key is refused with `UNAVAILABLE`, since the missing shard might hold
+  the same key. Keys are unique only within a shard, so prefer ids for anything that changes
+  a task, or keep each key's tasks in one shard's pools.
+- **Reads cover every shard:** task listings (paged across shards in id order), `Watch`,
+  worker and schedule listings, and snapshots. When a shard cannot be reached, the others still
+  answer, and the response names the missing shard in `unavailable_shards`. A `Watch` ends when
+  any shard's stream ends; reconnect. Prometheus `/metrics` stays per server: scrape each shard.
+
+A forwarded call carries the caller's own bearer token, and the other shard authenticates and
+authorizes it again: servers do not trust one another. Forwarded calls are marked
+(`cronoq-forwarded`) and answered by the receiving shard only, so they never travel further.
+
+Configure how servers reach each other's `https://` endpoints with `[server.peer_tls]`
+(`ca`, and `cert` / `key` for shards that require mTLS); the system roots are the default.
+
+### When a call is not forwarded
+
+Some calls are refused instead, with `FAILED_PRECONDITION` (HTTP 409) naming the shard and its
+endpoint in the message and in the response metadata (`cronoq-shard`,
+`cronoq-shard-endpoint`), so the caller can go there directly:
+
+- **Client certificates.** A caller that authenticated with a certificate has no token to
+  forward. Its reads cover only the receiving server's shard (the others are listed as
+  unavailable), and its `Watch` streams only that shard's events.
+- **Plain `http://` to another host.** Tokens are not sent unencrypted across the network:
+  calls for a shard whose endpoint is `http://` on another host are refused with its endpoint,
+  unless `server.insecure_peer_http = true` (trusted networks only). Loopback endpoints and
+  `https://` endpoints are always used.
+- **Workers** register with the shard of their pool; a worker connecting to another shard's
+  server is refused with the endpoint to use.
 
 Credentials are checked first: a caller that may not use a pool learns nothing about where it
-is served. Point clients and workers at the endpoint of their pools' shard.
+is served.
 
-Some requests cannot span shards and are refused with `INVALID_ARGUMENT` or the error above:
+### What cannot span shards
 
-- **Dependencies** on another shard's task: a task can only wait for tasks of its own shard.
-  Dependencies by key refer to keys of the task's own shard.
-- **Batches** with tasks of several shards: a batch is admitted atomically by one shard.
+- **Dependencies** on another shard's task (`INVALID_ARGUMENT`): a task can only wait for tasks
+  of its own shard. Dependencies by key refer to keys of the task's own shard.
+- **Batches** with tasks of several shards (`INVALID_ARGUMENT`): a batch is admitted atomically
+  by one shard.
 - **Resources** of another shard (`INVALID_ARGUMENT`).

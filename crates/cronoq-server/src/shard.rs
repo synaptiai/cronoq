@@ -72,6 +72,15 @@ impl ShardMap {
         &self.shards[self.own]
     }
 
+    /// Every shard but this one.
+    pub fn others(&self) -> impl Iterator<Item = &Shard> {
+        self.shards
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| *i != self.own)
+            .map(|(_, s)| s)
+    }
+
     /// The other shard that serves `pool`, if another one does.
     pub fn other_for_pool(&self, pool: &str) -> Option<&Shard> {
         let i = *self.by_pool.get(pool)?;

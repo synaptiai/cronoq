@@ -299,6 +299,16 @@ impl SpecArgs {
     }
 }
 
+/// Say on stderr which shards a combined answer is missing.
+fn warn_missing(shards: &[String]) {
+    if !shards.is_empty() {
+        eprintln!(
+            "warning: shards {} could not be reached; their part is missing",
+            fmt::clean(&shards.join(", "), false)
+        );
+    }
+}
+
 fn print_json(v: &serde_json::Value) {
     println!(
         "{}",
@@ -421,6 +431,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Tasks(a) => {
             let mut after = a.after;
             let mut all = Vec::new();
+            let mut missing = Vec::new();
             loop {
                 let page = rpc(tasks
                     .list_tasks(pb::ListTasksRequest {
@@ -431,12 +442,18 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     })
                     .await)?;
                 all.extend(page.tasks);
+                for s in page.unavailable_shards {
+                    if !missing.contains(&s) {
+                        missing.push(s);
+                    }
+                }
                 if !a.all || page.next_after == 0 {
                     after = page.next_after;
                     break;
                 }
                 after = page.next_after;
             }
+            warn_missing(&missing);
             match out {
                 Output::Json => {
                     let mut v = serde_json::json!({
@@ -460,6 +477,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Workers => {
             let r = rpc(admin.list_workers(pb::Empty {}).await)?;
+            warn_missing(&r.unavailable_shards);
             match out {
                 Output::Json => print_json(&serde_json::json!({
                     "workers": r.workers.iter().map(fmt::worker_json).collect::<Vec<_>>(),
@@ -492,6 +510,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Schedules => {
             let r = rpc(admin.list_recurring(pb::Empty {}).await)?;
+            warn_missing(&r.unavailable_shards);
             match out {
                 Output::Json => print_json(&serde_json::json!({
                     "schedules": r.schedules.iter().map(fmt::schedule_json).collect::<Vec<_>>(),
@@ -566,6 +585,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Command::Snapshot => {
             let s = rpc(admin.snapshot(pb::Empty {}).await)?;
+            warn_missing(&s.unavailable_shards);
             match out {
                 Output::Json => print_json(&fmt::snapshot_json(&s)),
                 Output::Text => println!("{}", top::pools_table(&s)),

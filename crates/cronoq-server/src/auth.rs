@@ -29,7 +29,37 @@ pub struct Principal {
     pub labels: Option<cronoq::Labels>,
     /// Tenant these credentials submit for (`None` = the caller names it).
     pub tenant: Option<Arc<str>>,
+    /// The bearer token the caller authenticated with, to forward calls to another shard
+    /// (`None` for client certificates, which cannot be forwarded).
+    pub bearer: Option<Bearer>,
+    /// The call was forwarded by another shard's server: answer it from this shard only.
+    pub forwarded: bool,
 }
+
+/// A bearer token kept to forward a call; never printed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Bearer(Arc<str>);
+
+impl Bearer {
+    #[cfg(test)]
+    pub(crate) fn for_tests(header: &str) -> Bearer {
+        Bearer(header.into())
+    }
+
+    /// The `authorization` header value.
+    pub fn header(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Bearer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Bearer(<redacted>)")
+    }
+}
+
+/// Header that marks a call forwarded between shards.
+pub const FORWARDED_HEADER: &str = "cronoq-forwarded";
 
 impl Principal {
     /// Unrestricted administrator (used when authentication is disabled).
@@ -39,6 +69,8 @@ impl Principal {
             pools: None,
             labels: None,
             tenant: None,
+            bearer: None,
+            forwarded: false,
         }
     }
 
@@ -148,6 +180,8 @@ impl Auth {
                     pools: pools(&t.pools),
                     labels: labels(&t.labels)?,
                     tenant: t.tenant.as_deref().map(Arc::from),
+                    bearer: None,
+                    forwarded: false,
                 },
             });
         }
@@ -162,6 +196,8 @@ impl Auth {
                         pools: pools(&c.pools),
                         labels: labels(&c.labels)?,
                         tenant: c.tenant.as_deref().map(Arc::from),
+                        bearer: None,
+                        forwarded: false,
                     },
                 })
             })
@@ -227,10 +263,11 @@ impl Auth {
                 let token = h
                     .strip_prefix("Bearer ")
                     .or_else(|| h.strip_prefix("bearer "))
-                    .ok_or(AuthError::Missing)?;
-                self.token(token.trim())
-                    .cloned()
-                    .ok_or(AuthError::Invalid)?
+                    .ok_or(AuthError::Missing)?
+                    .trim();
+                let mut p = self.token(token).cloned().ok_or(AuthError::Invalid)?;
+                p.bearer = Some(Bearer(format!("Bearer {token}").into()));
+                p
             }
             None => cert.cloned().ok_or(AuthError::Missing)?,
         };
@@ -292,8 +329,11 @@ pub fn check_grpc<T>(
                 .and_then(|c| auth.principal_for_cert(c.as_ref()))
         })
     };
-    auth.authorize(header, cert.as_ref(), role)
-        .map_err(|e| e.to_status())
+    let mut p = auth
+        .authorize(header, cert.as_ref(), role)
+        .map_err(|e| e.to_status())?;
+    p.forwarded = req.metadata().contains_key(FORWARDED_HEADER);
+    Ok(p)
 }
 
 #[cfg(test)]

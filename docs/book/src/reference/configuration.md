@@ -38,6 +38,7 @@ Durations are seconds (floats). They must be finite and between their minimum an
 | `insecure_no_auth` | bool | `false` | Allow starting with no tokens and no certificate mappings while listening on a non-loopback address. Without it the server refuses to start in that situation. |
 | `shutdown_grace_s` | float ≥ 0 | `10` | On shutdown (or loss of leadership), running attempts may finish for this long before they are aborted. |
 | `shard` | string, optional | unset | With [`[[shards]]`](#shards), the shard this server serves. Usually set per deployment with `--shard` or `CRONOQ_SHARD`, so all shards share one file. |
+| `insecure_peer_http` | bool | `false` | Forward callers' tokens to other shards over plain `http://` endpoints on other hosts. Without it, such calls are refused with the shard's endpoint. Trusted networks only. |
 
 ### `[server.tls]`
 
@@ -49,6 +50,16 @@ stays plain HTTP). Files are read once at startup; a missing file is reported wi
 | `cert` | path | PEM certificate chain. |
 | `key` | path | PEM private key. |
 | `client_ca` | path, optional | Require client certificates signed by this CA on both listeners (mutual TLS). Needed for `[[auth.certs]]`. |
+
+### `[server.peer_tls]`
+
+Optional. How this server verifies other shards' `https://` endpoints when it forwards calls
+([Sharding](../concepts/sharding.md)).
+
+| Key | Type | Description |
+|---|---|---|
+| `ca` | path, optional | PEM CA bundle for the other shards' certificates (default: the system roots). |
+| `cert`, `key` | paths, optional | Client certificate and key, for shards that require mTLS. Both or neither. |
 
 ### `[server.grpc_web]`
 
@@ -266,7 +277,7 @@ and pick their own with `server.shard`.
 | `name` | string | 1–32 lower-case letters, digits and `_`, starting with a letter. |
 | `number` | int, 0–255 | Unique; carried in the top 8 bits of the shard's task ids. Do not change it once the shard has tasks. |
 | `pools` | list of pool names | The pools this shard serves. Every `[[pools]]` entry belongs to exactly one shard. |
-| `endpoint` | URL | `http://` or `https://` address that reaches the shard's leader (for example a Kubernetes service in front of its replicas). Servers name it when they refuse another shard's work. |
+| `endpoint` | URL | `http://` or `https://` address that reaches the shard's leader (for example a Kubernetes service in front of its replicas). Other servers forward calls for the shard to it, and name it when they cannot forward a call. |
 
 With shards, each shard keeps its own state: a Postgres `store.schema` must contain `{shard}`
 (default `cronoq_{shard}`), and a SQLite `store.path` must contain `{shard}`; the server fills

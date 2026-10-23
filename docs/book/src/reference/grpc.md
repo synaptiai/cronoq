@@ -224,6 +224,18 @@ previous run is still going ends as `SKIPPED`), `OVERLAP_ALLOW`, `OVERLAP_QUEUE`
 previous run) or `OVERLAP_QUEUE_ON_SUCCESS` (wait, and run only if it succeeded). Schedules are
 durable with a durable store; `AddRecurring` returns once the schedule is stored. See [Recurring schedules](../concepts/recurring.md).
 
+## Shards
+
+With [`[[shards]]`](configuration.md#shards), any server answers for every shard
+([Sharding](../concepts/sharding.md)): calls for another shard are forwarded to it with the
+caller's token, and `ListTasks`, `Watch`, `ListWorkers`, `ListRecurring` and `Snapshot` cover all
+shards. The listing responses and `SnapshotResponse` name shards that could not be reached in
+`unavailable_shards`; `Get` and `Wait` by key name them in the `cronoq-unavailable-shards`
+response metadata, and `Cancel` by key is refused while any shard cannot be asked. A call that
+is not forwarded (client-certificate callers, plain-HTTP
+endpoints on other hosts, workers) gets `FAILED_PRECONDITION` with the shard's name and endpoint
+in the `cronoq-shard` and `cronoq-shard-endpoint` metadata.
+
 ## gRPC-Web
 
 With [`[server.grpc_web]`](configuration.md#servergrpc_web), the gRPC listener also answers

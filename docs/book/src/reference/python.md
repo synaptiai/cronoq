@@ -215,11 +215,11 @@ Result types (frozen dataclasses):
 | `Submitted` | `id`, `duplicate`, `result` |
 | `Result` | `id`, `status` (terminal), `output` (bytes or `None`), `message`, `output_available`; `.ok`, `.json()`, `.text()` |
 | `TaskInfo` | `id`, `status`, `pool`, `key`, `kind`, `attempt`, `max_attempts`, `created_at`, `started_at`, `finished_at` (Unix seconds or `None`), `message`, `output_available`, `tenant`, `priority` (name or `None`); `.done` |
-| `TaskPage` | `tasks` (tuple of `TaskInfo`), `next_after` (`int` or `None`) |
+| `TaskPage` | `tasks` (tuple of `TaskInfo`), `next_after` (`int` or `None`), `unavailable_shards` (shards that could not be reached) |
 | `WorkerInfo` | `id`, `name`, `pool`, `labels`, `slots`, `busy`, `connected_at` (Unix seconds) |
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message` |
-| `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`; `.pool(name)` |
+| `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
 | `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`; `.pending` |
 
 Failed calls raise `ClientError`: `.code` is the lower-case gRPC status name and `.retryable`

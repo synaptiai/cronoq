@@ -181,7 +181,9 @@ GET /v1/tasks?pool=default,reports&status=running,failed&limit=50
 | `after` | – | Only tasks with a larger id: pass the previous page's `next_after`. |
 | `limit` | `100` | Page size, at most `limits.max_list`. |
 
-`next_after` is present when more tasks follow. Live tasks come from the scheduler. Finished
+`next_after` is present when more tasks follow. With shards, the list covers every shard, and
+`unavailable_shards` (present when needed, also on `/v1/workers`, `/v1/recurring` and
+`/v1/snapshot`) names shards that could not be reached. Live tasks come from the scheduler. Finished
 tasks come from the store, or, without one, from the bounded info cache, so only the most
 recent ones are listed. A page is not an atomic snapshot: a task that finishes while the page is
 built can be missing from it.

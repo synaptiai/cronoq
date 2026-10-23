@@ -183,6 +183,32 @@ pub async fn run(
         );
     }
     let tls = cfg.server.tls.as_ref().map(load_tls).transpose()?;
+    let peers = match &shards {
+        Some(_) => Some(Arc::new(
+            crate::peer::Peers::new(
+                cfg.server.peer_tls.as_ref(),
+                auth.enabled(),
+                cfg.server.insecure_peer_http,
+                &cfg.limits,
+            )
+            .context("configuring calls to other shards")?,
+        )),
+        None => None,
+    };
+    if let (Some(peers), Some(map)) = (&peers, &shards) {
+        for sh in map.others() {
+            if !sh.endpoint.starts_with("https://") && auth.enabled() {
+                if peers.may_carry_tokens(sh) && cfg.server.insecure_peer_http {
+                    tracing::warn!(shard = %sh.name, endpoint = %sh.endpoint,
+                        "forwarding callers' tokens to this shard over plain http (insecure_peer_http)");
+                } else if !peers.may_carry_tokens(sh) {
+                    tracing::warn!(shard = %sh.name, endpoint = %sh.endpoint,
+                        "calls for this shard are not forwarded, because its endpoint is plain http \
+                         on another host; clients are told to connect to it directly");
+                }
+            }
+        }
+    }
     let limits = cfg.limits.clone();
 
     let grpc_listener = bind("gRPC", cfg.server.grpc_addr).await?;
@@ -289,7 +315,7 @@ pub async fn run(
         )));
     }
 
-    let result = lead(&cfg, shards, &shared, shutdown, bound, on_bound).await;
+    let result = lead(&cfg, shards, peers, &shared, shutdown, bound, on_bound).await;
     shared.ready.store(false, Ordering::SeqCst);
     shared.stop.cancel();
     for mut s in servers {
@@ -308,6 +334,7 @@ pub async fn run(
 async fn lead(
     cfg: &Config,
     shards: Option<Arc<crate::shard::ShardMap>>,
+    peers: Option<Arc<crate::peer::Peers>>,
     shared: &Arc<Shared>,
     shutdown: impl Future<Output = ()>,
     bound: Bound,
@@ -411,6 +438,7 @@ async fn lead(
         limits: limits.clone(),
         queries: queries.clone(),
         shards,
+        peers,
     });
     let _ = shared.app.set(app);
     shared.ready.store(true, Ordering::SeqCst);
