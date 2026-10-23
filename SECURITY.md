@@ -91,7 +91,7 @@ limited to a list of pools.
   across networks.
 - **Worker redirects.** A worker refused because another shard serves its pool connects to the
   endpoint the server names, with its own token, so it trusts the server it connected to as
-  much as that server's shard map. The Rust, Python and Go workers never follow a redirect from
+  much as that server's shard map. The Rust, Python, Go and TypeScript workers never follow a redirect from
   TLS to plain http, send the token over plain http only to loopback unless
   `insecure_redirect_http` is set, drop a fixed TLS server name for the new host, and stop
   after three redirects in a row.

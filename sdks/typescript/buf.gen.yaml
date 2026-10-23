@@ -1,0 +1,9 @@
+# Regenerate with `npx buf generate` (buf and the plugin come from node_modules).
+# CI checks that the checked-in code is current.
+version: v2
+inputs:
+  - directory: ../../crates/cronoq-proto/proto
+plugins:
+  - local: node_modules/.bin/protoc-gen-es
+    out: src/gen
+    opt: target=ts,import_extension=js

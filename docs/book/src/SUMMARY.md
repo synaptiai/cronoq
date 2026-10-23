@@ -61,6 +61,7 @@
 - [Python API](reference/python.md)
 - [Rust API](reference/rust.md)
 - [Go API](reference/go.md)
+- [TypeScript API](reference/typescript.md)
 - [Metrics](reference/metrics.md)
 - [Errors and status codes](reference/errors.md)
 

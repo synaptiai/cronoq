@@ -31,6 +31,14 @@ updates:
       go:
         patterns: ["*"]
 
+  - package-ecosystem: npm
+    directory: /sdks/typescript
+    schedule:
+      interval: weekly
+    groups:
+      typescript:
+        patterns: ["*"]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -42,8 +42,9 @@ by a tag with that prefix).
 2. Update the version in the root `Cargo.toml` (`[workspace.package] version`) and in the
    `version = "..."` of every internal path dependency (`cronoq-core` in
    `[workspace.dependencies]`, and the `cronoq`, `cronoq-proto`, `cronoq-store-postgres`
-   dependencies in the crates that use them). The Python package version follows the Rust crate
-   version automatically.
+   dependencies in the crates that use them), and `version` in `sdks/typescript/package.json`
+   (run `npm install` there to update its lock file). The Python package version follows the
+   Rust crate version automatically.
 3. In `CHANGELOG.md`, rename `## [Unreleased]` content into a new `## [X.Y.Z] - YYYY-MM-DD`
    section, leave an empty `## [Unreleased]`, and update the comparison links at the bottom.
 4. Commit (`Release vX.Y.Z`), open a pull request, and merge it after CI passes.
