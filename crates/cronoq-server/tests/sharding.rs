@@ -1,4 +1,5 @@
-//! Pools split between shards: each server serves its own shard and names the others.
+//! Pools split between shards: each server serves its own shard and names the others when it
+//! cannot forward a call to them (here: their endpoints are plain http on other hosts).
 
 mod common;
 
@@ -37,7 +38,7 @@ endpoint = "http://cpu.internal:7070"
 name = "gpu"
 number = 2
 pools = ["llm"]
-endpoint = "https://gpu.internal:7070"
+endpoint = "http://gpu.internal:7070"
 "#;
 /// A client token limited to pool `default`.
 const CPU_CLIENT: &str = "client-cpu-token-0123456789abcdef0";
@@ -100,42 +101,38 @@ async fn each_server_serves_its_shard_and_names_the_others() {
 
     // Work for the other shard is refused with its name and endpoint.
     let e = c.submit(submit(in_pool("llm"), false)).await.unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+    assert_elsewhere(&e, "gpu", "http://gpu.internal:7070");
     let e = c
         .get(pb::GetRequest {
             task: by_id(remote),
         })
         .await
         .unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+    assert_elsewhere(&e, "gpu", "http://gpu.internal:7070");
     let e = c
         .cancel(pb::CancelRequest {
             task: by_id(remote),
         })
         .await
         .unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+    assert_elsewhere(&e, "gpu", "http://gpu.internal:7070");
     let e = g
         .get(pb::GetRequest { task: by_id(local) })
         .await
         .unwrap_err();
     assert_elsewhere(&e, "cpu", "http://cpu.internal:7070");
-    let e = c
-        .watch(pb::WatchRequest {
-            pools: vec!["llm".into()],
-            ..Default::default()
-        })
-        .await
-        .unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
-    let e = c
+    // Reads of a shard that calls cannot be forwarded to (its endpoint is plain http on
+    // another host) leave it out and say so.
+    let r = c
         .list_tasks(pb::ListTasksRequest {
             pools: vec!["llm".into()],
             ..Default::default()
         })
         .await
-        .unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+        .unwrap()
+        .into_inner();
+    assert!(r.tasks.is_empty());
+    assert_eq!(r.unavailable_shards, ["gpu"]);
     // A batch is atomic in one shard, so it may not mix shards.
     let e = c
         .submit_batch(pb::SubmitBatchRequest {
@@ -143,7 +140,7 @@ async fn each_server_serves_its_shard_and_names_the_others() {
         })
         .await
         .unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+    assert_eq!(e.code(), tonic::Code::InvalidArgument);
     // Dependencies across shards are refused.
     let mut dependent = in_pool("default");
     dependent.deps.push(pb::Dep {
@@ -178,14 +175,14 @@ async fn each_server_serves_its_shard_and_names_the_others() {
         })
         .await
         .unwrap_err();
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+    assert_elsewhere(&e, "gpu", "http://gpu.internal:7070");
 
     // Workers of the other shard's pool are told where to go.
     let e = match raw_worker(&cpu, WORKER, register("llm", 1)).await {
         Err(e) => e,
         Ok(mut w) => w.inbound.message().await.unwrap_err(),
     };
-    assert_elsewhere(&e, "gpu", "https://gpu.internal:7070");
+    assert_elsewhere(&e, "gpu", "http://gpu.internal:7070");
 
     // Credentials that may not use a pool learn nothing about where it is.
     let e = cpu

@@ -145,7 +145,7 @@ async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next
         .extensions()
         .get::<ConnInfo>()
         .and_then(|c| c.cert.clone());
-    let principal = match st.auth.authorize(header, cert.as_ref(), role) {
+    let mut principal = match st.auth.authorize(header, cert.as_ref(), role) {
         Ok(p) => p,
         Err(e) => {
             let mut r = ApiError::from(e).into_response();
@@ -167,6 +167,7 @@ async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next
         } else {
             Duration::ZERO
         };
+    principal.forwarded = req.headers().contains_key(crate::auth::FORWARDED_HEADER);
     req.extensions_mut().insert(principal);
     match tokio::time::timeout(limit, next.run(req)).await {
         Ok(r) => r,
@@ -684,7 +685,7 @@ async fn submit(
     } else {
         None
     };
-    let r = grpc::submit_one(app, &p, spec, wait, &st.stop).await?;
+    let r = crate::route::submit(app, &p, spec, wait, &st.stop).await?;
     let mut v = json!({ "id": r.id.to_string(), "duplicate": r.duplicate });
     if let Some(res) = &r.result {
         v["result"] = result_json(res);
@@ -722,7 +723,7 @@ async fn submit_batch(
             Ok(spec)
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
-    let r = grpc::submit_batch(app, &p, specs).await?;
+    let r = crate::route::submit_batch(app, &p, specs).await?;
     Ok(Json(json!({
         "tasks": r.tasks.iter().map(|t| json!({"id": t.id.to_string(), "duplicate": t.duplicate})).collect::<Vec<_>>()
     })))
@@ -730,8 +731,10 @@ async fn submit_batch(
 
 async fn get_task(st: &Shared, p: &Principal, target: TaskRef) -> Result<Json<Value>, ApiError> {
     let app = app(st)?;
-    let target = grpc::authorize_task(app, p, target).await?;
-    Ok(Json(info_json(&grpc::task_info(app, target).await?)))
+    let (info, missing) = crate::route::get(app, p, target).await?;
+    let mut v = info_json(&info);
+    note_missing(&mut v, &missing);
+    Ok(Json(v))
 }
 
 async fn get_by_id(
@@ -753,9 +756,8 @@ async fn get_by_key(
 
 async fn cancel_task(st: &Shared, p: &Principal, target: TaskRef) -> Result<Json<Value>, ApiError> {
     let app = app(st)?;
-    let target = grpc::authorize_task(app, p, target).await?;
     Ok(Json(
-        json!({ "cancelled": grpc::cancel(app, target).await? }),
+        json!({ "cancelled": crate::route::cancel(app, p, target).await? }),
     ))
 }
 
@@ -790,10 +792,10 @@ async fn wait_task(
 ) -> Result<Json<Value>, ApiError> {
     let app = app(st)?;
     let timeout = grpc::wait_bound(q.timeout_s, &app.limits)?;
-    let target = grpc::authorize_task(app, p, target).await?;
-    Ok(Json(result_json(
-        &grpc::wait_result(app, target, timeout, &st.stop).await?,
-    )))
+    let (result, missing) = crate::route::wait(app, p, target, timeout, &st.stop).await?;
+    let mut v = result_json(&result);
+    note_missing(&mut v, &missing);
+    Ok(Json(v))
 }
 
 fn query(
@@ -863,8 +865,9 @@ async fn list_tasks(
         after,
         limit: q.limit.unwrap_or(0),
     };
-    let r = grpc::list_tasks(app(&st)?, &p, req).await?;
+    let r = crate::route::list_tasks(app(&st)?, &p, req).await?;
     let mut v = json!({ "tasks": r.tasks.iter().map(info_json).collect::<Vec<_>>() });
+    note_missing(&mut v, &r.unavailable_shards);
     if r.next_after > 0 {
         v["next_after"] = r.next_after.to_string().into();
     }
@@ -875,7 +878,7 @@ async fn list_workers(
     State(st): State<St>,
     Extension(p): Extension<Principal>,
 ) -> Result<Json<Value>, ApiError> {
-    let r = grpc::list_workers(app(&st)?, &p);
+    let r = crate::route::list_workers(app(&st)?, &p).await?;
     let workers: Vec<Value> = r
         .workers
         .iter()
@@ -887,14 +890,16 @@ async fn list_workers(
             })
         })
         .collect();
-    Ok(Json(json!({ "workers": workers })))
+    let mut v = json!({ "workers": workers });
+    note_missing(&mut v, &r.unavailable_shards);
+    Ok(Json(v))
 }
 
 async fn list_recurring(
     State(st): State<St>,
     Extension(p): Extension<Principal>,
 ) -> Result<Json<Value>, ApiError> {
-    let r = grpc::list_recurring(app(&st)?, &p).await?;
+    let r = crate::route::list_recurring(app(&st)?, &p).await?;
     let schedules: Vec<Value> = r
         .schedules
         .iter()
@@ -915,11 +920,23 @@ async fn list_recurring(
             v
         })
         .collect();
-    Ok(Json(json!({ "schedules": schedules })))
+    let mut v = json!({ "schedules": schedules });
+    note_missing(&mut v, &r.unavailable_shards);
+    Ok(Json(v))
 }
 
-async fn snapshot(State(st): State<St>) -> Result<Json<Value>, ApiError> {
-    let s = grpc::snapshot(app(&st)?).await?;
+/// Name the shards a combined answer is missing, if any.
+fn note_missing(v: &mut Value, shards: &[String]) {
+    if !shards.is_empty() {
+        v["unavailable_shards"] = shards.into();
+    }
+}
+
+async fn snapshot(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+) -> Result<Json<Value>, ApiError> {
+    let s = crate::route::snapshot(app(&st)?, &p).await?;
     let pools: Vec<Value> = s
         .pools
         .iter()
@@ -942,7 +959,7 @@ async fn snapshot(State(st): State<St>) -> Result<Json<Value>, ApiError> {
     let t = s.totals.unwrap_or_default();
     Ok(Json(json!({
         "pools": pools, "live_tasks": s.live_tasks, "running": s.running, "pending": s.pending,
-        "workers_connected": s.workers_connected,
+        "workers_connected": s.workers_connected, "unavailable_shards": s.unavailable_shards,
         "totals": {
             "submitted": t.submitted, "dispatched": t.dispatched, "succeeded": t.succeeded,
             "failed": t.failed, "dead_lettered": t.dead_lettered, "cancelled": t.cancelled,

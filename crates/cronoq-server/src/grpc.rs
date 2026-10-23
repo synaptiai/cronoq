@@ -108,7 +108,7 @@ fn check_spec_shard(app: &AppState, spec: &pb::TaskSpec) -> Result<(), Status> {
 }
 
 /// Resolve a reference to a task id (live in the engine, cached, or persisted).
-async fn resolve_id(app: &AppState, target: &TaskRef) -> Result<Option<TaskId>, Status> {
+pub(crate) async fn resolve_id(app: &AppState, target: &TaskRef) -> Result<Option<TaskId>, Status> {
     match target {
         TaskRef::Id(id) => Ok(Some(*id)),
         TaskRef::Key(k) => {
@@ -556,6 +556,15 @@ fn info_message(
 /// Default `ListTasks` page size.
 const DEFAULT_LIST: usize = 100;
 
+/// The page size for a requested `limit`: 0 means the default, and `limits.max_list` caps it.
+pub(crate) fn list_limit(app: &AppState, requested: u32) -> usize {
+    match requested {
+        0 => DEFAULT_LIST,
+        n => n as usize,
+    }
+    .min(app.limits.max_list)
+}
+
 /// The pools a listing covers: the requested ones (each checked), else all the caller may see.
 /// `None` means every pool.
 fn listing_pools(
@@ -604,11 +613,7 @@ pub async fn list_tasks(
     }
     let (finished, live): (Vec<TaskStatus>, Vec<TaskStatus>) =
         statuses.iter().partition(|s| s.is_terminal());
-    let limit = match r.limit {
-        0 => DEFAULT_LIST,
-        n => n as usize,
-    }
-    .min(app.limits.max_list);
+    let limit = list_limit(app, r.limit);
     let after = (r.after > 0).then_some(TaskId(r.after));
     // One more than a page from each source tells whether another page follows.
     let mut page: std::collections::BTreeMap<u64, pb::TaskInfo> = Default::default();
@@ -668,7 +673,11 @@ pub async fn list_tasks(
     } else {
         0
     };
-    Ok(pb::ListTasksResponse { tasks, next_after })
+    Ok(pb::ListTasksResponse {
+        tasks,
+        next_after,
+        unavailable_shards: Vec::new(),
+    })
 }
 
 /// Connected workers of the pools the caller may see.
@@ -692,7 +701,10 @@ pub fn list_workers(app: &AppState, principal: &Principal) -> pb::ListWorkersRes
             connected_unix_ns: convert::unix_ns(w.connected),
         })
         .collect();
-    pb::ListWorkersResponse { workers }
+    pb::ListWorkersResponse {
+        workers,
+        unavailable_shards: Vec::new(),
+    }
 }
 
 /// Recurring schedules of the pools the caller may see, by name.
@@ -720,7 +732,10 @@ pub async fn list_recurring(
         })
         .collect();
     schedules.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(pb::ListRecurringResponse { schedules })
+    Ok(pb::ListRecurringResponse {
+        schedules,
+        unavailable_shards: Vec::new(),
+    })
 }
 
 /// Cancel a task (`false` if it already finished).
@@ -729,6 +744,7 @@ pub async fn cancel(app: &AppState, target: TaskRef) -> Result<bool, Status> {
 }
 
 /// Which status events a Watch stream delivers.
+#[derive(Clone, Debug)]
 pub struct WatchFilter {
     /// Pools (empty = all the caller may see).
     pub pools: Vec<String>,
@@ -849,7 +865,7 @@ impl pb::tasks_server::Tasks for TasksService {
             None
         };
         Ok(Response::new(
-            submit_one(app, &p, spec, wait, &self.shared.stop).await?,
+            crate::route::submit(app, &p, spec, wait, &self.shared.stop).await?,
         ))
     }
 
@@ -860,7 +876,7 @@ impl pb::tasks_server::Tasks for TasksService {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
         Ok(Response::new(
-            submit_batch(app, &p, req.into_inner().tasks).await?,
+            crate::route::submit_batch(app, &p, req.into_inner().tasks).await?,
         ))
     }
 
@@ -871,9 +887,8 @@ impl pb::tasks_server::Tasks for TasksService {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
         let target = convert::task_ref(req.into_inner().task, &app.limits)?;
-        let target = authorize_task(app, &p, target).await?;
         Ok(Response::new(pb::CancelResponse {
-            cancelled: cancel(app, target).await?,
+            cancelled: crate::route::cancel(app, &p, target).await?,
         }))
     }
 
@@ -881,8 +896,8 @@ impl pb::tasks_server::Tasks for TasksService {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
         let target = convert::task_ref(req.into_inner().task, &app.limits)?;
-        let target = authorize_task(app, &p, target).await?;
-        Ok(Response::new(task_info(app, target).await?))
+        let (info, missing) = crate::route::get(app, &p, target).await?;
+        Ok(crate::route::with_missing(info, &missing))
     }
 
     async fn list_tasks(
@@ -891,7 +906,9 @@ impl pb::tasks_server::Tasks for TasksService {
     ) -> Result<Response<pb::ListTasksResponse>, Status> {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
-        Ok(Response::new(list_tasks(app, &p, req.into_inner()).await?))
+        Ok(Response::new(
+            crate::route::list_tasks(app, &p, req.into_inner()).await?,
+        ))
     }
 
     async fn wait(
@@ -903,10 +920,9 @@ impl pb::tasks_server::Tasks for TasksService {
         let r = req.into_inner();
         let target = convert::task_ref(r.task, &app.limits)?;
         let timeout = wait_bound(r.timeout_s, &app.limits)?;
-        let target = authorize_task(app, &p, target).await?;
-        Ok(Response::new(
-            wait_result(app, target, timeout, &self.shared.stop).await?,
-        ))
+        let (result, missing) =
+            crate::route::wait(app, &p, target, timeout, &self.shared.stop).await?;
+        Ok(crate::route::with_missing(result, &missing))
     }
 
     type WatchStream = EventStream;
@@ -924,7 +940,7 @@ impl pb::tasks_server::Tasks for TasksService {
             keys: r.keys,
             all_transitions: r.all_transitions,
         };
-        let rx = watch(app, &p, filter, self.shared.stop.clone())?;
+        let rx = crate::route::watch(app, &p, filter, self.shared.stop.clone())?;
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 }
@@ -1092,45 +1108,65 @@ pub async fn snapshot(app: &AppState) -> Result<pb::SnapshotResponse, Status> {
     Ok(r)
 }
 
+/// Checks of a schedule's own fields, before it is routed to its shard.
+fn check_recurring(r: &pb::RecurringRequest) -> Result<(), Status> {
+    convert::check_str("name", &r.name, MAX_SCHEDULE_FIELD)?;
+    convert::check_str("cron", &r.cron, MAX_SCHEDULE_FIELD)?;
+    convert::check_str("tz", &r.tz, 64)?;
+    if r.name.is_empty() {
+        return Err(Status::invalid_argument("recurring schedule needs a name"));
+    }
+    Ok(())
+}
+
+/// Add (or replace) a schedule on this shard.
+pub async fn add_recurring(app: &AppState, r: pb::RecurringRequest) -> Result<(), Status> {
+    check_recurring(&r)?;
+    let template = r.template.unwrap_or_default();
+    check_spec_shard(app, &template)?;
+    let template = convert::task(template, &app.limits)?;
+    let overlap = match pb::Overlap::try_from(r.overlap) {
+        Ok(pb::Overlap::Unspecified | pb::Overlap::Skip) => OverlapPolicy::Skip,
+        Ok(pb::Overlap::Allow) => OverlapPolicy::Allow,
+        Ok(pb::Overlap::Queue) => OverlapPolicy::Queue,
+        Ok(pb::Overlap::QueueOnSuccess) => OverlapPolicy::QueueOnSuccess,
+        Err(_) => return Err(Status::invalid_argument("unknown overlap policy")),
+    };
+    let mut rec = Recurring::new(r.name, r.cron, template).overlap(overlap);
+    if !r.tz.is_empty() {
+        rec = rec.tz(r.tz);
+    }
+    app.sched.add_recurring(rec).await.map_err(convert::error)
+}
+
+/// Remove a schedule from this shard.
+pub async fn remove_recurring(app: &AppState, name: &str) -> Result<bool, Status> {
+    app.sched
+        .remove_recurring(name)
+        .await
+        .map_err(convert::error)
+}
+
 #[tonic::async_trait]
 impl pb::admin_server::Admin for AdminService {
     async fn snapshot(
         &self,
         req: Request<pb::Empty>,
     ) -> Result<Response<pb::SnapshotResponse>, Status> {
-        check_grpc(&self.shared.auth, &req, Role::Metrics)?;
+        let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
         let app = self.shared.app_or_unavailable()?;
-        Ok(Response::new(snapshot(app).await?))
+        Ok(Response::new(crate::route::snapshot(app, &p).await?))
     }
 
     async fn add_recurring(
         &self,
         req: Request<pb::RecurringRequest>,
     ) -> Result<Response<pb::Empty>, Status> {
-        check_grpc(&self.shared.auth, &req, Role::Admin)?;
+        let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
         let app = self.shared.app_or_unavailable()?;
         let r = req.into_inner();
-        convert::check_str("name", &r.name, MAX_SCHEDULE_FIELD)?;
-        convert::check_str("cron", &r.cron, MAX_SCHEDULE_FIELD)?;
-        convert::check_str("tz", &r.tz, 64)?;
-        if r.name.is_empty() {
-            return Err(Status::invalid_argument("recurring schedule needs a name"));
-        }
-        let template = r.template.unwrap_or_default();
-        check_spec_shard(app, &template)?;
-        let template = convert::task(template, &app.limits)?;
-        let overlap = match pb::Overlap::try_from(r.overlap) {
-            Ok(pb::Overlap::Unspecified | pb::Overlap::Skip) => OverlapPolicy::Skip,
-            Ok(pb::Overlap::Allow) => OverlapPolicy::Allow,
-            Ok(pb::Overlap::Queue) => OverlapPolicy::Queue,
-            Ok(pb::Overlap::QueueOnSuccess) => OverlapPolicy::QueueOnSuccess,
-            Err(_) => return Err(Status::invalid_argument("unknown overlap policy")),
-        };
-        let mut rec = Recurring::new(r.name, r.cron, template).overlap(overlap);
-        if !r.tz.is_empty() {
-            rec = rec.tz(r.tz);
-        }
-        app.sched.add_recurring(rec).await.map_err(convert::error)?;
+        check_recurring(&r)?;
+        crate::route::add_recurring(app, &p, r).await?;
         Ok(Response::new(pb::Empty {}))
     }
 
@@ -1138,15 +1174,11 @@ impl pb::admin_server::Admin for AdminService {
         &self,
         req: Request<pb::RemoveRecurringRequest>,
     ) -> Result<Response<pb::RemoveRecurringResponse>, Status> {
-        check_grpc(&self.shared.auth, &req, Role::Admin)?;
+        let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
         let app = self.shared.app_or_unavailable()?;
         let name = req.into_inner().name;
         convert::check_str("name", &name, MAX_SCHEDULE_FIELD)?;
-        let removed = app
-            .sched
-            .remove_recurring(&name)
-            .await
-            .map_err(convert::error)?;
+        let removed = crate::route::remove_recurring(app, &p, name).await?;
         Ok(Response::new(pb::RemoveRecurringResponse { removed }))
     }
 
@@ -1156,7 +1188,7 @@ impl pb::admin_server::Admin for AdminService {
     ) -> Result<Response<pb::ListWorkersResponse>, Status> {
         let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
         let app = self.shared.app_or_unavailable()?;
-        Ok(Response::new(list_workers(app, &p)))
+        Ok(Response::new(crate::route::list_workers(app, &p).await?))
     }
 
     async fn list_recurring(
@@ -1165,6 +1197,6 @@ impl pb::admin_server::Admin for AdminService {
     ) -> Result<Response<pb::ListRecurringResponse>, Status> {
         let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
         let app = self.shared.app_or_unavailable()?;
-        Ok(Response::new(list_recurring(app, &p).await?))
+        Ok(Response::new(crate::route::list_recurring(app, &p).await?))
     }
 }

@@ -328,6 +328,12 @@ fn summary(st: &State, now: i64) -> Line<'static> {
             "live {}  running {}  pending {}  workers {}  done {}  failed {}",
             s.live_tasks, s.running, s.pending, s.workers_connected, t.succeeded, t.failed
         ));
+        if !s.unavailable_shards.is_empty() {
+            parts.push(format!(
+                "UNREACHABLE: {}",
+                fmt::clean(&s.unavailable_shards.join(", "), false)
+            ));
+        }
     }
     if st.updated_ns > 0 {
         parts.push(format!("updated {}", fmt::ago(st.updated_ns, now)));
@@ -635,6 +641,7 @@ name = "default"
                     ..Default::default()
                 }],
                 live_tasks: 8,
+                unavailable_shards: vec!["tpu".into()],
                 running: 3,
                 pending: 5,
                 workers_connected: 1,
@@ -650,6 +657,7 @@ name = "default"
                     connected_unix_ns: 40_000_000_000,
                     ..Default::default()
                 }],
+                ..Default::default()
             }),
             tasks: Pane::Ready(pb::ListTasksResponse {
                 tasks: vec![
@@ -671,6 +679,7 @@ name = "default"
                     },
                 ],
                 next_after: 42,
+                ..Default::default()
             }),
             schedules: Pane::Ready(pb::ListRecurringResponse {
                 schedules: vec![pb::RecurringInfo {
@@ -680,6 +689,7 @@ name = "default"
                     next_unix_ns: Some(160_000_000_000),
                     ..Default::default()
                 }],
+                ..Default::default()
             }),
             events: Events {
                 recent: [pb::StatusEvent {
@@ -702,6 +712,7 @@ name = "default"
         let s = draw(&full());
         for want in [
             "live 8  running 3  pending 5",
+            "UNREACHABLE: tpu",
             "updated 2s ago",
             "gpu-pool",
             "38%",

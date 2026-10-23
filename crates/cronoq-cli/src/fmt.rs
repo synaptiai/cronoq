@@ -303,6 +303,7 @@ pub fn snapshot_json(s: &pb::SnapshotResponse) -> Value {
         .collect();
     let t = s.totals.unwrap_or_default();
     json!({
+        "unavailable_shards": s.unavailable_shards,
         "pools": pools, "live_tasks": s.live_tasks, "running": s.running, "pending": s.pending,
         "workers_connected": s.workers_connected,
         "totals": {

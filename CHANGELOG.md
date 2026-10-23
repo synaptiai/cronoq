@@ -110,6 +110,9 @@ First public release.
   with `--shard`. Task ids carry the shard's number. Work for another shard is refused with its
   name and endpoint; dependencies and batches across shards are refused. Each resource belongs
   to one shard (`[[resources]] shard`), so shards cannot exceed a shared limit together.
+  Any server forwards calls for another shard to it with the caller's token (re-checked there;
+  never over plain HTTP to another host unless `insecure_peer_http`), and listings, `Watch` and
+  snapshots cover every shard, naming unreachable shards in `unavailable_shards`.
 - gRPC-Web for browser clients on the gRPC listener, off unless `[server.grpc_web]` lists the
   allowed origins: unary calls and `Watch`, the same authentication, CORS only for those origins,
   and in loopback-only mode only loopback hosts.

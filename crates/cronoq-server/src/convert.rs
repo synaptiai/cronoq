@@ -496,6 +496,7 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             lease_expiries: t.lease_expiries,
             stale_completions: t.stale_completions,
         }),
+        unavailable_shards: Vec::new(),
     }
 }
 

@@ -75,6 +75,8 @@ pub struct AppState {
     pub queries: Option<Arc<dyn cronoq::StoreQueries<Bytes>>>,
     /// The shard layout, when pools are split between shards.
     pub shards: Option<Arc<crate::shard::ShardMap>>,
+    /// Connections to the other shards.
+    pub peers: Option<Arc<crate::peer::Peers>>,
 }
 
 impl AppState {

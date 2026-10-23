@@ -161,6 +161,20 @@ impl Config {
                 "server.tls needs cert and key"
             );
         }
+        if let Some(t) = &s.peer_tls {
+            ensure!(
+                t.cert.is_some() == t.key.is_some(),
+                "server.peer_tls needs both cert and key, or neither"
+            );
+            // Without authentication here, forwarded calls carry no token, and another shard
+            // would authorize them as this server's certificate instead of as the caller.
+            ensure!(
+                t.cert.is_none() || !self.auth.tokens.is_empty() || !self.auth.certs.is_empty(),
+                "server.peer_tls.cert needs authentication on this server ([[auth.tokens]] or \
+                 [[auth.certs]]): otherwise calls forwarded to other shards would act as this \
+                 server's certificate"
+            );
+        }
         if let Some(w) = &s.grpc_web {
             ensure!(
                 (1..=64).contains(&w.allowed_origins.len()),
@@ -536,6 +550,25 @@ pub struct ServerConfig {
     pub grpc_web: Option<GrpcWebConfig>,
     /// The shard this server serves, one of `[[shards]]` (also `--shard`).
     pub shard: Option<String>,
+    /// TLS for calls to other shards' `https://` endpoints.
+    pub peer_tls: Option<PeerTlsConfig>,
+    /// Forward callers' tokens to other shards over plain `http://` endpoints on other hosts.
+    /// Off by default: such calls are refused with the shard's endpoint instead, so tokens do
+    /// not cross the network unencrypted. Trusted networks only.
+    #[serde(default)]
+    pub insecure_peer_http: bool,
+}
+
+/// How this server verifies (and identifies itself to) other shards' servers.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerTlsConfig {
+    /// PEM CA bundle for the other shards' certificates (default: the system roots).
+    pub ca: Option<PathBuf>,
+    /// PEM client certificate, for shards that require mTLS (with `key`).
+    pub cert: Option<PathBuf>,
+    /// PEM private key of `cert`.
+    pub key: Option<PathBuf>,
 }
 
 /// gRPC-Web for browser clients.
@@ -592,6 +625,8 @@ impl Default for ServerConfig {
             shutdown_grace_s: default_grace(),
             grpc_web: None,
             shard: None,
+            peer_tls: None,
+            insecure_peer_http: false,
         }
     }
 }
@@ -1268,6 +1303,20 @@ impl ResourceSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peer_certificates_need_local_authentication() {
+        let base =
+            "[[pools]]\nname = \"default\"\n[server.peer_tls]\ncert = \"c.pem\"\nkey = \"k.pem\"\n";
+        let open: Config = toml::from_str(base).unwrap();
+        let e = open.validate().unwrap_err().to_string();
+        assert!(e.contains("needs authentication"), "{e}");
+        let with_tokens: Config = toml::from_str(&format!(
+            "{base}[[auth.tokens]]\ntoken = \"0123456789abcdef0123456789\"\nrole = \"client\"\n"
+        ))
+        .unwrap();
+        with_tokens.validate().unwrap();
+    }
 
     #[test]
     fn shard_layouts_are_checked() {
