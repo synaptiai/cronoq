@@ -34,8 +34,8 @@ any language and connected over gRPC.
 2. **Python package** (`pip install cronoq`): the same engine with asyncio bindings. Payloads are
    Python objects. See the [Python quickstart](guides/python-quickstart.md).
 3. **Server** (`cronoq-server`): a standalone service with a gRPC and HTTP/JSON API. Clients in
-   any language submit work and remote workers lease it. See the
-   [Server quickstart](guides/server-quickstart.md).
+   any language submit work and remote workers lease it, with SDKs for Rust, Python and
+   [Go](reference/go.md). See the [Server quickstart](guides/server-quickstart.md).
 
 All three share one engine, so behaviour, configuration and metrics are the same everywhere.
 

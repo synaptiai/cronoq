@@ -133,6 +133,47 @@ jobs:
           python -m mypy.stubtest cronoq._cronoq
           python -m mypy --ignore-missing-imports python/cronoq
 
+  go:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    env:
+      CRONOQ_REQUIRE_SERVER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: sdks/go/go.sum
+      - run: cargo build -p cronoq-server
+      - name: Generated code matches the protocol
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: sdks/go
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.72.0
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+          buf generate
+          git diff --exit-code -- cronoqpb
+      - name: Vet and test against a real server
+        working-directory: sdks/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race -count=1 ./...
+      - name: Known vulnerabilities
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: sdks/go
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
   # Build a real wheel on each platform and test it installed into a clean environment, outside
   # the source tree, exactly as users get it from PyPI.
   wheel:

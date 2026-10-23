@@ -155,6 +155,17 @@ First public release.
   worker labels, and listing of tasks (`list_tasks`, `iter_tasks`), workers and schedules.
 - Wheels for CPython 3.14+ (abi3) on Linux, macOS and Windows (x86_64 and arm64).
 
+#### Go SDK (`sdks/go`)
+
+- `Dial` returns a client that submits (one task, atomic batches, or submit-and-wait), gets,
+  waits for, cancels, lists and watches tasks, and reads snapshots; errors carry the gRPC code.
+- `RunWorker` serves a pool with slots, heartbeats, reconnects with backoff, graceful draining,
+  aborts that end the handler's context, panics as retryable failures, and the attempt number
+  as a fencing token. It follows its pool to the right shard under the same rules as the Rust
+  and Python workers.
+- The generated gRPC stubs ship as `cronoqpb`. Go 1.26 or newer; tested against a real server
+  in CI.
+
 #### Project
 
 - Documentation book with concepts, use cases, guides, a benefits and decision guide, and

@@ -95,7 +95,7 @@ endpoint in the message and in the response metadata (`cronoq-shard`,
   unless `server.insecure_peer_http = true` (trusted networks only). Loopback endpoints and
   `https://` endpoints are always used.
 - **Workers** register with the shard of their pool. A worker that connects to another
-  shard's server is refused with the endpoint to use, and the Rust and Python workers connect
+  shard's server is refused with the endpoint to use, and the Rust, Python and Go workers connect
   there on their own (up to three redirects in a row). They keep their TLS settings, never
   follow a redirect from `https://` to `http://`, and send their token over plain `http://`
   only to loopback unless the worker allows it (`insecure_redirect_http`, trusted networks

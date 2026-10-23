@@ -10,6 +10,9 @@ then verifies the tag, builds and tests everything, and publishes:
 - `cronoq-server` binaries and wheels to a GitHub release, with notes taken from `CHANGELOG.md`;
 - a multi-architecture container image to `ghcr.io/synaptiai/cronoq`.
 
+The Go SDK is published by its own tag, `sdks/go/vX.Y.Z` (Go finds a module in a subdirectory
+by a tag with that prefix).
+
 ## One-time setup
 
 1. **GitHub environments.** Create environments `pypi` and `crates-io` under
@@ -48,7 +51,8 @@ then verifies the tag, builds and tests everything, and publishes:
 
    ```sh
    git tag -s vX.Y.Z -m "cronoq vX.Y.Z"
-   git push origin vX.Y.Z
+   git tag -s sdks/go/vX.Y.Z -m "cronoq Go SDK vX.Y.Z"
+   git push origin vX.Y.Z sdks/go/vX.Y.Z
    ```
 
 6. Watch the release workflow. It fails before publishing anything if the tag does not match

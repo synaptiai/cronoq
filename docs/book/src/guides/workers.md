@@ -147,6 +147,22 @@ rather than connecting in plaintext. `.label("gpu", "a100")` registers the worke
 When another shard serves the pool, the worker connects to that shard's endpoint
 (`.insecure_redirect_http(true)` allows plain `http://` to other hosts).
 
+## Go workers
+
+The [Go SDK](../reference/go.md#workers) runs workers with `cronoq.RunWorker`:
+
+```go
+err := cronoq.RunWorker(ctx, cronoq.WorkerOptions{
+	Target: "http://127.0.0.1:7070", Pool: "default", Slots: 8, Token: token,
+}, func(ctx context.Context, l *cronoq.Lease) ([]byte, error) {
+	return process(ctx, l.Payload)
+})
+```
+
+It enforces the granted slots, heartbeats each lease, ends the handler's context on `Abort`,
+turns a panic into a retryable failure, reconnects with backoff, follows its pool to the right
+shard, and when `ctx` ends drains running handlers for up to `DrainTimeout` (30 s).
+
 ## Any language over gRPC
 
 Workers in other languages implement one bidirectional stream, `cronoq.v1.Workers/Work`, from

@@ -85,4 +85,5 @@ Pool capacity is the sum of connected workers' slots.
 | Store | One conformance suite run against every store (throwaway PostgreSQL servers, temporary SQLite files); fencing, `pg_terminate_backend` failover, lease expiry and takeover. |
 | Server | Real gRPC/HTTP listeners with real workers; active-passive failover test. |
 | Python | pytest suites for the bindings, the compat shim and the client against a real server, run against built wheels on Linux, macOS and Windows. |
+| Go | `go test -race` for the SDK against a real server, with the generated stubs checked against the protocol. |
 | Performance | Criterion benchmarks with throughput gates in CI. |
