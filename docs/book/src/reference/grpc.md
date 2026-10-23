@@ -24,7 +24,10 @@ This page describes **worker protocol version 3**.
   collections to the `[limits]` table in the [configuration reference](configuration.md#limits).
   Strings must not contain NUL characters.
 - **Only the leader serves.** A standby or a stopping leader answers every RPC with
-  `UNAVAILABLE`; retry with backoff (through a load balancer that routes on `/readyz`).
+  `UNAVAILABLE`; retry with backoff. A standby also closes each connection about a second after
+  accepting it, so behind a load balancer that sends connections to every replica, a retry on a
+  new connection can reach the leader. A load balancer that routes on `/readyz` sends
+  connections to the leader only.
 - **Deadlines.** Unary calls are bounded by `limits.request_timeout_s`; `Submit` with `wait` and
   `Wait` by `limits.max_wait_s` on top.
 

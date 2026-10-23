@@ -297,6 +297,7 @@ pub async fn serve(
             continue;
         };
         let _ = tcp.set_nodelay(true);
+        let tcp = crate::standby::CloseOnStandby::new(tcp, st.clone());
         let (router, tls, st, builder) = (router.clone(), tls.clone(), st.clone(), builder.clone());
         let watcher = graceful.watcher();
         tokio::spawn(async move {

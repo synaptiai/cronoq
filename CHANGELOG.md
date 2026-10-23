@@ -102,6 +102,10 @@ First public release.
 - Remote workers over bidirectional streams, worker protocol version 3: granted slots, lease
   metadata, `Nack` hand-backs, `Cancelled` reports, `Shutdown` notices for restarts and
   leadership changes, and worker labels. Workers that speak an older version are refused.
+- Standbys close client connections about a second after accepting them (and a leader that
+  steps down closes its own), so clients behind a load balancer that sends connections to every
+  replica reconnect until they reach the leader. Connections stay open during a graceful
+  shutdown.
 - Worker tokens and certificate mappings can restrict which labels a worker may claim
   (`labels = ["name=value", ...]`).
 - `Watch` with pool, id and key filters and optional intermediate transitions; richer `Get`

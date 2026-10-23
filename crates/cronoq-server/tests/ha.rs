@@ -352,3 +352,51 @@ async fn deposed_leader_stops_and_releases_workers() {
         .unwrap();
     assert!(wr.unwrap_err().to_string().contains("leader"));
 }
+
+/// Whether the peer closes a fresh connection to `addr` (with nothing sent) within `t`.
+async fn closes_within(addr: &str, t: Duration) -> bool {
+    use tokio::io::AsyncReadExt;
+    let addr = addr.trim_start_matches("http://");
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut buf = [0u8; 64];
+    // Read until end-of-file; the server may send its HTTP/2 settings first.
+    let read_to_eof = async {
+        loop {
+            match s.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
+    };
+    tokio::time::timeout(t, read_to_eof).await.is_ok()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn standbys_close_connections_so_clients_reach_the_leader() {
+    let dir = SqliteDir::new("close");
+    let mut a = Node::leader(&dir.store()).await;
+    let mut b = Node::standby(&dir.store()).await;
+    // A standby ends both listeners' connections after about a second...
+    assert!(closes_within(&b.grpc, Duration::from_secs(3)).await);
+    assert!(closes_within(&b.http, Duration::from_secs(3)).await);
+    // ... and the leader keeps them.
+    assert!(!closes_within(&a.grpc, Duration::from_secs(3)).await);
+    assert!(!closes_within(&a.http, Duration::from_secs(3)).await);
+
+    // A client on the standby's connection still gets its answer first.
+    let mut on_b = b.tasks().await;
+    let e = on_b.get(pb::GetRequest { task: None }).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::Unavailable);
+
+    // When the leader stops, the standby takes over, and its new connections stay open.
+    a.stop_within(Duration::from_secs(10)).await.unwrap();
+    for _ in 0..500 {
+        if b.ready().await == Some(200) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(b.ready().await, Some(200));
+    assert!(!closes_within(&b.grpc, Duration::from_secs(3)).await);
+    b.stop_within(Duration::from_secs(10)).await.unwrap();
+}

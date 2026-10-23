@@ -91,8 +91,13 @@ Several `cronoq-server` replicas (or embedding processes) can point at the same 
   carry the epoch in their upper bits, and the store keeps a high-water mark of issued ids, so
   ids are never reused, even after old rows are pruned.
 
-Clients and workers reach the leader through a load balancer that routes on `/readyz`, and
-workers reconnect automatically (both official worker clients do).
+Clients and workers reach the leader either through a load balancer that routes on `/readyz`
+(only the leader is ready), or through one that sends connections to every replica. In the
+second case a standby answers each call with `UNAVAILABLE`, and closes every connection about a
+second after accepting it (and a leader that steps down closes its connections the same way),
+so a client that retries opens a new connection and the balancer picks a replica again. Workers
+reconnect on their own. During a graceful shutdown connections stay open, so running attempts
+can still report.
 
 ## Leader election and fencing (SQLite)
 

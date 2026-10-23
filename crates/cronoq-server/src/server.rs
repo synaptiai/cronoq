@@ -285,7 +285,11 @@ pub async fn run(
                 .max_decoding_message_size(max_msg)
                 .max_encoding_message_size(max_msg),
             );
-        let incoming = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
+        let standby = shared.clone();
+        let incoming = tokio_stream::StreamExt::map(
+            tokio_stream::wrappers::TcpListenerStream::new(grpc_listener),
+            move |c| c.map(|tcp| crate::standby::CloseOnStandby::new(tcp, standby.clone())),
+        );
         let stop = shared.stop.clone();
         servers.push(tokio::spawn(async move {
             if let Err(e) = router
