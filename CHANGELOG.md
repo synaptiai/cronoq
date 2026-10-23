@@ -49,7 +49,8 @@ First public release.
   `ShedOldest` overflow policies. Shedding considers parked tasks, never sheds fixed-start
   tasks, and only happens for submissions that pass every other admission check.
 - Queue-pressure autoscaling per pool (arrival rate, backlog, wait-time objectives, upcoming
-  reservations) with stabilization, cooldown, step limits and cost tracking.
+  reservations) with stabilization, cooldown, step limits and cost tracking. An idle pool
+  returns to its minimum: demand below 1% of a slot counts as none.
 - Windowed quality metrics: utilization, schedule efficiency, wait and run percentiles,
   priority adherence and fixed-start hit rate.
 - Recovery from a durable store, including dependencies on parents that left retention and the

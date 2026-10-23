@@ -7,6 +7,16 @@ use crate::spec::Priority;
 use crate::stats::Ewma;
 use crate::time::Time;
 
+/// Demand below this fraction of one slot counts as none. The arrival rate is a moving average
+/// that decays toward zero but never reaches it, and rounding a vanishing rate up would keep an
+/// idle pool at one slot for as long as the average takes to underflow (about half an hour).
+const NEGLIGIBLE: f64 = 0.01;
+
+/// Slots for a fractional demand: rounded up, with negligible demand as zero.
+fn slots(x: f64) -> f64 {
+    if x < NEGLIGIBLE { 0.0 } else { x.ceil() }
+}
+
 /// Signals sampled at each evaluation.
 #[derive(Clone, Debug, Default)]
 pub struct Signals {
@@ -53,7 +63,7 @@ impl AutoscaleState {
         }
         let lambda = self.arrival_rate.get().unwrap_or(0.0);
         let svc = s.service_secs.max(1e-9);
-        let base = (lambda * svc / cfg.target_utilization.clamp(0.01, 1.0)).ceil();
+        let base = slots(lambda * svc / cfg.target_utilization.clamp(0.01, 1.0));
         let backlog: u64 = s.backlog.iter().sum();
         let drain = (backlog as f64 * svc / cfg.drain_time.as_secs_f64().max(1e-3)).ceil();
         let mut slo_need = 0.0f64;
@@ -165,6 +175,38 @@ mod tests {
         assert_eq!(st.evaluate(&cfg, &idle, Time::from_secs_f64(8.5)), Some(9));
         assert_eq!(st.evaluate(&cfg, &idle, Time::from_secs_f64(9.0)), None);
         assert_eq!(st.evaluate(&cfg, &idle, Time::from_secs_f64(10.6)), Some(8));
+    }
+
+    #[test]
+    fn an_idle_pool_returns_to_zero() {
+        let cfg = AutoscaleConfig::default();
+        let mut st = AutoscaleState::default();
+        let busy = Signals {
+            arrivals: 8,
+            busy: 0,
+            min: 0,
+            ..sig(0, 0)
+        };
+        assert!(st.desired(&cfg, &busy) >= 1);
+        // The arrivals stop. The smoothed rate decays by 30% a second and never reaches zero;
+        // within a minute the demand is negligible and no slot is wanted.
+        let idle = Signals {
+            arrivals: 0,
+            ..busy
+        };
+        let mut d = u32::MAX;
+        for _ in 0..60 {
+            d = st.desired(&cfg, &idle);
+        }
+        assert_eq!(d, 0);
+        // A real trickle still counts: one 1 s task every 50 s.
+        let mut st = AutoscaleState::default();
+        let trickle = Signals {
+            arrivals: 1,
+            dt: 50.0,
+            ..idle
+        };
+        assert_eq!(st.desired(&cfg, &trickle), 1);
     }
 
     #[test]

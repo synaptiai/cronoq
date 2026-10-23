@@ -37,6 +37,7 @@ S        mean service time (EWMA of observed run times; default_duration before 
 B        backlog: ready tasks per class (fixed-start tasks that are due count as critical)
 
 base     = ceil(λ × S / target_utilization)             target_utilization = 0.75
+             (0 when below 0.01: the smoothed rate decays toward zero but never reaches it)
 drain    = ceil(ΣB × S / drain_time)                    drain_time = 30 s
 slo      = max over classes c with backlog and an SLO:
              ceil(B_≤c × S / slo[c])                    B_≤c = backlog in classes c and higher
