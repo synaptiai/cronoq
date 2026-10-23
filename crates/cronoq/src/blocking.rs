@@ -6,7 +6,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cronoq_core::{Snapshot, StatusEvent, Submitted, TaskId, TaskRef, TaskStatus};
 use tokio::runtime::{Handle, Runtime};
@@ -31,6 +31,38 @@ where
         })
     } else {
         rt.block_on(f)
+    }
+}
+
+/// Wakes the thread that polls a future in [`park_until`].
+struct Unpark(std::thread::Thread);
+
+impl std::task::Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Poll `f` on this thread until it is ready or `deadline` passes. A task handle only waits on
+/// a channel, so this needs no runtime: it works from inside a runtime, and after the
+/// scheduler's runtime has shut down (whose timer would panic).
+fn park_until<F: Future + Unpin>(mut f: F, deadline: Option<Instant>) -> Option<F::Output> {
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    loop {
+        if let std::task::Poll::Ready(v) = std::pin::Pin::new(&mut f).poll(&mut cx) {
+            return Some(v);
+        }
+        match deadline {
+            None => std::thread::park(),
+            Some(d) => {
+                let now = Instant::now();
+                if now >= d {
+                    return None;
+                }
+                std::thread::park_timeout(d - now);
+            }
+        }
     }
 }
 
@@ -61,10 +93,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> BlockingScheduler<P, O>
         self.rt.as_ref().expect("runtime alive").handle()
     }
     fn wrap(&self, h: TaskHandle<O>) -> BlockingHandle<O> {
-        BlockingHandle {
-            handle: Some(h),
-            rt: self.handle().clone(),
-        }
+        BlockingHandle { handle: Some(h) }
     }
     /// Blocking [`Scheduler::submit`].
     pub fn submit(&self, task: impl Into<Task<P>>) -> Result<BlockingHandle<O>, Error> {
@@ -158,7 +187,6 @@ impl<P, O> Drop for BlockingScheduler<P, O> {
 /// Blocking task handle.
 pub struct BlockingHandle<O> {
     handle: Option<TaskHandle<O>>,
-    rt: Handle,
 }
 
 impl<O: Send + Sync + 'static> BlockingHandle<O> {
@@ -176,14 +204,12 @@ impl<O: Send + Sync + 'static> BlockingHandle<O> {
     /// stopped first.
     pub fn wait(mut self) -> Result<Arc<O>, TaskFailure> {
         let h = self.handle.take().expect("not yet awaited");
-        block_on(&self.rt, h)
+        park_until(h, None).expect("no deadline")
     }
     /// Block up to `timeout`; returns `None` (and keeps the handle) if still running.
     pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Result<Arc<O>, TaskFailure>> {
         let h = self.handle.as_mut()?;
-        let r = block_on(&self.rt, async {
-            tokio::time::timeout(timeout, h).await.ok()
-        });
+        let r = park_until(h, Some(Instant::now() + timeout));
         if r.is_some() {
             self.handle = None;
         }
