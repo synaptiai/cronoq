@@ -73,7 +73,9 @@ Clients can call the server of any shard. It answers from every shard that the c
   any shard's stream ends; reconnect. Prometheus `/metrics` stays per server: scrape each shard.
 
 A forwarded call carries the caller's own bearer token, and the other shard authenticates and
-authorizes it again: servers do not trust one another. Forwarded calls are marked
+authorizes it again, so forwarding never grants more than the caller's own credentials. Each
+shard's server sees the tokens of the callers it forwards; protect every shard's servers as
+you would one server. Forwarded calls are marked
 (`cronoq-forwarded`) and answered by the receiving shard only, so they never travel further.
 
 Configure how servers reach each other's `https://` endpoints with `[server.peer_tls]`

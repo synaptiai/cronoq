@@ -15,6 +15,10 @@ const LAYOUT: &str = r#"
 token = "client-cpu-token-0123456789abcdef0"
 role = "client"
 pools = ["default"]
+[[auth.tokens]]
+token = "client-gpu-token-0123456789abcdef0"
+role = "client"
+pools = ["llm"]
 
 [[pools]]
 name = "default"
@@ -27,6 +31,8 @@ lease_ttl_s = 2
 "#;
 /// A client token limited to pool `default` (shard `cpu`).
 const CPU_CLIENT: &str = "client-cpu-token-0123456789abcdef0";
+/// A client token limited to pool `llm` (shard `gpu`).
+const GPU_CLIENT: &str = "client-gpu-token-0123456789abcdef0";
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -177,6 +183,19 @@ async fn any_server_reaches_the_shard_of_a_task() {
         assert_eq!(e.code(), tonic::Code::FailedPrecondition);
         assert!(e.message().contains("use the task id"), "{}", e.message());
     }
+    // Tasks a caller may not see do not count: a token for `llm` asking cpu for "here" finds
+    // gpu's task, not an ambiguity with cpu's task in `default`.
+    let got = c
+        .cpu
+        .tasks(GPU_CLIENT)
+        .await
+        .get(pb::GetRequest {
+            task: by_key("here"),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!((got.pool.as_str(), TaskId(got.id).shard()), ("llm", 2));
     // The id still reaches the task.
     let got = via_gpu
         .get(pb::GetRequest { task: by_id(local) })

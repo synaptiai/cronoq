@@ -78,8 +78,13 @@ limited to a list of pools.
   saying whether the task exists. Each shard has its own store, so one shard's leader cannot
   read or change another shard's tasks.
 - **Forwarding between shards.** A server forwards a call for another shard with the caller's
-  own bearer token, which that shard authenticates and authorizes again; servers hold no
-  credentials of their own for each other. Calls are forwarded only to the configured shard
+  own bearer token, which that shard authenticates and authorizes again: a server cannot grant
+  a caller more than the caller's own credentials allow on the other shard. Every shard's
+  server does see the tokens of the callers it forwards, and reads that cover all shards send
+  the token to every shard, so a compromised shard server could reuse them: run all shards
+  with the same care as one server. A server forwards with no token only when it runs without
+  authentication, and it then may not present a `[server.peer_tls]` client certificate, so
+  such calls cannot act as the server's own identity. Calls are forwarded only to the configured shard
   endpoints, never to an address a request names, and are marked so that they are not
   forwarded again. Tokens are not forwarded over plain `http://` to another host unless
   `server.insecure_peer_http` is set; use `https://` endpoints (with `[server.peer_tls]`)

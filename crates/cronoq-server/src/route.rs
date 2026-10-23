@@ -141,7 +141,18 @@ async fn locate<'a>(
         }
         TaskRef::Key(k) => k.clone(),
     };
-    let here = grpc::resolve_id(app, &target).await?.is_some();
+    // A task here counts only if the caller may see it, as other shards count only tasks the
+    // caller may see there.
+    let here = match grpc::resolve_id(app, &target).await? {
+        Some(id) => match &p.pools {
+            None => true,
+            Some(_) => app
+                .pool_of(id)
+                .await
+                .is_some_and(|pool| p.may_use_pool(&pool)),
+        },
+        None => false,
+    };
     let asks = map.others().map(|sh| {
         let key = key.to_string();
         async move {

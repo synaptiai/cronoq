@@ -59,7 +59,7 @@ Optional. How this server verifies other shards' `https://` endpoints when it fo
 | Key | Type | Description |
 |---|---|---|
 | `ca` | path, optional | PEM CA bundle for the other shards' certificates (default: the system roots). |
-| `cert`, `key` | paths, optional | Client certificate and key, for shards that require mTLS. Both or neither. |
+| `cert`, `key` | paths, optional | Client certificate and key, for shards that require mTLS. Both or neither; only allowed when this server has credentials configured, so that forwarded calls always carry the caller's token. |
 
 ### `[server.grpc_web]`
 
