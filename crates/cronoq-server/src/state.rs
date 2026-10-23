@@ -39,6 +39,11 @@ impl Shared {
         self.app.get()
     }
 
+    /// Running and not leading: waiting for leadership, or deposed. False while shutting down.
+    pub fn is_standby(&self) -> bool {
+        !self.stop.is_cancelled() && !self.ready.load(Ordering::SeqCst)
+    }
+
     /// The serving state as a gRPC result.
     pub fn app_or_unavailable(&self) -> Result<&Arc<AppState>, tonic::Status> {
         self.app()

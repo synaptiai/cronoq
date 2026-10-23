@@ -27,6 +27,7 @@ mod route;
 pub mod scaler;
 pub mod server;
 pub mod shard;
+mod standby;
 pub mod state;
 mod store;
 pub mod worker;
