@@ -50,7 +50,7 @@ let sched = Scheduler::<Prompt, Answer>::builder()
     .build()
     .await?;
 
-// A chat turn: high priority, must start within 2 seconds.
+// A chat turn: high priority, should finish within 2 seconds.
 sched.submit(Task::new(chat_prompt)
     .pool("llm").kind("chat")
     .priority(Priority::High)

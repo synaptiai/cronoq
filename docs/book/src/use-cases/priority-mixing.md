@@ -55,12 +55,12 @@ Dispatch always picks the highest score. In practice:
 - **One fleet instead of two.** Interactive work borrows the whole pool when it needs it; batch
   work uses whatever is left. No idle "fast lane" capacity.
 - **Bounded latency for users** regardless of how much batch work is queued, because dispatch
-  cost does not depend on queue length and higher classes are always considered first.
+  cost grows only with the logarithm of the queue length and higher classes are always considered first.
 - **Batch jobs still finish.** Aging prevents starvation by `normal` traffic, and you can tune
   the aging rate and caps per class.
-- **Measurable fairness.** `priority_adherence` in each pool snapshot reports how often a task
-  was dispatched while a strictly higher class was waiting (with aging, a value slightly below
-  1.0 is expected and healthy).
+- **Measurable fairness.** `priority_adherence` in each pool snapshot is the fraction of
+  dispatches made while no task of a strictly higher class was waiting; higher is better (with
+  aging, a value slightly below 1.0 is expected and healthy).
 
 ## Variations
 

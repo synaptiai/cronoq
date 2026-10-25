@@ -72,7 +72,21 @@ browsers their own token, limited to the pools and role they need.
 | `watch({ pools, ids, keys, allTransitions }, { signal })` | `AsyncGenerator<Event>` | Status events until `signal` aborts or the stream fails (for example when the server loses leadership: watch again). |
 | `snapshot()` | `pb.SnapshotResponse` | Pools, queues and totals (metrics role). |
 
-Every method also takes `{ signal, timeout }` call options. `client.tasks` and `client.admin`
+| `listTasks` filter | Default | Description |
+|---|---|---|
+| `pools` | every pool the caller may use | Pools to list. |
+| `statuses` | any | Statuses to list. |
+| `after` | `0n` | Only tasks with a larger id; pass the previous page's `nextAfter`. |
+| `limit` | `0` (= 100) | Page size, capped at the server's `limits.max_list`. |
+
+| `watch` filter | Default | Description |
+|---|---|---|
+| `pools` | every pool the caller may use | Pools to watch. |
+| `ids`, `keys` | none | Only events for these tasks. |
+| `allTransitions` | `false` | Stream every status change; without it, only terminal statuses are streamed. |
+
+Every method except `watch` also takes `{ signal, timeout }` call options; `watch` takes only
+`{ signal }`. `client.tasks` and `client.admin`
 are the generated Connect clients, for calls the class does not wrap (such as `addRecurring` or
 `listWorkers`); `pb` exports the generated messages.
 
@@ -93,7 +107,7 @@ could not be reached ([Sharding](../concepts/sharding.md)).
 ### Errors
 
 Failed calls reject with a `CronoqError`: `code` is the gRPC status name in lower case
-(`"not_found"`, `"unavailable"`, ...), and `metadata` holds the response metadata
+(`"not_found"`, `"unavailable"`, `"cancelled"`, ...), and `metadata` holds the response metadata
 ([Errors](errors.md)). `retryable` is true for `unavailable` (not the leader, shutting down) and
 `resource_exhausted` (queue full); `timeout` for a wait that ended while the task was still
 running; `notFound` for unknown tasks, pools and dependencies. In browsers, only the metadata
@@ -117,7 +131,9 @@ time (or fewer if the server grants fewer). It heartbeats every running lease, a
 with backoff when the connection drops (right away when the server announces a leadership
 change). When the pool belongs to another shard, it connects to that shard's endpoint; see
 below. When `signal` aborts, it stops taking leases and lets running handlers finish for up to
-`drainTimeout`, then aborts the rest and resolves. It rejects only for failures that retrying
+`drainTimeout`, then aborts the rest and resolves. An aborted handler that returns within 5 more
+seconds still has its outcome reported; after that its outcome is dropped (the server retries
+the task). It rejects only for failures that retrying
 cannot fix, such as a rejected token or an unknown pool.
 
 | Option | Default | Description |
@@ -133,6 +149,7 @@ cannot fix, such as a rejected token or an unknown pool.
 | `initialBackoff`, `maxBackoff` | 0.2 s, 10 s | Reconnect delay bounds. |
 | `drainTimeout` | 30 s | How long running handlers may finish after `signal` aborts. |
 | `insecureRedirectHttp` | `false` | Follow a shard redirect to plain `http://` on another host with the token. For trusted networks only. |
+| `maxMessageBytes` | 64 MiB | Largest message sent or received. |
 | `onRegistered` | none | Called after each registration with the worker id, granted slots and endpoint. |
 | `logger` | `console` | Receives the worker's log messages. |
 
@@ -140,12 +157,14 @@ cannot fix, such as a rejected token or an unknown pool.
 
 The handler gets a `Lease`: `id`, `taskId`, `attempt`, `payload`, `contentType`, `kind`, `key`,
 `pool`, `priority`, `tags`, `timeout`, `deadline`, `signal`, and `text()` and `json()`. `signal`
-aborts when the server aborts the attempt (timeout, cancellation, lease expiry) or the drain
-timeout passes; the outcome is then not reported. The handler returns the output, or throws:
+aborts when the server aborts the attempt (timeout, cancellation, lease expiry), when the
+connection to the server ends, or when the drain timeout passes. After an abort by the server
+the outcome is not reported; after the drain timeout it is reported if the handler returns
+within 5 seconds. The handler returns the output, or throws:
 
 | Throw | Effect |
 |---|---|
-| nothing | The task succeeds. An output larger than the server accepts fails it permanently. |
+| nothing | The task succeeds. An output larger than the server accepts, or a return value that cannot be serialised to JSON, fails it permanently. |
 | `new Permanent(msg)` | The task fails without retrying. |
 | `new Retryable(msg, retryAfter)` | Retryable failure, retried no earlier than `retryAfter` seconds. |
 | `new Reject(reason)` | Hand the lease back unrun; the server offers it to another worker. |

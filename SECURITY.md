@@ -6,7 +6,7 @@ cronoq is pre-1.0. Security fixes are released for the latest minor version only
 
 | Version | Supported |
 |---|---|
-| 0.1.x | ✅ |
+| 0.2.x | ✅ |
 | older | ❌ |
 
 ## Reporting a vulnerability
@@ -21,7 +21,9 @@ Report them privately through
 
 Please include:
 
-- the affected component (engine, runtime, server, Postgres or SQLite store, Python package) and version;
+- the affected component (engine, runtime, server, Postgres or SQLite store, Python package,
+  command-line client, Go SDK, TypeScript SDK, Kubernetes operator, Helm charts, container
+  images) and version;
 - a description of the issue and its impact;
 - steps to reproduce or a proof of concept;
 - any suggested mitigation.
@@ -33,12 +35,13 @@ before any public disclosure.
 
 ## Ongoing checks
 
-- **Dependencies.** Every pull request and push runs `cargo deny` (RustSec advisories, yanked
-  crates, licenses and sources). The advisory check also runs daily on `main`. Dependabot opens
-  weekly update pull requests for Rust crates, Python packages, GitHub Actions and the container
-  base image, and security update pull requests as soon as an advisory is published.
-- **Code.** CodeQL scans the Rust, Python and GitHub Actions code on every pull request and
-  weekly. Secret scanning with push protection blocks committed credentials.
+- **Dependencies.** CI runs on every pull request, on every push to `main` and weekly, and each
+  run includes `cargo deny` (RustSec advisories, yanked crates, licenses and sources). The
+  advisory check also runs daily on `main`. Dependabot opens weekly update pull requests for
+  Rust crates, Python packages, Go modules, npm packages, GitHub Actions and the container base
+  image, and security update pull requests as soon as an advisory is published.
+- **Code.** CodeQL scans the Rust, Python, Go, TypeScript and GitHub Actions code on every pull
+  request, on every push to `main` and weekly. Secret scanning with push protection blocks committed credentials.
 - **Supply chain.** Actions are pinned to commit SHAs. Releases are built and published from
   CI, never from a developer machine, and carry build provenance attestations.
 
@@ -54,7 +57,7 @@ team or trust domain); run separate servers for mutually untrusted tenants.
 |---|---|
 | `client` credentials | Submit tasks, and read, wait for, cancel and watch tasks, in the pools the credentials allow (all pools when unscoped). |
 | `worker` credentials | Register for the pools the credentials allow, receive those pools' payloads, and report outcomes only for leases assigned to their own stream. |
-| `metrics` credentials | Read snapshots (`Admin.Snapshot`, `/v1/snapshot`) and `/metrics`: pool names, counters and quality signals, no payloads. |
+| `metrics` credentials | Read snapshots, workers and recurring schedules (`Admin.Snapshot`, `Admin.ListWorkers`, `Admin.ListRecurring`, `/v1/snapshot`, `/v1/workers`, `/v1/recurring`) and `/metrics`: pool names, counters, quality signals, worker and schedule details, no payloads. |
 | `admin` credentials | Everything, including recurring schedules. |
 | Unauthenticated network peers | `/healthz` and `/readyz`; `/metrics` only on the optional `server.metrics_addr` listener. |
 | PostgreSQL | Fully trusted: it stores payloads, outputs and schedules. |

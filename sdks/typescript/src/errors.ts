@@ -35,6 +35,8 @@ export class CronoqError extends Error {
 
 /** The gRPC status name of a Connect code, as the other cronoq clients spell it. */
 function codeName(code: Code): string {
+  // Connect spells code 1 `Canceled`; gRPC's name is CANCELLED.
+  if (code === Code.Canceled) return "cancelled";
   return Code[code].replace(/[A-Z]/g, (c, i: number) => (i ? "_" : "") + c.toLowerCase());
 }
 

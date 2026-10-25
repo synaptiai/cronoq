@@ -1,7 +1,9 @@
 # Releasing cronoq
 
 Releases are cut by pushing a tag `vX.Y.Z`. The [release workflow](.github/workflows/release.yml)
-then verifies the tag, builds and tests everything, and publishes:
+then checks the tag against the versions, runs `cargo test --workspace`, builds every artifact,
+installs and tests the Python wheels on Linux, macOS and Windows, and, once those tests pass,
+publishes:
 
 - Rust crates to crates.io (`cronoq-core`, `cronoq`, `cronoq-proto`, `cronoq-store-postgres`,
   `cronoq-store-sqlite`, `cronoq-server`, `cronoq-cli`, in dependency order; crates with
@@ -72,8 +74,11 @@ by a tag with that prefix).
 
 6. Watch the release workflow. It fails before publishing anything if the tag does not match
    the crate, TypeScript package and chart versions, if `CHANGELOG.md` has no matching section,
-   or if any test fails. It also refuses to publish a TypeScript package version that is already
-   published.
+   or if `cargo test --workspace` or a wheel test fails: the jobs that publish crates, wheels,
+   the TypeScript package, container images, Helm charts and the GitHub release all wait for
+   those tests. The release workflow does not run the Go and TypeScript test suites; those run
+   in CI, so `main` must be green first. It also refuses to publish a TypeScript package version
+   that is already published.
 
 ## Dry run
 

@@ -2,7 +2,7 @@
 
 Requires the ``client`` extra: ``pip install "cronoq[client]"``.
 
-Speaks worker protocol version 2 (see ``cronoq.v1`` in ``cronoq-proto``).
+Speaks worker protocol version 3 (see ``cronoq.v1`` in ``cronoq-proto``).
 
 Submitting work::
 

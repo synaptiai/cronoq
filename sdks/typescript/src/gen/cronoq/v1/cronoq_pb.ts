@@ -391,7 +391,8 @@ export const GetRequestSchema: GenMessage<GetRequest> = /*@__PURE__*/
 
 /**
  * Task details. Fields other than id and status are best effort: they are known for tasks
- * submitted or observed by the serving leader (and for persisted tasks with Postgres).
+ * submitted or observed by the serving leader (and for persisted tasks with a durable store,
+ * Postgres or SQLite).
  *
  * @generated from message cronoq.v1.TaskInfo
  */

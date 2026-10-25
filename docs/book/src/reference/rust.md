@@ -43,7 +43,7 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 |---|---|
 | `Pool::new(name)` | Autoscaled pool (1 to 10 workers by default). |
 | `Pool::fixed(name, n)` | Fixed size, no autoscaling. |
-| `workers(min, initial, max)` | Capacity bounds. |
+| `workers(min, initial, max)` | `min` is the lower bound on the autoscaler's desired capacity; `initial` is the capacity at start (at most `max`, and not raised to `min`); `max` is the upper bound. |
 | `executor(impl Executor)`, `executor_arc(..)`, `executor_fn(async fn)` | How attempts run. |
 | `scaler(impl Scaler)`, `scaler_arc(..)` | Capacity backend (default `SlotScaler`: in-process slots). |
 | `autoscale(AutoscaleConfig)`, `no_autoscale()` | Autoscaling policy. |
@@ -51,7 +51,9 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 
 ### `Scheduler<P, O>`
 
-A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`.
+A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`, except
+`events()`, `pools()` and `clock()`, which are synchronous and return their value directly, and
+`stopped()`, which is `async` and returns `()`.
 
 | Method | Returns | Description |
 |---|---|---|
@@ -68,9 +70,9 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`.
 | `set_capacity(pool, n)` | `()` | Report capacity for pools with an `ExternalScaler`. |
 | `set_group_capacity(pool, labels, n)` | `()` | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `add_recurring(Recurring)` / `remove_recurring(name)` | `()` / `bool` | Cron schedules. |
-| `events()` | `broadcast::Receiver<StatusEvent>` | Status events (not async). |
+| `events()` | `broadcast::Receiver<StatusEvent>` | Status events. |
 | `pools()`, `clock()` | `&[Arc<str>]`, `&Clock` | Pool names; the engine clock. |
-| `stopped()` | – | Resolves when the scheduler stops for any reason. |
+| `stopped()` | `()` | Resolves when the scheduler stops for any reason. |
 | `shutdown(grace)` | `()` | Stop admitting, let running attempts finish for `grace`, then stop. |
 
 With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `add_recurring` and
@@ -99,7 +101,7 @@ absolute deadline, a fixed start or dependencies.
 |---|---|
 | `Executor<P, O>` | Trait: `execute(ctx, Arc<P>) -> BoxFuture<Result<O, TaskError>>`, optional `abort(lease)`. |
 | `FnExecutor` | Wraps an `async fn(TaskContext, Arc<P>)`; what `Pool::executor_fn` uses. |
-| `TaskContext` | `id`, `lease`, `attempt`, `pool`, `kind`, `key`, `tags`, `deadline`, `timeout`; `is_cancelled()`, `cancelled().await`, `cancellation_token()`, `heartbeat()`, `tag(key)`, `traceparent()`; `TaskContext::for_test(id)` for unit tests. |
+| `TaskContext` | `id`, `lease`, `attempt`, `pool`, `kind`, `key`, `tags`, `deadline`, `timeout`, `group` (labels of the worker group the attempt was assigned to); `is_cancelled()`, `cancelled().await`, `cancellation_token()`, `heartbeat()`, `tag(key)`, `traceparent()`; `TaskContext::for_test(id)` for unit tests. |
 | `TaskError` | `Retryable { message, retry_after }`, `Permanent { message }`, `Cancelled`; constructors `retryable`, `retry_after`, `permanent`, `from_err`. |
 
 A panicking executor fails its attempt permanently (`panic: ...`); the scheduler and other
@@ -123,7 +125,7 @@ See [Errors and status codes](errors.md).
 | `Scaler` | Trait: turn a desired capacity into workers. |
 | `SlotScaler` | Default: capacity is a number of in-process concurrent attempts. |
 | `ExternalScaler` | Capacity is managed elsewhere and reported with `set_capacity`. |
-| `Store<P, O>` | Trait: `acquire_leadership`, `release_leadership`, `commit`, `recover`, `load_output`. |
+| `Store<P, O>` | Trait: `persists` (default `true`; `false` means the engine produces no mutations), `acquire_leadership`, `release_leadership`, `commit`, `recover`, `load_output`. |
 | `MemoryStore` | No persistence (default). |
 | `TimeBase` | Wall-clock anchor of engine time; the runtime always uses Unix-epoch time (`unix_nanos_at_zero = 0`). |
 
@@ -146,6 +148,7 @@ Engine types are re-exported from `cronoq-core`: `AutoscaleConfig`, `Bounds`, `D
 | Feature | Default | Effect |
 |---|---|---|
 | `otel` | on | OpenTelemetry metrics and W3C trace-context propagation ([metrics reference](metrics.md#opentelemetry-cronoq-crate)). |
+| `store-codec` | off | The `cronoq::codec` module: conversions between engine types and the form durable stores keep, shared by the Postgres and SQLite stores. Needed only to write a store. |
 
 ## `cronoq-core`
 
@@ -158,7 +161,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `submit`, `try_submit`, `submit_batch` | Admission. |
 | `complete(now, lease, Outcome)`, `heartbeat(now, lease)` | Attempt feedback. |
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
-| `set_capacity(now, pool, n)` | Capacity changes. |
+| `set_capacity(now, pool, n)`, `set_group_capacity(now, pool, labels, n)` | Capacity changes, for the whole pool or for the workers with exactly `labels`. |
 | `add_recurring`, `remove_recurring`, `recurring_names`, `list_recurring` | Cron schedules. |
 | `tick(now)`, `next_wakeup()` | Timers. |
 | `poll_action()`, `drain_actions()`, `has_actions()` | `Action::{Dispatch, Abort, ScaleTo, Status, Persist, SpaceAvailable}` for the driver. |
@@ -167,7 +170,8 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `check_invariants()` | Panics on internal inconsistency (tests and fuzzing). |
 
 `CoreConfig` fields: `pools`, `resources`, `priority`, `urgency`, `global_bounds`, `retention`,
-`retention_max`, `persist`, `epoch_unix_nanos`, `id_epoch`, `metrics_window` (default 60 s),
+`retention_max`, `persist`, `epoch_unix_nanos`, `id_epoch`, `id_shard` (default `None`; when
+set, task ids carry the shard number in their top 8 bits), `metrics_window` (default 60 s),
 `seed`.
 
 ## `cronoq-store-postgres`
@@ -208,7 +212,7 @@ run_worker(opts, |lease| async move { Ok(lease.payload) }, shutdown_signal).awai
 | `token` | none | Bearer token with the worker role. |
 | `name` | empty | Shown in server logs. |
 | `tls` | none | `WorkerTls { ca_pem, identity, domain }` for TLS and mTLS. Needs an `https://` endpoint; with `http://` the worker returns an error. |
-| `label(name, value)` | none | A worker label; tasks that require labels are leased only to workers that have them. |
+| `labels` | empty | Worker labels, as `(name, value)` pairs; add one with the builder method `label(name, value)`. Tasks that require labels are leased only to workers that have them. |
 | `reconnect` | `true` | Reconnect with backoff when the connection drops or the server steps down. |
 | `insecure_redirect_http` | `false` | Follow a shard redirect to plain `http://` on another host with the token. Redirects otherwise keep TLS and use plain http only on loopback; see [Sharding](../concepts/sharding.md). |
 | `initial_backoff`, `max_backoff` | 200 ms, 10 s | Reconnect backoff bounds. |

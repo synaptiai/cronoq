@@ -110,8 +110,10 @@ The worker:
 Pass `labels={"gpu": "a100"}` to register the worker with labels: tasks submitted with
 `labels=` run only on workers that have them ([Worker labels](../concepts/labels.md)).
 
-Raise `Reject` to give a lease back unrun (the server offers it to another worker of the pool
-without counting an attempt), and `CancelTask` to end the task as `cancelled`. For mTLS, pass
+Raise `Reject` to give a lease back unrun: the server offers it to another worker of the pool
+with the same labels without counting an attempt, or, if no such worker can take it, fails the
+attempt as retryable.
+Raise `CancelTask` to end the task as `cancelled`. For mTLS, pass
 `credentials=grpc.ssl_channel_credentials(root, key, cert)`.
 
 ## Remote workers: Rust

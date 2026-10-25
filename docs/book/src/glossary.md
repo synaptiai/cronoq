@@ -58,7 +58,7 @@ decisions.
 
 **Slot**: capacity to run one attempt at a time.
 
-**Snapshot**: per-pool metrics over the sliding window.
+**Snapshot**: per-pool state, quality metrics over the sliding window, and counters since start.
 
 **Tolerance**: how far from its fixed start a task may begin and still count as on time.
 

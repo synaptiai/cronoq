@@ -37,7 +37,9 @@ any language and connected over gRPC.
    any language submit work and remote workers lease it, with SDKs for Rust, Python,
    [Go](reference/go.md) and [TypeScript](reference/typescript.md). See the [Server quickstart](guides/server-quickstart.md).
 
-All three share one engine, so behaviour, configuration and metrics are the same everywhere.
+All three share one engine, so the scheduling rules and metrics are the same everywhere. The
+Rust library exposes a few engine settings, such as the priority and urgency parameters, that the
+Python package and the server leave at their defaults.
 
 ## How to read this book
 

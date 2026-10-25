@@ -1085,7 +1085,8 @@ func (x *GetRequest) GetTask() *TaskRef {
 }
 
 // Task details. Fields other than id and status are best effort: they are known for tasks
-// submitted or observed by the serving leader (and for persisted tasks with Postgres).
+// submitted or observed by the serving leader (and for persisted tasks with a durable store,
+// Postgres or SQLite).
 type TaskInfo struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Id              uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`

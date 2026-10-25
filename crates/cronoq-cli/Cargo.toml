@@ -15,6 +15,8 @@ categories = ["command-line-utilities"]
 [[bin]]
 name = "cronoq"
 path = "src/main.rs"
+# Its rustdoc output would collide with the `cronoq` library's (rust-lang/cargo#6313).
+doc = false
 
 [dependencies]
 anyhow = "1"

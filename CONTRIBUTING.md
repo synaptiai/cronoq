@@ -24,9 +24,16 @@ For security issues, do **not** open a public issue; see [SECURITY.md](SECURITY.
 | `crates/cronoq-core` | Sans-IO engine. Pure logic; most scheduling changes land here. |
 | `crates/cronoq` | Tokio runtime and public Rust API. |
 | `crates/cronoq-store-postgres` | Postgres store. |
+| `crates/cronoq-store-sqlite` | SQLite store. |
+| `crates/cronoq-store-tests` | Conformance tests shared by the stores (not published). |
 | `crates/cronoq-proto` | Protobuf API. |
 | `crates/cronoq-server` | gRPC/HTTP server and Rust worker client. |
+| `crates/cronoq-cli` | `cronoq` command-line client. |
+| `crates/cronoq-operator` | Kubernetes operator that scales worker Deployments. |
 | `crates/cronoq-py` | Python bindings (PyO3), Python package and client. |
+| `sdks/go` | Go client and worker. |
+| `sdks/typescript` | TypeScript client (Node and browsers) and Node worker. |
+| `deploy/helm` | Helm charts for the server and the operator. |
 | `docs/book` | User documentation (mdBook). |
 | `docs/SPEC.md` | Design document. |
 
@@ -82,11 +89,12 @@ The client tests build and start `cronoq-server` automatically (or use `CRONOQ_S
 with `npm run generate` in `sdks/typescript`.
 
 To test a built wheel the way users install it (outside the source tree, in a fresh
-virtualenv), as CI does on Linux, macOS and Windows:
+virtualenv), as CI does on Linux, macOS and Windows, run from the repository root:
 
 ```sh
-maturin build --release -o dist
-bash ../../.github/scripts/test_wheel.sh dist   # run from the repository root, or adjust paths
+cargo build -p cronoq-server   # the client tests use target/debug/cronoq-server
+maturin build --release -m crates/cronoq-py/Cargo.toml -o crates/cronoq-py/dist
+bash .github/scripts/test_wheel.sh crates/cronoq-py/dist
 ```
 
 When you change the Python API, update the stubs in `python/cronoq/_cronoq.pyi`, the docstrings,
@@ -120,6 +128,7 @@ Documentation is part of the change, not a follow-up. Where to document what:
 | An HTTP route, gRPC message or status code | `reference/http.md`, `reference/grpc.md`, `reference/errors.md`. |
 | A metric | `reference/metrics.md`. |
 | A Rust or Python API | rustdoc / docstrings and stubs, `reference/rust.md` / `reference/python.md`. |
+| A Go or TypeScript API | Doc comments, `reference/go.md` / `reference/typescript.md`, and the SDK's README. |
 | Anything security-relevant | `SECURITY.md` (threat model) and `guides/security.md`. |
 
 Write in plain, direct English: short sentences, active voice, concrete examples that compile
@@ -157,13 +166,15 @@ with an issue or discussion describing the problem and the proposed behaviour. U
 - The worker protocol has its own version (`PROTOCOL_VERSION`, sent in `Register` and
   `Registered`). New worker or server messages must keep older workers working; bump the
   version and document the change in `reference/grpc.md`.
-- Store schema changes go in a new numbered migration in `cronoq-store-postgres`; never edit an
-  existing one. Builds refuse to run against a schema newer than they know.
+- Store schema changes go in a new migration, appended to `MIGRATIONS` in both
+  `cronoq-store-postgres` and `cronoq-store-sqlite`; never edit an existing one. Builds refuse to
+  run against a schema newer than they know.
 
 ## Releasing
 
 Maintainers cut releases by pushing a `vX.Y.Z` tag; the release workflow publishes crates,
-wheels, binaries and the container image. See [RELEASING.md](RELEASING.md).
+wheels, the TypeScript package, binaries, container images and Helm charts. See
+[RELEASING.md](RELEASING.md).
 
 ## Licensing
 

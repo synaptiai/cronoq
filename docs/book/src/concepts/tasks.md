@@ -21,6 +21,8 @@ mode) runs one *attempt* of a task at a time; a task may need several attempts.
 | `deps` | none | Dependencies with edge conditions. See [Dependencies](dependencies.md). |
 | `resources` | none | Units of named resources needed while running. See [Resources](resources.md). |
 | `tags` | none | Free-form key/value labels passed to the executor (e.g. `traceparent`). |
+| `labels` | none | Worker labels the task requires; it runs only on workers that carry them. See [Worker labels](labels.md). |
+| `tenant` | none | Tenant the task belongs to, for fair sharing of a pool between tenants. See [Fair sharing](fairness.md). |
 
 Every task gets a numeric **id** assigned by the engine. Ids increase monotonically; in server
 mode the top bits carry the leader's fencing epoch, so ids stay unique across failovers.
@@ -54,7 +56,7 @@ mode the top bits carry the leader's fencing epoch, so ids stay unique across fa
 | `Failed` | ✔ | Permanent failure, or a missed fixed start with `MissPolicy::Fail`. |
 | `DeadLettered` | ✔ | Retryable failures used up every attempt. |
 | `Cancelled` | ✔ | Cancelled by a client. |
-| `Skipped` | ✔ | A dependency edge can no longer be satisfied, or an awaited key never appeared. |
+| `Skipped` | ✔ | A dependency edge can no longer be satisfied, an awaited key never appeared, or a recurring occurrence was skipped by the overlap policy `Skip`. |
 | `Missed` | ✔ | Fixed start missed with `MissPolicy::Skip`. |
 | `Shed` | ✔ | Evicted to make room under overload. |
 
@@ -69,8 +71,8 @@ may depend on it.
 - **Python**: awaiting a `TaskHandle` returns the executor's return value or raises
   `cronoq.TaskFailed`.
 - **Server**: `Wait` / `GET /v1/tasks/{id}/result` return the output bytes (and JSON, when the
-  bytes are JSON). Outputs are kept in a bounded in-memory cache and, with Postgres, in the
-  database.
+  bytes are JSON). Outputs are kept in a bounded in-memory cache and, with a durable store
+  (SQLite or Postgres), in the store.
 
 Handles are not required: `enqueue` submits without one, which is cheaper.
 

@@ -46,8 +46,8 @@ Plain queues treat every job the same. Real workloads do not:
 - 💥 **Lost jobs when a worker dies** → leases, heartbeats, timeouts, retries with backoff,
   dead letters, and failover backed by Postgres or a local SQLite file.
 
-It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, with
-dispatch cost independent of backlog size.
+It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, and
+the cost of a dispatch grows only with the logarithm of the backlog size, with no periodic rescans.
 
 Not sure it fits your system? [Benefits at a glance](https://synaptiai.github.io/cronoq/benefits.html)
 maps common symptoms to features, shows where to start, and lists the trade-offs.
@@ -58,7 +58,7 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 
 ```toml
 [dependencies]
-cronoq = "0.1"
+cronoq = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -178,7 +178,9 @@ curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TO
 | End to end through tokio, no-op tasks | ~250,000 tasks/s |
 | Sequential submit → await round trip | ~70 µs |
 
-CI gates on these numbers (`cargo bench -p cronoq-core`, `cargo bench -p cronoq`).
+A benchmark workflow runs on every push to `main` (`cargo bench -p cronoq-core`,
+`cargo bench -p cronoq`) and fails if the engine falls below 700,000 cycles/s or the end-to-end
+run below 175,000 tasks/s. It does not check the round-trip time.
 
 ## Architecture
 
@@ -194,7 +196,7 @@ flowchart LR
     D -->|dispatch| E[Executors / remote workers]
     E -->|outcomes, heartbeats| D
     D -->|scale requests| S[Scalers]
-    D -->|group commit| DB[(Postgres store)]
+    D -->|group commit| DB[(Postgres or SQLite store)]
 ```
 
 The engine is a deterministic state machine with no clock or I/O, tested by randomized
@@ -228,7 +230,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
 | [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |
 | [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
-| [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `cronoq`) |
+| [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `@synaptiai/cronoq`) |
 | [`cronoq-operator`](crates/cronoq-operator) | Kubernetes operator that scales worker Deployments |
 | [`deploy/helm`](deploy/helm) | Helm charts for the server and the operator |
 

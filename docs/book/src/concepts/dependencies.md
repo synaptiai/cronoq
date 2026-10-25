@@ -10,8 +10,10 @@ A **key** is an optional unique name for a task.
 - **References**: dependencies, cancellation, status lookups and result waits accept a key
   wherever they accept an id.
 
-Keys stay reserved while the task is live and for the retention window after it ends (1 hour by
-default; the Postgres store keeps finished rows for 7 days by default).
+Keys stay reserved while the task is live and for the retention window after it ends
+(`limits.key_retention_s` on the server, `CoreConfig::retention` in the library; 1 hour by
+default). Separately, the server deletes finished rows from a Postgres or SQLite store after
+`store.keep_finished_s` (7 days by default).
 
 ## Edges
 

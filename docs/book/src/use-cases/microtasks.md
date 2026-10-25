@@ -50,7 +50,7 @@ Measured on a shared 4-vCPU VM:
 
 ## What you get
 
-- **Scheduling overhead in the microseconds**, independent of backlog size.
+- **Scheduling overhead in the microseconds**, growing only with the logarithm of the backlog.
 - **All the scheduling rules still apply** (priorities, deadlines, resources, retries) at this
   rate.
 - **Backpressure** via bounded queues instead of unbounded memory growth during spikes.

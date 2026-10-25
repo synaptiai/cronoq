@@ -24,6 +24,7 @@ sched.submit(Task::new(close_books)
 Or a recurring schedule (cron with optional seconds, IANA time zones):
 
 ```rust,ignore
+use std::time::Duration;
 use cronoq::{OverlapPolicy, Recurring, Task};
 
 sched.add_recurring(
@@ -64,7 +65,7 @@ await sched.add_recurring("hourly-rollup", "0 0 * * * *", rollup_payload,
 - **Early feedback.** Over-subscribed schedules are rejected at submission time.
 - **Explicit miss semantics** instead of silently late jobs.
 - **Measurable punctuality** via `fixed_start_hit_rate`.
-- **Durable schedules.** With the Postgres store, recurring definitions and their next
+- **Durable schedules.** With a SQLite or Postgres store, recurring definitions and their next
   occurrence survive restarts and failovers. After downtime, at most one missed occurrence runs
   late (with `RunLate`); the schedule then resumes from the present instead of replaying every
   missed occurrence.

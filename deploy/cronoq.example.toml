@@ -30,13 +30,13 @@ shutdown_grace_s = 10        # running attempts get this long to finish on shutd
 # authentication is disabled (only allowed on loopback addresses).
 [[auth.tokens]]
 token_env = "CRONOQ_CLIENT_TOKEN"
-role = "client"    # Tasks: submit, cancel, get, wait, watch
+role = "client"    # Tasks: submit, cancel, get, list, wait, watch
 [[auth.tokens]]
 token_env = "CRONOQ_WORKER_TOKEN"
 role = "worker"    # Workers.Work stream
 [[auth.tokens]]
 token_env = "CRONOQ_METRICS_TOKEN"
-role = "metrics"   # Admin.Snapshot, /v1/snapshot, /metrics
+role = "metrics"   # Admin.Snapshot/ListWorkers/ListRecurring, /v1/snapshot, /v1/workers, /v1/recurring, /metrics
 [[auth.tokens]]
 token_env = "CRONOQ_ADMIN_TOKEN"
 role = "admin"     # everything, plus recurring schedules
@@ -85,6 +85,8 @@ role = "admin"     # everything, plus recurring schedules
 # keepalive_interval_s = 20        # HTTP/2 pings detect dead connections (and workers)
 # keepalive_timeout_s = 20
 # max_list = 1000                  # most tasks in one ListTasks / GET /v1/tasks page
+# key_retention_s = 3600           # how long a finished task's key keeps deduplicating
+# key_retention_max = 1000000      # most finished keys kept for that
 
 # Recent outputs and task details kept in memory for Wait/Get after completion.
 # [outputs]
@@ -94,6 +96,7 @@ role = "admin"     # everything, plus recurring schedules
 
 [[pools]]
 name = "default"
+# min = 0                  # lower bound of the desired capacity the autoscaler reports
 max = 50
 lease_ttl_s = 30           # workers heartbeat each lease within this
 overflow = "reject"        # wait | reject | shed_lowest | shed_oldest
