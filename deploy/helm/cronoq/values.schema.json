@@ -22,7 +22,7 @@
               "properties": { "name": { "type": "string" }, "key": { "type": "string", "minLength": 1 } }
             },
             "schema": { "type": "string", "pattern": "^[a-z_][a-z0-9_{}]*$" },
-            "keepFinishedSeconds": { "type": "integer", "minimum": 0 }
+            "keepFinishedSeconds": { "type": "integer", "minimum": 60 }
           }
         }
       }

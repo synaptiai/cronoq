@@ -16,7 +16,7 @@ use cronoq_proto::v1::{tasks_client::TasksClient, SubmitRequest, TaskSpec};
 # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 let mut client = TasksClient::connect("http://localhost:7070").await?;
 let task = TaskSpec { payload: b"hello".to_vec(), ..Default::default() };
-let resp = client.submit(SubmitRequest { task: Some(task), wait: true }).await?;
+let resp = client.submit(SubmitRequest { task: Some(task), wait: true, ..Default::default() }).await?;
 println!("{:?}", resp.into_inner());
 # Ok(()) }
 ```

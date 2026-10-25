@@ -30,8 +30,8 @@ Dispatch cost is independent of backlog size (see [Architecture](../architecture
 ## Tuning the server
 
 - Give workers enough `slots` that per-lease round trips are amortized; heartbeats are cheap.
-- With Postgres, commit latency bounds how fast the engine can acknowledge submissions in a
-  single step. Batched submissions (`SubmitBatch`, `/v1/tasks:batch`) share one commit.
+- With a durable store (SQLite or Postgres), commit latency bounds how fast the engine can
+  acknowledge submissions in a single step. Batched submissions (`SubmitBatch`, `/v1/tasks:batch`) share one commit.
 - Keep the database close (same region/zone) to the server.
 
 ## Measuring

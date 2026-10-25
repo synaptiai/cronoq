@@ -5,14 +5,20 @@
 A **pool** is a group of worker slots with one executor (or one set of remote workers), one
 autoscaling policy and its own queue bounds. A **slot** runs one attempt at a time.
 
-| Setting | Default (library) | Default (server) |
+| Setting (library / server key) | Default (library) | Default (server) |
 |---|---|---|
-| `min_workers` / `max_workers` | 1 / 10 | 0 / 10 |
-| `initial_workers` | 1 | 0 (capacity comes from workers) |
+| `min_workers` / `min` | 1 | 0 |
+| `max_workers` / `max` | 10 | 10 |
+| `initial_workers` / none | 1 | 0 (capacity comes from workers) |
 | Autoscaling | on | on |
 | Lease TTL | none | 30 s |
 | Overflow policy | `Wait` | `Reject` |
 | Retry policy | 3 attempts, 1 s ×2 up to 60 s, jitter | same |
+
+The minimum bounds the autoscaler's desired capacity: desired is never below it. It does not
+set capacity itself. In the library, `initial_workers` is the capacity at start (at most the
+maximum, and not raised to the minimum); in the server, capacity comes only from connected
+workers.
 
 Use several pools to isolate workloads with different executors, hardware or scaling needs;
 use [resources](resources.md) to share limits between them.
@@ -34,7 +40,8 @@ Every `interval` (1 s) each autoscaled pool computes:
 ```text
 λ        arrival rate (EWMA, α = 0.3) of tasks becoming ready
 S        mean service time (EWMA of observed run times; default_duration before any)
-B        backlog: ready tasks per class (fixed-start tasks that are due count as critical)
+B        backlog per class: ready tasks plus tasks waiting for a retry
+         (fixed-start tasks that are due count as critical)
 
 base     = ceil(λ × S / target_utilization)             target_utilization = 0.75
              (0 when below 0.01: the smoothed rate decays toward zero but never reaches it)
@@ -57,8 +64,9 @@ Then:
 
 ## Cost
 
-Set `cost_per_worker_second` and each pool reports accumulated `worker_seconds` and `cost` in
-snapshots and metrics.
+Set `cost_per_worker_second` and each pool reports `worker_seconds` and `cost`, accumulated
+since start, in snapshots. Cost is also exported as a metric (`cronoq_pool_cost_total` in
+Prometheus, `cronoq.pool.cost` in OpenTelemetry); `worker_seconds` is in snapshots only.
 
 ## Configuration reference
 

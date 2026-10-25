@@ -20,7 +20,7 @@ APIs, and says what a caller should do about it.
 
 The server also returns `INVALID_ARGUMENT` / 400 for requests that fail its own checks
 (`[limits]`, unknown JSON fields, both relative and absolute times) and `PERMISSION_DENIED` /
-403 for pools outside a token's scope.
+403 for pools or tenants outside the credentials' scope.
 
 ## Task outcomes
 
@@ -92,16 +92,19 @@ return database messages to clients.
 |---|---|---|---|
 | `INVALID_ARGUMENT` | 400 | no | Malformed request or spec. |
 | `UNAUTHENTICATED` | 401 | no | Missing or unknown credentials. |
-| `PERMISSION_DENIED` | 403 | no | Role or pool scope does not allow it. |
+| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
-| `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict. |
+| `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
+| `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | – | 413, 415 | no | Body too large, wrong content type. |
 | `RESOURCE_EXHAUSTED` | 429 | yes, with backoff | Queue bounds reached. |
 | `INTERNAL` | 500 | maybe | Unexpected server error. |
 | `UNAVAILABLE` | 503 | yes, with backoff | Not the leader, shutting down, store unavailable. |
-| `DEADLINE_EXCEEDED` | 504 | wait again | A wait timed out while the task is still running. |
+| `DEADLINE_EXCEEDED` | 504 | wait again | A wait timed out while the task is still running, or the request exceeded its time limit. |
 | `DATA_LOSS` | – | reconnect | A `Watch` stream fell behind. |
 
-Submissions with a `key` are idempotent, so retrying a submit after `UNAVAILABLE` or a lost
-connection never creates a second task: the retry returns the original id with
-`duplicate = true`.
+Submissions with a `key` are idempotent while the original task is live, and after it finished
+for as long as the server keeps its key (`limits.key_retention_s`, default 3600 s, and at most
+`limits.key_retention_max` finished tasks). Within that window, retrying a submit after
+`UNAVAILABLE` or a lost connection does not create a second task: the retry returns the
+original id with `duplicate = true`.

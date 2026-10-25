@@ -50,8 +50,8 @@ Runnable: `cargo run -p cronoq --example dag_pipeline`.
 | `Dep::on_failure` | failed or was dead-lettered | `Skipped` |
 | `Dep::on_complete` | reached any terminal status | (always runs) |
 
-`Skipped` propagates: everything downstream of a skipped task whose edge requires success is
-skipped too. A task that waits on dependencies has status `Blocked`; it enters the queue only
+`Skipped` propagates: everything downstream of a skipped task is skipped too, except children
+attached with `on_complete`. A task that waits on dependencies has status `Blocked`; it enters the queue only
 when every edge is satisfied, so blocked tasks never occupy workers.
 
 Dependencies can reference **task ids** or **keys**. A key that has never been seen is rejected

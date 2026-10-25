@@ -4,8 +4,8 @@
 
 Releases publish a multi-architecture image (`linux/amd64`, `linux/arm64`) to
 `ghcr.io/synaptiai/cronoq`, tagged with the version (`0.2.0`) and the minor series (`0.2`).
-The image is distroless: it contains the `cronoq-server` binary and the example configuration,
-runs as a non-root user, and has no shell or curl. Build it yourself with:
+The image is distroless: it contains the `cronoq-server` binary, the `cronoq` CLI and the example
+configuration, runs as a non-root user, and has no shell or curl. Build it yourself with:
 
 ```sh
 docker build -t cronoq .
@@ -96,7 +96,8 @@ store:
     schema: "cronoq_{shard}"   # each shard gets its own tables
 ```
 
-Each shard gets its own Deployment, Service (`<release>-cronoq-<shard>`, the shard's endpoint)
+Each shard gets its own Deployment, Service (`<release>-cronoq-<shard>`, or `<release>-<shard>`
+when the release name contains `cronoq`; the shard's endpoint)
 and disruption budget, from one shared configuration. The main Service reaches every shard's
 servers, and any server answers for every shard ([Sharding](../concepts/sharding.md)).
 
@@ -155,7 +156,8 @@ connection terminated by Postgres, or that timeout), a standby takes the lock, r
 accepted work and becomes ready. Clients retry on `UNAVAILABLE` / 503; workers receive
 `Shutdown{not_leader}` and reconnect. See [Durability and HA](../concepts/durability.md).
 
-The database role needs permission to create tables in the `public` schema on first start.
+The database role needs permission to create tables in `store.schema` on first start (`public`
+by default; the chart sets `cronoq`), and to create that schema if it does not exist.
 Migrations are versioned and applied automatically, under a lock, by whichever replica starts
 first; replicas of an older version refuse to run against a newer schema.
 
@@ -244,8 +246,8 @@ leases finish before the pod is killed.
 The scheduler itself is light: one core comfortably handles hundreds of thousands of task
 transitions per second. Memory is dominated by pending tasks (a few hundred bytes plus the
 payload each), the output cache (`[outputs]`, 64 MiB by default) and the task-info cache. With
-Postgres, the leader writes one small transaction per engine step, with all mutations of that
-step batched together; replies wait for that commit.
+a durable store, the leader writes the mutations queued since its last commit in one
+transaction; replies wait for that commit.
 
 ## Checklist
 

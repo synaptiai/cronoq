@@ -19,7 +19,7 @@ This page describes **worker protocol version 3**.
   (`*_unix_ns`, `int64`). Durations must be finite and non-negative. Set at most one of the
   relative and absolute forms.
 - **Enum zero values** (`*_UNSPECIFIED`) mean "default": `PRIORITY_NORMAL`,
-  `EDGE_COND_ON_SUCCESS`, `MISS_POLICY_RUN_LATE`.
+  `EDGE_COND_ON_SUCCESS`, `MISS_POLICY_RUN_LATE`, `OVERLAP_SKIP`.
 - **Limits.** Messages are limited to `limits.max_message_bytes` (default 16 MiB), strings and
   collections to the `[limits]` table in the [configuration reference](configuration.md#limits).
   Strings must not contain NUL characters.
@@ -28,8 +28,9 @@ This page describes **worker protocol version 3**.
   accepting it, so behind a load balancer that sends connections to every replica, a retry on a
   new connection can reach the leader. A load balancer that routes on `/readyz` sends
   connections to the leader only.
-- **Deadlines.** Unary calls are bounded by `limits.request_timeout_s`; `Submit` with `wait` and
-  `Wait` by `limits.max_wait_s` on top.
+- **Deadlines.** Every unary call is bounded by `limits.max_wait_s + limits.request_timeout_s`.
+  `Submit` with `wait` and `Wait` also stop waiting after `limits.max_wait_s` (or the shorter
+  timeout the call asks for).
 
 ## `Tasks` (role: client)
 
@@ -80,7 +81,8 @@ expires first the call fails with `DEADLINE_EXCEEDED` and the task keeps running
 keys defined anywhere in the batch. The response lists one `SubmitResponse` per task, in request
 order, without `result`.
 
-With Postgres, `Submit`, `SubmitBatch` and `Cancel` return after the change is durable.
+With a durable store (Postgres or SQLite), `Submit`, `SubmitBatch` and `Cancel` return after
+the change is stored.
 
 ### `TaskInfo`
 
@@ -210,10 +212,11 @@ occurrence); schedules are sorted by name.
 `SnapshotResponse` carries `pools` (one `PoolSnapshot` per pool: `name`, `capacity`, `busy`,
 `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`,
 `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`,
-`wait_p50_s`, `wait_p90_s`, `wait_p99_s`, `cost`, `workers_connected`), `live_tasks`,
-`running`, `pending`, `workers_connected` and `totals` (`submitted`, `dispatched`,
-`succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`,
-`timeouts`, `lease_expiries`). The [HTTP snapshot](http.md#get-v1snapshot) documents each
+`wait_p50_s`, `wait_p90_s`, `wait_p99_s`, `cost`, `workers_connected`, and `groups`: one
+`WorkerGroup{labels, capacity, busy}` per set of worker labels, unlabeled first), `live_tasks`,
+`running`, `pending`, `workers_connected`, `unavailable_shards` and `totals` (`submitted`,
+`dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`,
+`retries`, `timeouts`, `lease_expiries`, `stale_completions`). The [HTTP snapshot](http.md#get-v1snapshot) documents each
 field.
 
 `AddRecurring` registers (or replaces) a cron schedule named `name`. `cron` has six fields
@@ -269,13 +272,15 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 |---|---|
 | `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle; oversize string or collection. |
 | `NOT_FOUND` | Unknown task, pool, resource or dependency. |
-| `FAILED_PRECONDITION` | Fixed-start reservation conflict. |
+| `ALREADY_EXISTS` | The key is already used by a task in a pool outside the credentials' scope. |
+| `FAILED_PRECONDITION` | Fixed-start reservation conflict; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| `PERMISSION_DENIED` | The credentials lack the role, or the pool is outside their scope. |
+| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, without credentials configured, the request does not name a loopback host. |
 | `DEADLINE_EXCEEDED` | A wait timed out while the task is still running, or no `Register` within 10 s. |
 | `UNAVAILABLE` | Not the leader, shutting down, or the store is unavailable. Retry with backoff. |
 | `DATA_LOSS` | A `Watch` stream fell behind and events were dropped. |
+| `UNIMPLEMENTED` | A plain gRPC request over HTTP/1.1 (with gRPC-Web enabled, HTTP/1.1 carries only gRPC-Web). |
 | `INTERNAL` | Unexpected server error. |
 
 ## Enumerations
@@ -286,16 +291,11 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `TaskStatus` | `TASK_STATUS_UNSPECIFIED`, `BLOCKED`, `SCHEDULED`, `READY`, `RUNNING`, `RETRYING`, `SUCCEEDED`, `FAILED`, `DEAD_LETTERED`, `CANCELLED`, `SKIPPED`, `MISSED`, `SHED` (prefixed `TASK_STATUS_`) |
 | `EdgeCond` | `EDGE_COND_UNSPECIFIED` (= on success), `EDGE_COND_ON_SUCCESS`, `EDGE_COND_ON_COMPLETE`, `EDGE_COND_ON_FAILURE` |
 | `MissPolicy` | `MISS_POLICY_UNSPECIFIED` (= run late), `MISS_POLICY_RUN_LATE`, `MISS_POLICY_SKIP`, `MISS_POLICY_FAIL` |
+| `Overlap` | `OVERLAP_UNSPECIFIED` (= skip), `OVERLAP_SKIP`, `OVERLAP_ALLOW`, `OVERLAP_QUEUE`, `OVERLAP_QUEUE_ON_SUCCESS` |
 
 Status meanings: [HTTP statuses](http.md#statuses).
 
-## Protocol versions
+## Protocol version
 
-| Version | Changes |
-|---|---|
-| 1 | Initial version. |
-| 2 | `Nack` and `Cancelled` outcomes, `Shutdown`, lease metadata (`pool`, `priority`, `lease_ttl_s`), `Complete.content_type`, granted slots and `max_message_bytes` in `Registered`. |
-| 3 | Worker labels (`Register.labels`); lease ids carry the leader epoch. |
-
-A server refuses workers that speak an older version, with `FAILED_PRECONDITION` and a message
-naming the version it needs.
+Workers send `protocol_version` 3; a server refuses older versions with `FAILED_PRECONDITION`
+and a message naming the version it needs.

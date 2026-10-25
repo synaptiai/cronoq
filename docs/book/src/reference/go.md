@@ -57,6 +57,21 @@ opened on the first call.
 
 `Ref` names a task: `cronoq.ID(id)` or `cronoq.Key(key)`.
 
+| `ListOptions` field | Default | Description |
+|---|---|---|
+| `Pools` | every pool the caller may use | Pools to list. |
+| `Statuses` | any | Statuses to list. |
+| `After` | 0 | Only tasks with a larger id; pass the previous page's `NextAfter`. |
+| `Limit` | 0 (= 100) | Page size, capped at the server's `limits.max_list`. |
+
+`TaskPage.NextAfter` is 0 on the last page.
+
+| `WatchOptions` field | Default | Description |
+|---|---|---|
+| `Pools` | every pool the caller may use | Pools to watch. |
+| `IDs`, `Keys` | none | Only events for these tasks. |
+| `AllTransitions` | `false` | Stream every status change; without it, only terminal statuses are streamed. |
+
 `Task` fields: `Payload`, `ContentType`, `Kind`, `Pool`, `Key`, `Tenant`, `Priority`
 (`cronoq.Critical`, `High`, `Normal`, `Low`), `Timeout` (per attempt), `Deadline` (relative),
 `StartIn`, `After` (`[]Dep{{Ref: cronoq.Key("extract"), Cond: cronoq.OnSuccess}}`),
@@ -98,9 +113,10 @@ time (or fewer if the server grants fewer). It heartbeats every running lease, a
 with backoff when the connection drops (right away when the server announces a leadership
 change). When the pool belongs to another shard, it connects to that shard's endpoint; see
 below. When `ctx` ends, it stops taking leases and lets running handlers finish for up to
-`DrainTimeout`, then cancels the rest and returns `nil`; a handler that ignores the cancellation
-gets 5 more seconds, then its outcome is dropped (the server retries the task). It returns an error only for failures
-that retrying cannot fix, such as a rejected token or an unknown pool.
+`DrainTimeout`, then cancels the rest and returns `nil`. A cancelled handler that returns within
+5 more seconds still has its outcome reported; after that its outcome is dropped (the server
+retries the task). It returns an error only for failures that retrying cannot fix, such as a
+rejected token or an unknown pool.
 
 | Option | Default | Description |
 |---|---|---|
@@ -114,14 +130,17 @@ that retrying cannot fix, such as a rejected token or an unknown pool.
 | `InitialBackoff`, `MaxBackoff` | 200 ms, 10 s | Reconnect delay bounds. |
 | `DrainTimeout` | 30 s | How long running handlers may finish after `ctx` ends. |
 | `InsecureRedirectHTTP` | `false` | Follow a shard redirect to plain `http://` on another host with the token. For trusted networks only. |
+| `MaxMessageBytes` | 64 MiB | Largest lease message accepted from the server. |
+| `DialOptions` | none | Extra `grpc.DialOption`s. |
 | `Logger` | `slog.Default()` | Receives the worker's log messages. |
 
 ### Handlers
 
 The handler gets a `*Lease`: `ID`, `TaskID`, `Attempt`, `Payload`, `ContentType`, `Kind`, `Key`,
 `Pool`, `Priority`, `Tags`, `Timeout` and `Deadline`. Its context ends when the server aborts the
-attempt (timeout, cancellation, lease expiry) or the drain timeout passes; the outcome is then
-not reported. It returns the output, or an error:
+attempt (timeout, cancellation, lease expiry), when the connection to the server ends, or when
+the drain timeout passes. After an abort the outcome is not reported; after the drain timeout it
+is reported if the handler returns within 5 seconds. It returns the output, or an error:
 
 | Return | Effect |
 |---|---|

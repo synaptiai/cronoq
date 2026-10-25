@@ -48,8 +48,9 @@ a failure, keeps its original place in its class.
 Within one class, every task ages at the same rate from its own submission time, so an older
 task always has a score at least as high as a younger one. A FIFO queue per class therefore
 always has its best task at the head. Deadline tasks live in a second per-class queue ordered by
-latest start time. Dispatch compares at most eight heads (four classes × two queues), computing
-their scores lazily. There is no periodic rescoring and no full-queue scan, so dispatch cost
+latest start time, and in pools with fair sharing, tenants' tasks live in a third per-class queue
+ordered by start tag. Dispatch compares at most twelve heads (four classes × three queues),
+computing their scores lazily. There is no periodic rescoring and no full-queue scan, so dispatch cost
 does not grow with the backlog.
 
 ## Measuring adherence

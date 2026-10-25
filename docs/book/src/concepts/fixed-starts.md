@@ -21,8 +21,9 @@ The task occupies a reservation interval in its pool:
 
 At any instant, at most `floor(max_workers × reservable_fraction)` reservations may overlap
 (`reservable_fraction` defaults to **0.5**, and at least one reservation is always allowed). If
-the new interval would exceed that, submission fails with **`ReservationConflict`**. Keeping the
-fraction below 1 guarantees ad-hoc work always has part of the pool.
+the new interval would exceed that, submission fails with **`ReservationConflict`**. When
+`max_workers` is 2 or more, a fraction below 1 keeps part of the pool free for ad-hoc work. A
+pool with `max_workers = 1` can be fully reserved, because one reservation is always allowed.
 
 ## 2. Holding a worker
 
@@ -71,7 +72,8 @@ workers (server mode with no connected workers), or a dependency finished late.
   dependencies.
 - **Resources**: a fixed-start task also needs its resources; if they are not available at the
   start time it waits for them while keeping its slot.
-- **Retries**: a retried attempt is dispatched like regular work.
+- **Retries**: a retried attempt has no held slot and no miss policy. It waits in the due queue
+  and takes the next free slot ahead of regular work.
 - **Overload**: fixed-start tasks are never shed by the `shed_lowest` / `shed_oldest` overflow
   policies; their capacity was promised at admission.
 - **Recurring schedules** create fixed-start tasks; see [Recurring schedules](recurring.md).

@@ -69,5 +69,5 @@ description and the [gRPC reference](../reference/grpc.md).
 - **Elastic fleets.** The server computes the desired number of workers per pool and exports it
   (`cronoq_pool_desired_workers`) for KEDA or HPA, or calls your webhook. See
   [Cost-aware autoscaling](autoscaling.md).
-- **High availability.** With the Postgres store, standby servers take over; workers reconnect
-  and accepted work resumes. See [Durability and HA](../concepts/durability.md).
+- **High availability.** With a durable store (Postgres, or SQLite on one host), standby servers
+  take over; workers reconnect and accepted work resumes. See [Durability and HA](../concepts/durability.md).

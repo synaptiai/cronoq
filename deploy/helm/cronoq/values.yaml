@@ -1,5 +1,5 @@
 # Values for the cronoq server chart. See the deployment guide:
-# https://synaptiai.github.io/cronoq/guides/deployment.html#helm
+# https://synaptiai.github.io/cronoq/guides/deployment.html#kubernetes
 
 image:
   repository: ghcr.io/synaptiai/cronoq
@@ -27,8 +27,8 @@ store:
     urlSecret:
       name: ""
       key: url
-    # Schema for the server's tables. With shards, each shard gets its own: `{shard}` is
-    # replaced by the shard's name.
+    # Schema for the server's tables. With shards, it must contain `{shard}` (for example
+    # cronoq_{shard}), which is replaced by each shard's name, so each shard gets its own.
     schema: cronoq
     keepFinishedSeconds: 604800
 
@@ -43,7 +43,8 @@ shards: []
 tls:
   # Secret of type kubernetes.io/tls (tls.crt, tls.key, and ca.crt for verifying the other
   # shards). Serves both listeners over TLS; shard endpoints then use https://. The
-  # certificate must name every shard's Service (<release>-cronoq-<shard>).
+  # certificate must name every shard's Service (<release>-cronoq-<shard>, or <release>-<shard>
+  # when the release name contains "cronoq").
   secretName: ""
   # Require client certificates signed by ca.crt (mTLS). The kubelet's probes then only check
   # that the HTTP port accepts connections, since they cannot present a certificate.

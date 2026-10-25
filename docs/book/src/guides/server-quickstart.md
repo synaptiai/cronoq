@@ -112,7 +112,7 @@ curl -s localhost:7071/v1/tasks \
 ```
 
 ```json
-{"id":"1","duplicate":false,"result":{"id":"1","status":"succeeded","output_available":true,"output":{"echo":{"hello":"world"},"attempt":1},"output_b64":"..."}}
+{"duplicate":false,"id":"1","result":{"id":"1","output":{"attempt":1,"echo":{"hello":"world"}},"output_available":true,"output_b64":"...","status":"succeeded"}}
 ```
 
 Task ids are strings in JSON, because they are 64-bit.

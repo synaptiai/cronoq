@@ -26,7 +26,7 @@ An annotated example lives in
 [`deploy/cronoq.example.toml`](https://github.com/synaptiai/cronoq/blob/main/deploy/cronoq.example.toml);
 it is the configuration baked into the container image.
 
-Durations are seconds (floats). They must be finite and between their minimum and 10 years.
+Durations are seconds (floats). They must be finite and between their minimum and one year.
 
 ## `[server]`
 
@@ -82,7 +82,7 @@ with a client certificate mapped to a role. Roles:
 |---|---|
 | `client` | Submit, inspect, wait for, cancel and watch tasks (`Tasks` service, `/v1/tasks*`). |
 | `worker` | Open the `Workers.Work` stream and serve leases. |
-| `metrics` | Read snapshots and metrics (`Admin.Snapshot`, `/v1/snapshot`, `/metrics`). |
+| `metrics` | Read snapshots, workers, recurring schedules and metrics (`Admin.Snapshot`, `Admin.ListWorkers`, `Admin.ListRecurring`, `/v1/snapshot`, `/v1/workers`, `/v1/recurring`, `/metrics`). |
 | `admin` | Everything, including recurring schedules (`Admin.AddRecurring`, `Admin.RemoveRecurring`). |
 
 `/healthz` and `/readyz` never need credentials.
@@ -144,7 +144,7 @@ keep_finished_s = 604800
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | `memory` \| `postgres` \| `sqlite` | `memory` | `memory` keeps all state in the process (lost on restart). `postgres` and `sqlite` make state durable and enable active-passive HA (`sqlite`: processes on one host). |
-| `url` | string | – | `postgres` only. Connection URL. Prefer `url_env`; the server warns about inline URLs and about URLs without `sslmode=verify-full`/`require`. |
+| `url` | string | – | `postgres` only. Connection URL. Prefer `url_env`; the server warns about inline URLs and, unless the host is local, about URLs that set neither `sslmode=verify-full` nor `sslmode=verify-ca` (`sslmode=require` also gets the warning). |
 | `url_env` | string | `DATABASE_URL` | `postgres` only. Read the URL from this environment variable. Set `url` or `url_env`, not both. |
 | `keep_finished_s` | float ≥ 60 | `604800` (7 days) | Finished tasks older than this are pruned hourly (in batches; tasks that live tasks depend on are kept). |
 | `path` | path | – | `sqlite` only, required: the database file (created if missing, owner-only permissions). Keep it on a local filesystem. |
@@ -173,8 +173,8 @@ optional.
 | `max_deps` | int | `256` | Most dependencies per task. |
 | `max_resources` | int | `16` | Most resource entries per task. |
 | `max_wait_s` | float ≥ 0 | `300` | Longest server-side wait for a result (`Wait`, `Submit{wait}`, `GET …/result`). Longer requested waits are capped; when it expires the caller gets `DEADLINE_EXCEEDED` / HTTP 504 and can wait again. |
-| `request_timeout_s` | float ≥ 0.1 | `30` | Timeout for any other request (waiting requests get `request_timeout_s + max_wait_s`). |
-| `max_concurrent_requests` | int ≥ 1 | `4096` | Requests processed concurrently per listener (excess requests queue). Also caps open HTTP connections. |
+| `request_timeout_s` | float ≥ 0.1 | `30` | Request time limit. Every gRPC call gets `request_timeout_s + max_wait_s`. Over HTTP, waiting routes (`/v1/tasks` and paths ending in `/result`) get `request_timeout_s + max_wait_s` and other routes get `request_timeout_s`. |
+| `max_concurrent_requests` | int ≥ 1 | `4096` | On the gRPC listener, requests processed concurrently (excess requests queue). On the HTTP listener, open connections; further connections are refused. |
 | `max_concurrent_streams` | int ≥ 1 | `1024` | HTTP/2 streams per connection. |
 | `max_slots_per_worker` | int ≥ 1 | `1024` | Slots a single worker may register (also capped by the pool's `max`). |
 | `keepalive_interval_s` | float ≥ 0.1 | `20` | HTTP/2 keepalive ping interval; detects half-open workers and clients. |
@@ -204,7 +204,7 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | 1–64 characters from `[A-Za-z0-9_.:-]`, unique. |
-| `min` | int | `0` | Autoscaler lower bound. |
+| `min` | int ≤ `max` | `0` | Lower bound on the autoscaler's desired capacity: the desired capacity never drops below it. Capacity itself still comes only from connected workers. |
 | `max` | int ≥ 1 | `10` | Autoscaler upper bound, basis for reservation capacity, and a cap on slots per worker. |
 | `autoscale` | bool | `true` | Compute a desired capacity from queue pressure (exported as `cronoq_pool_desired_workers` and sent to the scaler). |
 | `scaler` | table | `{ kind = "external" }` | How the desired capacity is communicated, see below. |
@@ -220,6 +220,8 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `cooldown_s` | float ≥ 0 | `30` | Autoscaler: minimum time between scale-down steps. |
 | `cost_per_worker_second` | float ≥ 0 | `0` | Cost per slot-second, for `cronoq_pool_cost_total`. |
 | `max_slots_per_worker` | int ≥ 1 | `limits.max_slots_per_worker` | Slots one worker may register in this pool (never above `max`). Workers asking for more are granted the cap. |
+| `fair_share` | bool | `false` | Share the pool fairly between tenants with equal weights (implied by `tenant_weights`). |
+| `tenant_weights` | table of tenant = weight | `{}` | Share the pool fairly between tenants with these weights (each finite and > 0; others weigh 1). See [Fair sharing](../concepts/fairness.md). |
 
 ### `scaler`
 
@@ -237,8 +239,6 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `multiplier` | float in [1, 1000] | `2` | Backoff growth factor. |
 | `max_backoff_s` | float ≥ 0 | `60` | Backoff ceiling. |
 | `jitter` | bool | `true` | Full jitter (uniform in `[0, backoff]`). |
-| `fair_share` | bool | `false` | Share the pool fairly between tenants with equal weights (implied by `tenant_weights`). |
-| `tenant_weights` | table of tenant = weight | `{}` | Share the pool fairly between tenants with these weights (others weigh 1). See [Fair sharing](../concepts/fairness.md). |
 
 ## `[[resources]]`
 
@@ -287,8 +287,8 @@ shard separately.
 
 ## `[outputs]`
 
-Recent outputs and task records, used by `Wait`/`Get` after a task finished. With Postgres,
-outputs that are no longer cached are read from the database.
+Recent outputs and task records, used by `Wait`/`Get` after a task finished. With a durable
+store (`postgres` or `sqlite`), outputs that are no longer cached are read from the database.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -301,14 +301,22 @@ outputs that are no longer cached are read from the database.
 `--check` (and every startup) rejects:
 
 - unknown keys, duplicate pool or resource names, invalid names;
-- non-finite, negative or out-of-range numbers (durations, fractions, multipliers, rates);
+- non-finite, negative or out-of-range numbers (durations, fractions, multipliers, rates,
+  tenant weights), and a pool `min` above its `max`;
 - `[[auth.tokens]]` entries without exactly one of `token`/`token_env`, duplicate literal
-  tokens, tokens shorter than 16 characters, pool allow-lists naming unknown pools;
+  `token` values, pool allow-lists naming unknown pools;
 - `[[auth.certs]]` without `server.tls.client_ca`;
 - `server.grpc_web.allowed_origins` that is empty, has more than 64 entries, or holds anything
   other than exact origins;
 - both `store.url` and `store.url_env`;
-- non-loopback listeners with no credentials, unless `insecure_no_auth` is set;
 - `[[shards]]` with duplicate names, numbers or endpoints, unknown pools, pools in no shard or in
   two, a missing or unknown `server.shard`, a store namespace without `{shard}`, or a resource
   without a known `shard`.
+
+Startup also rejects the following, which `--check` does not test because they depend on the
+environment:
+
+- a `token_env` variable that is not set;
+- tokens shorter than 16 characters, and duplicate tokens (including tokens read from
+  `token_env`);
+- non-loopback listeners with no credentials, unless `insecure_no_auth` is set.

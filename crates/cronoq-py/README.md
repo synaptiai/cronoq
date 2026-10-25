@@ -26,7 +26,7 @@ pip install cronoq
 - **Elastic concurrency.** Pools scale between `min` and `max` from queue pressure and wait-time
   objectives.
 - **Fast.** The engine makes about a million scheduling decisions per second; payloads stay
-  Python objects (no serialization).
+  Python objects in memory, and are serialized only when a durable store is configured.
 
 ## Quickstart
 
@@ -66,7 +66,8 @@ asyncio.run(main())
   cannot be interrupted: on timeout or cancellation the attempt is aborted, but the function
   keeps running until it returns, and the next attempt may overlap with it. Check
   `ctx.is_cancelled()` in long-running sync executors.
-* Payloads and results are arbitrary Python objects (never serialized).
+* Payloads and results are arbitrary Python objects. They are serialized only when the scheduler
+  has a durable store (see [Durable state](#durable-state)).
 * Tasks without `pool=` go to the scheduler's `default_pool`: the pool named `"default"`, or
   the first pool.
 * `cronoq.Retryable` / `cronoq.Permanent` control retries; any other exception is retryable.

@@ -22,7 +22,8 @@ start says when work should *begin*; cronoq reserves capacity and holds a worker
 
 Not behind `normal` traffic: aging lets a waiting `low` task overtake fresh `normal` work after
 about 45 seconds with the default settings. It can wait behind sustained `high` or `critical`
-load, by design. Raise `age_cap` for stronger mixing.
+load, by design. For stronger mixing, raise `age_cap`; it is configurable only from the Rust
+library (`Builder::priority`), and the server and the Python package use the defaults.
 
 ### How many tasks can the engine hold?
 
@@ -62,7 +63,8 @@ A server pool's capacity is its connected workers' slots. Check `cronoq_workers_
 
 ### Is there a UI?
 
-Not yet. Use `/v1/snapshot`, the `Admin` service, Prometheus/Grafana and status events.
+There is no web UI. `cronoq top` gives a live view in the terminal; for the rest, use
+`/v1/snapshot`, the `Admin` service, Prometheus/Grafana and status events.
 
 ### What happens when the database is unavailable?
 
@@ -80,7 +82,7 @@ Within one trust domain, yes: give each team tokens scoped to its pools
 resources are shared across pools, so teams that must not learn about each other's work need
 separate servers. See [Security hardening](guides/security.md).
 
-### How do I upgrade a cluster with Postgres?
+### How do I upgrade a cluster with a durable store?
 
 The new version applies its schema migrations when it connects, and an older build refuses to
 start against a newer schema, so upgrades roll forward only. When a release adds no migration,

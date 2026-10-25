@@ -15,7 +15,7 @@ tasks behind it wait too.
 Declare the resource once on the scheduler; tasks request units of it:
 
 ```rust,ignore
-use cronoq::{Pool, ResourceConfig, Task};
+use cronoq::{Pool, ResourceConfig, Scheduler, Task};
 
 let sched = Scheduler::<Job, Out>::builder()
     .resource(ResourceConfig::semaphore("gpu", 4))          // 4 GPUs in total

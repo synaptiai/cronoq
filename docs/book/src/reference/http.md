@@ -1,7 +1,7 @@
 # HTTP API
 
-The HTTP gateway exposes the client side of the [gRPC API](grpc.md) as JSON, plus metrics and
-health probes. It listens on `server.http_addr` (default `127.0.0.1:7071`) and serves HTTP/1.1
+The HTTP gateway exposes the `Tasks` service of the [gRPC API](grpc.md) as JSON, except the
+`Watch` stream, plus the read-only `Admin` calls, metrics and health probes. It listens on `server.http_addr` (default `127.0.0.1:7071`) and serves HTTP/1.1
 and HTTP/2 (h2c without TLS, ALPN with TLS). With `[server.tls]` configured it serves HTTPS and
 accepts client certificates on the same terms as the gRPC listener.
 
@@ -14,9 +14,13 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
   certificate mapped in `[[auth.certs]]`. The `admin` role passes every check. Without
   any `[[auth.tokens]]` or `[[auth.certs]]`, authentication is off and every request is treated
   as admin; the server only starts that way on loopback addresses unless `--insecure-no-auth`
-  is given.
+  is given. In that mode a request whose `Host` is not a loopback name or address (`localhost`,
+  `*.localhost`, `127.0.0.1`, `[::1]`) gets 403.
 - **Pool scope.** A token or certificate with `pools = [...]` may only submit into those pools.
   Tasks in other pools look like they do not exist (404), so their ids and keys do not leak.
+  Submitting a key that is already used by a task in a pool outside the scope returns 409.
+- **Tenant.** Credentials with a `tenant` submit for that tenant: tasks without a tenant get it,
+  and naming another tenant returns 403.
 - **Request bodies** must be JSON with `content-type: application/json` (otherwise 415) and at
   most `limits.max_http_body_bytes` (default 16 MiB, otherwise 413). Unknown fields are
   rejected with 400, so a typo such as `"priorty"` never passes silently.
@@ -24,9 +28,9 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
   JavaScript numbers lose precision above 2^53. Requests accept ids as strings or numbers.
 - **Timestamps** (`*_unix_ns`) are Unix nanoseconds, returned as strings for the same reason.
   Durations (`*_s`) are seconds as JSON numbers and must be finite and non-negative.
-- **Every request has a time limit** of `limits.request_timeout_s` (default 30 s). Routes that
-  wait for a result (`POST /v1/tasks` with `wait`, `GET .../result`) get `limits.max_wait_s`
-  (default 300 s) on top. A request that runs out of time returns 504.
+- **Every request has a time limit** of `limits.request_timeout_s` (default 30 s). Every
+  request to `/v1/tasks` (`POST` and `GET`) and to every path ending in `/result` gets
+  `limits.max_wait_s` (default 300 s) on top. A request that runs out of time returns 504.
 - **Only the leader serves.** A standby (or a leader that is shutting down) answers every `/v1`
   route and `/metrics` with 503 `not the leader (standby or shutting down)`. Put the servers
   behind a load balancer that routes on `/readyz`.
@@ -71,10 +75,10 @@ The body of `POST /v1/tasks` and each element of a batch's `tasks`. Every field 
 | `pool` | string | `"default"` | Target pool. Must exist (404) and be allowed for the caller (403). |
 | `kind` | string | `"default"` | Free-form label passed to the worker (at most `max_kind_len`). |
 | `priority` | `"critical"`, `"high"`, `"normal"`, `"low"` | `"normal"` | Priority class. |
-| `key` | string | – | Unique key: deduplicates submissions and names the task for dependencies and the `by-key` routes (at most `max_key_len`). |
+| `key` | string | – | Unique key: deduplicates submissions and names the task for dependencies and the `by-key` routes (at most `max_key_len`). Keys of the form `<prefix>@<UTC time, RFC 3339>` (for example `report@2026-01-01T03:00:00Z`) are reserved for recurring occurrences and rejected with 400. |
 | `deadline_in_s` / `deadline_unix_ns` | number / integer | – | Deadline, relative or absolute. Raises urgency as it approaches. |
 | `start_in_s` / `start_unix_ns` | number / integer | – | Fixed start time, relative or absolute ([fixed starts](../concepts/fixed-starts.md)). |
-| `tolerance_s` | number | `1` | How late a fixed start may begin; `0` is allowed. |
+| `tolerance_s` | number | `1` | How late a fixed start may begin; `0` is allowed. Requires `start_in_s` or `start_unix_ns`. |
 | `on_miss` | `"run_late"`, `"skip"`, `"fail"` | `"run_late"` | What happens when a fixed start misses its window. |
 | `duration_hint_s` | number | pool's `default_duration_s` | Expected run time, used for reservations and hold leads. |
 | `timeout_s` | number | none | Per-attempt timeout; the worker's lease is aborted when it expires. |
@@ -82,7 +86,7 @@ The body of `POST /v1/tasks` and each element of a batch's `tasks`. Every field 
 | `after` | array | `[]` | Tasks that must **succeed** first: strings are keys; numbers or `{"id": "..."}` are ids. |
 | `deps` | array | `[]` | `{"key": "..."}` or `{"id": "..."}`, with optional `"cond"`: `"on_success"` (default), `"on_complete"`, `"on_failure"`. |
 | `resources` | object | `{}` | `{"<resource>": units}` acquired for each attempt. At most `max_resources` entries. |
-| `tags` | object | `{}` | String labels passed to the worker. At most `max_tags`, each value at most `max_tag_len`. |
+| `tags` | object | `{}` | String labels passed to the worker. At most `max_tags`; each key and each value at most `max_tag_len`. Keys starting with `cronoq.` are reserved. |
 | `tenant` | string | – | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
 | `labels` | object | `{}` | Worker labels the task requires: it runs only on workers that registered with all of them ([Worker labels](../concepts/labels.md)). Same limits as `tags`. |
 | `wait` | bool | `false` | `POST /v1/tasks` only: respond when the task has finished. Rejected in batches. |
@@ -104,8 +108,8 @@ curl -s localhost:7071/v1/tasks -H "authorization: Bearer $CLIENT_TOKEN" \
 ```
 
 `duplicate` is `true` when a task with the same `key` is already known; `id` is then the
-existing task's id and nothing new is enqueued. The response is sent after the task is durably
-stored when Postgres is configured.
+existing task's id and nothing new is enqueued. With a durable store (Postgres or SQLite), the
+response is sent after the task is stored.
 
 With `"wait": true` the response also carries the [result](#result-object):
 
@@ -182,8 +186,9 @@ GET /v1/tasks?pool=default,reports&status=running,failed&limit=50
 | `limit` | `100` | Page size, at most `limits.max_list`. |
 
 `next_after` is present when more tasks follow. With shards, the list covers every shard, and
-`unavailable_shards` (present when needed, also on `/v1/workers`, `/v1/recurring` and
-`/v1/snapshot`) names shards that could not be reached. Live tasks come from the scheduler. Finished
+`unavailable_shards` names shards that could not be reached. It is present only when a shard
+was missing, on this route and on `/v1/workers`, `/v1/recurring`, the task-detail routes and the
+result routes; `/v1/snapshot` always includes it (empty when every shard answered). Live tasks come from the scheduler. Finished
 tasks come from the store, or, without one, from the bounded info cache, so only the most
 recent ones are listed. A page is not an atomic snapshot: a task that finishes while the page is
 built can be missing from it.
@@ -218,7 +223,8 @@ occurrence.
 
 `false` when the task already finished. Cancelling a running task aborts the worker's lease and
 cancels its handler. Dependents on an `on_success` or `on_failure` edge end as `skipped`;
-`on_complete` dependents proceed. With Postgres, the cancellation is durable before the response is sent.
+`on_complete` dependents proceed. With a durable store (Postgres or SQLite), the cancellation
+is stored before the response is sent.
 
 ## `GET /v1/tasks/{id}/result` and `GET /v1/tasks/by-key/{key}/result`
 
@@ -231,8 +237,8 @@ curl -s "localhost:7071/v1/tasks/17/result?timeout_s=60" -H "authorization: Bear
 
 Returns a [result object](#result-object), or 504 `task is still running; wait again or poll`.
 Results of finished tasks remain available while the leader's output cache
-(`outputs.cache_entries`, `outputs.cache_bytes`) or the Postgres store (`keep_finished_s`)
-still holds them.
+(`outputs.cache_entries`, `outputs.cache_bytes`) or the durable store (Postgres or SQLite,
+`store.keep_finished_s`) still holds them.
 
 ### Result object
 
@@ -252,7 +258,7 @@ still holds them.
 ## `GET /v1/snapshot`
 
 ```json
-{"live_tasks": 12, "running": 4, "pending": 8, "workers_connected": 2,
+{"live_tasks": 12, "running": 4, "pending": 8, "workers_connected": 2, "unavailable_shards": [],
  "pools": [{"name": "default", "capacity": 4, "busy": 4, "held": 0, "desired": 6,
             "pending": 8, "pending_by_class": [0, 2, 6, 0], "reservations": 0,
             "dispatched": 120, "succeeded": 118, "failed": 1,
@@ -272,6 +278,7 @@ still holds them.
 |---|---|
 | `live_tasks`, `running`, `pending` | Tasks not yet finished; of those, running and waiting. |
 | `workers_connected` | Remote worker streams across all pools. |
+| `unavailable_shards` | Shards that could not be reached; their part is missing from the response. |
 | `pools[].capacity` | Worker slots (sum of the slots of connected workers). |
 | `pools[].busy`, `held`, `desired` | Busy slots; slots held idle for an upcoming fixed start; the autoscaler's target. |
 | `pools[].pending`, `pending_by_class` | Waiting tasks, total and by class (critical, high, normal, low). |
@@ -312,10 +319,10 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 |---|---|---|
 | 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle, invalid id. |
 | 401 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, or the pool is outside their scope. |
+| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off and the `Host` is not a loopback name. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
-| 409 | `FAILED_PRECONDITION` | Fixed-start reservation conflict. |
+| 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
 | 413 | – | Body larger than `limits.max_http_body_bytes`. |
 | 415 | – | Missing or wrong `content-type`. |
 | 429 | `RESOURCE_EXHAUSTED` | Pool (`max_pending`) or server (`max_pending_total`) queue full. Retry with backoff. |

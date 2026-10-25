@@ -47,8 +47,9 @@ urgency of one that is less late.
 
 ## Choosing values
 
-- Give a `duration_hint` when you know it; otherwise the first tasks of a `kind` use the pool
-  default until cronoq has observed completions.
+- Give a `duration_hint` when you know it; otherwise the first tasks of a `kind` use the pool's
+  learned median run time (or `default_duration` if nothing in the pool has completed yet) until
+  cronoq has observed completions of that kind.
 - Deadlines are about *finishing*. If something must *start* at a given time, use a
   [fixed start](fixed-starts.md).
 - To get more capacity when deadlines are at risk, set per-class wait SLOs in the pool's

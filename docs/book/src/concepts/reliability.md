@@ -93,7 +93,8 @@ ends.
 - a queued, blocked or retrying task is removed;
 - a running attempt is aborted (the cancellation token fires and the future is dropped; remote
   workers get `Abort`);
-- dependents whose edge requires success are `Skipped`.
+- dependents attached with an on-success or on-failure edge are `Skipped`; dependents attached
+  with an on-complete edge become eligible.
 
 ## Shutdown and dropped schedulers
 
@@ -114,7 +115,7 @@ server: `output_available = false`): the task did succeed, but its result is gon
 ## Dead letters
 
 Tasks that end as `DeadLettered` or `Failed` keep their final message, available through
-status events, `Wait` results and (with Postgres) the database. Monitor
+status events, `Wait` results and (with a SQLite or Postgres store) the store. Monitor
 `cronoq_tasks_total{status="dead_lettered"}` to catch systematic failures.
 
 ## Recovery after a crash
