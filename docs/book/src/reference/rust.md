@@ -32,7 +32,7 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 | `events_capacity(n)` | 4096 | Broadcast buffer of `events()`; slow subscribers lose the oldest events. |
 | `max_store_outage(Duration)` | 5 min | How long a store may report `StoreError::Unavailable` before the scheduler stops. |
 | `drop_grace(Duration)` | 5 s | Grace for running attempts when every handle is dropped without `shutdown`. |
-| `output_cache(n)` | 1024 | Recent outputs kept for handles attached after success (0 disables). |
+| `output_cache(n)` | 1024 | Recent results kept for handles attached after a task finished: outputs, and the messages of tasks that did not succeed (0 disables). |
 | `configure(FnOnce(&mut CoreConfig))` | – | Engine-wide settings: bounds, retention, metrics window, seed. |
 | `build().await` | – | Start on the current tokio runtime (waits for leadership with a persistent store). |
 | `build_blocking()` | – | Start a `BlockingScheduler` on its own runtime thread. |

@@ -190,8 +190,9 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         self.pipeline.drop_grace = d;
         self
     }
-    /// How many recent outputs are kept for handles attached after a task succeeded, e.g.
-    /// duplicate submissions (default 1024; 0 disables). Stores can also serve older ones.
+    /// How many recent results are kept for handles attached after a task finished, e.g.
+    /// duplicate submissions: outputs of tasks that succeeded and messages of tasks that ended
+    /// otherwise (default 1024; 0 disables). Stores can also serve older outputs.
     pub fn output_cache(mut self, n: usize) -> Self {
         self.pipeline.output_cache = n;
         self

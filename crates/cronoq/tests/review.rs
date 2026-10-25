@@ -393,6 +393,31 @@ async fn duplicate_of_succeeded_task_gets_output() {
     assert_eq!(*h3.await.unwrap(), 10);
 }
 
+// --- A handle attached after a task failed carries the failure's message.
+#[tokio::test]
+async fn late_handle_of_failed_task_gets_its_message() {
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 1).executor_fn(|_c, _x: Arc<u64>| async move {
+                Err::<u64, _>(TaskError::permanent("bad input"))
+            }),
+        )
+        .build()
+        .await
+        .unwrap();
+    let h = s.submit(Task::new(1).key("k")).await.unwrap();
+    let first = h.await;
+    assert!(
+        matches!(&first, Err(TaskFailure::Ended { message, .. }) if &**message == "bad input"),
+        "{first:?}"
+    );
+    let late = s.handle("k").await.unwrap().unwrap().await;
+    assert!(
+        matches!(&late, Err(TaskFailure::Ended { status: TaskStatus::Failed, message }) if &**message == "bad input"),
+        "{late:?}"
+    );
+}
+
 #[tokio::test]
 async fn output_comes_from_store_when_not_cached() {
     let store = Arc::new(ScriptedStore::default());

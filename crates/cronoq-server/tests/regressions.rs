@@ -958,7 +958,7 @@ async fn worker_failure_messages_are_sanitized() {
     assert!(
         r.message.contains("bad byte \u{FFFD} in input"),
         "{}",
-        &r.message[..40]
+        r.message.chars().take(40).collect::<String>()
     );
     assert!(r.message.len() <= 8192);
     s.stop().await;
