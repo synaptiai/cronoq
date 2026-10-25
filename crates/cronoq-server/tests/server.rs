@@ -464,3 +464,20 @@ async fn occurrence_shaped_keys_are_reserved() {
     assert!(c.submit(submit(ok, false)).await.is_ok());
     server.stop().await;
 }
+
+#[tokio::test]
+async fn a_pool_min_bounds_desired_capacity_without_inventing_workers() {
+    let s = TestServer::start("[[pools]]\nname = \"default\"\nmin = 2\nmax = 8\n").await;
+    let mut desired = None;
+    for _ in 0..200 {
+        let snap = s.snapshot().await;
+        desired = snap["pools"][0]["desired"].as_u64();
+        if desired == Some(2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(desired, Some(2), "an idle pool asks for its minimum");
+    assert_eq!(s.capacity().await, 0, "no worker is connected");
+    s.stop().await;
+}

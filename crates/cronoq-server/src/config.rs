@@ -1110,9 +1110,8 @@ impl PoolSection {
 
     /// Engine configuration. Assumes [`Config::validate`] passed.
     pub fn to_pool_config(&self, limits: &LimitsConfig) -> PoolConfig {
+        // Capacity comes from connected workers; `min` bounds only the desired capacity.
         let mut c = PoolConfig::new(self.name.as_str()).workers(self.min, 0, self.max);
-        c.min_workers = 0; // capacity comes from connected workers
-        c.initial_workers = 0;
         c.lease_ttl = Some(Duration::from_secs_f64(self.lease_ttl_s));
         c.bounds.max_pending = Some(self.max_pending.unwrap_or(limits.max_pending_per_pool));
         c.overflow = self.overflow.into();
