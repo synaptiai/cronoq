@@ -212,8 +212,7 @@ First public release. No 0.1.0 was published.
 - Documentation book with concepts, use cases, guides, a benefits and decision guide, and
   complete configuration, HTTP, gRPC, metrics, Python, Rust, Go, TypeScript and error references.
 - Examples, a distroless container image, CI with deterministic simulation, fuzzing and
-  benchmark gates, wheel tests on Linux x86_64, macOS (Intel and Apple silicon) and Windows x64,
-  and a release pipeline for crates.io, PyPI, GitHub Packages (the TypeScript SDK, with a
+  benchmark gates, wheel tests on every platform a wheel is built for, and a release pipeline for crates.io, PyPI, GitHub Packages (the TypeScript SDK, with a
   provenance attestation), GitHub releases, GHCR images and OCI Helm charts.
 
 ### Security

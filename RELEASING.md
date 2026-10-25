@@ -6,8 +6,9 @@ installs and tests the Python wheels on Linux, macOS and Windows, and, once thos
 publishes:
 
 - Rust crates to crates.io (`cronoq-core`, `cronoq`, `cronoq-proto`, `cronoq-store-postgres`,
-  `cronoq-store-sqlite`, `cronoq-server`, `cronoq-cli`, in dependency order; crates with
-  `publish = false` are skipped);
+  `cronoq-store-sqlite`, `cronoq-server`, `cronoq-cli`), one at a time in dependency order.
+  Crates with `publish = false` and versions already on crates.io are skipped, and a publish
+  refused by crates.io's limit on new crates waits 10 minutes and tries again;
 - Python wheels (Linux x86_64/aarch64, macOS x86_64/arm64, Windows x64/arm64) and the sdist to
   PyPI as `cronoq`;
 - the TypeScript SDK to GitHub Packages as `@synaptiai/cronoq`, with a provenance attestation;

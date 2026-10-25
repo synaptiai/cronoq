@@ -117,6 +117,8 @@ More: [Python quickstart](https://synaptiai.github.io/cronoq/guides/python-quick
 pip install "cronoq[client]"
 ```
 
+The extra installs `grpcio`, which has no prebuilt wheel for Windows on arm64.
+
 ```python
 import os
 from cronoq.client import CancelTask, Client, Reject, Worker, task
