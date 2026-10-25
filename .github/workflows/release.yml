@@ -226,10 +226,47 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
         if: env.BOOTSTRAP_TOKEN == ''
         id: auth
-      # Publishes in dependency order; crates with `publish = false` are skipped.
-      - run: cargo publish --workspace
+      # One crate at a time, in dependency order (crates with `publish = false` are skipped).
+      # crates.io limits how fast new crates can be created, so a rate-limited publish waits and
+      # tries again, and versions already on crates.io are skipped, so a re-run finishes the job.
+      - name: Publish crates
+        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || env.BOOTSTRAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          crates=$(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, sys
+          ws = {p["name"]: p for p in json.load(sys.stdin)["packages"] if p.get("publish") is None}
+          deps = {n: {d["name"] for d in p["dependencies"] if d["name"] in ws and d["kind"] != "dev"} for n, p in ws.items()}
+          done = []
+          while len(done) < len(ws):
+              ready = sorted(n for n in ws if n not in done and deps[n] <= set(done))
+              if not ready:
+                  sys.exit("dependency cycle between workspace crates")
+              done += ready
+          print(" ".join(done))')
+          for crate in $crates; do
+            if curl -sf -A "cronoq-release (github.com/synaptiai/cronoq)" \
+                "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
+              echo "$crate $version is already on crates.io"
+              continue
+            fi
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if cargo publish -p "$crate" 2> publish.log; then
+                cat publish.log
+                continue 2
+              fi
+              cat publish.log
+              if ! grep -qiE "429|too many requests|rate limit" publish.log; then
+                exit 1
+              fi
+              echo "crates.io rate limit; waiting 10 minutes (attempt $attempt)"
+              sleep 600
+            done
+            echo "$crate: still rate limited after 10 attempts"
+            exit 1
+          done
 
   container:
     # Images (and the charts, which wait for them) are pushed only after the wheel tests pass.
