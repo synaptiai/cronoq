@@ -1,21 +1,35 @@
 # TypeScript API
 
-The TypeScript SDK (npm package `cronoq`, in `sdks/typescript`) is a client for a
+The TypeScript SDK (npm package `@synaptiai/cronoq`, in `sdks/typescript`) is a client for a
 [cronoq server](../guides/server-quickstart.md), built on Connect-ES. It runs in two places:
 
 | Import | Transport | What works |
 |---|---|---|
-| `cronoq/node` | gRPC over HTTP/2 (Node 22 or newer) | The client and workers. |
-| `cronoq/web` | gRPC-Web from a browser | The client: unary calls and `watch`. Workers need a bidirectional stream, which gRPC-Web cannot carry. |
+| `@synaptiai/cronoq/node` | gRPC over HTTP/2 (Node 22 or newer) | The client and workers. |
+| `@synaptiai/cronoq/web` | gRPC-Web from a browser | The client: unary calls and `watch`. Workers need a bidirectional stream, which gRPC-Web cannot carry. |
+
+The package is published to GitHub Packages, whose npm registry needs a GitHub token to install
+any package, public ones included. Create a personal access token (classic) with the
+`read:packages` scope, put it in `GITHUB_TOKEN`, and point the `@synaptiai` scope at the
+registry:
 
 ```sh
-npm install cronoq
+echo '@synaptiai:registry=https://npm.pkg.github.com' >> .npmrc
+echo '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' >> .npmrc
+npm install @synaptiai/cronoq
+```
+
+Each [GitHub release](https://github.com/synaptiai/cronoq/releases) also carries the package
+tarball, which installs without a token:
+
+```sh
+npm install https://github.com/synaptiai/cronoq/releases/download/v0.2.0/synaptiai-cronoq-0.2.0.tgz
 ```
 
 ## Submitting and waiting
 
 ```ts
-import { connect, text } from "cronoq/node";
+import { connect, text } from "@synaptiai/cronoq/node";
 
 const c = connect("http://127.0.0.1:7070", { token: process.env.CRONOQ_TOKEN });
 const sub = await c.submit({ payload: { to: "ada" }, key: "welcome-ada", priority: "high" });
@@ -88,7 +102,7 @@ the server exposes to CORS requests is visible.
 ## Workers (Node)
 
 ```ts
-import { runWorker } from "cronoq/node";
+import { runWorker } from "@synaptiai/cronoq/node";
 
 const stop = new AbortController();
 process.on("SIGTERM", () => stop.abort());
