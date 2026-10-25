@@ -542,9 +542,10 @@ cronoq.RunWorker(ctx, cronoq.WorkerOptions{Target: "https://cronoq:7070", Pool: 
 A gRPC client (generated stubs in `cronoqpb`) and a worker loop with slots, heartbeats, reconnects,
 draining and shard redirects; the handler's context ends when the server aborts the attempt.
 
-### TypeScript (`cronoq` on npm, `sdks/typescript`)
+### TypeScript (`@synaptiai/cronoq` on GitHub Packages, `sdks/typescript`)
 ```ts
-const c = connect("https://cronoq:7070", { token });             // cronoq/node; connectWeb in cronoq/web
+// connect from @synaptiai/cronoq/node; connectWeb from @synaptiai/cronoq/web
+const c = connect("https://cronoq:7070", { token });
 const sub = await c.submitAndWait({ payload: { to: "ada" }, key: "job-1" }, 30);
 await runWorker({ target: "https://cronoq:7070", pool: "default", slots: 8, token, signal }, (lease) => handle(lease.json()));
 ```

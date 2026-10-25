@@ -174,9 +174,12 @@ First public release. No 0.1.0 was published.
 
 #### TypeScript SDK (`sdks/typescript`)
 
-- One client for Node (`cronoq/node`, gRPC over HTTP/2) and browsers (`cronoq/web`, gRPC-Web):
-  submit (one task, atomic batches, or submit-and-wait), get, wait for, cancel, list and watch
-  tasks, and read snapshots. Task ids are `bigint`s; errors carry the gRPC code and metadata.
+- Published to GitHub Packages as `@synaptiai/cronoq`; each GitHub release also carries the
+  package tarball.
+- One client for Node (`@synaptiai/cronoq/node`, gRPC over HTTP/2) and browsers
+  (`@synaptiai/cronoq/web`, gRPC-Web): submit (one task, atomic batches, or submit-and-wait),
+  get, wait for, cancel, list and watch tasks, and read snapshots. Task ids are `bigint`s;
+  errors carry the gRPC code and metadata.
 - `runWorker` (Node) serves a pool with slots, heartbeats, reconnects with backoff, draining
   when its signal aborts, aborts that abort the handler's signal, and the attempt number as a
   fencing token. It follows its pool to the right shard under the same rules as the other
@@ -207,7 +210,8 @@ First public release. No 0.1.0 was published.
   complete configuration, HTTP, gRPC, metrics, Python, Rust and error references.
 - Examples, a distroless container image, CI with deterministic simulation, fuzzing and
   benchmark gates, wheel tests on every platform, and a release pipeline for crates.io, PyPI,
-  npm (with provenance), GitHub releases, GHCR images and OCI Helm charts.
+  GitHub Packages (the TypeScript SDK, with a provenance attestation), GitHub releases, GHCR
+  images and OCI Helm charts.
 
 ### Security
 

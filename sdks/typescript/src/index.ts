@@ -1,6 +1,6 @@
 /**
- * TypeScript client for a cronoq server. Import from `cronoq/node` in Node (gRPC over HTTP/2,
- * clients and workers) or from `cronoq/web` in browsers (gRPC-Web, clients only).
+ * TypeScript client for a cronoq server. Import from `@synaptiai/cronoq/node` in Node (gRPC over HTTP/2,
+ * clients and workers) or from `@synaptiai/cronoq/web` in browsers (gRPC-Web, clients only).
  *
  * @module
  */

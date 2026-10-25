@@ -166,7 +166,7 @@ shard, and when `ctx` ends drains running handlers for up to `DrainTimeout` (30 
 ## TypeScript workers
 
 The [TypeScript SDK](../reference/typescript.md#workers-node) runs workers in Node with
-`runWorker` from `cronoq/node`:
+`runWorker` from `@synaptiai/cronoq/node`:
 
 ```ts
 await runWorker(

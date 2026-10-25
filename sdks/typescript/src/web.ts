@@ -1,9 +1,9 @@
 /**
  * Browser entry point: gRPC-Web, for clients (unary calls and `watch`). The server must allow
- * the page's origin in `[server.grpc_web]`. Workers need `cronoq/node`.
+ * the page's origin in `[server.grpc_web]`. Workers need `@synaptiai/cronoq/node`.
  *
  * ```ts
- * import { connectWeb } from "cronoq/web";
+ * import { connectWeb } from "@synaptiai/cronoq/web";
  * const c = connectWeb("https://cronoq.example.com:7070", { token });
  * for await (const e of c.watch({ pools: ["default"] })) console.log(e.id, e.status);
  * ```
