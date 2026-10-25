@@ -28,7 +28,8 @@ This page describes **worker protocol version 3**.
   accepting it, so behind a load balancer that sends connections to every replica, a retry on a
   new connection can reach the leader. A load balancer that routes on `/readyz` sends
   connections to the leader only.
-- **Deadlines.** Every unary call is bounded by `limits.max_wait_s + limits.request_timeout_s`.
+- **Deadlines.** Every unary call is bounded by `limits.max_wait_s + limits.request_timeout_s`;
+  a call that runs longer fails with `CANCELLED`.
   `Submit` with `wait` and `Wait` also stop waiting after `limits.max_wait_s` (or the shorter
   timeout the call asks for).
 
@@ -276,8 +277,9 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `FAILED_PRECONDITION` | Fixed-start reservation conflict; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, without credentials configured, the request does not name a loopback host. |
+| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
 | `DEADLINE_EXCEEDED` | A wait timed out while the task is still running, or no `Register` within 10 s. |
+| `CANCELLED` | The call ran longer than `limits.max_wait_s + limits.request_timeout_s`, or the client cancelled it. |
 | `UNAVAILABLE` | Not the leader, shutting down, or the store is unavailable. Retry with backoff. |
 | `DATA_LOSS` | A `Watch` stream fell behind and events were dropped. |
 | `UNIMPLEMENTED` | A plain gRPC request over HTTP/1.1 (with gRPC-Web enabled, HTTP/1.1 carries only gRPC-Web). |

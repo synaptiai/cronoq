@@ -92,7 +92,7 @@ return database messages to clients.
 |---|---|---|---|
 | `INVALID_ARGUMENT` | 400 | no | Malformed request or spec. |
 | `UNAUTHENTICATED` | 401 | no | Missing or unknown credentials. |
-| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it. |
+| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
 | `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
@@ -100,7 +100,8 @@ return database messages to clients.
 | `RESOURCE_EXHAUSTED` | 429 | yes, with backoff | Queue bounds reached. |
 | `INTERNAL` | 500 | maybe | Unexpected server error. |
 | `UNAVAILABLE` | 503 | yes, with backoff | Not the leader, shutting down, store unavailable. |
-| `DEADLINE_EXCEEDED` | 504 | wait again | A wait timed out while the task is still running, or the request exceeded its time limit. |
+| `DEADLINE_EXCEEDED` | 504 | wait again | A wait timed out while the task is still running; over HTTP, also a request that exceeded its time limit. |
+| `CANCELLED` | – | maybe | A gRPC call ran longer than `limits.max_wait_s + limits.request_timeout_s`. |
 | `DATA_LOSS` | – | reconnect | A `Watch` stream fell behind. |
 
 Submissions with a `key` are idempotent while the original task is live, and after it finished

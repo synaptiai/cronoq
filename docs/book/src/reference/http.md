@@ -14,8 +14,8 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
   certificate mapped in `[[auth.certs]]`. The `admin` role passes every check. Without
   any `[[auth.tokens]]` or `[[auth.certs]]`, authentication is off and every request is treated
   as admin; the server only starts that way on loopback addresses unless `--insecure-no-auth`
-  is given. In that mode a request whose `Host` is not a loopback name or address (`localhost`,
-  `*.localhost`, `127.0.0.1`, `[::1]`) gets 403.
+  is given. In that mode, unless `--insecure-no-auth` is given, a request whose `Host` is not a
+  loopback name or address (`localhost`, `*.localhost`, any `127.x.x.x`, `[::1]`) gets 403.
 - **Pool scope.** A token or certificate with `pools = [...]` may only submit into those pools.
   Tasks in other pools look like they do not exist (404), so their ids and keys do not leak.
   Submitting a key that is already used by a task in a pool outside the scope returns 409.
@@ -319,7 +319,7 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 |---|---|---|
 | 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle, invalid id. |
 | 401 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off and the `Host` is not a loopback name. |
+| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
 | 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |

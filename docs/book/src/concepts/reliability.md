@@ -93,8 +93,8 @@ ends.
 - a queued, blocked or retrying task is removed;
 - a running attempt is aborted (the cancellation token fires and the future is dropped; remote
   workers get `Abort`);
-- dependents attached with an on-success or on-failure edge are `Skipped`; dependents attached
-  with an on-complete edge become eligible.
+- dependents attached with an on-success or on-failure edge are `Skipped`; for dependents attached
+  with an on-complete edge, that edge is satisfied.
 
 ## Shutdown and dropped schedulers
 

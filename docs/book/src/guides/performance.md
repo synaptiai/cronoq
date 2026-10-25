@@ -9,7 +9,7 @@
 | End-to-end in-process, no-op tasks, bulk submit | ~250 k tasks/s |
 | Sequential `submit().await` then `handle.await` | ~70 µs round trip |
 
-Dispatch cost is independent of backlog size (see [Architecture](../architecture.md)).
+Dispatch cost grows only with the logarithm of the backlog, with no rescans (see [Architecture](../architecture.md)).
 
 ## Tuning the library
 

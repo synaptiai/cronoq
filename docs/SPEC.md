@@ -183,7 +183,7 @@ pub enum MissPolicy { RunLate /*default*/, Skip, Fail }
                                                 │
          ┌────────────┬───────────┬────────────┼──────────────┐
       Succeeded    Failed     DeadLettered   Cancelled     Skipped / Missed / Shed
-   (terminal)  (permanent err) (attempts out)   (by user)    (dep cond / fixed miss / overload)
+   (terminal)  (permanent err) (attempts out) (user/executor) (dep cond / fixed miss / overload)
 ```
 
 Terminal statuses are retained in a compact table (`TaskId`/key → status, end time)
@@ -223,8 +223,10 @@ Within one class every non-deadline task ages at the same rate from its own arri
 **older ⇒ score ≥ younger, at every instant**, including after the cap (ties are broken
 by sequence). A plain FIFO per class therefore always has its best task at the head.
 
-Aging is measured from submission. A task released by its dependencies, or retried, keeps its
-original place in its class.
+Aging is measured from submission. In a FIFO lane, a task released by its dependencies, or
+retried, keeps its original place in its class. In a fair queue (§5.3) such a task gets a new
+start tag when it becomes ready; only tasks woken from a resource or label waiter queue keep
+their tag.
 
 Per pool, per class:
 - `lanes[c]`: a `VecDeque<(seq, Key)>` sorted by submission sequence, holding ready tasks
@@ -535,8 +537,8 @@ timeouts, lease expiry, token refill, the autoscale tick and recurring occurrenc
   changes take effect immediately.
 - **Store errors.** `StoreError::Unavailable` is transient: the commit is retried with
   capped exponential backoff while the engine keeps serving reads, for up to
-  `max_store_outage` (default 5 min). With other errors the scheduler fails after 5
-  consecutive failed commits; `Fenced` is fatal at once. On a fatal error the scheduler stops
+  `max_store_outage` (default 5 min). With other errors the scheduler fails on the
+  5th commit that fails that way since the last successful commit; `Fenced` is fatal at once. On a fatal error the scheduler stops
   and every waiting caller receives `Error::Store(..)`.
 - **Panics** in executors, scalers and stores are caught and reported instead of killing the
   driver; an executor panic fails its task permanently (a panic in a `run_worker` handler is
@@ -576,8 +578,8 @@ rebasing, fencing and handover, key reuse within a batch, dependencies on pruned
 missed starts after restart, batching-independent messages, output loading, listing finished
 tasks, id high-water marks after pruning, and restart without rerunning finished work.
 
-**Recovery** (all stores): load non-terminal tasks, schedules, and finished tasks that live
-tasks depend on. A task that was `Running` when the leader died counts that attempt as
+**Recovery** (all stores): load non-terminal tasks, schedules, and finished tasks that are
+within the store's retention window (default 1 h) or that live tasks depend on. A task that was `Running` when the leader died counts that attempt as
 lease-lost and is retried according to its policy (at-least-once); if its retry budget is then
 exhausted, it is dead-lettered. A recovered live task whose parent (by id or key) is no longer
 known treats that edge as satisfied, because a live child implies the edge was satisfied
@@ -781,11 +783,11 @@ HTTP gateway (axum): `POST|GET /v1/tasks`, `POST /v1/tasks:batch`, `GET|DELETE /
 only on the leader). Task ids are JSON
 strings; errors are `{"error": ..., "code": ...}` with a matching status (504 for a wait that
 timed out, 503 while standing by).
-Auth: static bearer tokens (config) and optional mTLS. Config: one TOML file, named by
-`--config` or `CRONOQ_CONFIG`; `--shard` or `CRONOQ_SHARD` picks the shard to serve. Secrets
+Auth: static bearer tokens (config) and optional mTLS. Config: an optional TOML file, named
+by `--config` or `CRONOQ_CONFIG` (without one the server runs on built-in defaults); `--shard` or `CRONOQ_SHARD` picks the shard to serve. Secrets
 are read from the environment variables that the config names (`token_env`, `url_env`; a
-Postgres store with neither `url` nor `url_env` reads `DATABASE_URL`). There are no other
-environment overrides.
+Postgres store with neither `url` nor `url_env` reads `DATABASE_URL`). Apart from `RUST_LOG`
+(the log filter), there are no other environment overrides.
 
 **Security.** Listeners default to 127.0.0.1, and non-loopback listeners require credentials
 unless `--insecure-no-auth` is given. Requests are authenticated before their body is read.

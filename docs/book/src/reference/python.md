@@ -272,7 +272,7 @@ output, or raises:
 |---|---|
 | `cronoq.Retryable(msg, retry_after=s)` or any other exception | Retryable failure. |
 | `cronoq.Permanent(msg)` | Permanent failure. |
-| `cronoq.client.Reject(reason)` | Hand the lease back unrun (`Nack`); the server offers it to another worker of the pool. If no worker has a free slot, the attempt fails as retryable and counts against the task's retries. |
+| `cronoq.client.Reject(reason)` | Hand the lease back unrun (`Nack`); the server offers it to another worker of the pool with the same labels that has a free slot and has not already refused it. If there is none, the attempt fails as retryable and counts against the task's retries. |
 | `cronoq.client.CancelTask(msg)` | End the task as `cancelled`. |
 
 The worker heartbeats each running lease every `lease_ttl / 3`. When the server aborts an

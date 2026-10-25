@@ -19,7 +19,7 @@ return.
 | **Graceful overload** | Bounded queues turn overload into backpressure (wait, reject or shed the least important work) instead of memory growth. | `shed` and `429` counts instead of out-of-memory incidents. | [Backpressure](concepts/backpressure.md) |
 | **Survives restarts and failover** | With a SQLite or Postgres store, accepted work, cancellations and schedules are durable; a standby takes over in seconds. | Kill the leader: work continues on the standby. | [Durability](concepts/durability.md) |
 | **Scheduling quality you can measure** | Every pool reports utilization, wait percentiles, priority adherence, fixed-start hit rate and cost, in OpenTelemetry and Prometheus. | Dashboards and alerts from day one. | [Metrics](concepts/metrics.md) |
-| **Negligible overhead** | About a million scheduling decisions per second per core, independent of backlog size. | Scheduler CPU stays a rounding error even for millisecond tasks. | [Performance](guides/performance.md) |
+| **Negligible overhead** | About a million scheduling decisions per second per core, growing only with the logarithm of the backlog. | Scheduler CPU stays a rounding error even for millisecond tasks. | [Performance](guides/performance.md) |
 
 ## Pick your starting point
 

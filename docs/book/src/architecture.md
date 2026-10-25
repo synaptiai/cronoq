@@ -51,9 +51,9 @@ Consequences:
 | Structure | Purpose | Cost |
 |---|---|---|
 | Slab of task entries | Task storage; queues hold 8-byte keys | O(1) insert/remove |
-| Per-class FIFO lane (sorted deque by sequence) | Ready tasks without deadlines | O(1) push/pop; O(n) reinsertion for retries (binary search, then insert into the deque) |
+| Per-class FIFO lane (sorted deque by sequence) | Ready tasks without deadlines, in pools without fairness | O(1) push/pop; O(n) reinsertion for retries (binary search, then insert into the deque) |
 | Per-class deadline queue (B-tree by latest start time) | Ready tasks with deadlines | O(log n) |
-| Per-class fair-share queue (B-tree by start tag) | Ready tasks in pools with fairness | O(log n) |
+| Per-class fair-share queue (B-tree by start tag) | Ready tasks without deadlines, in pools with fairness | O(log n) |
 | Due queue and pending holds | Fixed-start tasks at or near their start | O(log n) |
 | Reservation calendar (B-tree by start) | Admission of fixed starts | O(k log k) for k overlapping |
 | Resource waiter queues | Tasks parked on a resource, FIFO | O(1) amortized |
@@ -63,12 +63,12 @@ Consequences:
 | Retention table | Terminal statuses for late dependents and dedup | O(1) |
 | Window ring + log-linear histograms | Metrics | O(1) per event |
 
-**Dispatch** compares the heads of at most twelve queues (for each of the four classes: the FIFO
-lane, the deadline queue and, in pools with fairness, the fair-share queue), computing their
-effective scores lazily. Every task in a class ages at the same rate, so in a FIFO lane the oldest
-task is always the best of its lane. The deadline queue's head is the task with the earliest latest
-start time, and the fair-share queue's head is the task with the lowest start tag. No periodic
-rescoring is needed.
+**Dispatch** compares the heads of at most eight queues (for each of the four classes: the
+deadline queue and either the FIFO lane or, in pools with fairness, the fair-share queue),
+computing their effective scores lazily. Every task in a class ages at the same rate, so in a
+FIFO lane the oldest task is always the best of its lane. The deadline queue's head is the task
+with the earliest latest start time, and the fair-share queue's head is the task with the lowest
+start tag. No periodic rescoring is needed.
 
 ## Driver loop
 

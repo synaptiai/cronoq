@@ -43,15 +43,15 @@ it delay urgent work. If you want stronger mixing, raise `age_cap` (Rust:
 The time is measured from **submission**. A task released by its dependencies, or retried after
 a failure, keeps its original place in its class.
 
-## Why dispatch is constant-time
+## Why dispatch never rescans the backlog
 
 Within one class, every task ages at the same rate from its own submission time, so an older
 task always has a score at least as high as a younger one. A FIFO queue per class therefore
 always has its best task at the head. Deadline tasks live in a second per-class queue ordered by
-latest start time, and in pools with fair sharing, tenants' tasks live in a third per-class queue
-ordered by start tag. Dispatch compares at most twelve heads (four classes × three queues),
-computing their scores lazily. There is no periodic rescoring and no full-queue scan, so dispatch cost
-does not grow with the backlog.
+latest start time. In pools with fair sharing, tasks without deadlines live in a per-class
+fair-share queue ordered by start tag instead of the FIFO lane. Dispatch compares at most eight
+heads (four classes × two queues), computing their scores lazily. There is no periodic rescoring
+and no full-queue scan, so dispatch cost grows at most with the logarithm of the backlog.
 
 ## Measuring adherence
 

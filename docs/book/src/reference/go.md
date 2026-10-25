@@ -130,7 +130,7 @@ rejected token or an unknown pool.
 | `InitialBackoff`, `MaxBackoff` | 200 ms, 10 s | Reconnect delay bounds. |
 | `DrainTimeout` | 30 s | How long running handlers may finish after `ctx` ends. |
 | `InsecureRedirectHTTP` | `false` | Follow a shard redirect to plain `http://` on another host with the token. For trusted networks only. |
-| `MaxMessageBytes` | 64 MiB | Largest lease message accepted from the server. |
+| `MaxMessageBytes` | 64 MiB | Largest message sent or received. |
 | `DialOptions` | none | Extra `grpc.DialOption`s. |
 | `Logger` | `slog.Default()` | Receives the worker's log messages. |
 
