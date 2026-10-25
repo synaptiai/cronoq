@@ -178,7 +178,8 @@ First public release. No 0.1.0 was published.
   package tarball.
 - One client for Node (`@synaptiai/cronoq/node`, gRPC over HTTP/2) and browsers
   (`@synaptiai/cronoq/web`, gRPC-Web): submit (one task, atomic batches, or submit-and-wait),
-  get, wait for, cancel, list and watch tasks, and read snapshots. Task ids are `bigint`s; errors carry the gRPC code and metadata.
+  get, wait for, cancel, list and watch tasks, and read snapshots. Task ids are `bigint`s;
+  errors carry the gRPC code and metadata.
 - `runWorker` (Node) serves a pool with slots, heartbeats, reconnects with backoff, draining
   when its signal aborts, aborts that abort the handler's signal, and the attempt number as a
   fencing token. It follows its pool to the right shard under the same rules as the other
