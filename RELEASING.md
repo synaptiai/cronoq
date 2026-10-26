@@ -107,6 +107,12 @@ without publishing.
   release.
 - A partially published release (for example crates published, PyPI failed) can be completed by
   re-running the failed jobs of the same workflow run.
+- A re-run uses the workflow file of the tagged commit, so it cannot pick up a fix to a publish
+  step. If the TypeScript package failed to publish because of such a fix, merge the fix, re-run
+  any other failed publish jobs, then run the *Finish release* workflow on `main` with the tag and
+  the run's id (`gh workflow run finish-release.yml -f tag=vX.Y.Z -f run_id=<id>`). It publishes
+  the run's own package tarball and creates the GitHub release from the run's files, once every
+  crate is on crates.io. Don't move a tag once anything has been published from it.
 - Yank a broken crate with `cargo yank --version X.Y.Z <crate>`; on PyPI, yank the release from
   the project's management page; on GitHub Packages, delete the version from the
   package's page (GitHub refuses once a public version has more than 5,000 downloads).
