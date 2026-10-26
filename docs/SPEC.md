@@ -535,8 +535,9 @@ timeouts, lease expiry, token refill, the autoscale tick and recurring occurrenc
   their commit succeeds.
 - **Durable acknowledgements.** `submit`, `enqueue`, `cancel`, `add_recurring` and
   `remove_recurring` reply only after the batch holding their mutation is committed;
-  dispatches and status replies are also released after the commit. Aborts and capacity
-  changes take effect immediately.
+  dispatches, status events and the handles waiting on them are also released after the
+  commit. Aborts and capacity changes take effect immediately. `status()` reads the engine's
+  current state, so it can show a terminal status shortly before that status is committed.
 - **Store errors.** `StoreError::Unavailable` is transient: the commit is retried with
   capped exponential backoff while the engine keeps serving reads, for up to
   `max_store_outage` (default 5 min). With other errors the scheduler fails on the

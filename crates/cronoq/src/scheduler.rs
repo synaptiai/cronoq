@@ -463,7 +463,9 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         self.call(|reply| Cmd::Cancel { target, reply }).await?
     }
 
-    /// Current status of a task (live or recently finished).
+    /// Current status of a task (live or recently finished), as the engine holds it. With a
+    /// durable store this can report a terminal status shortly before that status is committed;
+    /// a [`TaskHandle`] resolves, and [`Scheduler::events`] report the change, only after it is.
     pub async fn status(&self, target: impl Into<TaskRef>) -> Result<Option<TaskStatus>, Error> {
         let target = target.into();
         self.call(|reply| Cmd::Status { target, reply }).await
