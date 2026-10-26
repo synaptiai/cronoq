@@ -7,7 +7,7 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-25
+## [0.2.0] - 2026-10-26
 
 First public release. No 0.1.0 was published.
 
