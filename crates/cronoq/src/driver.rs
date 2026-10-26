@@ -118,6 +118,8 @@ enum Feedback<O> {
         capacity: u32,
         /// Responses older than the newest applied one are ignored.
         seq: u64,
+        /// The answer to the request made at start.
+        initial: bool,
     },
 }
 
@@ -293,6 +295,8 @@ pub(crate) struct Driver<P, O> {
     other_failures: u32,
     scale_seq: Vec<u64>,
     scale_applied: Vec<u64>,
+    /// Pools whose unlabeled capacity was reported (`set_capacity`) since start.
+    reported: Vec<bool>,
     metrics: Metrics,
     next_gauge: Instant,
     shutdown: Option<Instant>,
@@ -358,6 +362,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             other_failures: 0,
             scale_seq: vec![0; n],
             scale_applied: vec![0; n],
+            reported: vec![false; n],
             metrics: Metrics::new(),
             next_gauge: Instant::now(),
             shutdown: None,
@@ -408,6 +413,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 pool,
                 capacity,
                 seq,
+                initial,
             });
         });
     }
@@ -669,6 +675,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             }
             Cmd::SetCapacity { pool, capacity } => {
                 if !closed {
+                    self.reported[pool.0 as usize] = true;
                     self.core.set_capacity(now, pool, capacity);
                 }
             }
@@ -678,6 +685,10 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 capacity,
             } => {
                 if !closed {
+                    // Scaler answers set the unlabeled group only.
+                    if labels.is_empty() {
+                        self.reported[pool.0 as usize] = true;
+                    }
                     self.core.set_group_capacity(now, pool, &labels, capacity);
                 }
             }
@@ -981,9 +992,14 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 pool,
                 capacity,
                 seq,
+                initial,
             } => {
                 let i = pool.0 as usize;
-                if self.shutdown.is_none() && seq > self.scale_applied[i] {
+                // The start-up answer (an external pool starts empty) can arrive after workers
+                // reported their capacity; it describes the pool before them, so it is dropped
+                // instead of erasing theirs.
+                let superseded = initial && self.reported[i];
+                if self.shutdown.is_none() && seq > self.scale_applied[i] && !superseded {
                     self.scale_applied[i] = seq;
                     self.core.set_capacity(now, pool, capacity);
                 }

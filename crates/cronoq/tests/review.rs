@@ -626,6 +626,47 @@ async fn stale_scale_responses_are_ignored() {
     assert_eq!(cap, last, "stale response overrode capacity");
 }
 
+// --- The first answer of an external scaler does not erase capacity reported before it
+// arrives (workers that registered while a scaler webhook was still answering).
+struct SlowExternal;
+
+#[async_trait]
+impl Scaler for SlowExternal {
+    async fn scale_to(&self, _pool: &str, _desired: u32) -> Result<u32, ScaleError> {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        Err(ScaleError::External)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn initial_external_scale_keeps_reported_capacity() {
+    let pool = |name: &str, initial| {
+        Pool::new(name)
+            .workers(0, initial, 8)
+            .scaler(SlowExternal)
+            .executor_fn(|_c, x: Arc<u64>| async move { Ok::<_, TaskError>(*x) })
+    };
+    let s: Sched = Scheduler::builder()
+        .pool(pool("reported", 0))
+        .pool(pool("silent", 4))
+        .pool(pool("labeled", 4))
+        .build()
+        .await
+        .unwrap();
+    s.set_capacity("reported", 3).await.unwrap();
+    for pool in ["reported", "labeled"] {
+        s.set_group_capacity(pool, &[("gpu", "a100")], 2)
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snap = s.snapshot().await.unwrap();
+    assert_eq!(snap.pools[0].capacity, 5, "the scaler's answer erased it");
+    // Without a report for the unlabeled workers, an external pool still starts without them.
+    assert_eq!(snap.pools[1].capacity, 0);
+    assert_eq!(snap.pools[2].capacity, 2);
+}
+
 // --- Builder order does not matter for start options.
 #[test]
 fn start_options_are_order_independent() {

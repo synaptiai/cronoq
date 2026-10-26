@@ -7,11 +7,6 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
-### Added
-
-- `cronoq_server::run_with_listeners` serves on listeners the caller has already bound, so their
-  addresses are known before the server becomes the leader.
-
 ## [0.2.0] - 2026-10-26
 
 First public release. No 0.1.0 was published.
@@ -142,6 +137,8 @@ First public release. No 0.1.0 was published.
 - Rust worker client (`worker::run_worker`) with slot enforcement, heartbeats, panic isolation,
   reconnect with backoff, TLS/mTLS and graceful drain.
 - `--check` to validate configuration, `--print-proto` to print the API.
+- `cronoq_server::run` and `run_with_listeners`, which serves on listeners the caller has already
+  bound, to embed the server in a Rust program.
 
 #### Command-line tool (`cronoq-cli`)
 
