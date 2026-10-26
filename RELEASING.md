@@ -64,13 +64,19 @@ by a tag with that prefix).
      `deploy/helm/cronoq-operator/Chart.yaml`.
 3. In `CHANGELOG.md`, rename `## [Unreleased]` content into a new `## [X.Y.Z] - YYYY-MM-DD`
    section, leave an empty `## [Unreleased]`, and update the comparison links at the bottom.
-4. Commit (`Release vX.Y.Z`), open a pull request, and merge it after CI passes.
-5. Tag and push:
+4. Commit (`Release vX.Y.Z`), open a pull request, and merge it after CI passes. Before
+   tagging, run a [dry run](#dry-run) on the merge commit, and run the server and runtime test
+   suites repeatedly under parallel load to catch timing-dependent failures, for example:
+
+   ```sh
+   for i in $(seq 20); do cargo test -q -p cronoq -p cronoq-server -- --test-threads=16 || break; done
+   ```
+
+5. Tag and push the release tag alone:
 
    ```sh
    git tag -s vX.Y.Z -m "cronoq vX.Y.Z"
-   git tag -s sdks/go/vX.Y.Z -m "cronoq Go SDK vX.Y.Z"
-   git push origin vX.Y.Z sdks/go/vX.Y.Z
+   git push origin vX.Y.Z
    ```
 
 6. Watch the release workflow. It fails before publishing anything if the tag does not match
@@ -80,6 +86,14 @@ by a tag with that prefix).
    those tests. The release workflow does not run the Go and TypeScript test suites; those run
    in CI, so `main` must be green first. It also refuses to publish a TypeScript package version
    that is already published.
+7. Only after every job of the release workflow has succeeded, tag and push the Go SDK. The Go
+   module proxy records a version the first time anyone fetches it, so the tag cannot be moved
+   afterwards:
+
+   ```sh
+   git tag -s sdks/go/vX.Y.Z -m "cronoq Go SDK vX.Y.Z" vX.Y.Z^{commit}
+   git push origin sdks/go/vX.Y.Z
+   ```
 
 ## Dry run
 

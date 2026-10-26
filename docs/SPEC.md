@@ -195,7 +195,9 @@ Outputs (`O`) of succeeded tasks are kept in a bounded in-memory cache in the ru
 (`output_cache`, default 1024 entries) and, with a durable store, in the store
 (`Store::load_output`). Handles to tasks that already succeeded (duplicate submissions,
 `Scheduler::handle`) read the cache first and then the store; if neither has the output the
-handle resolves to `TaskFailure::OutputUnavailable`.
+handle resolves to `TaskFailure::OutputUnavailable`. The same cache keeps the messages of tasks
+that ended without succeeding, so a handle attached later resolves to `TaskFailure::Ended` with
+the task's own message.
 
 ---
 
@@ -533,8 +535,9 @@ timeouts, lease expiry, token refill, the autoscale tick and recurring occurrenc
   their commit succeeds.
 - **Durable acknowledgements.** `submit`, `enqueue`, `cancel`, `add_recurring` and
   `remove_recurring` reply only after the batch holding their mutation is committed;
-  dispatches and status replies are also released after the commit. Aborts and capacity
-  changes take effect immediately.
+  dispatches, status events and the handles waiting on them are also released after the
+  commit. Aborts and capacity changes take effect immediately. `status()` reads the engine's
+  current state, so it can show a terminal status shortly before that status is committed.
 - **Store errors.** `StoreError::Unavailable` is transient: the commit is retried with
   capped exponential backoff while the engine keeps serving reads, for up to
   `max_store_outage` (default 5 min). With other errors the scheduler fails on the

@@ -159,10 +159,49 @@ async fn bind(what: &str, addr: SocketAddr) -> anyhow::Result<TcpListener> {
         .with_context(|| format!("binding the {what} listener on {addr}"))
 }
 
+/// Take over a listener the caller bound.
+fn adopt(l: std::net::TcpListener) -> anyhow::Result<TcpListener> {
+    l.set_nonblocking(true)?;
+    Ok(TcpListener::from_std(l)?)
+}
+
+/// gRPC and HTTP listening sockets bound by the caller, for [`run_with_listeners`].
+#[derive(Debug)]
+pub struct Listeners {
+    /// Serves gRPC (in place of `server.grpc_addr`).
+    pub grpc: std::net::TcpListener,
+    /// Serves HTTP (in place of `server.http_addr`).
+    pub http: std::net::TcpListener,
+}
+
 /// Run until `shutdown` resolves, or until the scheduler stops (e.g. leadership is lost, which
 /// returns an error). `on_bound` is called once this instance serves as the leader.
 pub async fn run(
     cfg: Config,
+    shutdown: impl Future<Output = ()>,
+    on_bound: impl FnOnce(Bound),
+) -> anyhow::Result<()> {
+    serve(cfg, None, shutdown, on_bound).await
+}
+
+/// [`run`] on listeners the caller has already bound, so their addresses are known before
+/// this instance becomes the leader (a standby is reachable, but `on_bound` is not called
+/// until it leads). The metrics listener, if configured, is still bound from
+/// `server.metrics_addr`.
+pub async fn run_with_listeners(
+    mut cfg: Config,
+    listeners: Listeners,
+    shutdown: impl Future<Output = ()>,
+    on_bound: impl FnOnce(Bound),
+) -> anyhow::Result<()> {
+    cfg.server.grpc_addr = listeners.grpc.local_addr()?;
+    cfg.server.http_addr = listeners.http.local_addr()?;
+    serve(cfg, Some(listeners), shutdown, on_bound).await
+}
+
+async fn serve(
+    cfg: Config,
+    listeners: Option<Listeners>,
     shutdown: impl Future<Output = ()>,
     on_bound: impl FnOnce(Bound),
 ) -> anyhow::Result<()> {
@@ -211,8 +250,13 @@ pub async fn run(
     }
     let limits = cfg.limits.clone();
 
-    let grpc_listener = bind("gRPC", cfg.server.grpc_addr).await?;
-    let http_listener = bind("HTTP", cfg.server.http_addr).await?;
+    let (grpc_listener, http_listener) = match listeners {
+        Some(l) => (adopt(l.grpc)?, adopt(l.http)?),
+        None => (
+            bind("gRPC", cfg.server.grpc_addr).await?,
+            bind("HTTP", cfg.server.http_addr).await?,
+        ),
+    };
     let metrics_listener = match cfg.server.metrics_addr {
         Some(a) => Some(bind("metrics", a).await?),
         None => None,

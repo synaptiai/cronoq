@@ -312,6 +312,47 @@ async fn unread_worker_is_evicted_and_work_completes_elsewhere() {
     s.stop().await;
 }
 
+// The scaler webhook is asked once at start. Before the fix, its answer reset the pool to no
+// capacity even when workers had registered while it was in flight, so they sat idle.
+#[tokio::test(flavor = "multi_thread")]
+async fn workers_registered_before_the_first_scaler_answer_keep_their_capacity() {
+    let hook = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/scale", hook.local_addr().unwrap());
+    let (answer_tx, answer_rx) = tokio::sync::oneshot::channel::<()>();
+    let (answered_tx, answered_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let (mut c, _) = hook.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = c.read(&mut buf).await;
+        let _ = answer_rx.await;
+        c.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let _ = answered_tx.send(());
+    });
+    let s = TestServer::start(&format!(
+        "[[pools]]\nname = \"default\"\nmax = 8\nscaler = {{ kind = \"webhook\", url = \"{url}\" }}\n"
+    ))
+    .await;
+    let (_w, _j) = spawn_worker(&s, 2, Arc::default());
+    s.wait_capacity(2).await;
+    answer_tx.send(()).unwrap();
+    answered_rx.await.unwrap();
+    // Give the answer time to reach the scheduler, then check that the worker still has work.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.capacity().await, 2);
+    let r = tokio::time::timeout(
+        Duration::from_secs(5),
+        s.tasks(CLIENT).await.submit(submit(spec(b"hi"), true)),
+    )
+    .await
+    .expect("no capacity to run the task")
+    .unwrap()
+    .into_inner();
+    assert_eq!(r.result.unwrap().output.as_deref(), Some(&b"HI"[..]));
+    s.stop().await;
+}
+
 /// TCP proxy that forwards until `cut` is set, then silently drops bytes (a half-open peer).
 async fn proxy(target: std::net::SocketAddr, cut: Arc<AtomicBool>) -> std::net::SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -958,7 +999,7 @@ async fn worker_failure_messages_are_sanitized() {
     assert!(
         r.message.contains("bad byte \u{FFFD} in input"),
         "{}",
-        &r.message[..40]
+        r.message.chars().take(40).collect::<String>()
     );
     assert!(r.message.len() <= 8192);
     s.stop().await;
@@ -1173,6 +1214,31 @@ async fn refuses_public_listeners_without_auth() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serves_on_listeners_handed_over() {
+    let l = listeners();
+    let (grpc, http) = (l.grpc.local_addr().unwrap(), l.http.local_addr().unwrap());
+    let cfg = Config::parse(&format!("{SERVER}\n{TOKENS}\n{DEFAULT_POOL}")).unwrap();
+    let s = TestServer::start_on(cfg, Some(l)).await;
+    assert_eq!((s.bound.grpc, s.bound.http), (grpc, http));
+    assert_eq!(reqwest::get(s.http("/readyz")).await.unwrap().status(), 200);
+    s.stop().await;
+
+    // The exposure check looks at the listeners, not at the configured addresses.
+    let l = cronoq_server::Listeners {
+        grpc: std::net::TcpListener::bind("0.0.0.0:0").unwrap(),
+        http: std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    };
+    let cfg = Config::parse(SERVER).unwrap();
+    let run = cronoq_server::run_with_listeners(cfg, l, std::future::pending(), |_| {});
+    let e = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("a public listener without auth is refused")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("--insecure-no-auth"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
