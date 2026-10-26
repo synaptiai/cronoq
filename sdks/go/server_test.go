@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,8 +27,10 @@ type server struct {
 	// serverLines go into the [server] table; tables follow the tokens and limits.
 	serverLines, tables string
 	grpcPort, httpPort  int
-	cmd                 *exec.Cmd
-	exited              chan struct{}
+	// newPorts lets the first start move to other ports if another process took these.
+	newPorts bool
+	cmd      *exec.Cmd
+	exited   chan struct{}
 }
 
 // serverBinary is $CRONOQ_SERVER_BIN, or the debug build in the repository's target directory.
@@ -96,13 +99,32 @@ func newServer(t *testing.T, serverLines, tables string) *server {
 
 func startServer(t *testing.T) *server {
 	s := newServer(t, "", "")
+	s.newPorts = true
 	s.start()
 	return s
 }
 
 func (s *server) target() string { return fmt.Sprintf("http://127.0.0.1:%d", s.grpcPort) }
 
+// start starts the server. Free ports can be taken by another process between choosing and
+// binding them, so with newPorts a first start that finds a port in use retries on new ones.
 func (s *server) start() {
+	s.t.Helper()
+	for attempt := 1; ; attempt++ {
+		log, ok := s.startOnce()
+		if ok {
+			s.newPorts = false
+			return
+		}
+		if !s.newPorts || attempt == 3 || !strings.Contains(log, "Address already in use") {
+			s.t.Fatalf("cronoq-server exited during startup: %s", log)
+		}
+		s.grpcPort, s.httpPort = freePort(s.t), freePort(s.t)
+	}
+}
+
+// startOnce starts the server and waits until it is ready, or returns its log if it exits.
+func (s *server) startOnce() (string, bool) {
 	s.t.Helper()
 	cfg := fmt.Sprintf("[server]\ngrpc_addr = \"127.0.0.1:%d\"\nhttp_addr = \"127.0.0.1:%d\"\nshutdown_grace_s = 0\n%s\n%s\n%s",
 		s.grpcPort, s.httpPort, s.serverLines, layout, s.tables)
@@ -130,19 +152,21 @@ func (s *server) start() {
 		select {
 		case <-exited:
 			log, _ := os.ReadFile(logPath)
-			s.t.Fatalf("cronoq-server exited during startup: %s", log)
+			s.cmd = nil
+			return string(log), false
 		default:
 		}
 		r, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", s.httpPort))
 		if err == nil {
 			r.Body.Close()
 			if r.StatusCode == http.StatusOK {
-				return
+				return "", true
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	s.t.Fatal("cronoq-server did not become ready")
+	return "", false
 }
 
 func (s *server) stop() {

@@ -1176,6 +1176,31 @@ async fn refuses_public_listeners_without_auth() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn serves_on_listeners_handed_over() {
+    let l = listeners();
+    let (grpc, http) = (l.grpc.local_addr().unwrap(), l.http.local_addr().unwrap());
+    let cfg = Config::parse(&format!("{SERVER}\n{TOKENS}\n{DEFAULT_POOL}")).unwrap();
+    let s = TestServer::start_on(cfg, Some(l)).await;
+    assert_eq!((s.bound.grpc, s.bound.http), (grpc, http));
+    assert_eq!(reqwest::get(s.http("/readyz")).await.unwrap().status(), 200);
+    s.stop().await;
+
+    // The exposure check looks at the listeners, not at the configured addresses.
+    let l = cronoq_server::Listeners {
+        grpc: std::net::TcpListener::bind("0.0.0.0:0").unwrap(),
+        http: std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    };
+    let cfg = Config::parse(SERVER).unwrap();
+    let run = cronoq_server::run_with_listeners(cfg, l, std::future::pending(), |_| {});
+    let e = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("a public listener without auth is refused")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("--insecure-no-auth"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn metrics_listener_is_separate_and_unauthenticated() {
     let mut cfg = Config::parse(&format!("{SERVER}\n{TOKENS}\n{DEFAULT_POOL}")).unwrap();
     cfg.server.metrics_addr = Some("127.0.0.1:0".parse().unwrap());

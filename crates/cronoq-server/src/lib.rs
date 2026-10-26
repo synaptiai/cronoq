@@ -33,4 +33,4 @@ mod store;
 pub mod worker;
 
 pub use config::Config;
-pub use server::{Bound, run};
+pub use server::{Bound, Listeners, run, run_with_listeners};

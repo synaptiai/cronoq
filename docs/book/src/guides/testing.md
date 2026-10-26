@@ -66,3 +66,10 @@ Start `cronoq-server` with a temporary config on free ports (`grpc_addr = "127.0
 when you embed it with `cronoq_server::run`), connect a test worker, and submit through the
 client. The repository's `crates/cronoq-server/tests/server.rs` and
 `crates/cronoq-py/python/tests/test_client.py` are complete examples.
+
+`run` reports the addresses it bound once the server is the leader. When a test needs them
+earlier, for example to reach a standby, bind the listeners on port 0 yourself and pass them to
+`cronoq_server::run_with_listeners`. Choosing a free port, closing it, and putting its number in
+the config is not safe when tests run in parallel: another process can take the port before the
+server binds it. A server started as a separate process has to bind its ports itself, so retry
+the start on new ports if it exits with "Address already in use".

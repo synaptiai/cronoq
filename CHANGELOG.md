@@ -7,6 +7,11 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+
+- `cronoq_server::run_with_listeners` serves on listeners the caller has already bound, so their
+  addresses are known before the server becomes the leader.
+
 ## [0.2.0] - 2026-10-26
 
 First public release. No 0.1.0 was published.

@@ -8,17 +8,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use cronoq_proto::v1 as pb;
 use cronoq_server::worker::{WorkerOptions, run_worker};
-use cronoq_server::{Bound, Config};
+use cronoq_server::{Bound, Config, Listeners};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
 
 struct Node {
     http: String,
@@ -31,12 +23,18 @@ struct Node {
 impl Node {
     /// `store` is the body of the `[store]` section.
     fn start(store: &str) -> Node {
-        let (gp, hp) = (free_port(), free_port());
+        // Bound here and handed over, so the addresses are known before the node leads and
+        // no other process can take the ports before the server serves them.
+        let bind = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listeners = Listeners {
+            grpc: bind(),
+            http: bind(),
+        };
+        let grpc = listeners.grpc.local_addr().unwrap();
+        let http = listeners.http.local_addr().unwrap();
         let cfg = Config::parse(&format!(
             r#"
             [server]
-            grpc_addr = "127.0.0.1:{gp}"
-            http_addr = "127.0.0.1:{hp}"
             shutdown_grace_s = 0
             [store]
             {store}
@@ -51,8 +49,9 @@ impl Node {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let (bound_tx, bound_rx) = oneshot::channel();
-        let join = tokio::spawn(cronoq_server::run(
+        let join = tokio::spawn(cronoq_server::run_with_listeners(
             cfg,
+            listeners,
             async {
                 let _ = stop_rx.await;
             },
@@ -61,8 +60,8 @@ impl Node {
             },
         ));
         Node {
-            http: format!("http://127.0.0.1:{hp}"),
-            grpc: format!("http://127.0.0.1:{gp}"),
+            http: format!("http://{http}"),
+            grpc: format!("http://{grpc}"),
             stop: Some(stop_tx),
             bound: Some(bound_rx),
             join,
@@ -86,6 +85,9 @@ impl Node {
         for _ in 0..200 {
             if n.ready().await.is_some() {
                 break;
+            }
+            if n.join.is_finished() {
+                panic!("server failed: {:?}", n.join.await);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
