@@ -1,6 +1,6 @@
 // A cronoq-server subprocess for the tests, with fixed ports so it can be restarted in place.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdtempSync, openSync, readSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -105,9 +105,10 @@ export class Server {
       config,
       `[server]\ngrpc_addr = "127.0.0.1:${this.grpcPort}"\nhttp_addr = "127.0.0.1:${this.httpPort}"\nshutdown_grace_s = 0\n${this.serverLines}\n${LAYOUT}\n${this.tables}`,
     );
-    const log = join(this.dir, "server.log");
+    // The log is read back through the descriptor the server writes to, not by path.
+    const log = openSync(join(this.dir, "server.log"), "w+");
     const proc = spawn(this.bin, ["--config", config], {
-      stdio: ["ignore", "ignore", openSync(log, "w")],
+      stdio: ["ignore", "ignore", log],
       env: { ...process.env, RUST_LOG: "warn" },
     });
     this.proc = proc;
@@ -117,7 +118,9 @@ export class Server {
     while (Date.now() < deadline) {
       if (gone) {
         this.proc = undefined;
-        return readFileSync(log, "utf8");
+        const text = readAll(log);
+        closeSync(log);
+        return text;
       }
       try {
         const r = await fetch(`http://127.0.0.1:${this.httpPort}/readyz`);
@@ -138,4 +141,11 @@ export class Server {
     clearTimeout(t);
     this.proc = undefined;
   }
+}
+
+/** The whole contents of an open file, from its start. */
+function readAll(fd: number): string {
+  const buf = Buffer.alloc(fstatSync(fd).size);
+  readSync(fd, buf, 0, buf.length, 0);
+  return buf.toString("utf8");
 }
