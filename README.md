@@ -25,34 +25,39 @@
 
 cronoq decides **when** work runs, **in what order**, and **how much capacity** it needs. You
 decide **where** it runs: async functions in your process, Python coroutines, or remote workers
-connected over gRPC. One engine powers all three, with the same rules, configuration and metrics.
+connected over gRPC. One engine powers all three, with the same scheduling rules and metrics.
 
 ## Why cronoq
 
 Plain queues treat every job the same. Real workloads do not:
 
-- 🧑‍💻 **User-facing work stuck behind batch jobs** → four priority classes; dispatch always
-  takes the most urgent ready task, and aging stops background work from starving.
+- 🧑‍💻 **User-facing work stuck behind batch jobs** → four priority classes, so urgent work is
+  dispatched ahead of batch work; aging lets long-waiting background work overtake a steady
+  stream of ordinary work, while high-priority work still goes first.
 - ⏰ **SLAs missed with idle capacity earlier in the day** → deadlines raise urgency as the
   latest start time approaches; earliest-deadline-first within a class.
 - 📅 **Cron jobs starting late because workers were busy** → fixed-start tasks reserve capacity
-  when submitted and get a worker *held* just before they start.
+  ahead of their start and get a worker *held* just before it; a run that cannot get capacity
+  is reported as a conflict instead of starting late unnoticed.
 - 🚦 **429 storms against rate-limited APIs** → shared token buckets and semaphores are enforced
-  before dispatch; tasks waiting for a limit don't occupy a worker; `retry_after` is honoured.
+  before dispatch; queued tasks wait for a limit without occupying a worker; `retry_after` is
+  honoured.
 - 💸 **Paying for idle workers at night, saturated at noon** → queue-pressure autoscaling per
   pool, pre-warmed for upcoming reservations, with cost reporting.
 - 🔗 **Hand-rolled job chaining** → DAG edges on success, failure or completion; atomic batches;
   idempotent keys.
 - 🏢 **One tenant's burst delays everyone else** → weighted fair sharing between tenants within
-  each priority class, with the tenant pinned to the caller's credentials.
+  each priority class; a token can be pinned to its tenant so a client can't spend another
+  tenant's share.
 - 🎛️ **GPU jobs landing on CPU-only workers** → worker labels: a task that requires
   `gpu=a100` runs only on workers that have it, without blocking the rest of the pool.
 - 💥 **Lost jobs when a worker dies** → leases, heartbeats, timeouts, retries with backoff,
-  dead letters, and failover backed by Postgres or a local SQLite file. Attempt numbers are
-  fencing tokens, so side effects can be made effectively-once.
+  dead letters, and failover backed by Postgres or a local SQLite file. Attempt numbers never
+  repeat, so workers can use them as fencing tokens for effectively-once side effects.
 
-It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, and
-the cost of a dispatch grows only with the logarithm of the backlog size, with no periodic rescans.
+It is fast enough for the hot path: **~1 million scheduling decisions per second per core**. A
+dispatch compares the heads of a few sorted queues instead of scanning the backlog, so a deep
+queue does not slow it down noticeably.
 
 Not sure it fits your system? [Benefits at a glance](https://synaptiai.github.io/cronoq/benefits.html)
 maps common symptoms to features, shows where to start, and lists the trade-offs.
@@ -71,7 +76,8 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 | TypeScript | `@synaptiai/cronoq` on GitHub Packages, or the tarball on the release page (Node 22+; [how to install](https://synaptiai.github.io/cronoq/reference/typescript.html)) |
 
 Wheels, binaries, images and the TypeScript package carry build provenance attestations:
-`gh attestation verify <file> --repo synaptiai/cronoq`.
+`gh attestation verify <file> --repo synaptiai/cronoq`, or `oci://ghcr.io/synaptiai/cronoq:0.2.0`
+in place of the file for an image.
 
 ## Quickstart
 
@@ -175,43 +181,44 @@ each step, and leads on to deployment with Postgres, Kubernetes and TLS.
 | | |
 |---|---|
 | [LLM and agent workloads](https://synaptiai.github.io/cronoq/use-cases/llm-agents.html) | Rate limits, 429 backoff, chat before batch, autoscaling |
-| [Interactive + batch on shared capacity](https://synaptiai.github.io/cronoq/use-cases/priority-mixing.html) | One fleet instead of two, no starvation |
-| [Deadline-driven work](https://synaptiai.github.io/cronoq/use-cases/deadlines.html) | Reorder by urgency to meet SLAs |
-| [Scheduled jobs with guaranteed capacity](https://synaptiai.github.io/cronoq/use-cases/scheduled-jobs.html) | Cron that starts on time |
+| [Interactive + batch on shared capacity](https://synaptiai.github.io/cronoq/use-cases/priority-mixing.html) | One fleet instead of two, batch still finishes |
+| [Deadline-driven work](https://synaptiai.github.io/cronoq/use-cases/deadlines.html) | Reorder by urgency as deadlines approach |
+| [Scheduled jobs with guaranteed capacity](https://synaptiai.github.io/cronoq/use-cases/scheduled-jobs.html) | Cron with capacity reserved ahead of each run |
 | [Pipelines and DAGs](https://synaptiai.github.io/cronoq/use-cases/pipelines.html) | Fan-out/fan-in, failure handlers, atomic batches |
-| [GPUs and scarce resources](https://synaptiai.github.io/cronoq/use-cases/scarce-resources.html) | Global semaphores, no head-of-line blocking |
-| [High-throughput microtasks](https://synaptiai.github.io/cronoq/use-cases/microtasks.html) | Microsecond scheduling overhead |
+| [GPUs and scarce resources](https://synaptiai.github.io/cronoq/use-cases/scarce-resources.html) | Shared semaphores, no head-of-line blocking |
+| [High-throughput microtasks](https://synaptiai.github.io/cronoq/use-cases/microtasks.html) | A few microseconds of scheduling overhead per task |
 | [Polyglot worker fleets](https://synaptiai.github.io/cronoq/use-cases/worker-fleets.html) | gRPC workers in any language, HA |
-| [Cost-aware autoscaling](https://synaptiai.github.io/cronoq/use-cases/autoscaling.html) | Queue-pressure scaling, KEDA integration |
+| [Cost-aware autoscaling](https://synaptiai.github.io/cronoq/use-cases/autoscaling.html) | Queue-pressure scaling, a desired-capacity metric for KEDA or HPA |
 
 ## Features
 
 | Area | Highlights |
 |---|---|
-| Ordering | 4 priority classes, aging, FIFO or weighted fair sharing between tenants within a class, deadline urgency, EDF |
+| Ordering | 4 priority classes, bounded aging, FIFO within a class (or weighted fair sharing between tenants), deadline urgency, earliest deadline first (by latest start time) |
 | Placement | Worker labels with required labels per task; tasks without requirements prefer the least specialized workers |
 | Time | Fixed starts with reservations and worker holds, miss policies, cron with time zones |
 | Dependencies | DAG edges by id or key, `on_success` / `on_failure` / `on_complete`, atomic batches, dedup keys |
 | Reliability | Leases, heartbeats, timeouts, retries with exponential backoff and `retry_after`, dead letters, cancellation |
-| Limits | Semaphores and token buckets shared across pools, bounded queues (wait / reject / shed) |
+| Limits | Semaphores and token buckets shared across pools (within a shard), bounded queues (wait / reject / shed) |
 | Elasticity | Per-pool queue-pressure autoscaling, wait-time SLOs, reservation pre-warming, cost reporting |
-| Durability | Postgres and SQLite stores, leader election, epoch fencing, recovery, at-least-once execution, attempt numbers as fencing tokens |
-| Scale-out | Pools split between shards, each with its own leader and store; any server forwards calls to the right shard |
+| Durability | A Postgres store, or SQLite with standbys on the same host; leader election, epoch fencing, recovery, at-least-once execution, attempt numbers for fencing side effects |
+| Scale-out | Pools split between shards, each with its own leader and store; client calls to any server reach the right shard, and workers are redirected to it |
 | Interfaces | Rust (async + blocking), Python (asyncio), Go, TypeScript (Node and browsers), gRPC, gRPC-Web, HTTP/JSON, the `cronoq` CLI with a live `top` view |
-| Operations | Helm charts, a Kubernetes operator that scales worker Deployments, KEDA and webhook scalers, token roles scoped to pools and tenants, TLS and mTLS |
-| Observability | OpenTelemetry metrics and trace propagation, Prometheus, windowed quality metrics |
+| Operations | Helm charts, a Kubernetes operator that scales worker Deployments, a webhook scaler and a desired-capacity metric for KEDA, token roles limited to pools and pinned to tenants, TLS and mTLS |
+| Observability | Prometheus metrics, windowed quality metrics, and in the Rust library OpenTelemetry metrics and trace propagation |
 
 ## Performance
 
 | | Measured on a shared 4-vCPU VM |
 |---|---|
 | Engine: submit → dispatch → complete | ~1.0–1.2 million cycles/s per core |
-| End to end through tokio, no-op tasks | ~250,000 tasks/s |
+| End to end through tokio, no-op tasks submitted in bulk | ~250,000 tasks/s |
 | Sequential submit → await round trip | ~70 µs |
 
 A benchmark workflow runs on every push to `main` (`cargo bench -p cronoq-core`,
-`cargo bench -p cronoq`) and fails if the engine falls below 700,000 cycles/s or the end-to-end
-run below 175,000 tasks/s. It does not check the round-trip time.
+`cargo bench -p cronoq`) and fails if the engine, with 64 workers and a backlog of 10,000, falls
+below 700,000 cycles/s, or the end-to-end run below 175,000 tasks/s. It does not check the
+round-trip time.
 
 ## Architecture
 
@@ -227,7 +234,7 @@ flowchart LR
     D -->|dispatch| E[Executors / remote workers]
     E -->|outcomes, heartbeats| D
     D -->|scale requests| S[Scalers]
-    D -->|group commit| DB[(Postgres or SQLite store)]
+    D -->|group commit| DB[(Postgres or SQLite store,<br/>or in memory)]
 ```
 
 The engine is a deterministic state machine with no clock or I/O, tested by randomized
@@ -264,8 +271,8 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`crates/cronoq-operator`](crates/cronoq-operator) | Kubernetes operator that scales worker Deployments (published as an image) |
 | [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
 | [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `@synaptiai/cronoq`) |
-| [`deploy`](deploy) | Example server configuration and the Helm charts for the server and the operator |
-| [`docs`](docs) | The book's source and the design document |
+| [`deploy`](deploy) | Example server configuration, and the Helm charts for the server and the operator with their end-to-end tests |
+| [`docs`](docs) | The book's source, the design document and the original Python prototype |
 
 ## Community
 

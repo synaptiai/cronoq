@@ -51,7 +51,9 @@ always has its best task at the head. Deadline tasks live in a second per-class 
 latest start time. In pools with fair sharing, tasks without deadlines live in a per-class
 fair-share queue ordered by start tag instead of the FIFO lane. Dispatch compares at most eight
 heads (four classes × two queues), computing their scores lazily. There is no periodic rescoring
-and no full-queue scan, so dispatch cost grows at most with the logarithm of the backlog.
+and no full-queue scan, so choosing the next task costs at most the logarithm of the backlog.
+Fresh tasks join the back of their lane; a retried or woken task goes back to its place by
+submission order, which in a very long lane moves the entries behind it.
 
 ## Measuring adherence
 

@@ -2,7 +2,8 @@
 //!
 //! An elastic, priority-aware task scheduler for Rust (and Python, and over gRPC).
 //!
-//! - **Priorities with aging**: four classes, FIFO within a class, starvation-free aging.
+//! - **Priorities with aging**: four classes, FIFO within a class, and bounded aging; by default
+//!   long-waiting `Low` work overtakes fresh `Normal` work, but never `High` or `Critical` work.
 //! - **Deadlines**: urgency rises as a task's latest start time approaches.
 //! - **Fixed starts and cron**: capacity is reserved and a worker is held ahead of time.
 //! - **DAGs**: dependencies with success/failure/completion conditions.

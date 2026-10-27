@@ -9,7 +9,9 @@
 | End-to-end in-process, no-op tasks, bulk submit | ~250 k tasks/s |
 | Sequential `submit().await` then `handle.await` | ~70 µs round trip |
 
-Dispatch cost grows only with the logarithm of the backlog, with no rescans (see [Architecture](../architecture.md)).
+Choosing the next task looks only at the heads of a few sorted queues, so its cost grows at most
+with the logarithm of the backlog, with no rescans (see [Architecture](../architecture.md)).
+Re-queuing a retried or woken task into a very long lane also moves the entries behind it.
 
 ## Tuning the library
 
