@@ -2,7 +2,7 @@
  * Node entry point: gRPC over HTTP/2, for clients and workers.
  *
  * ```ts
- * import { connect, runWorker } from "cronoq/node";
+ * import { connect, runWorker } from "@synaptiai/cronoq/node";
  * const c = connect("http://127.0.0.1:7070", { token: process.env.CRONOQ_TOKEN });
  * const sub = await c.submitAndWait({ payload: { to: "ada" } }, 30);
  * ```

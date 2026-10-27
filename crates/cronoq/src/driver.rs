@@ -118,6 +118,8 @@ enum Feedback<O> {
         capacity: u32,
         /// Responses older than the newest applied one are ignored.
         seq: u64,
+        /// The answer to the request made at start.
+        initial: bool,
     },
 }
 
@@ -276,8 +278,9 @@ pub(crate) struct Driver<P, O> {
     /// Outputs of tasks that succeeded in the engine but whose terminal event is not yet
     /// released (held for durability).
     outputs: FxHashMap<TaskId, Arc<O>>,
-    /// Recently released outputs, for handles attached after completion (bounded).
-    recent: FxHashMap<TaskId, Arc<O>>,
+    /// Recently released outputs, and the messages of tasks that ended otherwise, for handles
+    /// attached after completion (bounded by `output_cache`).
+    recent: FxHashMap<TaskId, Result<Arc<O>, Arc<str>>>,
     recent_order: VecDeque<TaskId>,
     blocked: VecDeque<Blocked<P, O>>,
     deferred: Vec<Deferred>,
@@ -292,6 +295,8 @@ pub(crate) struct Driver<P, O> {
     other_failures: u32,
     scale_seq: Vec<u64>,
     scale_applied: Vec<u64>,
+    /// Pools whose unlabeled capacity was reported (`set_capacity`) since start.
+    reported: Vec<bool>,
     metrics: Metrics,
     next_gauge: Instant,
     shutdown: Option<Instant>,
@@ -357,6 +362,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             other_failures: 0,
             scale_seq: vec![0; n],
             scale_applied: vec![0; n],
+            reported: vec![false; n],
             metrics: Metrics::new(),
             next_gauge: Instant::now(),
             shutdown: None,
@@ -407,6 +413,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 pool,
                 capacity,
                 seq,
+                initial,
             });
         });
     }
@@ -668,6 +675,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             }
             Cmd::SetCapacity { pool, capacity } => {
                 if !closed {
+                    self.reported[pool.0 as usize] = true;
                     self.core.set_capacity(now, pool, capacity);
                 }
             }
@@ -677,6 +685,10 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 capacity,
             } => {
                 if !closed {
+                    // Scaler answers set the unlabeled group only.
+                    if labels.is_empty() {
+                        self.reported[pool.0 as usize] = true;
+                    }
                     self.core.set_group_capacity(now, pool, &labels, capacity);
                 }
             }
@@ -894,7 +906,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         let (tx, rx) = oneshot::channel();
         match self.core.status(&TaskRef::Id(id)) {
             Some(TaskStatus::Succeeded) if !self.outputs.contains_key(&id) => {
-                if let Some(o) = self.recent.get(&id) {
+                if let Some(Ok(o)) = self.recent.get(&id) {
                     let _ = tx.send(Ok(o.clone()));
                 } else if self.persists {
                     let store = self.store.clone();
@@ -910,9 +922,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 }
             }
             Some(st) if st.is_terminal() && st != TaskStatus::Succeeded => {
+                let message = match self.recent.get(&id) {
+                    Some(Err(m)) => m.clone(),
+                    _ => "task already finished".into(),
+                };
                 let _ = tx.send(Err(TaskFailure::Ended {
                     status: st,
-                    message: "task already finished".into(),
+                    message,
                 }));
             }
             _ => {
@@ -976,9 +992,14 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 pool,
                 capacity,
                 seq,
+                initial,
             } => {
                 let i = pool.0 as usize;
-                if self.shutdown.is_none() && seq > self.scale_applied[i] {
+                // The start-up answer (an external pool starts empty) can arrive after workers
+                // reported their capacity; it describes the pool before them, so it is dropped
+                // instead of erasing theirs.
+                let superseded = initial && self.reported[i];
+                if self.shutdown.is_none() && seq > self.scale_applied[i] && !superseded {
                     self.scale_applied[i] = seq;
                     self.core.set_capacity(now, pool, capacity);
                 }
@@ -1245,8 +1266,14 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     let output = self.outputs.remove(&e.id);
                     self.metrics
                         .task_finished(&self.pools[e.pool.0 as usize].name, e.status);
-                    if let (Some(o), TaskStatus::Succeeded) = (&output, e.status) {
-                        self.remember_output(e.id, o.clone());
+                    match (&output, e.status) {
+                        (Some(o), TaskStatus::Succeeded) => self.remember(e.id, Ok(o.clone())),
+                        (_, TaskStatus::Succeeded) => {}
+                        _ => {
+                            if let Some(m) = &e.message {
+                                self.remember(e.id, Err(m.clone()));
+                            }
+                        }
                     }
                     if let Some(ws) = self.waiters.remove(&e.id) {
                         for w in ws {
@@ -1276,11 +1303,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         }
     }
 
-    fn remember_output(&mut self, id: TaskId, o: Arc<O>) {
+    fn remember(&mut self, id: TaskId, r: Result<Arc<O>, Arc<str>>) {
         if self.cfg.output_cache == 0 {
             return;
         }
-        if self.recent.insert(id, o).is_none() {
+        if self.recent.insert(id, r).is_none() {
             self.recent_order.push_back(id);
         }
         while self.recent_order.len() > self.cfg.output_cache {

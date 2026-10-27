@@ -73,8 +73,8 @@ recognised by its `cronoq.recurring` tag.
 
 ## The template
 
-The template's payload, pool, kind, priority, duration hint, timeout, retry policy, resources
-and tags are copied to every occurrence. Two options apply per occurrence:
+The template's payload, pool, kind, priority, duration hint, timeout, retry policy, resources,
+tags, labels and tenant are copied to every occurrence. Two options apply per occurrence:
 
 | Template option | Effect on each occurrence |
 |---|---|

@@ -9,7 +9,7 @@ use bytes::Bytes;
 use cronoq::TaskError;
 use cronoq_proto::v1 as pb;
 use cronoq_server::worker::{WorkerOptions, run_worker};
-use cronoq_server::{Bound, Config};
+use cronoq_server::{Bound, Config, Listeners};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
@@ -52,6 +52,17 @@ retry = { max_attempts = 3, initial_backoff_s = 0.05, jitter = false }
 "#;
 
 pub type Intercepted = InterceptedService<Channel, Auth>;
+
+/// Loopback gRPC and HTTP listeners on ports chosen by the system, for a server whose
+/// addresses must be known before it starts (or before it leads). They stay bound until the
+/// server takes them over, so no other process can take the ports in between.
+pub fn listeners() -> Listeners {
+    let bind = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    Listeners {
+        grpc: bind(),
+        http: bind(),
+    }
+}
 
 /// Adds a bearer token to every request.
 #[derive(Clone)]
@@ -98,19 +109,27 @@ impl TestServer {
     }
 
     pub async fn start_cfg(cfg: Config) -> TestServer {
+        Self::start_on(cfg, None).await
+    }
+
+    /// Server on `listeners` (see [`listeners`]) when given, else on the configured addresses.
+    pub async fn start_on(cfg: Config, listeners: Option<Listeners>) -> TestServer {
         // reqwest is built without a bundled crypto provider; the tests use ring like the server.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let (bound_tx, bound_rx) = oneshot::channel();
-        let join = tokio::spawn(cronoq_server::run(
-            cfg,
-            async {
-                let _ = stop_rx.await;
-            },
-            move |b| {
-                let _ = bound_tx.send(b);
-            },
-        ));
+        let shutdown = async {
+            let _ = stop_rx.await;
+        };
+        let on_bound = move |b| {
+            let _ = bound_tx.send(b);
+        };
+        let join = match listeners {
+            Some(l) => tokio::spawn(cronoq_server::run_with_listeners(
+                cfg, l, shutdown, on_bound,
+            )),
+            None => tokio::spawn(cronoq_server::run(cfg, shutdown, on_bound)),
+        };
         let bound = match tokio::time::timeout(Duration::from_secs(10), bound_rx).await {
             Ok(Ok(b)) => b,
             _ => panic!("server did not start: {:?}", join.await),

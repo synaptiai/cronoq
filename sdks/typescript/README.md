@@ -3,11 +3,11 @@
 A TypeScript client for the [cronoq](https://github.com/synaptiai/cronoq) server, built on
 Connect-ES:
 
-- `cronoq/node`: the client and workers, over gRPC (Node 22 or newer);
-- `cronoq/web`: the client in browsers, over gRPC-Web (unary calls and `watch`).
+- `@synaptiai/cronoq/node`: the client and workers, over gRPC (Node 22 or newer);
+- `@synaptiai/cronoq/web`: the client in browsers, over gRPC-Web (unary calls and `watch`).
 
 ```ts
-import { connect, runWorker, text } from "cronoq/node";
+import { connect, runWorker, text } from "@synaptiai/cronoq/node";
 
 const c = connect("http://127.0.0.1:7070", { token: process.env.CRONOQ_TOKEN });
 const sub = await c.submitAndWait({ payload: "hello" }, 30);
@@ -23,11 +23,16 @@ await runWorker(
 In a browser, with the page's origin allowed in the server's `[server.grpc_web]`:
 
 ```ts
-import { connectWeb } from "cronoq/web";
+import { connectWeb } from "@synaptiai/cronoq/web";
 
 const c = connectWeb("https://cronoq.example.com:7070", { token });
 for await (const e of c.watch({ pools: ["default"] })) console.log(e.id, e.status);
 ```
+
+The package is published to GitHub Packages as `@synaptiai/cronoq`, and each GitHub release
+also carries its tarball; the
+[reference](https://synaptiai.github.io/cronoq/reference/typescript.html) shows how to install
+either.
 
 Task ids are `bigint`s. Throw `Permanent`, `Retryable` (with `retryAfter`), `Reject` or
 `CancelTask` from a handler to control the outcome; `(lease.taskId, lease.attempt)` is a

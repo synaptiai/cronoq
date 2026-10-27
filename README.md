@@ -43,14 +43,35 @@ Plain queues treat every job the same. Real workloads do not:
   pool, pre-warmed for upcoming reservations, with cost reporting.
 - 🔗 **Hand-rolled job chaining** → DAG edges on success, failure or completion; atomic batches;
   idempotent keys.
+- 🏢 **One tenant's burst delays everyone else** → weighted fair sharing between tenants within
+  each priority class, with the tenant pinned to the caller's credentials.
+- 🎛️ **GPU jobs landing on CPU-only workers** → worker labels: a task that requires
+  `gpu=a100` runs only on workers that have it, without blocking the rest of the pool.
 - 💥 **Lost jobs when a worker dies** → leases, heartbeats, timeouts, retries with backoff,
-  dead letters, and failover backed by Postgres or a local SQLite file.
+  dead letters, and failover backed by Postgres or a local SQLite file. Attempt numbers are
+  fencing tokens, so side effects can be made effectively-once.
 
-It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, with
-dispatch cost independent of backlog size.
+It is fast enough for the hot path: **~1 million scheduling decisions per second per core**, and
+the cost of a dispatch grows only with the logarithm of the backlog size, with no periodic rescans.
 
 Not sure it fits your system? [Benefits at a glance](https://synaptiai.github.io/cronoq/benefits.html)
 maps common symptoms to features, shows where to start, and lists the trade-offs.
+
+## Install
+
+| What | How |
+|---|---|
+| Rust library | `cargo add cronoq` (Rust 1.94+) |
+| Python | `pip install cronoq` for the in-process scheduler; `pip install "cronoq[client]"` adds the gRPC client and worker (CPython 3.14+) |
+| Server (container) | `docker pull ghcr.io/synaptiai/cronoq:0.2.0` (includes the `cronoq` CLI) |
+| Server (binaries) | Linux, macOS and Windows archives on the [release page](https://github.com/synaptiai/cronoq/releases/latest), each with `cronoq-server` and `cronoq` |
+| Kubernetes | `helm install cronoq oci://ghcr.io/synaptiai/charts/cronoq --version 0.2.0`; the operator chart is `oci://ghcr.io/synaptiai/charts/cronoq-operator` |
+| Command-line tool | `cargo install cronoq-cli` |
+| Go | `go get github.com/synaptiai/cronoq/sdks/go@v0.2.0` (Go 1.26+) |
+| TypeScript | `@synaptiai/cronoq` on GitHub Packages, or the tarball on the release page (Node 22+; [how to install](https://synaptiai.github.io/cronoq/reference/typescript.html)) |
+
+Wheels, binaries, images and the TypeScript package carry build provenance attestations:
+`gh attestation verify <file> --repo synaptiai/cronoq`.
 
 ## Quickstart
 
@@ -58,7 +79,7 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 
 ```toml
 [dependencies]
-cronoq = "0.1"
+cronoq = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -93,10 +114,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Python
 
-```sh
-pip install cronoq
-```
-
 ```python
 import asyncio, cronoq
 
@@ -116,31 +133,40 @@ asyncio.run(main())
 ```sh
 # One random token per role (at least 16 characters; 32+ recommended).
 for role in CLIENT WORKER METRICS ADMIN; do export CRONOQ_${role}_TOKEN=$(openssl rand -hex 24); done
-docker build -t cronoq . && docker run -p 7070:7070 -p 7071:7071 \
-  -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN cronoq
+docker run --name cronoq -p 7070:7070 -p 7071:7071 \
+  -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
+  ghcr.io/synaptiai/cronoq:0.2.0
 ```
 
-A worker (Python, `pip install "cronoq[client]"`):
+The server listens on port 7070 (gRPC) and 7071 (HTTP), with an in-memory store and the pools
+of the [example configuration](deploy/cronoq.example.toml), including `default`. Start a worker
+in another shell with the same tokens exported (`pip install "cronoq[client]"`):
 
 ```python
-import os
+import asyncio, os
 from cronoq.client import Worker
 
 async def handle(lease):
     return {"echo": lease.json()}
 
-await Worker("localhost:7070", "default", handle, slots=4,
-             token=os.environ["CRONOQ_WORKER_TOKEN"]).run()
+asyncio.run(Worker("localhost:7070", "default", handle, slots=4,
+                   token=os.environ["CRONOQ_WORKER_TOKEN"]).run())
 ```
 
-Submit from anywhere, with the `cronoq` command-line tool or plain HTTP:
+Then submit a task and wait for its result, over HTTP or with the `cronoq` CLI in the image:
 
 ```sh
-CRONOQ_TOKEN=$CRONOQ_CLIENT_TOKEN cronoq submit '{"hello": "world"}' --json --priority high --wait
 curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TOKEN" \
      -H 'content-type: application/json' \
      -d '{"payload": {"hello": "world"}, "priority": "high", "wait": true}'
+docker exec -e CRONOQ_TOKEN=$CRONOQ_CLIENT_TOKEN cronoq \
+  cronoq submit '{"hello": "world"}' --json --priority high --wait
 ```
+
+The HTTP response carries the worker's answer in `result.output`, and the CLI prints it:
+`{"echo": {"hello": "world"}}`. The
+[server quickstart](https://synaptiai.github.io/cronoq/guides/server-quickstart.html) explains
+each step, and leads on to deployment with Postgres, Kubernetes and TLS.
 
 ## Use cases
 
@@ -160,14 +186,17 @@ curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TO
 
 | Area | Highlights |
 |---|---|
-| Ordering | 4 priority classes, aging, FIFO within class, deadline urgency, EDF |
+| Ordering | 4 priority classes, aging, FIFO or weighted fair sharing between tenants within a class, deadline urgency, EDF |
+| Placement | Worker labels with required labels per task; tasks without requirements prefer the least specialized workers |
 | Time | Fixed starts with reservations and worker holds, miss policies, cron with time zones |
 | Dependencies | DAG edges by id or key, `on_success` / `on_failure` / `on_complete`, atomic batches, dedup keys |
 | Reliability | Leases, heartbeats, timeouts, retries with exponential backoff and `retry_after`, dead letters, cancellation |
 | Limits | Semaphores and token buckets shared across pools, bounded queues (wait / reject / shed) |
 | Elasticity | Per-pool queue-pressure autoscaling, wait-time SLOs, reservation pre-warming, cost reporting |
-| Durability | Postgres and SQLite stores, leader election, epoch fencing, recovery, at-least-once execution |
-| Interfaces | Rust (async + blocking), Python (asyncio), Go, TypeScript (Node and browsers), gRPC, gRPC-Web, HTTP/JSON |
+| Durability | Postgres and SQLite stores, leader election, epoch fencing, recovery, at-least-once execution, attempt numbers as fencing tokens |
+| Scale-out | Pools split between shards, each with its own leader and store; any server forwards calls to the right shard |
+| Interfaces | Rust (async + blocking), Python (asyncio), Go, TypeScript (Node and browsers), gRPC, gRPC-Web, HTTP/JSON, the `cronoq` CLI with a live `top` view |
+| Operations | Helm charts, a Kubernetes operator that scales worker Deployments, KEDA and webhook scalers, token roles scoped to pools and tenants, TLS and mTLS |
 | Observability | OpenTelemetry metrics and trace propagation, Prometheus, windowed quality metrics |
 
 ## Performance
@@ -178,7 +207,9 @@ curl -X POST localhost:7071/v1/tasks -H "authorization: Bearer $CRONOQ_CLIENT_TO
 | End to end through tokio, no-op tasks | ~250,000 tasks/s |
 | Sequential submit → await round trip | ~70 µs |
 
-CI gates on these numbers (`cargo bench -p cronoq-core`, `cargo bench -p cronoq`).
+A benchmark workflow runs on every push to `main` (`cargo bench -p cronoq-core`,
+`cargo bench -p cronoq`) and fails if the engine falls below 700,000 cycles/s or the end-to-end
+run below 175,000 tasks/s. It does not check the round-trip time.
 
 ## Architecture
 
@@ -194,7 +225,7 @@ flowchart LR
     D -->|dispatch| E[Executors / remote workers]
     E -->|outcomes, heartbeats| D
     D -->|scale requests| S[Scalers]
-    D -->|group commit| DB[(Postgres store)]
+    D -->|group commit| DB[(Postgres or SQLite store)]
 ```
 
 The engine is a deterministic state machine with no clock or I/O, tested by randomized
@@ -228,7 +259,7 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
 | [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |
 | [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
-| [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `cronoq`) |
+| [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `@synaptiai/cronoq`) |
 | [`cronoq-operator`](crates/cronoq-operator) | Kubernetes operator that scales worker Deployments |
 | [`deploy/helm`](deploy/helm) | Helm charts for the server and the operator |
 

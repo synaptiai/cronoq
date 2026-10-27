@@ -67,7 +67,7 @@ The driver distinguishes three kinds of store errors:
 | Error | Behaviour |
 |---|---|
 | `Unavailable` (connection lost, timeout, database restarting) | Retried with capped backoff for up to `max_store_outage` (default 5 minutes). The engine keeps running in memory meanwhile; acknowledgements and dispatches that need durability wait. If the outage lasts longer, the scheduler stops with `Error::Store`. |
-| `Other` | Retried 5 times, then the scheduler stops. |
+| `Other` | Retried with backoff; the scheduler stops on the 5th such failure since the last successful commit. |
 | `Fenced` | Another instance is leader: the scheduler stops immediately. |
 
 A commit that takes longer than `commit_timeout` (default 30 s) counts as `Unavailable`. Callers

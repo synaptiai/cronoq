@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-cronoq = "0.1"
+cronoq = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

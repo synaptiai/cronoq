@@ -9,7 +9,7 @@ limits) and sizes each pool's concurrency from queue pressure. Your async functi
 
 ```toml
 [dependencies]
-cronoq = "0.1"
+cronoq = "0.2"
 ```
 
 ```rust,no_run

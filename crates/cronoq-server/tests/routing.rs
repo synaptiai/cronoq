@@ -7,7 +7,7 @@ use std::time::Duration;
 use common::*;
 use cronoq::TaskId;
 use cronoq_proto::v1 as pb;
-use cronoq_server::Config;
+use cronoq_server::{Config, Listeners};
 use tonic::metadata::MetadataValue;
 
 const LAYOUT: &str = r#"
@@ -34,12 +34,12 @@ const CPU_CLIENT: &str = "client-cpu-token-0123456789abcdef0";
 /// A client token limited to pool `llm` (shard `gpu`).
 const GPU_CLIENT: &str = "client-gpu-token-0123456789abcdef0";
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// Listeners for the `cpu` and `gpu` shards, and their gRPC ports.
+fn shard_listeners() -> (Listeners, Listeners, (u16, u16)) {
+    let (cpu, gpu) = (listeners(), listeners());
+    let port = |l: &Listeners| l.grpc.local_addr().unwrap().port();
+    let ports = (port(&cpu), port(&gpu));
+    (cpu, gpu, ports)
 }
 
 /// Two shards: `cpu` (pool `default`) and `gpu` (pool `llm`), on loopback ports.
@@ -48,31 +48,26 @@ struct Cluster {
     gpu: TestServer,
 }
 
-fn config(shard: &str, ports: (u16, u16), gpu_endpoint: &str) -> Config {
+/// The server for `shard`; it listens where [`shard_listeners`] says.
+fn config(shard: &str, cpu_port: u16, gpu_endpoint: &str) -> Config {
     let shards = format!(
         "[[shards]]\nname = \"cpu\"\nnumber = 1\npools = [\"default\"]\nendpoint = \"http://127.0.0.1:{}\"\n\
          [[shards]]\nname = \"gpu\"\nnumber = 2\npools = [\"llm\"]\nendpoint = \"{gpu_endpoint}\"\n",
-        ports.0
+        cpu_port
     );
     let mut cfg: Config =
         toml::from_str(&format!("{SERVER}\n{TOKENS}\n{LAYOUT}\n{shards}")).unwrap();
     cfg.server.shard = Some(shard.into());
-    cfg.server.grpc_addr = format!(
-        "127.0.0.1:{}",
-        if shard == "cpu" { ports.0 } else { ports.1 }
-    )
-    .parse()
-    .unwrap();
     cfg
 }
 
 impl Cluster {
     async fn start() -> Cluster {
-        let ports = (free_port(), free_port());
+        let (cpu, gpu, ports) = shard_listeners();
         let gpu_endpoint = format!("http://127.0.0.1:{}", ports.1);
         Cluster {
-            cpu: TestServer::start_cfg(config("cpu", ports, &gpu_endpoint)).await,
-            gpu: TestServer::start_cfg(config("gpu", ports, &gpu_endpoint)).await,
+            cpu: TestServer::start_on(config("cpu", ports.0, &gpu_endpoint), Some(cpu)).await,
+            gpu: TestServer::start_on(config("gpu", ports.0, &gpu_endpoint), Some(gpu)).await,
         }
     }
 
@@ -477,8 +472,9 @@ async fn forwarding_is_limited_to_safe_cases() {
     c.stop().await;
 
     // Tokens are not forwarded over plain http to another host: the caller is sent there.
-    let ports = (free_port(), free_port());
-    let cpu = TestServer::start_cfg(config("cpu", ports, "http://10.255.255.1:7070")).await;
+    let l = listeners();
+    let port = l.grpc.local_addr().unwrap().port();
+    let cpu = TestServer::start_on(config("cpu", port, "http://10.255.255.1:7070"), Some(l)).await;
     let e = cpu
         .tasks(CLIENT)
         .await
@@ -542,12 +538,11 @@ async fn workers_follow_their_pool_to_its_shard() {
 
     // Two servers that each say the other serves `llm` send the worker back and forth until
     // it gives up.
-    let ports = (free_port(), free_port());
-    let cpu = TestServer::start_cfg(config(
-        "cpu",
-        ports,
-        &format!("http://127.0.0.1:{}", ports.1),
-    ))
+    let (cpu_l, gpu_l, ports) = shard_listeners();
+    let cpu = TestServer::start_on(
+        config("cpu", ports.0, &format!("http://127.0.0.1:{}", ports.1)),
+        Some(cpu_l),
+    )
     .await;
     let swapped = format!(
         "{LAYOUT}\n[[pools]]\nname = \"spare\"\nmax = 1\n\
@@ -559,8 +554,7 @@ async fn workers_follow_their_pool_to_its_shard() {
     );
     let mut cfg: Config = toml::from_str(&format!("{SERVER}\n{TOKENS}\n{swapped}")).unwrap();
     cfg.server.shard = Some("gpu".into());
-    cfg.server.grpc_addr = format!("127.0.0.1:{}", ports.1).parse().unwrap();
-    let gpu = TestServer::start_cfg(cfg).await;
+    let gpu = TestServer::start_on(cfg, Some(gpu_l)).await;
     let opts = WorkerOptions::new(cpu.grpc_url(), "llm").token(WORKER);
     let e = tokio::time::timeout(
         Duration::from_secs(20),

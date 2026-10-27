@@ -32,8 +32,8 @@ stay simple: they receive a task, run it, and report the outcome.
   upcoming reservations. Scale-down is damped by a stabilization window, and cost per pool is
   reported directly.
 - **Operational clarity.** Every pool reports utilization, wait percentiles, priority adherence,
-  fixed-start hit rate and cost over a sliding window, as both OpenTelemetry and Prometheus
-  metrics.
+  fixed-start hit rate over a sliding window, and cost accumulated since start, as both
+  OpenTelemetry and Prometheus metrics.
 - **Speed.** The engine handles over a million scheduling decisions per second on one core, so
   it can sit in the hot path of microtask systems as well as hours-long batch jobs.
 - **One engine, three surfaces.** The same scheduling rules apply whether you embed the Rust

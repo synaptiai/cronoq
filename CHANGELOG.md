@@ -7,7 +7,7 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-10-26
 
 First public release. No 0.1.0 was published.
 
@@ -18,7 +18,8 @@ First public release. No 0.1.0 was published.
 - Sans-IO, deterministic engine: every input carries the current time, so the whole scheduler
   runs under virtual time in tests and simulations. Engine time is Unix time in nanoseconds.
 - Four priority classes (critical, high, normal, low), FIFO within a class, and aging so that no
-  class starves. Constant-time dispatch regardless of backlog size.
+  class starves. Dispatch compares the heads of each class's queues and never rescans the
+  backlog.
 - Deadlines with a monotonic urgency curve and earliest-deadline-first ordering within a class.
 - Fixed-start tasks: capacity reservations at admission (`ReservationConflict` when a pool's
   reservable share is full), worker holds with a lead time learned from the pool's run times
@@ -118,9 +119,10 @@ First public release. No 0.1.0 was published.
   to one shard (`[[resources]] shard`), so shards cannot exceed a shared limit together.
   Any server forwards calls for another shard to it with the caller's token (re-checked there;
   never over plain HTTP to another host unless `insecure_peer_http`), and listings, `Watch` and
-  snapshots cover every shard, naming unreachable shards in `unavailable_shards`. The Rust and
-  Python workers follow a refusal to their pool's shard, never from TLS to plain HTTP, and with
-  a token over plain HTTP only to loopback unless `insecure_redirect_http` is set.
+  snapshots cover every shard, naming unreachable shards in `unavailable_shards`. The Rust,
+  Python, Go and TypeScript workers follow a refusal to their pool's shard, never from TLS to
+  plain HTTP, and with a token over plain HTTP only to loopback unless `insecure_redirect_http`
+  is set.
 - gRPC-Web for browser clients on the gRPC listener, off unless `[server.grpc_web]` lists the
   allowed origins: unary calls and `Watch`, the same authentication, CORS only for those origins,
   and in loopback-only mode only loopback hosts.
@@ -135,6 +137,8 @@ First public release. No 0.1.0 was published.
 - Rust worker client (`worker::run_worker`) with slot enforcement, heartbeats, panic isolation,
   reconnect with backoff, TLS/mTLS and graceful drain.
 - `--check` to validate configuration, `--print-proto` to print the API.
+- `cronoq_server::run` and `run_with_listeners`, which serves on listeners the caller has already
+  bound, to embed the server in a Rust program.
 
 #### Command-line tool (`cronoq-cli`)
 
@@ -148,8 +152,9 @@ First public release. No 0.1.0 was published.
 
 #### Python (`cronoq` on PyPI)
 
-- Asyncio-native bindings for the engine with Python payloads (never serialized), sync and
-  async executors, typed stubs and picklable exceptions.
+- Asyncio-native bindings for the engine with Python payloads (kept as Python objects in
+  memory, encoded only for a durable store), sync and async executors, typed stubs and
+  picklable exceptions.
 - Status events (`Scheduler.events()`) with a bounded buffer, lag reporting and
   `on_lag="raise"`.
 - `cronoq.compat.ElasticPriorityScheduler`, a synchronous drop-in for code written against the
@@ -174,9 +179,12 @@ First public release. No 0.1.0 was published.
 
 #### TypeScript SDK (`sdks/typescript`)
 
-- One client for Node (`cronoq/node`, gRPC over HTTP/2) and browsers (`cronoq/web`, gRPC-Web):
-  submit (one task, atomic batches, or submit-and-wait), get, wait for, cancel, list and watch
-  tasks, and read snapshots. Task ids are `bigint`s; errors carry the gRPC code and metadata.
+- Published to GitHub Packages as `@synaptiai/cronoq`; each GitHub release also carries the
+  package tarball.
+- One client for Node (`@synaptiai/cronoq/node`, gRPC over HTTP/2) and browsers
+  (`@synaptiai/cronoq/web`, gRPC-Web): submit (one task, atomic batches, or submit-and-wait),
+  get, wait for, cancel, list and watch tasks, and read snapshots. Task ids are `bigint`s;
+  errors carry the gRPC code and metadata.
 - `runWorker` (Node) serves a pool with slots, heartbeats, reconnects with backoff, draining
   when its signal aborts, aborts that abort the handler's signal, and the attempt number as a
   fencing token. It follows its pool to the right shard under the same rules as the other
@@ -204,10 +212,10 @@ First public release. No 0.1.0 was published.
 #### Project
 
 - Documentation book with concepts, use cases, guides, a benefits and decision guide, and
-  complete configuration, HTTP, gRPC, metrics, Python, Rust and error references.
+  complete configuration, HTTP, gRPC, metrics, Python, Rust, Go, TypeScript and error references.
 - Examples, a distroless container image, CI with deterministic simulation, fuzzing and
-  benchmark gates, wheel tests on every platform, and a release pipeline for crates.io, PyPI,
-  npm (with provenance), GitHub releases, GHCR images and OCI Helm charts.
+  benchmark gates, wheel tests on every platform a wheel is built for, and a release pipeline for crates.io, PyPI, GitHub Packages (the TypeScript SDK, with a
+  provenance attestation), GitHub releases, GHCR images and OCI Helm charts.
 
 ### Security
 
@@ -236,7 +244,8 @@ First public release. No 0.1.0 was published.
   waits, request time, concurrent connections and streams, and worker slots; slow TLS
   handshakes and headers time out.
 - Database errors are logged rather than returned to clients; messages from workers are
-  sanitized; the server warns about database URLs without `sslmode=verify-full`.
+  sanitized; the server warns about non-local database URLs without `sslmode=verify-full` or
+  `verify-ca`.
 
 [Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.2.0

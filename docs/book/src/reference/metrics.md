@@ -8,8 +8,10 @@ cronoq reports three views of the same state:
 - **Snapshots** (`Scheduler::snapshot()`, `await sched.snapshot()`, `GET /v1/snapshot`,
   `Admin.Snapshot`), described in [Metrics and quality signals](../concepts/metrics.md).
 
-Window-based values cover the engine's sliding metrics window: the last 60 seconds, in 12
-buckets.
+Window-based values cover the engine's sliding metrics window, kept in 12 buckets. The window
+is the last 60 seconds by default; the Rust crate sets it with `CoreConfig::metrics_window`
+(through `Builder::configure`), and `cronoq-server` and the Python package always use 60
+seconds.
 
 ## Prometheus (`cronoq-server`)
 

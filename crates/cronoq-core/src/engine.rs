@@ -418,7 +418,8 @@ impl<P> Core<P> {
                 pc.min_workers <= pc.max_workers,
                 "min_workers > max_workers"
             );
-            let initial = pc.initial_workers.clamp(pc.min_workers, pc.max_workers);
+            // `min_workers` bounds the autoscaler only; capacity may start below it.
+            let initial = pc.initial_workers.min(pc.max_workers);
             if let Some(a) = &pc.autoscale {
                 timers.push(Reverse((
                     Time::ZERO + a.interval,

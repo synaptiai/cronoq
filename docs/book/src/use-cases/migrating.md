@@ -36,7 +36,7 @@ a background thread. As in the original, a task "runs" by sleeping for its `dura
 |---|---|---|
 | Fixed-start conflicts | Any two overlapping fixed tasks conflict, regardless of worker count. | Overlaps are allowed up to half of `max_workers` (at least one). |
 | Recorded start of fixed tasks | `max(now, fixed_start)`, even if dispatched early. | The actual dispatch time. |
-| Dependencies | Satisfied only while the parent is among the last 1000 completed tasks. | Tracked exactly; late dependents are resolved from retained statuses. |
+| Dependencies | Satisfied only while the parent is among the last 1000 completed tasks. | Late dependents are resolved from retained terminal statuses (kept for 1 hour by default). |
 | Deadline urgency | Non-monotonic (an overdue task could rank below an almost-due one). | Monotonic; overdue tasks always rank highest within their class. |
 | Scaling trigger | `schedule_quality` thresholds. | Queue pressure; `scale_up_threshold` / `scale_down_threshold` are accepted and ignored. |
 | `schedule_quality` | Divides by the worker count at call time. | Total work ÷ worker-seconds actually provisioned. |
@@ -55,14 +55,15 @@ retries, timeouts, cancellation, resources and per-pool configuration.
 | `Task(..., dependencies=[a, b])` | `submit(..., after=[a, b])` |
 | `ElasticPriorityScheduler(initial_workers, max_workers)` | `Scheduler([Pool("default", run, min=1, initial=i, max=m)])` |
 | `get_metrics()` | `await sched.snapshot()` (per pool: `priority_adherence`, `fixed_start_hit_rate`, `utilization`, wait percentiles, `cost`) |
-| `get_cost()` | `snapshot().pool("default").cost` (set `cost_per_worker_second` in `AutoscaleConfig`) |
+| `get_cost()` | `(await sched.snapshot()).pool("default").cost` (set `cost_per_worker_second` in `AutoscaleConfig`) |
 
 ## What you get
 
 - **A one-line migration.** Existing code keeps its API, threads and call sites; the scheduling
   decisions move to the cronoq engine.
-- **Correct semantics where the prototype was approximate.** Dependencies are tracked exactly,
-  deadline urgency is monotonic, and fixed starts are admitted against real capacity instead of
+- **Correct semantics where the prototype was approximate.** Dependencies are resolved from
+  retained terminal statuses (1 hour by default) instead of the last 1000 completions, deadline
+  urgency is monotonic, and fixed starts are admitted against real capacity instead of
   conflicting whenever two of them overlap.
 - **No polling.** Dispatch is event-driven: a task starts as soon as a worker is free instead of
   on the next 100 ms poll, and an idle scheduler uses no CPU.

@@ -139,11 +139,12 @@ impl Default for AutoscaleConfig {
 pub struct PoolConfig {
     /// Unique pool name.
     pub name: Arc<str>,
-    /// Lower capacity bound for the autoscaler.
+    /// Lower bound on the autoscaler's desired capacity. Capacity itself may be lower, for
+    /// example at start (`initial_workers`) or when it is reported by remote workers.
     pub min_workers: u32,
     /// Upper capacity bound for the autoscaler (also sizes the reservation limit).
     pub max_workers: u32,
-    /// Capacity at start.
+    /// Capacity at start (at most `max_workers`).
     pub initial_workers: u32,
     /// `None` disables autoscaling (capacity changes only via `CapacityChanged`).
     pub autoscale: Option<AutoscaleConfig>,

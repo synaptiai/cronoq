@@ -24,9 +24,9 @@ use cronoq_store_postgres::PgStore;
 # async fn demo(executor: impl cronoq::Executor<Bytes, Bytes>) -> Result<(), Box<dyn std::error::Error>> {
 let store = PgStore::connect("postgres://cronoq@db/cronoq").await?; // applies the schema
 let sched = Scheduler::<Bytes, Bytes>::builder()
-    .store(store)                    // blocks until this instance is the leader
+    .store(store)
     .pool(Pool::new("default").executor(executor))
-    .build()
+    .build()                         // blocks until this instance is the leader
     .await?;
 # Ok(()) }
 ```

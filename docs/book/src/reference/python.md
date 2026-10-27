@@ -5,7 +5,9 @@ pip install cronoq            # embedded scheduler (module: cronoq)
 pip install "cronoq[client]"  # + cronoq.client: gRPC client and remote worker for cronoq-server
 ```
 
-Wheels use the stable ABI (`abi3`, CPython 3.14+) for Linux, macOS and Windows. Type stubs ship
+Wheels use the stable ABI (`abi3`, CPython 3.14+) for Linux, macOS and Windows, on x86_64 and
+arm64. The `client` extra needs `grpcio`, which has no prebuilt wheel for Windows on arm64, so
+there pip tries to build it from source. Type stubs ship
 with the package (`py.typed`). Durations are seconds
 (`float`); absolute times accept a `datetime` or Unix seconds. Invalid durations or
 configuration (negative, NaN, out of range) raise `ValueError`.
@@ -27,7 +29,7 @@ Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
 | `shutdown_grace` | Seconds running attempts get when leaving `async with`. |
 | `event_capacity` | Buffer of each `events()` stream. |
 | `store` | Keep state in a SQLite file so it survives restarts; see [`SqliteStore`](#cronoqsqlitestore). |
-| `codec` | How payloads and results are turned into bytes for the store (an object with `encode(obj) -> bytes` and `decode(bytes) -> obj`). Default: `JsonCodec`. Needs `store`. |
+| `codec` | How payloads and results are turned into bytes for the store: any object matching the `cronoq.Codec` protocol (`encode(obj) -> bytes` and `decode(bytes) -> obj`). Default: `JsonCodec`. Needs `store`. |
 
 A scheduler is bound to the event loop that starts it. If that loop closes without a shutdown,
 the scheduler stops and further calls raise `SchedulerError`; calls before `start()` raise
@@ -45,7 +47,7 @@ the scheduler stops and further calls raise `SchedulerError`; calls before `star
 | `await snapshot()` | `Snapshot` | Metrics and quality signals. |
 | `await set_capacity(pool, n)` | | Report capacity for externally managed pools. |
 | `await set_group_capacity(pool, labels, n)` | | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
-| `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"`, `"allow"`, `"queue"` or `"queue_on_success"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `key` (a prefix: each occurrence gets `"<key>@<start in UTC>"`), `deadline_in` (relative to each occurrence's start), `duration_hint`, `timeout`, `retry`, `resources`, `tags`. |
+| `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"`, `"allow"`, `"queue"` or `"queue_on_success"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `key` (a prefix: each occurrence gets `"<key>@<start in UTC>"`), `deadline_in` (relative to each occurrence's start), `duration_hint`, `timeout`, `retry`, `resources`, `tags`, `labels`, `tenant`. |
 | `await remove_recurring(name)` | `bool` | `False` if no such schedule. |
 | `events(on_lag="skip")` | `EventStream` | Status events; see [below](#status-events). |
 | `await shutdown(grace=5.0)` | | Stop admitting, let running attempts finish for `grace` seconds, then stop. |
@@ -142,7 +144,7 @@ Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=N
 | `retry` | Default `RetryPolicy` (3 attempts, exponential backoff). |
 | `unknown_dependency`, `await_timeout` | `"reject"` unknown dependency keys, or `"await"` them for up to `await_timeout` seconds. |
 | `default_duration` | Duration assumed for tasks without `duration_hint`. |
-| `reservable_fraction` | Share of `max` that fixed-start reservations may use, in `(0, 1]`. |
+| `reservable_fraction` | Share of `max` that fixed-start reservations may use, in `[0, 1]`; `0` is treated as the default `0.5`. |
 
 A sync executor cannot be interrupted: on timeout or cancellation the attempt is aborted, but
 the function keeps running until it returns. Check `ctx.is_cancelled()` in long-running sync
@@ -153,6 +155,7 @@ executors.
 | Type | Description |
 |---|---|
 | `Priority` | `CRITICAL`, `HIGH`, `NORMAL`, `LOW`; ordered, hashable, `.name`, `.value`, `int()`. |
+| `Codec`, `JsonCodec` | `Codec` is the protocol a store codec implements (`encode(obj) -> bytes`, `decode(bytes) -> obj`); `JsonCodec` is the default implementation. |
 | `Task(payload, **options)` | A task for `submit_batch`. |
 | `Dep(target, on="success")` | Dependency; `on` is `"success"`, `"failure"` or `"complete"` (`"on_"` prefix accepted). |
 | `RetryPolicy(max_attempts=3, initial_backoff=1.0, multiplier=2.0, max_backoff=60.0, jitter=True)` | `RetryPolicy.none()` disables retries. |
@@ -163,6 +166,8 @@ executors.
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
 | `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`. |
 | `StatusEvent`, `EventStream` | See [status events](#status-events). |
+
+`cronoq.__version__` is the package version as a string.
 
 ## Exceptions
 
@@ -220,7 +225,9 @@ Result types (frozen dataclasses):
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message` |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
-| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`; `.pending` |
+| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first); `.pending` |
+| `WorkerGroup` | `labels`, `capacity`, `busy`: the connected workers of a pool that registered the same labels |
+| `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions` (counters since the leader started) |
 
 Failed calls raise `ClientError`: `.code` is the lower-case gRPC status name and `.retryable`
 is true for `unavailable` and `resource_exhausted`. A `watch` stream ends with `ClientError`
@@ -235,8 +242,17 @@ Builds a `TaskSpec` for `submit_batch` and `add_recurring`. Options: `pool`, `ki
 (`(ref, "on_success")` tuples or dicts), `resources`, `tags`, `labels` (worker labels the
 task requires), `tenant`, `content_type`.
 
-Payloads: `bytes` are sent as-is, `str` as UTF-8 text, other values as JSON
-(`application/json`). Worker outputs are encoded the same way.
+Payloads are encoded by type:
+
+| Payload | Bytes sent | Content type |
+|---|---|---|
+| `bytes`, `bytearray`, `memoryview` | as-is | `application/octet-stream` |
+| `str` | UTF-8 | `text/plain; charset=utf-8` |
+| `None` | empty | none |
+| anything else | JSON | `application/json` |
+
+`content_type=` overrides the content type. Worker outputs are encoded the same way (without
+an override). `Result.json()` returns `None` for an empty output.
 
 ### `Worker(target, pool, handler, *, slots=1, token=None, name="", tls=False, credentials=None, reconnect=True, backoff=(0.1, 5.0), grace=10.0, options=None, labels=None, insecure_redirect_http=False)`
 
@@ -258,7 +274,7 @@ output, or raises:
 |---|---|
 | `cronoq.Retryable(msg, retry_after=s)` or any other exception | Retryable failure. |
 | `cronoq.Permanent(msg)` | Permanent failure. |
-| `cronoq.client.Reject(reason)` | Hand the lease back unrun (`Nack`); the server offers it to another worker. |
+| `cronoq.client.Reject(reason)` | Hand the lease back unrun (`Nack`); the server offers it to another worker of the pool with the same labels that has a free slot and has not already refused it. If there is none, the attempt fails as retryable and counts against the task's retries. |
 | `cronoq.client.CancelTask(msg)` | End the task as `cancelled`. |
 
 The worker heartbeats each running lease every `lease_ttl / 3`. When the server aborts an

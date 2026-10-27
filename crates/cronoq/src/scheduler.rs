@@ -190,8 +190,9 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         self.pipeline.drop_grace = d;
         self
     }
-    /// How many recent outputs are kept for handles attached after a task succeeded, e.g.
-    /// duplicate submissions (default 1024; 0 disables). Stores can also serve older ones.
+    /// How many recent results are kept for handles attached after a task finished, e.g.
+    /// duplicate submissions: outputs of tasks that succeeded and messages of tasks that ended
+    /// otherwise (default 1024; 0 disables). Stores can also serve older outputs.
     pub fn output_cache(mut self, n: usize) -> Self {
         self.pipeline.output_cache = n;
         self
@@ -462,7 +463,9 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         self.call(|reply| Cmd::Cancel { target, reply }).await?
     }
 
-    /// Current status of a task (live or recently finished).
+    /// Current status of a task (live or recently finished), as the engine holds it. With a
+    /// durable store this can report a terminal status shortly before that status is committed;
+    /// a [`TaskHandle`] resolves, and [`Scheduler::events`] report the change, only after it is.
     pub async fn status(&self, target: impl Into<TaskRef>) -> Result<Option<TaskStatus>, Error> {
         let target = target.into();
         self.call(|reply| Cmd::Status { target, reply }).await

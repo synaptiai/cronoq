@@ -2,9 +2,10 @@
 
 The HTTP gateway exposes the client side of the gRPC API as JSON, so any language with an HTTP
 client can submit and inspect work. It listens on `server.http_addr` (default
-`127.0.0.1:7071`). All `/v1` routes need `authorization: Bearer <token>` with the `client` role
-(or `admin`) when authentication is enabled, and request bodies need
-`content-type: application/json`.
+`127.0.0.1:7071`). When authentication is enabled, every `/v1` route needs
+`authorization: Bearer <token>`: the `/v1/tasks` routes need the `client` role, and
+`/v1/snapshot`, `/v1/workers` and `/v1/recurring` need the `metrics` role (`admin` works for all
+of them). Request bodies need `content-type: application/json`.
 
 ```sh
 export CRONOQ=http://localhost:7071
@@ -27,7 +28,7 @@ curl -s $CRONOQ/v1/tasks -H "$AUTH" -H "$JSON" -d '{
   "resources": {"openai": 1},
   "tags": {"tenant": "acme"}
 }'
-# {"id":"17","duplicate":false}
+# {"duplicate":false,"id":"17"}
 ```
 
 - `payload` is any JSON value (sent to workers as `application/json`); use `payload_b64` for
@@ -46,7 +47,7 @@ curl -s "$CRONOQ/v1/tasks:batch" -H "$AUTH" -H "$JSON" -d '{"tasks": [
   {"payload": "load", "key": "load", "after": ["extract"]},
   {"payload": "alert", "deps": [{"key": "load", "cond": "on_failure"}]}
 ]}'
-# {"tasks":[{"id":"18","duplicate":false},{"id":"19","duplicate":false},{"id":"20","duplicate":false}]}
+# {"tasks":[{"duplicate":false,"id":"18"},{"duplicate":false,"id":"19"},{"duplicate":false,"id":"20"}]}
 ```
 
 `after` accepts keys (strings) and ids (`{"id": "18"}` or a number). A batch is all-or-nothing,
@@ -60,10 +61,10 @@ Ids and keys have separate routes:
 ```sh
 curl -s $CRONOQ/v1/tasks/17 -H "$AUTH"
 curl -s $CRONOQ/v1/tasks/by-key/summary-42 -H "$AUTH"
-# {"id":"17","status":"running","pool":"llm","key":"summary-42","kind":"summarize","attempt":1,...}
+# {"attempt":1,...,"id":"17","key":"summary-42","kind":"summarize",...,"pool":"llm",...,"status":"running"}
 
 curl -s "$CRONOQ/v1/tasks/17/result?timeout_s=60" -H "$AUTH"
-# {"id":"17","status":"succeeded","output_available":true,"output":{...},"output_b64":"..."}
+# {"id":"17","output":{...},"output_available":true,"output_b64":"...","status":"succeeded"}
 
 curl -s -X DELETE $CRONOQ/v1/tasks/by-key/summary-42 -H "$AUTH"
 # {"cancelled":true}

@@ -1,6 +1,6 @@
 name: Benchmarks
 
-# Wall-clock targets from SPEC §1, checked on a dedicated runner. Shared CI machines are too
+# Wall-clock targets from SPEC §1, checked on GitHub's shared runners. They are too
 # noisy for tight thresholds, so this gates on the absolute targets with headroom and records
 # the criterion reports as artifacts.
 on:

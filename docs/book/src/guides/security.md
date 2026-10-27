@@ -10,7 +10,7 @@ This guide is the checklist for running `cronoq-server` outside a laptop. The th
 |---|---|---|
 | `client` | Submit, batch, cancel, get, wait, watch (`Tasks`, `/v1/tasks*`) | Serve pools, read metrics, manage schedules |
 | `worker` | Open `Workers/Work` streams and receive leases of its pools; report outcomes for its own leases | Submit or read tasks |
-| `metrics` | `Admin.Snapshot`, `/v1/snapshot`, `/metrics` | Anything that touches tasks |
+| `metrics` | `Admin.Snapshot`, `Admin.ListWorkers`, `Admin.ListRecurring`; `/v1/snapshot`, `/v1/workers`, `/v1/recurring`, `/metrics` | Anything that touches tasks |
 | `admin` | Everything, including `Admin.AddRecurring` / `RemoveRecurring` | – |
 | no credentials | `/healthz`, `/readyz`, and `/metrics` on `metrics_addr` | Anything else |
 

@@ -5,7 +5,7 @@ name: Release
 #   - crates to crates.io (trusted publishing, environment `crates-io`)
 #   - cronoq-server binaries and wheels to a GitHub release
 #   - multi-arch container images to ghcr.io/<owner>/cronoq and ghcr.io/<owner>/cronoq-operator
-#   - the TypeScript SDK to npm as `cronoq` (environment `npm`, with provenance)
+#   - the TypeScript SDK to GitHub Packages as `@synaptiai/cronoq`, with a provenance attestation
 #   - the Helm charts to oci://ghcr.io/<owner>/charts
 # Before the first release, set up the registries as RELEASING.md describes. A dry run builds,
 # tests and packages everything and publishes nothing.
@@ -111,13 +111,17 @@ jobs:
         include:
           - { os: ubuntu-24.04, artifact: wheels-ubuntu-24.04-x86_64, python: "3.14" }
           - { os: ubuntu-24.04, artifact: wheels-ubuntu-24.04-x86_64, python: "3.15" }
+          - { os: ubuntu-24.04-arm, artifact: wheels-ubuntu-24.04-aarch64, python: "3.14" }
           - { os: macos-15-intel, artifact: wheels-macos-15-intel-x86_64, python: "3.14" }
           - { os: macos-14, artifact: wheels-macos-14-aarch64, python: "3.14" }
           - { os: macos-14, artifact: wheels-macos-14-aarch64, python: "3.15" }
           - { os: windows-2022, artifact: wheels-windows-2022-x64, python: "3.14" }
           - { os: windows-2022, artifact: wheels-windows-2022-x64, python: "3.15" }
+          # grpcio has no Windows ARM wheel to install, so only the engine bindings are tested there.
+          - { os: windows-11-arm, artifact: wheels-windows-11-arm-aarch64, python: "3.14", extras: none }
     env:
       CRONOQ_REQUIRE_SERVER: "1"
+      CRONOQ_WHEEL_EXTRAS: ${{ matrix.extras || 'client' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -226,13 +230,51 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
         if: env.BOOTSTRAP_TOKEN == ''
         id: auth
-      # Publishes in dependency order; crates with `publish = false` are skipped.
-      - run: cargo publish --workspace
+      # One crate at a time, in dependency order (crates with `publish = false` are skipped).
+      # crates.io limits how fast new crates can be created, so a rate-limited publish waits and
+      # tries again, and versions already on crates.io are skipped, so a re-run finishes the job.
+      - name: Publish crates
+        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || env.BOOTSTRAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          crates=$(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, sys
+          ws = {p["name"]: p for p in json.load(sys.stdin)["packages"] if p.get("publish") is None}
+          deps = {n: {d["name"] for d in p["dependencies"] if d["name"] in ws and d["kind"] != "dev"} for n, p in ws.items()}
+          done = []
+          while len(done) < len(ws):
+              ready = sorted(n for n in ws if n not in done and deps[n] <= set(done))
+              if not ready:
+                  sys.exit("dependency cycle between workspace crates")
+              done += ready
+          print(" ".join(done))')
+          for crate in $crates; do
+            if curl -sf -A "cronoq-release (github.com/synaptiai/cronoq)" \
+                "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
+              echo "$crate $version is already on crates.io"
+              continue
+            fi
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if cargo publish -p "$crate" 2> publish.log; then
+                cat publish.log
+                continue 2
+              fi
+              cat publish.log
+              if ! grep -qiE "429|too many requests|rate limit" publish.log; then
+                exit 1
+              fi
+              echo "crates.io rate limit; waiting 10 minutes (attempt $attempt)"
+              sleep 600
+            done
+            echo "$crate: still rate limited after 10 attempts"
+            exit 1
+          done
 
   container:
-    needs: verify
+    # Images (and the charts, which wait for them) are pushed only after the wheel tests pass.
+    needs: [verify, test-wheels]
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -297,12 +339,11 @@ jobs:
           cache: npm
           cache-dependency-path: sdks/typescript/package-lock.json
       - run: npm ci
-      # Builds through `prepack`; the tarball is what `npm publish` uploads. It is renamed so that
-      # it cannot collide with the server chart's cronoq-X.Y.Z.tgz in the release assets.
+      # Builds through `prepack`; the tarball (synaptiai-cronoq-X.Y.Z.tgz) is what `npm publish`
+      # uploads, and it is also attached to the GitHub release.
       - run: |
           mkdir -p "$RUNNER_TEMP/npm"
           npm pack --pack-destination "$RUNNER_TEMP/npm"
-          for f in "$RUNNER_TEMP"/npm/cronoq-*.tgz; do mv "$f" "$RUNNER_TEMP/npm/npm-$(basename "$f")"; done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-package
@@ -312,27 +353,26 @@ jobs:
     needs: [npm-package, test-wheels]
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.dry_run == false)
     runs-on: ubuntu-24.04
-    environment: npm
     permissions:
       contents: read
+      packages: write
       id-token: write
+      attestations: write
     env:
-      # npm trusted publishing can only be configured for a package that exists, so the first
-      # release uses a token stored as the environment secret NPM_TOKEN. Delete the secret once
-      # trusted publishing is configured (see RELEASING.md).
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # GitHub Packages accepts the workflow's own token for a package linked to this repository
+      # (the `repository` field of package.json).
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-          registry-url: https://registry.npmjs.org
-      # Trusted publishing (OIDC) needs npm 11.5.1 or newer.
-      - run: npm install -g npm@11.21.0
+          registry-url: https://npm.pkg.github.com
+          scope: "@synaptiai"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: npm-package
           path: npm
-      - name: Refuse a tarball that does not match the tag, or a version already on npm
+      - name: Refuse a tarball that does not match the tag, or a version already published
         # bash with pipefail: a failing tar stops the step.
         shell: bash
         run: |
@@ -340,12 +380,18 @@ jobs:
           tarballs=(npm/*.tgz)
           test "${#tarballs[@]}" -eq 1 || { echo "expected one npm tarball, found ${#tarballs[@]}"; exit 1; }
           tag="${GITHUB_REF_NAME#v}"
-          version=$(tar -xOzf "${tarballs[0]}" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
+          meta=$(tar -xOzf "${tarballs[0]}" package/package.json)
+          name=$(node -p 'JSON.parse(require("fs").readFileSync(0)).name' <<<"$meta")
+          version=$(node -p 'JSON.parse(require("fs").readFileSync(0)).version' <<<"$meta")
           test "$version" = "$tag" || { echo "the tarball is version $version, the tag is $tag"; exit 1; }
-          if npm view "cronoq@$version" version >/dev/null 2>&1; then
-            echo "cronoq@$version is already on npm"; exit 1
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published"; exit 1
           fi
-      - run: npm publish npm/*.tgz --access public --provenance
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: npm/*.tgz
+      # `./`: without it, npm reads `npm/<file>.tgz` as a GitHub repository (owner/repo).
+      - run: npm publish ./npm/*.tgz
 
   charts:
     needs: [verify, container]
@@ -401,4 +447,5 @@ jobs:
             artifacts/*.whl
             artifacts/cronoq-[0-9]*.tgz
             artifacts/cronoq-operator-[0-9]*.tgz
+            artifacts/synaptiai-cronoq-[0-9]*.tgz
             artifacts/*.tar.gz

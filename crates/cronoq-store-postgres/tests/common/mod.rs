@@ -79,20 +79,36 @@ impl TestPg {
             ]);
             c
         });
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        run({
+        // PostgreSQL binds the port itself, so another process can take it between choosing and
+        // binding; start again on a new port when that happens.
+        let log = dir.join("log");
+        let mut attempts = 0;
+        let port = loop {
+            attempts += 1;
+            let port = TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let _ = std::fs::remove_file(&log);
             let mut c = pg_cmd("pg_ctl");
-            c.arg("-D").arg(&data).arg("-l").arg(dir.join("log")).arg("-w").arg("-o").arg(format!(
+            c.arg("-D").arg(&data).arg("-l").arg(&log).arg("-w").arg("-o").arg(format!(
                 "-p {port} -c listen_addresses=127.0.0.1 -k {} -c fsync=off -c synchronous_commit=off",
                 dir.display()
             ));
             c.arg("start");
-            c
-        });
+            let out = c.output().expect("spawn");
+            if out.status.success() {
+                break port;
+            }
+            let server_log = std::fs::read_to_string(&log).unwrap_or_default();
+            assert!(
+                attempts < 3 && server_log.contains("Address already in use"),
+                "{c:?} failed: {}{}{server_log}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
         Some(TestPg {
             dir,
             url: format!("postgres://postgres@127.0.0.1:{port}/postgres"),

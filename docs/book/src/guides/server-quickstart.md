@@ -37,13 +37,12 @@ From source:
 cargo run --release -p cronoq-server -- --config deploy/cronoq.example.toml
 ```
 
-Or with Docker (the image contains the same example configuration):
+Or with the released container image, which contains the same example configuration:
 
 ```sh
-docker build -t cronoq .
 docker run --rm -p 7070:7070 -p 7071:7071 \
   -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
-  cronoq
+  ghcr.io/synaptiai/cronoq:0.2.0
 ```
 
 The [example configuration](https://github.com/synaptiai/cronoq/blob/main/deploy/cronoq.example.toml)
@@ -112,7 +111,7 @@ curl -s localhost:7071/v1/tasks \
 ```
 
 ```json
-{"id":"1","duplicate":false,"result":{"id":"1","status":"succeeded","output_available":true,"output":{"echo":{"hello":"world"},"attempt":1},"output_b64":"..."}}
+{"duplicate":false,"id":"1","result":{"id":"1","output":{"attempt":1,"echo":{"hello":"world"}},"output_available":true,"output_b64":"...","status":"succeeded"}}
 ```
 
 Task ids are strings in JSON, because they are 64-bit.
@@ -120,13 +119,16 @@ Task ids are strings in JSON, because they are 64-bit.
 With the Python client:
 
 ```python
-import os
+import asyncio, os
 from cronoq.client import Client
 
-async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
-    sub = await c.submit({"hello": "world"}, priority="high", key="hello-1")
-    result = await c.wait(sub.id, timeout=30)
-    print(result.status, result.json())
+async def main():
+    async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
+        sub = await c.submit({"hello": "world"}, priority="high", key="hello-1")
+        result = await c.wait(sub.id, timeout=30)
+        print(result.status, result.json())
+
+asyncio.run(main())
 ```
 
 Submitting again with the same `key` returns the same task (`duplicate = true`), so retries

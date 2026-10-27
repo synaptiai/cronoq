@@ -733,8 +733,15 @@ pub async fn scheduler_resumes_after_restart_without_rerunning_finished_work<H: 
         .await
         .unwrap();
     assert_eq!(s2.status("a").await.unwrap(), Some(TaskStatus::Succeeded));
+    // Wait on handles, not `status`: `status` reads the engine, which reports a task succeeded
+    // before its terminal mutation is committed, while a handle resolves only after that commit.
     for p in ["b", "c", "d"] {
-        until_status(&s2, p, TaskStatus::Succeeded).await;
+        let h = s2.handle(p).await.unwrap().expect("recovered task");
+        let out = tokio::time::timeout(Duration::from_secs(10), h)
+            .await
+            .unwrap_or_else(|_| panic!("{p} did not finish"))
+            .unwrap();
+        assert_eq!(*out, Bytes::from(format!("out:{p}")));
     }
     let counts = runs.lock().unwrap().clone();
     assert_eq!(counts["a"], 1, "finished work is not re-run");
