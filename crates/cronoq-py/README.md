@@ -15,12 +15,13 @@ pip install cronoq
 
 ## Why
 
-- **Important work first, nothing starves.** Four priority classes with aging; deadlines raise
+- **Important work first, and batch work still finishes.** Four priority classes; aging lets
+  long-waiting background work overtake a steady stream of ordinary work, and deadlines raise
   urgency as they approach.
 - **Respect rate limits.** Token buckets and semaphores shared across pools gate dispatch, so a
   burst never turns into a 429 storm; `Retryable(retry_after=...)` honours `Retry-After`.
-- **Scheduled jobs that start on time.** Fixed-start tasks reserve capacity and get a worker held
-  for them; cron schedules with time zones.
+- **Scheduled jobs with capacity kept for them.** Fixed-start tasks reserve capacity ahead of
+  their start and get a worker held for them; cron schedules with time zones.
 - **Pipelines without glue code.** Dependencies by key with success/failure/completion edges,
   atomic batches, idempotent keys.
 - **Elastic concurrency.** Pools scale between `min` and `max` from queue pressure and wait-time
@@ -117,7 +118,8 @@ More: [Python quickstart](https://synaptiai.github.io/cronoq/guides/python-quick
 pip install "cronoq[client]"
 ```
 
-The extra installs `grpcio`, which has no prebuilt wheel for Windows on arm64.
+The extra installs `grpcio`, which has no prebuilt wheel for Windows on arm64. The tour below
+uses top-level `await`: run it with `python -m asyncio`, or put it inside an `async def`.
 
 ```python
 import os
