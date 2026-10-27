@@ -50,7 +50,8 @@ Measured on a shared 4-vCPU VM:
 
 ## What you get
 
-- **Scheduling overhead in the microseconds**, growing only with the logarithm of the backlog.
+- **Scheduling overhead in the microseconds**: choosing the next task looks only at queue heads,
+  so a deep backlog barely slows it down.
 - **All the scheduling rules still apply** (priorities, deadlines, resources, retries) at this
   rate.
 - **Backpressure** via bounded queues instead of unbounded memory growth during spikes.
