@@ -35,6 +35,12 @@ by a tag with that prefix).
    release workflow uses it when present. After the first release, add a trusted publisher to
    every crate (repository `synaptiai/cronoq`, workflow `release.yml`, environment `crates-io`),
    then delete the secret and revoke the token.
+
+   A crate added to the workspace later needs the same steps before the release that first
+   includes it: a trusted-publishing token cannot create a crate, and it covers only crates with
+   their own trusted publisher. Without them, the crates job stops at that crate after publishing
+   the crates before it. Publish the new crate's first version by hand (`cargo publish -p
+   <crate>`, logged in as an owner), add its trusted publisher, then tag the release.
 4. **GitHub Packages (npm).** The workflow publishes `@synaptiai/cronoq` with the built-in
    `GITHUB_TOKEN`; the `repository` field of `sdks/typescript/package.json` links the package to
    this repository, which is what lets that token publish it. The scope must stay the name of the
@@ -107,6 +113,10 @@ without publishing.
   release.
 - A partially published release (for example crates published, PyPI failed) can be completed by
   re-running the failed jobs of the same workflow run.
+- If crates.io answers `403 Forbidden: The provided access token is not valid for crate <crate>`,
+  that crate has no trusted publisher matching the run (owner `synaptiai`, repository `cronoq`,
+  workflow `release.yml`; the workflow name must match exactly). Fix its entry on crates.io, then
+  re-run the failed jobs; crates already published are skipped.
 - A re-run uses the workflow file of the tagged commit, so it cannot pick up a fix to a publish
   step. If the TypeScript package failed to publish because of such a fix, merge the fix, re-run
   any other failed publish jobs, then run the *Finish release* workflow on `main` with the tag and
