@@ -23,7 +23,7 @@ Each [GitHub release](https://github.com/synaptiai/cronoq/releases) also carries
 tarball, which installs without a token:
 
 ```sh
-npm install https://github.com/synaptiai/cronoq/releases/download/v0.2.0/synaptiai-cronoq-0.2.0.tgz
+npm install https://github.com/synaptiai/cronoq/releases/download/v0.2.1/synaptiai-cronoq-0.2.1.tgz
 ```
 
 ## Submitting and waiting

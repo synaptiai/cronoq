@@ -14,7 +14,7 @@ keywords = ["scheduler", "postgres", "leader-election", "fencing"]
 categories = ["database", "concurrency"]
 
 [dependencies]
-cronoq = { path = "../cronoq", version = "0.2.0", default-features = false, features = ["store-codec"] }
+cronoq = { path = "../cronoq", version = "0.2.1", default-features = false, features = ["store-codec"] }
 cronoq-core.workspace = true
 async-trait = "0.1"
 bytes = "1"
