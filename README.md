@@ -7,9 +7,9 @@
 
 <p align="center">
   <a href="https://github.com/synaptiai/cronoq/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/synaptiai/cronoq/ci.yml?branch=main&label=CI"></a>
-  <a href="https://crates.io/crates/cronoq"><img alt="crates.io" src="https://img.shields.io/crates/v/cronoq.svg"></a>
+  <a href="https://crates.io/crates/cronoq"><img alt="crates.io" src="https://img.shields.io/crates/v/cronoq"></a>
   <a href="https://docs.rs/cronoq"><img alt="docs.rs" src="https://img.shields.io/docsrs/cronoq"></a>
-  <a href="https://pypi.org/project/cronoq/"><img alt="PyPI" src="https://img.shields.io/pypi/v/cronoq.svg"></a>
+  <a href="https://pypi.org/project/cronoq/"><img alt="PyPI" src="https://img.shields.io/pypi/v/cronoq"></a>
   <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.94-blue">
   <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
 </p>
@@ -113,6 +113,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ### Python
+
+After `pip install cronoq`:
 
 ```python
 import asyncio, cronoq
@@ -248,20 +250,22 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 
 ## Repository layout
 
-| Crate | Description |
+| Path | Description |
 |---|---|
-| [`cronoq-core`](crates/cronoq-core) | Sans-IO scheduling engine |
-| [`cronoq`](crates/cronoq) | Tokio runtime and Rust API |
-| [`cronoq-store-postgres`](crates/cronoq-store-postgres) | Durable store with leader election and fencing |
-| [`cronoq-store-sqlite`](crates/cronoq-store-sqlite) | Durable store in a local file, with standby processes and fencing |
-| [`cronoq-proto`](crates/cronoq-proto) | Protobuf definitions and generated gRPC code |
-| [`cronoq-server`](crates/cronoq-server) | gRPC/HTTP server, remote workers, Rust worker client |
-| [`cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
-| [`cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client |
+| [`crates/cronoq-core`](crates/cronoq-core) | Sans-IO scheduling engine |
+| [`crates/cronoq`](crates/cronoq) | Tokio runtime and Rust API |
+| [`crates/cronoq-store-postgres`](crates/cronoq-store-postgres) | Durable store with leader election and fencing |
+| [`crates/cronoq-store-sqlite`](crates/cronoq-store-sqlite) | Durable store in a local file, with standby processes and fencing |
+| [`crates/cronoq-store-tests`](crates/cronoq-store-tests) | Conformance tests every durable store passes (not published) |
+| [`crates/cronoq-proto`](crates/cronoq-proto) | Protobuf definitions and generated gRPC code |
+| [`crates/cronoq-server`](crates/cronoq-server) | gRPC/HTTP server, remote workers, Rust worker client |
+| [`crates/cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
+| [`crates/cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client (`cronoq` on PyPI) |
+| [`crates/cronoq-operator`](crates/cronoq-operator) | Kubernetes operator that scales worker Deployments (published as an image) |
 | [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
 | [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `@synaptiai/cronoq`) |
-| [`cronoq-operator`](crates/cronoq-operator) | Kubernetes operator that scales worker Deployments |
-| [`deploy/helm`](deploy/helm) | Helm charts for the server and the operator |
+| [`deploy`](deploy) | Example server configuration and the Helm charts for the server and the operator |
+| [`docs`](docs) | The book's source and the design document |
 
 ## Community
 
