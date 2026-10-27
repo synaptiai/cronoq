@@ -49,15 +49,27 @@ test("loopback means the host the connection uses", () => {
 
 test("workers follow their pool to its shard", { skip: bin === undefined && "cronoq-server not built" }, async () => {
   const pools = '\n[[pools]]\nname = "default"\nmax = 4\n[[pools]]\nname = "llm"\nmax = 4\n[[pools]]\nname = "spare"\nmax = 1\n';
-  const [cpuGrpc, cpuHttp, gpuGrpc, gpuHttp] = [await freePort(), await freePort(), await freePort(), await freePort()];
-  const layout = (cpuPools: string, gpuPools: string) =>
-    `${pools}\n[[shards]]\nname = "cpu"\nnumber = 1\npools = ${cpuPools}\nendpoint = "http://127.0.0.1:${cpuGrpc}"\n` +
-    `[[shards]]\nname = "gpu"\nnumber = 2\npools = ${gpuPools}\nendpoint = "http://127.0.0.1:${gpuGrpc}"\n`;
-  const shared = layout('["default", "spare"]', '["llm"]');
-  const cpu = new Server(bin!, cpuGrpc, cpuHttp, 'shard = "cpu"', shared);
-  const gpu = new Server(bin!, gpuGrpc, gpuHttp, 'shard = "gpu"', shared);
-  await cpu.start();
-  await gpu.start();
+  // Each shard's configuration names the other's port, so the ports are chosen up front. Another
+  // process can take one before a server binds it; then both start again on new ports.
+  let cpu: Server, gpu: Server, layout: (cpuPools: string, gpuPools: string) => string;
+  for (let attempt = 1; ; attempt++) {
+    const [cpuGrpc, cpuHttp, gpuGrpc, gpuHttp] = [await freePort(), await freePort(), await freePort(), await freePort()];
+    layout = (cpuPools, gpuPools) =>
+      `${pools}\n[[shards]]\nname = "cpu"\nnumber = 1\npools = ${cpuPools}\nendpoint = "http://127.0.0.1:${cpuGrpc}"\n` +
+      `[[shards]]\nname = "gpu"\nnumber = 2\npools = ${gpuPools}\nendpoint = "http://127.0.0.1:${gpuGrpc}"\n`;
+    const shared = layout('["default", "spare"]', '["llm"]');
+    cpu = new Server(bin!, cpuGrpc, cpuHttp, 'shard = "cpu"', shared);
+    gpu = new Server(bin!, gpuGrpc, gpuHttp, 'shard = "gpu"', shared);
+    try {
+      await cpu.start();
+      await gpu.start();
+      break;
+    } catch (e) {
+      await cpu.stop();
+      await gpu.stop();
+      if (attempt === 3 || !String(e).includes("Address already in use")) throw e;
+    }
+  }
   try {
     // Pointed at cpu, a worker for pool llm registers with gpu and runs its tasks.
     const ac = new AbortController();
