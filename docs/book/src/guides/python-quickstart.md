@@ -151,18 +151,28 @@ With the `client` extra, `cronoq.client.Client` submits work to a `cronoq-server
 `cronoq.client.Worker` serves a pool:
 
 ```python
-import os
-from cronoq.client import Client, Worker
-
-async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
-    sub = await c.submit({"prompt": "hi"}, pool="llm", priority="high", wait=True)
-    print(sub.result.json())
+# worker.py: serves the pool until stopped
+import asyncio, os
+from cronoq.client import Worker
 
 async def handle(lease):
     return {"answer": lease.json()}
 
-await Worker("localhost:7070", "llm", handle, slots=8,
-             token=os.environ["CRONOQ_WORKER_TOKEN"]).run()
+asyncio.run(Worker("localhost:7070", "llm", handle, slots=8,
+                   token=os.environ["CRONOQ_WORKER_TOKEN"]).run())
+```
+
+```python
+# client.py: submits a task and waits for its result
+import asyncio, os
+from cronoq.client import Client
+
+async def main():
+    async with Client("localhost:7070", token=os.environ["CRONOQ_CLIENT_TOKEN"]) as c:
+        sub = await c.submit({"prompt": "hi"}, pool="llm", priority="high", wait=True)
+        print(sub.result.json())
+
+asyncio.run(main())
 ```
 
 See [Writing executors and workers](workers.md), the [server quickstart](server-quickstart.md)

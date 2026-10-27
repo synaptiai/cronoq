@@ -5,15 +5,17 @@
 Releases publish a multi-architecture image (`linux/amd64`, `linux/arm64`) to
 `ghcr.io/synaptiai/cronoq`, tagged with the version (`0.2.0`) and the minor series (`0.2`).
 The image is distroless: it contains the `cronoq-server` binary, the `cronoq` CLI and the example
-configuration, runs as a non-root user, and has no shell or curl. Build it yourself with:
+configuration, runs as a non-root user, and has no shell or curl. Run it with your own
+configuration:
 
 ```sh
-docker build -t cronoq .
 docker run -p 7070:7070 -p 7071:7071 \
   -v $PWD/cronoq.toml:/etc/cronoq/cronoq.toml:ro \
   -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
-  cronoq
+  ghcr.io/synaptiai/cronoq:0.2.0
 ```
+
+To build the image from a checkout instead, run `docker build -t cronoq .`.
 
 The configuration path comes from `--config` or `CRONOQ_CONFIG` (the image sets
 `/etc/cronoq/cronoq.toml`). Every `token_env` the configuration names must be set, or the
@@ -24,7 +26,7 @@ gracefully on `SIGTERM` or `SIGINT`: it stops admitting work, gives running atte
 Validate configuration changes before rolling them out:
 
 ```sh
-docker run --rm -v $PWD/cronoq.toml:/c.toml:ro cronoq --config /c.toml --check
+docker run --rm -v $PWD/cronoq.toml:/c.toml:ro ghcr.io/synaptiai/cronoq:0.2.0 --config /c.toml --check
 ```
 
 ## Kubernetes
