@@ -68,15 +68,15 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 |---|---|
 | Rust library | `cargo add cronoq` (Rust 1.94+) |
 | Python | `pip install cronoq` for the in-process scheduler; `pip install "cronoq[client]"` adds the gRPC client and worker (CPython 3.14+) |
-| Server (container) | `docker pull ghcr.io/synaptiai/cronoq:0.2.0` (includes the `cronoq` CLI) |
+| Server (container) | `docker pull ghcr.io/synaptiai/cronoq:0.2.1` (includes the `cronoq` CLI) |
 | Server (binaries) | Linux, macOS and Windows archives on the [release page](https://github.com/synaptiai/cronoq/releases/latest), each with `cronoq-server` and `cronoq` |
-| Kubernetes | `helm install cronoq oci://ghcr.io/synaptiai/charts/cronoq --version 0.2.0`; the operator chart is `oci://ghcr.io/synaptiai/charts/cronoq-operator` |
+| Kubernetes | `helm install cronoq oci://ghcr.io/synaptiai/charts/cronoq --version 0.2.1`; the operator chart is `oci://ghcr.io/synaptiai/charts/cronoq-operator` |
 | Command-line tool | `cargo install cronoq-cli` |
-| Go | `go get github.com/synaptiai/cronoq/sdks/go@v0.2.0` (Go 1.26+) |
+| Go | `go get github.com/synaptiai/cronoq/sdks/go@v0.2.1` (Go 1.26+) |
 | TypeScript | `@synaptiai/cronoq` on GitHub Packages, or the tarball on the release page (Node 22+; [how to install](https://synaptiai.github.io/cronoq/reference/typescript.html)) |
 
 Wheels, binaries, images and the TypeScript package carry build provenance attestations:
-`gh attestation verify <file> --repo synaptiai/cronoq`, or `oci://ghcr.io/synaptiai/cronoq:0.2.0`
+`gh attestation verify <file> --repo synaptiai/cronoq`, or `oci://ghcr.io/synaptiai/cronoq:0.2.1`
 in place of the file for an image.
 
 ## Quickstart
@@ -143,7 +143,7 @@ asyncio.run(main())
 for role in CLIENT WORKER METRICS ADMIN; do export CRONOQ_${role}_TOKEN=$(openssl rand -hex 24); done
 docker run --name cronoq -p 7070:7070 -p 7071:7071 \
   -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
-  ghcr.io/synaptiai/cronoq:0.2.0
+  ghcr.io/synaptiai/cronoq:0.2.1
 ```
 
 The server listens on port 7070 (gRPC) and 7071 (HTTP), with an in-memory store and the pools

@@ -7,6 +7,40 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-27
+
+A documentation and release-tooling release. The code that runs is the same as in 0.2.0.
+
+### Fixed
+
+- The README, the Python package's README (its PyPI page) and the book now say exactly what the
+  code does:
+  - aging lets long-waiting background work overtake ordinary work, but never `High` or
+    `Critical` work;
+  - fixed starts and cron runs reserve capacity ahead of their start, and a run that cannot
+    get it is reported as a conflict;
+  - a token's tenant applies to what it submits, and does not hide other tenants' tasks;
+  - workers use attempt numbers as fencing tokens, and the server fences reports by lease;
+  - client calls reach the right shard through any server, and workers are redirected to it;
+  - KEDA reads the desired-capacity metric; there is no KEDA scaler;
+  - OpenTelemetry metrics and trace propagation are in the Rust library only;
+  - resources are shared within a shard, and SQLite standbys run on the same host;
+  - choosing the next task looks only at queue heads, and re-queuing a retried task into a
+    very long queue moves the entries behind it.
+- The Rust crate's documentation no longer calls aging starvation-free.
+- Every quickstart in the README and the book runs as written: the Python client and worker
+  snippets use `asyncio.run`, and the server quickstarts use the published container image.
+- The README has an install section for every package.
+- The release workflow publishes the TypeScript package by file path. In 0.2.0, npm read the
+  path as a GitHub repository, and the package was published afterwards with the new manual
+  *Finish release* workflow.
+
+### Project
+
+- The Go SDK's `sdks/go/v0.2.0` tag points at the commit before the 0.2.0 release tag; its
+  code is the same. From 0.2.1, the Go SDK tag and the release tag point at the same commit.
+- The TypeScript tests no longer race for ports or leave a log file open per server start.
+
 ## [0.2.0] - 2026-10-26
 
 First public release. No 0.1.0 was published.
@@ -247,5 +281,6 @@ First public release. No 0.1.0 was published.
   sanitized; the server warns about non-local database URLs without `sslmode=verify-full` or
   `verify-ca`.
 
-[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/synaptiai/cronoq/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.2.0

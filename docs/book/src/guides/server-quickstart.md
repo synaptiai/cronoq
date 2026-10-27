@@ -42,7 +42,7 @@ Or with the released container image, which contains the same example configurat
 ```sh
 docker run --rm -p 7070:7070 -p 7071:7071 \
   -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
-  ghcr.io/synaptiai/cronoq:0.2.0
+  ghcr.io/synaptiai/cronoq:0.2.1
 ```
 
 The [example configuration](https://github.com/synaptiai/cronoq/blob/main/deploy/cronoq.example.toml)

@@ -1,6 +1,6 @@
 # cronoq — Specification
 
-> Status: **Accepted; describes 0.2.0** · Owner: Daniel Bentes · License: MIT OR Apache-2.0
+> Status: **Accepted; describes 0.2.1** · Owner: Daniel Bentes · License: MIT OR Apache-2.0
 > Predecessor: the Python `ElasticPriorityScheduler` in `docs/prototype/`, whose API is preserved
 > by `cronoq.compat`.
 

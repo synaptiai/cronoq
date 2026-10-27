@@ -22,7 +22,7 @@ doc = false
 anyhow = "1"
 chrono.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
-cronoq-proto = { path = "../cronoq-proto", version = "0.2.0" }
+cronoq-proto = { path = "../cronoq-proto", version = "0.2.1" }
 futures-util = "0.3"
 ratatui = "0.30"
 serde_json = "1"

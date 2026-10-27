@@ -2,8 +2,8 @@ apiVersion: v2
 name: cronoq
 description: The cronoq task scheduler server, with standbys, an optional durable store and shards
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 home: https://synaptiai.github.io/cronoq/
 sources:
   - https://github.com/synaptiai/cronoq
