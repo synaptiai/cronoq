@@ -115,22 +115,25 @@ export class Server {
     let gone = false;
     this.exited = new Promise((r) => proc.on("exit", () => ((gone = true), r())));
     const deadline = Date.now() + 20_000;
-    while (Date.now() < deadline) {
-      if (gone) {
-        this.proc = undefined;
-        const text = readAll(log);
-        closeSync(log);
-        return text;
+    try {
+      while (Date.now() < deadline) {
+        if (gone) {
+          this.proc = undefined;
+          return readAll(log);
+        }
+        try {
+          const r = await fetch(`http://127.0.0.1:${this.httpPort}/readyz`);
+          if (r.ok) return undefined;
+        } catch {
+          // not listening yet
+        }
+        await new Promise((r) => setTimeout(r, 50));
       }
-      try {
-        const r = await fetch(`http://127.0.0.1:${this.httpPort}/readyz`);
-        if (r.ok) return undefined;
-      } catch {
-        // not listening yet
-      }
-      await new Promise((r) => setTimeout(r, 50));
+      throw new Error("cronoq-server did not become ready");
+    } finally {
+      // The child keeps its own copy of the descriptor.
+      closeSync(log);
     }
-    throw new Error("cronoq-server did not become ready");
   }
 
   async stop(): Promise<void> {
