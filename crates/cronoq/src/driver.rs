@@ -22,7 +22,7 @@ use cronoq_core::{
     TaskStatus,
 };
 use futures_util::FutureExt;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
@@ -248,6 +248,10 @@ pub(crate) struct PipelineConfig {
 
 /// Retries of `StoreError::Other` before giving up.
 const MAX_OTHER_FAILURES: u32 = 5;
+
+/// Messages of tasks that ended without succeeding, kept for handles attached afterwards. They
+/// are kept even when `output_cache` is 0 (as in the server, which caches outputs itself).
+const FAILURE_MESSAGES: usize = 1024;
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 /// Feedback items handled per loop iteration (keeps commands and timers responsive).
 const FEEDBACK_BATCH: usize = 1024;
@@ -278,10 +282,16 @@ pub(crate) struct Driver<P, O> {
     /// Outputs of tasks that succeeded in the engine but whose terminal event is not yet
     /// released (held for durability).
     outputs: FxHashMap<TaskId, Arc<O>>,
-    /// Recently released outputs, and the messages of tasks that ended otherwise, for handles
-    /// attached after completion (bounded by `output_cache`).
-    recent: FxHashMap<TaskId, Result<Arc<O>, Arc<str>>>,
+    /// Tasks that ended without succeeding in the engine but whose terminal event is not yet
+    /// released (held for durability).
+    ending: FxHashSet<TaskId>,
+    /// Recently released outputs, for handles attached after completion (bounded by
+    /// `output_cache`).
+    recent: FxHashMap<TaskId, Arc<O>>,
     recent_order: VecDeque<TaskId>,
+    /// Messages of recently released tasks that ended otherwise (bounded by `FAILURE_MESSAGES`).
+    failures: FxHashMap<TaskId, Arc<str>>,
+    failures_order: VecDeque<TaskId>,
     blocked: VecDeque<Blocked<P, O>>,
     deferred: Vec<Deferred>,
     actions: Vec<Action<P>>,
@@ -349,8 +359,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             running: FxHashMap::default(),
             waiters: FxHashMap::default(),
             outputs: FxHashMap::default(),
+            ending: FxHashSet::default(),
             recent: FxHashMap::default(),
             recent_order: VecDeque::new(),
+            failures: FxHashMap::default(),
+            failures_order: VecDeque::new(),
             blocked: VecDeque::new(),
             deferred: Vec::new(),
             actions: Vec::new(),
@@ -906,7 +919,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         let (tx, rx) = oneshot::channel();
         match self.core.status(&TaskRef::Id(id)) {
             Some(TaskStatus::Succeeded) if !self.outputs.contains_key(&id) => {
-                if let Some(Ok(o)) = self.recent.get(&id) {
+                if let Some(o) = self.recent.get(&id) {
                     let _ = tx.send(Ok(o.clone()));
                 } else if self.persists {
                     let store = self.store.clone();
@@ -921,10 +934,14 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     let _ = tx.send(Err(TaskFailure::OutputUnavailable { id }));
                 }
             }
-            Some(st) if st.is_terminal() && st != TaskStatus::Succeeded => {
-                let message = match self.recent.get(&id) {
-                    Some(Err(m)) => m.clone(),
-                    _ => "task already finished".into(),
+            Some(st)
+                if st.is_terminal()
+                    && st != TaskStatus::Succeeded
+                    && !self.ending.contains(&id) =>
+            {
+                let message = match self.failures.get(&id) {
+                    Some(m) => m.clone(),
+                    None => "task already finished".into(),
                 };
                 let _ = tx.send(Err(TaskFailure::Ended {
                     status: st,
@@ -932,7 +949,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 }));
             }
             _ => {
-                // Live, or succeeded with its terminal event still held for durability.
+                // Live, or ended with its terminal event still held for durability.
                 let ws = self.waiters.entry(id).or_default();
                 // Drop waiters whose handles were abandoned (e.g. a timed-out `Wait` RPC).
                 ws.retain(|w| !w.is_closed());
@@ -1039,7 +1056,15 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     @ (Action::Abort { .. } | Action::ScaleTo { .. } | Action::SpaceAvailable) => {
                         now_actions.push(a)
                     }
-                    a => held.push(a),
+                    a => {
+                        if let Action::Status(e) = &a
+                            && e.status.is_terminal()
+                            && e.status != TaskStatus::Succeeded
+                        {
+                            self.ending.insert(e.id);
+                        }
+                        held.push(a)
+                    }
                 }
             }
             let deferred = std::mem::take(&mut self.deferred);
@@ -1266,12 +1291,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     let output = self.outputs.remove(&e.id);
                     self.metrics
                         .task_finished(&self.pools[e.pool.0 as usize].name, e.status);
+                    self.ending.remove(&e.id);
                     match (&output, e.status) {
-                        (Some(o), TaskStatus::Succeeded) => self.remember(e.id, Ok(o.clone())),
+                        (Some(o), TaskStatus::Succeeded) => self.remember(e.id, o.clone()),
                         (_, TaskStatus::Succeeded) => {}
                         _ => {
                             if let Some(m) = &e.message {
-                                self.remember(e.id, Err(m.clone()));
+                                self.remember_failure(e.id, m.clone());
                             }
                         }
                     }
@@ -1303,16 +1329,27 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         }
     }
 
-    fn remember(&mut self, id: TaskId, r: Result<Arc<O>, Arc<str>>) {
+    fn remember(&mut self, id: TaskId, o: Arc<O>) {
         if self.cfg.output_cache == 0 {
             return;
         }
-        if self.recent.insert(id, r).is_none() {
+        if self.recent.insert(id, o).is_none() {
             self.recent_order.push_back(id);
         }
         while self.recent_order.len() > self.cfg.output_cache {
             if let Some(old) = self.recent_order.pop_front() {
                 self.recent.remove(&old);
+            }
+        }
+    }
+
+    fn remember_failure(&mut self, id: TaskId, message: Arc<str>) {
+        if self.failures.insert(id, message).is_none() {
+            self.failures_order.push_back(id);
+        }
+        while self.failures_order.len() > FAILURE_MESSAGES {
+            if let Some(old) = self.failures_order.pop_front() {
+                self.failures.remove(&old);
             }
         }
     }
