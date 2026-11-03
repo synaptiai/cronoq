@@ -195,9 +195,10 @@ Outputs (`O`) of succeeded tasks are kept in a bounded in-memory cache in the ru
 (`output_cache`, default 1024 entries) and, with a durable store, in the store
 (`Store::load_output`). Handles to tasks that already succeeded (duplicate submissions,
 `Scheduler::handle`) read the cache first and then the store; if neither has the output the
-handle resolves to `TaskFailure::OutputUnavailable`. The same cache keeps the messages of tasks
-that ended without succeeding, so a handle attached later resolves to `TaskFailure::Ended` with
-the task's own message.
+handle resolves to `TaskFailure::OutputUnavailable`. The messages of the last 1024 tasks that
+ended without succeeding are kept separately, also when `output_cache` is 0, so a handle
+attached later resolves to `TaskFailure::Ended` with the task's own message. A handle attached
+while that task's end is still being committed resolves once it is.
 
 ---
 

@@ -418,6 +418,67 @@ async fn late_handle_of_failed_task_gets_its_message() {
     );
 }
 
+// --- ... also with the output cache off, as the server runs the scheduler.
+#[tokio::test]
+async fn late_handle_of_failed_task_gets_its_message_without_output_cache() {
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 1).executor_fn(|_c, _x: Arc<u64>| async move {
+                Err::<u64, _>(TaskError::permanent("bad input"))
+            }),
+        )
+        .output_cache(0)
+        .build()
+        .await
+        .unwrap();
+    let _ = s.submit(Task::new(1).key("k")).await.unwrap().await;
+    let late = s.handle("k").await.unwrap().unwrap().await;
+    assert!(
+        matches!(&late, Err(TaskFailure::Ended { status: TaskStatus::Failed, message }) if &**message == "bad input"),
+        "{late:?}"
+    );
+}
+
+// --- ... and when attached while the failure is still being committed.
+#[tokio::test]
+async fn handle_attached_while_failure_is_held_gets_its_message() {
+    let store = Arc::new(ScriptedStore::default());
+    let go = Arc::new(Notify::new());
+    let g = go.clone();
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 1).executor_fn(move |_c, _x: Arc<u64>| {
+                let g = g.clone();
+                async move {
+                    g.notified().await;
+                    Err::<u64, _>(TaskError::permanent("bad input"))
+                }
+            }),
+        )
+        .store(Shared(store.clone()))
+        .output_cache(0)
+        .build()
+        .await
+        .unwrap();
+    s.enqueue(Task::new(1).key("k")).await.unwrap();
+    while s.status("k").await.unwrap() != Some(TaskStatus::Running) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    store.hold.store(true, Ordering::SeqCst);
+    go.notify_one();
+    while s.status("k").await.unwrap() != Some(TaskStatus::Failed) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let late = s.handle("k").await.unwrap().unwrap();
+    store.hold.store(false, Ordering::SeqCst);
+    store.gate.notify_waiters();
+    let late = late.await;
+    assert!(
+        matches!(&late, Err(TaskFailure::Ended { status: TaskStatus::Failed, message }) if &**message == "bad input"),
+        "{late:?}"
+    );
+}
+
 #[tokio::test]
 async fn output_comes_from_store_when_not_cached() {
     let store = Arc::new(ScriptedStore::default());
