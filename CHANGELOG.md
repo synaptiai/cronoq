@@ -7,6 +7,24 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-03
+
+### Fixed
+
+- A handle attached to a task just after it failed, such as a `Wait` or a duplicate submission
+  with `wait`, could resolve with the generic message "task already finished" instead of the
+  task's own message. The server runs the runtime with its output cache off, so there the
+  message was kept only in the server's own cache, which could be filled too late. The runtime
+  now keeps the messages of the last 1024 tasks that did not succeed even when `output_cache`
+  is 0, and with a durable store a handle attached while a failure is still being committed
+  waits for it.
+
+### Security
+
+- `pulldown-cmark` is updated to 0.13.6 (RUSTSEC-2026-0433). It is used only at build time, to
+  read the comments in cronoq's own `.proto` files, so no released binary or library parsed
+  untrusted Markdown with it.
+
 ## [0.2.1] - 2026-10-27
 
 A documentation and release-tooling release. The code that runs is the same as in 0.2.0.
@@ -281,6 +299,7 @@ First public release. No 0.1.0 was published.
   sanitized; the server warns about non-local database URLs without `sslmode=verify-full` or
   `verify-ca`.
 
-[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/synaptiai/cronoq/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/synaptiai/cronoq/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.2.0
