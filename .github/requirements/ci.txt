@@ -1,8 +1,8 @@
 # Pinned Python tooling for CI (also used as a constraints file when installing wheels).
 # Update deliberately.
-maturin==1.15.0
-pytest==9.1.1
-pytest-asyncio==1.4.0
-grpcio==1.84.1
+maturin==1.16.0
+pytest==9.2.0
+pytest-asyncio==1.4.1
+grpcio==1.85.1
 protobuf==7.36.2
-mypy==2.4.0
+mypy==2.4.1
