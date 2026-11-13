@@ -22,8 +22,9 @@ start says when work should *begin*; cronoq reserves capacity and holds a worker
 
 Not behind `normal` traffic: aging lets a waiting `low` task overtake fresh `normal` work after
 about 45 seconds with the default settings. It can wait behind sustained `high` or `critical`
-load, by design. For stronger mixing, raise `age_cap`; it is configurable only from the Rust
-library (`Builder::priority` or `Builder::configure`), and the server and the Python package use the defaults.
+load, by design. For stronger mixing, change `aging_rate` or `age_cap`, for the whole scheduler
+or for one pool, in the server configuration, in Rust or in Python (see
+[Priorities and aging](concepts/priorities.md#configuration)).
 
 ### How many tasks can the engine hold?
 

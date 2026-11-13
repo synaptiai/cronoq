@@ -57,9 +57,15 @@ urgency of one that is less late.
 
 ## Configuration
 
-| Setting | Default | Where |
+| Setting | Default | Key |
 |---|---|---|
-| Maximum urgency `U` | 5000 | `UrgencyConfig::max` |
-| Minimum horizon | 5 s | `UrgencyConfig::window` |
-| Overdue rate | 100 /s | `UrgencyConfig::overdue_rate` |
-| Overdue cap | 3000 | `UrgencyConfig::overdue_cap` |
+| Maximum urgency `U` | 5000 | `max` |
+| Minimum horizon | 5 s | `window_s` (Rust and Python: `window`) |
+| Overdue rate | 100 /s | `overdue_rate` |
+| Overdue cap | 3000 | `overdue_cap` |
+
+Like the [priority settings](priorities.md#configuration), these are set for the whole
+scheduler and can be overridden per pool: `[urgency]` and `urgency = { ... }` in the server
+configuration, `Builder::urgency` and `Pool::urgency` in Rust, and
+`Scheduler(..., urgency=UrgencyConfig(...))` and `Pool(..., urgency=...)` in Python. Every value
+must be finite and not negative.

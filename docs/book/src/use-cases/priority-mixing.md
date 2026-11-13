@@ -66,5 +66,7 @@ Dispatch always picks the highest score. In practice:
 
 - **Protect batch throughput at peak**: put batch work in its own pool with `min` workers and
   interactive work in another; resources can still be shared between pools.
-- **Different aging policy**: configure `PriorityConfig` (Rust) per class, for example a higher
-  `age_cap` for `low` to let it overtake `high` after a long wait.
+- **Different aging policy**: set `aging_rate` and `age_cap` per class, for the whole scheduler
+  or for one pool ([how](../concepts/priorities.md#configuration)). For example, a higher
+  `aging_rate` for `low` makes batch work overtake fresh `normal` work sooner, and a higher
+  `age_cap` with `allow_overtaking_high` lets it overtake `high` after a long wait.

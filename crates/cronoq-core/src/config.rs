@@ -6,6 +6,9 @@ use std::sync::Arc;
 use crate::spec::{Priority, RetryPolicy};
 
 /// Per-class score parameters: `base + min(aging_rate * wait, age_cap) + urgency`.
+///
+/// Set for the whole engine in [`CoreConfig::priority`] and, optionally, per pool in
+/// [`PoolConfig::priority`]. Scores are only compared within one pool.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PriorityConfig {
     /// Starting score per class.
@@ -14,6 +17,9 @@ pub struct PriorityConfig {
     pub aging_rate: [f64; Priority::COUNT],
     /// Maximum score points gained from waiting.
     pub age_cap: [f64; Priority::COUNT],
+    /// Accept settings with which waiting alone lets a lower class overtake freshly submitted
+    /// `High` or `Critical` work. Without it [`PriorityConfig::validate`] refuses them.
+    pub allow_overtaking_high: bool,
 }
 
 impl Default for PriorityConfig {
@@ -22,7 +28,56 @@ impl Default for PriorityConfig {
             base: [10_000.0, 1_000.0, 100.0, 10.0],
             aging_rate: [2.0; 4],
             age_cap: [800.0; 4],
+            allow_overtaking_high: false,
         }
+    }
+}
+
+impl PriorityConfig {
+    /// Check the settings: every value finite and not negative, base scores strictly ordered
+    /// (`Critical` > `High` > `Normal` > `Low`), and, unless
+    /// [`allow_overtaking_high`](PriorityConfig::allow_overtaking_high) is set, no lower class
+    /// able to pass freshly submitted `High` or `Critical` work by waiting
+    /// (`base[lower] + age_cap[lower] <= base[higher]`). `Low` passing fresh `Normal` work is
+    /// always allowed: that is what aging is for, and what the defaults do after 45 s.
+    pub fn validate(&self) -> Result<(), String> {
+        let ok = |v: &[f64]| v.iter().all(|x| x.is_finite() && *x >= 0.0);
+        if !ok(&self.base) || !ok(&self.aging_rate) || !ok(&self.age_cap) {
+            return Err("priority base, aging_rate and age_cap must be finite and >= 0".into());
+        }
+        for c in 1..Priority::COUNT {
+            if self.base[c] >= self.base[c - 1] {
+                return Err(format!(
+                    "priority base scores must be strictly ordered: {} ({}) must be below {} ({})",
+                    Priority::ALL[c].name(),
+                    self.base[c],
+                    Priority::ALL[c - 1].name(),
+                    self.base[c - 1],
+                ));
+            }
+        }
+        if self.allow_overtaking_high {
+            return Ok(());
+        }
+        for higher in [Priority::Critical, Priority::High] {
+            let h = higher.index();
+            for lower in h + 1..Priority::COUNT {
+                let reach = self.base[lower] + self.age_cap[lower];
+                if reach > self.base[h] {
+                    return Err(format!(
+                        "priority age_cap lets {} work overtake fresh {} work by waiting \
+                         (base {} + age_cap {} > base {}); lower the cap or set \
+                         allow_overtaking_high",
+                        Priority::ALL[lower].name(),
+                        higher.name(),
+                        self.base[lower],
+                        self.age_cap[lower],
+                        self.base[h],
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -47,6 +102,17 @@ impl Default for UrgencyConfig {
             overdue_rate: 100.0,
             overdue_cap: 3_000.0,
         }
+    }
+}
+
+impl UrgencyConfig {
+    /// Check the settings: `max`, `overdue_rate` and `overdue_cap` finite and not negative.
+    pub fn validate(&self) -> Result<(), String> {
+        let ok = |x: f64| x.is_finite() && x >= 0.0;
+        if !ok(self.max) || !ok(self.overdue_rate) || !ok(self.overdue_cap) {
+            return Err("urgency max, overdue_rate and overdue_cap must be finite and >= 0".into());
+        }
+        Ok(())
     }
 }
 
@@ -167,6 +233,10 @@ pub struct PoolConfig {
     /// Weighted fair sharing between tenants (`None`: tasks of a class run in submission
     /// order whatever their tenant).
     pub fairness: Option<Fairness>,
+    /// Class scores and aging for this pool (`None`: [`CoreConfig::priority`]).
+    pub priority: Option<PriorityConfig>,
+    /// Deadline urgency curve for this pool (`None`: [`CoreConfig::urgency`]).
+    pub urgency: Option<UrgencyConfig>,
 }
 
 /// Weighted fair sharing of a pool between tenants ([`TaskSpec::tenant`](crate::TaskSpec::tenant)).
@@ -220,6 +290,8 @@ impl PoolConfig {
             lease_ttl: None,
             unknown_dependency: UnknownDependency::Reject,
             fairness: None,
+            priority: None,
+            urgency: None,
         }
     }
     /// Fixed worker count, no autoscaling.
@@ -293,9 +365,9 @@ pub struct CoreConfig {
     pub pools: Vec<PoolConfig>,
     /// Shared resources.
     pub resources: Vec<ResourceConfig>,
-    /// Class scores and aging.
+    /// Class scores and aging, for pools without their own ([`PoolConfig::priority`]).
     pub priority: PriorityConfig,
-    /// Deadline urgency curve.
+    /// Deadline urgency curve, for pools without their own ([`PoolConfig::urgency`]).
     pub urgency: UrgencyConfig,
     /// Queue bounds across all pools.
     pub global_bounds: Bounds,
@@ -376,6 +448,14 @@ impl CoreConfig {
                     ));
                 }
             }
+            if let Some(pc) = &p.priority {
+                pc.validate()
+                    .map_err(|e| format!("pool '{}': {e}", p.name))?;
+            }
+            if let Some(u) = &p.urgency {
+                u.validate()
+                    .map_err(|e| format!("pool '{}': {e}", p.name))?;
+            }
             if let Some(a) = &p.autoscale {
                 if a.interval.is_zero() {
                     return Err(format!("pool '{}': autoscale interval must be > 0", p.name));
@@ -420,17 +500,8 @@ impl CoreConfig {
                 ResourceKind::Semaphore { .. } => {}
             }
         }
-        let finite = |v: &[f64]| v.iter().all(|x| x.is_finite());
-        if !finite(&self.priority.base)
-            || !finite(&self.priority.aging_rate)
-            || !finite(&self.priority.age_cap)
-        {
-            return Err("priority weights must be finite".into());
-        }
-        let u = &self.urgency;
-        if !finite(&[u.max, u.overdue_rate, u.overdue_cap]) {
-            return Err("urgency settings must be finite".into());
-        }
+        self.priority.validate()?;
+        self.urgency.validate()?;
         if self.metrics_window.is_zero() {
             return Err("metrics_window must be > 0".into());
         }

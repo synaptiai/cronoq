@@ -779,6 +779,63 @@ async fn unstorable_values_are_rejected() {
     assert!(s.submit(Task::new(1).retry(r)).await.is_err());
 }
 
+// --- Priority and urgency settings are checked when the scheduler is built.
+#[tokio::test]
+async fn build_refuses_invalid_priority_and_urgency_settings() {
+    let over_high = PriorityConfig {
+        age_cap: [800.0, 800.0, 800.0, 5_000.0],
+        ..Default::default()
+    };
+    let err = |r: Result<Sched, Error>| match r {
+        Err(Error::Config(m)) => m,
+        other => panic!(
+            "expected a configuration error, got {:?}",
+            other.map(|_| ())
+        ),
+    };
+    let e = err(Scheduler::builder()
+        .pool(echo_pool(1))
+        .priority(over_high.clone())
+        .build()
+        .await);
+    assert!(e.contains("low work overtake fresh high"), "{e}");
+    let e = err(Scheduler::builder()
+        .pool(echo_pool(1).priority(over_high.clone()))
+        .build()
+        .await);
+    assert!(e.starts_with("pool 'default':"), "{e}");
+    let e = err(Scheduler::builder()
+        .pool(echo_pool(1).urgency(UrgencyConfig {
+            overdue_rate: f64::NAN,
+            ..Default::default()
+        }))
+        .build()
+        .await);
+    assert!(
+        e.starts_with("pool 'default':") && e.contains("urgency"),
+        "{e}"
+    );
+
+    // With the flag the same settings are accepted, and the snapshot reports them per pool.
+    let allowed = PriorityConfig {
+        allow_overtaking_high: true,
+        ..over_high
+    };
+    let s: Sched = Scheduler::builder()
+        .pool(echo_pool(1).priority(allowed.clone()))
+        .pool(Pool::fixed("other", 1).executor_fn(|_c, x: Arc<u64>| async move { Ok(*x) }))
+        .build()
+        .await
+        .unwrap();
+    let snap = s.snapshot().await.unwrap();
+    assert_eq!(snap.pool("default").unwrap().priority, allowed);
+    assert_eq!(
+        snap.pool("other").unwrap().priority,
+        PriorityConfig::default()
+    );
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
 // --- Events capacity is configurable.
 #[tokio::test]
 async fn events_capacity_is_configurable() {

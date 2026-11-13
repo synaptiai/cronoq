@@ -155,6 +155,10 @@ impl Resource {
 
 struct Pool {
     cfg: PoolConfig,
+    /// Class scores and aging in effect: the pool's own, or the engine-wide ones.
+    priority: crate::config::PriorityConfig,
+    /// Deadline urgency curve in effect.
+    urgency: crate::config::UrgencyConfig,
     /// Sum of the groups' capacity.
     capacity: u32,
     /// Sum of the groups' busy slots.
@@ -429,6 +433,8 @@ impl<P> Core<P> {
             }
             pools.push(Pool {
                 cfg: pc.clone(),
+                priority: pc.priority.clone().unwrap_or_else(|| cfg.priority.clone()),
+                urgency: pc.urgency.clone().unwrap_or_else(|| cfg.urgency.clone()),
                 capacity: initial,
                 busy: 0,
                 held: 0,
@@ -2941,12 +2947,13 @@ impl<P> Core<P> {
     }
 
     fn score(&self, e: &Entry<P>, now: Time) -> f64 {
-        let pc = &self.cfg.priority;
+        let p = &self.pools[e.pool as usize];
+        let pc = &p.priority;
         let c = e.class as usize;
         let wait = now.diff_secs(e.arrival).max(0.0);
         let mut s = pc.base[c] + (pc.aging_rate[c] * wait).min(pc.age_cap[c]);
         if e.deadline != Time::MAX {
-            let u = &self.cfg.urgency;
+            let u = &p.urgency;
             let d = e.deadline.diff_secs(e.lst).max(0.0);
             let h = d.max(secs(u.window)).max(1e-9);
             let slack = e.lst.diff_secs(now);
@@ -3293,6 +3300,8 @@ impl<P> Core<P> {
                         busy: g.busy,
                     })
                     .collect(),
+                priority: p.priority.clone(),
+                urgency: p.urgency.clone(),
             });
         }
         Snapshot {

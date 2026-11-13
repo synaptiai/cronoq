@@ -355,6 +355,28 @@ message PoolSnapshot {
   uint64 workers_connected = 19;
   // Worker groups (workers with the same labels), unlabeled first.
   repeated WorkerGroup groups = 20;
+  // Class scores and aging in effect for this pool.
+  PriorityConfig priority = 21;
+  // Deadline urgency curve in effect for this pool.
+  UrgencyConfig urgency = 22;
+}
+
+// Score of a waiting task: base + min(aging_rate * seconds waited, age_cap) + urgency. Each
+// list holds four values: critical, high, normal, low.
+message PriorityConfig {
+  repeated double base = 1;
+  repeated double aging_rate = 2;
+  repeated double age_cap = 3;
+  // Whether waiting alone may let a lower class overtake fresh high or critical work.
+  bool allow_overtaking_high = 4;
+}
+
+// Score added to a task with a deadline as its latest start time approaches and passes.
+message UrgencyConfig {
+  double max = 1;
+  double window_s = 2;
+  double overdue_rate = 3;
+  double overdue_cap = 4;
 }
 
 message WorkerGroup {

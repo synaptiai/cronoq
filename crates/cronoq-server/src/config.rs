@@ -32,6 +32,10 @@ pub struct Config {
     /// Request and resource limits.
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// Class scores and aging, for every pool that does not set its own.
+    pub priority: Option<PrioritySection>,
+    /// Deadline urgency curve, for every pool that does not set its own.
+    pub urgency: Option<UrgencySection>,
     /// Worker pools (each served by remote workers).
     #[serde(default = "default_pools")]
     pub pools: Vec<PoolSection>,
@@ -45,6 +49,64 @@ pub struct Config {
     /// and pick their own with `server.shard`.
     #[serde(default)]
     pub shards: Vec<ShardSection>,
+}
+
+/// Class scores and aging (`[priority]`, or `priority = { ... }` in a pool). Each array holds
+/// four values, for `critical`, `high`, `normal` and `low`. A key left out keeps the value it
+/// would otherwise have: the built-in default at the top level, the top-level value in a pool.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrioritySection {
+    /// Starting score per class (default `[10000, 1000, 100, 10]`).
+    pub base: Option<[f64; 4]>,
+    /// Score points gained per second of waiting (default `[2, 2, 2, 2]`).
+    pub aging_rate: Option<[f64; 4]>,
+    /// Most score points waiting can add (default `[800, 800, 800, 800]`).
+    pub age_cap: Option<[f64; 4]>,
+    /// Accept values with which waiting alone lets a lower class overtake fresh `high` or
+    /// `critical` work.
+    pub allow_overtaking_high: Option<bool>,
+}
+
+impl PrioritySection {
+    /// These settings on top of `under`.
+    pub fn over(&self, under: &cronoq::PriorityConfig) -> cronoq::PriorityConfig {
+        cronoq::PriorityConfig {
+            base: self.base.unwrap_or(under.base),
+            aging_rate: self.aging_rate.unwrap_or(under.aging_rate),
+            age_cap: self.age_cap.unwrap_or(under.age_cap),
+            allow_overtaking_high: self
+                .allow_overtaking_high
+                .unwrap_or(under.allow_overtaking_high),
+        }
+    }
+}
+
+/// Deadline urgency curve (`[urgency]`, or `urgency = { ... }` in a pool). A key left out keeps
+/// the value it would otherwise have, as in [`PrioritySection`].
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrgencySection {
+    /// Score points added when a task's latest start time arrives (default 5000).
+    pub max: Option<f64>,
+    /// Shortest time before the latest start over which urgency rises, in seconds (default 5).
+    pub window_s: Option<f64>,
+    /// Extra score points per second past the latest start time (default 100).
+    pub overdue_rate: Option<f64>,
+    /// Most extra score points for being overdue (default 3000).
+    pub overdue_cap: Option<f64>,
+}
+
+impl UrgencySection {
+    /// These settings on top of `under`. Assumes `window_s` passed [`Config::validate`].
+    pub fn over(&self, under: &cronoq::UrgencyConfig) -> cronoq::UrgencyConfig {
+        cronoq::UrgencyConfig {
+            max: self.max.unwrap_or(under.max),
+            window: self.window_s.map_or(under.window, Duration::from_secs_f64),
+            overdue_rate: self.overdue_rate.unwrap_or(under.overdue_rate),
+            overdue_cap: self.overdue_cap.unwrap_or(under.overdue_cap),
+        }
+    }
 }
 
 /// A group of pools served by its own leader (and standbys).
@@ -87,6 +149,8 @@ impl Default for Config {
             auth: AuthConfig::default(),
             store: StoreConfig::default(),
             limits: LimitsConfig::default(),
+            priority: None,
+            urgency: None,
             shards: Vec::new(),
             pools: default_pools(),
             resources: Vec::new(),
@@ -146,6 +210,22 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Class scores and aging for pools without their own.
+    pub fn priority_config(&self) -> cronoq::PriorityConfig {
+        let default = cronoq::PriorityConfig::default();
+        self.priority
+            .as_ref()
+            .map_or(default.clone(), |p| p.over(&default))
+    }
+
+    /// Deadline urgency curve for pools without their own.
+    pub fn urgency_config(&self) -> cronoq::UrgencyConfig {
+        let default = cronoq::UrgencyConfig::default();
+        self.urgency
+            .as_ref()
+            .map_or(default.clone(), |u| u.over(&default))
+    }
+
     /// Check every option. Called by [`Config::parse`] and again by [`crate::run`].
     pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(!self.pools.is_empty(), "at least one pool is required");
@@ -188,6 +268,14 @@ impl Config {
                 );
             }
         }
+        opt_secs(
+            "urgency.window_s",
+            self.urgency.as_ref().and_then(|u| u.window_s),
+            0.0,
+        )?;
+        let (priority, urgency) = (self.priority_config(), self.urgency_config());
+        priority.validate().map_err(anyhow::Error::msg)?;
+        urgency.validate().map_err(anyhow::Error::msg)?;
         let mut names = HashSet::new();
         for p in &self.pools {
             ensure!(
@@ -199,6 +287,17 @@ impl Config {
             ensure!(p.max >= 1, "pool '{}': max must be at least 1", p.name);
             ensure!(p.min <= p.max, "pool '{}': min > max", p.name);
             let at = |k: &str| format!("pool '{}': {k}", p.name);
+            if let Some(s) = &p.priority {
+                s.over(&priority)
+                    .validate()
+                    .map_err(|e| anyhow::anyhow!("pool '{}': {e}", p.name))?;
+            }
+            if let Some(s) = &p.urgency {
+                opt_secs(&at("urgency.window_s"), s.window_s, 0.0)?;
+                s.over(&urgency)
+                    .validate()
+                    .map_err(|e| anyhow::anyhow!("pool '{}': {e}", p.name))?;
+            }
             finite_secs(&at("lease_ttl_s"), p.lease_ttl_s, 0.1)?;
             opt_secs(&at("default_duration_s"), p.default_duration_s, 0.0)?;
             opt_secs(
@@ -1058,6 +1157,12 @@ pub struct PoolSection {
     /// Weight of each tenant in the fair share (others weigh 1).
     #[serde(default)]
     pub tenant_weights: std::collections::BTreeMap<String, f64>,
+    /// Class scores and aging for this pool; keys left out keep the top-level `[priority]`
+    /// values.
+    pub priority: Option<PrioritySection>,
+    /// Deadline urgency curve for this pool; keys left out keep the top-level `[urgency]`
+    /// values.
+    pub urgency: Option<UrgencySection>,
 }
 
 fn default_max() -> u32 {
@@ -1096,6 +1201,8 @@ impl PoolSection {
             max_slots_per_worker: None,
             fair_share: false,
             tenant_weights: Default::default(),
+            priority: None,
+            urgency: None,
         }
     }
 
@@ -1633,6 +1740,132 @@ mod tests {
         for (name, toml) in cases {
             assert!(Config::parse(toml).is_err(), "{name} should be rejected");
         }
+    }
+
+    #[test]
+    fn priority_and_urgency_layer_defaults_top_level_and_pool() {
+        let cfg = Config::parse(
+            r#"
+            [priority]
+            aging_rate = [1, 1, 4, 4]
+
+            [urgency]
+            max = 6000
+            window_s = 2.5
+
+            [[pools]]
+            name = "plain"
+
+            [[pools]]
+            name = "batch"
+            priority = { age_cap = [0, 0, 900, 990] }
+            urgency = { overdue_cap = 0 }
+            "#,
+        )
+        .unwrap();
+        let default = cronoq::PriorityConfig::default();
+        let top = cfg.priority_config();
+        assert_eq!(top.aging_rate, [1.0, 1.0, 4.0, 4.0]);
+        assert_eq!((top.base, top.age_cap), (default.base, default.age_cap));
+        let urgency = cfg.urgency_config();
+        assert_eq!(
+            (urgency.max, urgency.window),
+            (6000.0, Duration::from_millis(2500))
+        );
+        assert_eq!(urgency.overdue_rate, 100.0);
+
+        assert!(cfg.pools[0].priority.is_none() && cfg.pools[0].urgency.is_none());
+        // A pool keeps the top-level values for the keys it leaves out.
+        let batch = cfg.pools[1].priority.as_ref().unwrap().over(&top);
+        assert_eq!(batch.aging_rate, [1.0, 1.0, 4.0, 4.0]);
+        assert_eq!(batch.age_cap, [0.0, 0.0, 900.0, 990.0]);
+        let batch = cfg.pools[1].urgency.as_ref().unwrap().over(&urgency);
+        assert_eq!((batch.max, batch.overdue_cap), (6000.0, 0.0));
+
+        // Without the tables the engine defaults apply.
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(cfg.priority_config(), default);
+        assert_eq!(cfg.urgency_config(), cronoq::UrgencyConfig::default());
+    }
+
+    #[test]
+    fn priority_and_urgency_values_are_checked() {
+        let cases = [
+            (
+                "unknown key",
+                "[priority]\nbases = [4, 3, 2, 1]",
+                "unknown field",
+            ),
+            ("three values", "[priority]\nbase = [3, 2, 1]", "length 4"),
+            (
+                "negative rate",
+                "[priority]\naging_rate = [2, 2, -2, 2]",
+                "finite and >= 0",
+            ),
+            (
+                "nan cap",
+                "[priority]\nage_cap = [nan, 1, 1, 1]",
+                "finite and >= 0",
+            ),
+            (
+                "unordered",
+                "[priority]\nbase = [10, 10, 5, 1]",
+                "strictly ordered",
+            ),
+            (
+                "low over high",
+                "[priority]\nage_cap = [800, 800, 800, 5000]",
+                "low work overtake fresh high",
+            ),
+            (
+                "low over critical",
+                "[priority]\nage_cap = [0, 0, 0, 12000]",
+                "low work overtake fresh critical",
+            ),
+            ("negative urgency", "[urgency]\nmax = -1", "urgency max"),
+            (
+                "nan window",
+                "[urgency]\nwindow_s = nan",
+                "urgency.window_s",
+            ),
+            (
+                "negative window",
+                "[urgency]\nwindow_s = -1",
+                "urgency.window_s",
+            ),
+            (
+                "pool over high",
+                "[[pools]]\nname = 'a'\npriority = { age_cap = [0, 0, 901, 0] }",
+                "pool 'a': priority age_cap lets normal work overtake fresh high",
+            ),
+            (
+                // The pool changes only a base score; with the cap it inherits, that is too much.
+                "pool inherits a cap",
+                "[[pools]]\nname = 'a'\npriority = { base = [10000, 1000, 500, 10] }",
+                "pool 'a': priority age_cap lets normal work overtake fresh high",
+            ),
+            (
+                "pool window",
+                "[[pools]]\nname = 'a'\nurgency = { window_s = -3 }",
+                "pool 'a': urgency.window_s",
+            ),
+        ];
+        for (name, toml, want) in cases {
+            let e = format!("{:#}", Config::parse(toml).unwrap_err());
+            assert!(e.contains(want), "{name}: {e}");
+        }
+        // The flag accepts aging past high, at the top level and inherited by a pool.
+        Config::parse(concat!(
+            "[priority]\nage_cap = [800, 800, 800, 12000]\nallow_overtaking_high = true\n",
+            "[[pools]]\nname = 'a'\npriority = { aging_rate = [3, 3, 3, 3] }",
+        ))
+        .unwrap();
+        // A pool can turn the flag on for itself only.
+        Config::parse(concat!(
+            "[[pools]]\nname = 'a'\n",
+            "priority = { age_cap = [0, 0, 0, 5000], allow_overtaking_high = true }",
+        ))
+        .unwrap();
     }
 
     #[test]

@@ -18,7 +18,8 @@ configuration (negative, NaN, out of range) raise `ValueError`.
 Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
           emit_transitions: bool = False, *, shutdown_grace: float = 5.0,
           event_capacity: int = 1024, store: SqliteStore | None = None,
-          codec: Codec | None = None)
+          codec: Codec | None = None, priority: PriorityConfig | None = None,
+          urgency: UrgencyConfig | None = None)
 ```
 
 | Argument | Description |
@@ -130,7 +131,7 @@ With a store, payloads and results are encoded by the scheduler's codec:
 Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=None,
      max_pending=None, overflow="wait", retry=None, unknown_dependency="reject",
      await_timeout=None, default_duration=1.0, reservable_fraction=0.5,
-     tenant_weights=None, fair_share=False)
+     tenant_weights=None, fair_share=False, priority=None, urgency=None)
 ```
 
 | Argument | Description |
@@ -160,11 +161,13 @@ executors.
 | `Dep(target, on="success")` | Dependency; `on` is `"success"`, `"failure"` or `"complete"` (`"on_"` prefix accepted). |
 | `RetryPolicy(max_attempts=3, initial_backoff=1.0, multiplier=2.0, max_backoff=60.0, jitter=True)` | `RetryPolicy.none()` disables retries. |
 | `AutoscaleConfig(interval=1.0, target_utilization=0.75, drain_time=30.0, slo=None, reservation_horizon=60.0, stabilization_window=60.0, cooldown=30.0, max_step_up_abs=4, max_step_down=1, cost_per_worker_second=0.0)` | `slo` maps priority names to wait objectives in seconds. |
+| `PriorityConfig(base=None, aging_rate=None, age_cap=None, *, allow_overtaking_high=False)` | [Class scores and aging](../concepts/priorities.md#configuration). Each sequence holds four values (critical, high, normal, low); `None` keeps the default. Raises `ValueError` for values that fail the checks described there. Pass it to `Scheduler(priority=...)` for every pool, or to `Pool(priority=...)` for one. |
+| `UrgencyConfig(max=5000.0, window=5.0, overdue_rate=100.0, overdue_cap=3000.0)` | [Deadline urgency curve](../concepts/deadlines.md#configuration), `window` in seconds. Pass it to `Scheduler(urgency=...)` or `Pool(urgency=...)`. |
 | `Resource.semaphore(name, permits)` / `Resource.token_bucket(name, rate, burst)` | Shared resources. |
 | `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `group` (labels of the worker group the attempt was assigned to), `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
 | `TaskHandle` | Awaitable; `id`, `duplicate`, `await result()`, `done()`, `cancel()`. |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
-| `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`. |
+| `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
 | `StatusEvent`, `EventStream` | See [status events](#status-events). |
 
 `cronoq.__version__` is the package version as a string.
@@ -225,7 +228,7 @@ Result types (frozen dataclasses):
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message` |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
-| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first); `.pending` |
+| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
 | `WorkerGroup` | `labels`, `capacity`, `busy`: the connected workers of a pool that registered the same labels |
 | `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions` (counters since the leader started) |
 

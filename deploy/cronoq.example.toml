@@ -94,6 +94,20 @@ role = "admin"     # everything, plus recurring schedules
 # cache_bytes = 67108864
 # info_entries = 100000
 
+# How waiting tasks are scored, for every pool: base + min(aging_rate * seconds waited, age_cap).
+# Four values each: critical, high, normal, low. A pool can override any key with
+# priority = { ... } and urgency = { ... }.
+# [priority]
+# base = [10000, 1000, 100, 10]
+# aging_rate = [2, 2, 2, 2]
+# age_cap = [800, 800, 800, 800]
+# allow_overtaking_high = false    # accept caps that let waiting pass fresh high/critical work
+# [urgency]                        # extra score as a deadline's latest start time nears
+# max = 5000
+# window_s = 5
+# overdue_rate = 100
+# overdue_cap = 3000
+
 [[pools]]
 name = "default"
 # min = 0                  # lower bound of the desired capacity the autoscaler reports

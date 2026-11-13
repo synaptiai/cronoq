@@ -302,6 +302,76 @@ async def test_snapshot_metrics():
         assert snap.pool("nope") is None
 
 
+def test_priority_and_urgency_config_validate_on_construction():
+    d = cronoq.PriorityConfig()
+    assert d.base == [10000.0, 1000.0, 100.0, 10.0]
+    assert d.aging_rate == [2.0] * 4 and d.age_cap == [800.0] * 4
+    assert d.allow_overtaking_high is False
+    u = cronoq.UrgencyConfig()
+    assert (u.max, u.window, u.overdue_rate, u.overdue_cap) == (5000.0, 5.0, 100.0, 3000.0)
+    assert "PriorityConfig(" in repr(d) and "UrgencyConfig(" in repr(u)
+
+    with pytest.raises(ValueError, match="low work overtake fresh high"):
+        cronoq.PriorityConfig(age_cap=(800, 800, 800, 5000))
+    ok = cronoq.PriorityConfig(age_cap=(800, 800, 800, 5000), allow_overtaking_high=True)
+    assert ok.age_cap == [800.0, 800.0, 800.0, 5000.0]
+    with pytest.raises(ValueError, match="strictly ordered"):
+        cronoq.PriorityConfig(base=(10, 10, 5, 1))
+    with pytest.raises(ValueError, match="finite"):
+        cronoq.PriorityConfig(aging_rate=(2, 2, -1, 2))
+    with pytest.raises((TypeError, ValueError)):
+        cronoq.PriorityConfig(base=(3, 2, 1))
+    with pytest.raises(ValueError, match="urgency"):
+        cronoq.UrgencyConfig(max=-1)
+    with pytest.raises(ValueError, match="window"):
+        cronoq.UrgencyConfig(window=float("nan"))
+
+
+async def test_priority_config_applies_per_scheduler_and_per_pool():
+    release = asyncio.Event()
+    order: list[tuple[str, str]] = []
+
+    def runner(name):
+        async def run(ctx, payload):
+            if payload == "block":
+                await release.wait()
+            else:
+                order.append((name, payload))
+
+        return run
+
+    # Aging so fast that a low task passes fresh high work after about 10 ms of waiting.
+    fast = cronoq.PriorityConfig(
+        aging_rate=(0, 0, 0, 100_000), age_cap=(0, 0, 0, 5000), allow_overtaking_high=True
+    )
+    pools = [
+        Pool("default", runner("default"), max=1, autoscale=False),
+        Pool("tuned", runner("tuned"), max=1, autoscale=False, priority=fast),
+    ]
+    async with Scheduler(pools, urgency=cronoq.UrgencyConfig(max=7000.0)) as s:
+        handles = []
+        for p in ("default", "tuned"):
+            handles.append(await s.submit("block", pool=p))
+        await asyncio.sleep(0.05)
+        for p in ("default", "tuned"):
+            handles.append(await s.submit("low", pool=p, priority="low"))
+        await asyncio.sleep(0.3)
+        for p in ("default", "tuned"):
+            handles.append(await s.submit("high", pool=p, priority="high"))
+        release.set()
+        for h in handles:
+            await h
+        snap = await s.snapshot()
+        default, tuned = snap.pool("default"), snap.pool("tuned")
+        assert default.priority.age_cap == [800.0] * 4
+        assert tuned.priority.age_cap == [0.0, 0.0, 0.0, 5000.0]
+        assert tuned.priority.allow_overtaking_high is True
+        # The scheduler-wide urgency reaches every pool without its own.
+        assert default.urgency.max == 7000.0 and tuned.urgency.max == 7000.0
+    assert [x for x in order if x[0] == "default"] == [("default", "high"), ("default", "low")]
+    assert [x for x in order if x[0] == "tuned"] == [("tuned", "low"), ("tuned", "high")]
+
+
 async def test_deadlines_and_option_validation():
     async with Scheduler([pool()]) as s:
         assert await (await s.submit(1, deadline_in=1.0)) == 1

@@ -22,6 +22,7 @@ __all__ = [
     "Pool",
     "PoolSnapshot",
     "Priority",
+    "PriorityConfig",
     "Resource",
     "RetryPolicy",
     "Scheduler",
@@ -31,6 +32,7 @@ __all__ = [
     "Task",
     "TaskContext",
     "TaskHandle",
+    "UrgencyConfig",
     "__version__",
 ]
 
@@ -103,6 +105,35 @@ class AutoscaleConfig:
     ) -> Self: ...
 
 @final
+class PriorityConfig:
+    base: list[float]
+    aging_rate: list[float]
+    age_cap: list[float]
+    allow_overtaking_high: bool
+    def __new__(
+        cls,
+        base: Sequence[float] | None = None,
+        aging_rate: Sequence[float] | None = None,
+        age_cap: Sequence[float] | None = None,
+        *,
+        allow_overtaking_high: bool = False,
+    ) -> Self: ...
+
+@final
+class UrgencyConfig:
+    max: float
+    window: float
+    overdue_rate: float
+    overdue_cap: float
+    def __new__(
+        cls,
+        max: float = 5000.0,
+        window: float = 5.0,
+        overdue_rate: float = 100.0,
+        overdue_cap: float = 3000.0,
+    ) -> Self: ...
+
+@final
 class Dep:
     def __new__(cls, target: _TaskRefLike, on: _DepCondition = "success") -> Self: ...
 
@@ -135,6 +166,8 @@ class Pool:
         reservable_fraction: float = 0.5,
         tenant_weights: Mapping[str, float] | None = None,
         fair_share: bool = False,
+        priority: PriorityConfig | None = None,
+        urgency: UrgencyConfig | None = None,
     ) -> Self: ...
 
 @final
@@ -218,6 +251,8 @@ class PoolSnapshot:
     run_p99: float
     worker_seconds: float
     cost: float
+    priority: PriorityConfig
+    urgency: UrgencyConfig
 
 @final
 class Snapshot:
@@ -282,6 +317,8 @@ class Scheduler:
         event_capacity: int = 1024,
         store: SqliteStore | None = None,
         codec: Any = None,
+        priority: PriorityConfig | None = None,
+        urgency: UrgencyConfig | None = None,
     ) -> Self: ...
     def start(self) -> Awaitable[None]: ...
     def submit(

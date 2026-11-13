@@ -18,6 +18,8 @@ fn _cronoq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::Priority>()?;
     m.add_class::<types::RetryPolicy>()?;
     m.add_class::<types::AutoscaleConfig>()?;
+    m.add_class::<types::PriorityConfig>()?;
+    m.add_class::<types::UrgencyConfig>()?;
     m.add_class::<types::Dep>()?;
     m.add_class::<types::Resource>()?;
     m.add_class::<types::Pool>()?;

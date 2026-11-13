@@ -954,6 +954,14 @@ async fn snapshot(
                 "groups": p.groups.iter().map(|g| json!({
                     "labels": g.labels, "capacity": g.capacity, "busy": g.busy,
                 })).collect::<Vec<_>>(),
+                "priority": p.priority.as_ref().map(|c| json!({
+                    "base": c.base, "aging_rate": c.aging_rate, "age_cap": c.age_cap,
+                    "allow_overtaking_high": c.allow_overtaking_high,
+                })),
+                "urgency": p.urgency.as_ref().map(|u| json!({
+                    "max": u.max, "window_s": u.window_s,
+                    "overdue_rate": u.overdue_rate, "overdue_cap": u.overdue_cap,
+                })),
             })
         })
         .collect();

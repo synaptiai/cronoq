@@ -372,6 +372,12 @@ async def test_auth_errors(server: Server) -> None:
     async with Client(server.target, token=ADMIN) as admin:
         snap = await admin.snapshot()
         assert snap.pool("default") is not None
+        # The server's effective scoring settings come with each pool.
+        p = snap.pool("default")
+        assert p.priority is not None and p.urgency is not None
+        assert p.priority.base == (10000.0, 1000.0, 100.0, 10.0)
+        assert p.priority.age_cap == (800.0,) * 4 and not p.priority.allow_overtaking_high
+        assert (p.urgency.max, p.urgency.window) == (5000.0, 5.0)
     async with Client(server.target, token=METRICS) as metrics:
         snap = await metrics.snapshot()
         assert snap.totals.submitted >= 0 and snap.workers_connected == 0

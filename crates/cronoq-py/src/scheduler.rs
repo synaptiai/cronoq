@@ -15,8 +15,8 @@ use crate::errors::{failure_to_pyerr, not_started, py_error, stopped, to_pyerr};
 use crate::executor::{LoopClosed, PyExecutor};
 use crate::store::{Codec, CodecStore, SqliteStore};
 use crate::types::{
-    Dep, Opts, Pool, PyObj, Resource, RetryPolicy, Task, extract_ref, parse_miss, parse_overlap,
-    secs,
+    Dep, Opts, Pool, PriorityConfig, PyObj, Resource, RetryPolicy, Task, UrgencyConfig,
+    extract_ref, parse_miss, parse_overlap, secs,
 };
 
 type Sched = cronoq::Scheduler<PyObj, PyObj>;
@@ -105,6 +105,8 @@ pub struct Scheduler {
     pools: Vec<Py<Pool>>,
     resources: Vec<ResourceConfig>,
     emit_transitions: bool,
+    priority: Option<cronoq::PriorityConfig>,
+    urgency: Option<cronoq::UrgencyConfig>,
     shutdown_grace: f64,
     event_capacity: usize,
     default_pool: Arc<str>,
@@ -184,6 +186,9 @@ impl Scheduler {
     /// `pools` must have unique names. Tasks submitted without `pool=` go to the pool named
     /// `"default"`, or to the first pool if none has that name.
     ///
+    /// `priority` (a `PriorityConfig`) and `urgency` (an `UrgencyConfig`) set the class scores
+    /// and the deadline urgency curve for every pool that does not set its own.
+    ///
     /// `shutdown_grace` is the grace period used by `async with`; `event_capacity` bounds the
     /// buffer of each `events()` stream.
     ///
@@ -191,7 +196,7 @@ impl Scheduler {
     /// Payloads and results are then encoded with `codec` (an object with `encode(obj) ->
     /// bytes` and `decode(bytes) -> obj`), JSON by default.
     #[new]
-    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None))]
+    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None, priority=None, urgency=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -202,6 +207,8 @@ impl Scheduler {
         event_capacity: usize,
         store: Option<Py<SqliteStore>>,
         codec: Option<PyObj>,
+        priority: Option<PriorityConfig>,
+        urgency: Option<UrgencyConfig>,
     ) -> PyResult<Self> {
         if pools.is_empty() {
             return Err(PyValueError::new_err("at least one pool is required"));
@@ -263,6 +270,8 @@ impl Scheduler {
                 .map(|r| r.inner)
                 .collect(),
             emit_transitions,
+            priority: priority.map(|p| p.to_core()),
+            urgency: urgency.map(|u| u.to_core()),
             shutdown_grace,
             event_capacity,
             default_pool,
@@ -306,6 +315,12 @@ impl Scheduler {
             }
         });
         let mut b = Sched::builder().emit_transitions(self.emit_transitions);
+        if let Some(p) = &self.priority {
+            b = b.priority(p.clone());
+        }
+        if let Some(u) = &self.urgency {
+            b = b.urgency(u.clone());
+        }
         for p in &self.pools {
             let p = p.get();
             let exec = PyExecutor::new(
@@ -1131,6 +1146,10 @@ pub struct PoolSnapshot {
     run_p99: f64,
     worker_seconds: f64,
     cost: f64,
+    /// Class scores and aging in effect for this pool.
+    priority: PriorityConfig,
+    /// Deadline urgency curve in effect for this pool.
+    urgency: UrgencyConfig,
 }
 
 #[pymethods]
@@ -1231,6 +1250,8 @@ impl From<cronoq::Snapshot> for Snapshot {
                             run_p99: p.run_p99.as_secs_f64(),
                             worker_seconds: p.worker_seconds,
                             cost: p.cost,
+                            priority: PriorityConfig::from_core(&p.priority),
+                            urgency: UrgencyConfig::from_core(&p.urgency),
                         },
                     )
                     .expect("allocate PoolSnapshot")

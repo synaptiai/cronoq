@@ -223,6 +223,9 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `fair_share` | bool | `false` | Share the pool fairly between tenants with equal weights (implied by `tenant_weights`). |
 | `tenant_weights` | table of tenant = weight | `{}` | Share the pool fairly between tenants with these weights (each finite and > 0; others weigh 1). See [Fair sharing](../concepts/fairness.md). |
 
+Each pool also accepts `priority` and `urgency`, described under
+[Priority and urgency](#priority-and-urgency).
+
 ### `scaler`
 
 | Form | Description |
@@ -239,6 +242,46 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `multiplier` | float in [1, 1000] | `2` | Backoff growth factor. |
 | `max_backoff_s` | float ≥ 0 | `60` | Backoff ceiling. |
 | `jitter` | bool | `true` | Full jitter (uniform in `[0, backoff]`). |
+
+## Priority and urgency
+
+`[priority]` and `[urgency]` set how waiting tasks are scored
+([Priorities and aging](../concepts/priorities.md), [Deadlines](../concepts/deadlines.md)) for
+every pool. A pool overrides them with `priority = { ... }` and `urgency = { ... }`; keys it
+leaves out keep the top-level values, and keys left out at the top level keep the defaults.
+
+```toml
+[priority]
+aging_rate = [2, 2, 2, 9]
+
+[urgency]
+max = 6000
+
+[[pools]]
+name = "reports"
+priority = { age_cap = [800, 800, 800, 1000], allow_overtaking_high = true }
+urgency = { overdue_cap = 0 }
+```
+
+`priority`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `base` | 4 floats ≥ 0 | `[10000, 1000, 100, 10]` | Starting score for critical, high, normal and low. Must be strictly decreasing. |
+| `aging_rate` | 4 floats ≥ 0 | `[2, 2, 2, 2]` | Score points gained per second of waiting, per class. |
+| `age_cap` | 4 floats ≥ 0 | `[800, 800, 800, 800]` | Most score points waiting can add, per class. |
+| `allow_overtaking_high` | bool | `false` | Accept values with which waiting alone lets a lower class pass fresh `high` or `critical` work (`base[lower] + age_cap[lower] > base[higher]`). Without it such values are rejected. |
+
+`urgency`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `max` | float ≥ 0 | `5000` | Score points added when a task's latest start time arrives. |
+| `window_s` | float ≥ 0 | `5` | Shortest time before the latest start over which urgency rises. |
+| `overdue_rate` | float ≥ 0 | `100` | Extra score points per second past the latest start time. |
+| `overdue_cap` | float ≥ 0 | `3000` | Most extra score points for being overdue. |
+
+The values in effect for each pool are in the [snapshot](http.md#get-v1snapshot).
 
 ## `[[resources]]`
 
@@ -303,6 +346,8 @@ store (`postgres` or `sqlite`), outputs that are no longer cached are read from 
 - unknown keys, duplicate pool or resource names, invalid names;
 - non-finite, negative or out-of-range numbers (durations, fractions, multipliers, rates,
   tenant weights), and a pool `min` above its `max`;
+- `priority` base scores that are not strictly decreasing, and, unless `allow_overtaking_high`
+  is set, an `age_cap` that lets a lower class pass fresh `high` or `critical` work;
 - `[[auth.tokens]]` entries without exactly one of `token`/`token_env`, duplicate literal
   `token` values, pool allow-lists naming unknown pools;
 - `[[auth.certs]]` without `server.tls.client_ca`;
