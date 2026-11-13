@@ -28,6 +28,10 @@ decisions.
 
 **Fencing**: rejecting writes from a leader whose epoch is no longer current.
 
+**Fingerprint**: 128 bits stored with a task that say what its submission asked for; a later
+submission of the same key with `on_key_conflict = reject` is compared against it
+([Detecting conflicting submissions](concepts/key-conflicts.md)).
+
 **Freeze rule**: every attempt of one task sees the same payload; a task that has started is
 never changed by a [replacement](concepts/replacing.md), only followed.
 

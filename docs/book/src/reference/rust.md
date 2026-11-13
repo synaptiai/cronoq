@@ -92,7 +92,8 @@ With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`
 `resource(name, units)`, `tag(key, value)`, `label(name, value)` (a required
 [worker label](../concepts/labels.md)), `tenant(name)` ([fair sharing](../concepts/fairness.md)),
 `replace_queued()` and `renew_position()` ([replacing a task by key](../concepts/replacing.md);
-single submissions only). Builder order does not matter. Strings must not contain NUL characters.
+single submissions only), `fingerprint(u128)` and `on_key_conflict(KeyConflict)`
+([detecting conflicting submissions](../concepts/key-conflicts.md)). Builder order does not matter. Strings must not contain NUL characters.
 
 `Submitted` (from `enqueue`) has `id`, `duplicate` and `outcome`: a `SubmitOutcome` of
 `Created`, `Existing`, `Replaced` or `Pending`. `TaskHandle::outcome()` gives the same for
@@ -120,8 +121,8 @@ attempts keep running.
 
 | Type | Variants |
 |---|---|
-| `SubmitError` | `UnknownPool`, `UnknownResource`, `ResourceExceedsCapacity`, `ReservationConflict`, `Cycle`, `UnknownDependency`, `Full`, `Overloaded`, `DuplicateKeyInBatch`, `ReplaceMismatch(&'static str)`, `Invalid(&'static str)`. |
-| `Error` | `Submit(SubmitError)`, `Update(UpdateError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
+| `SubmitError` | `UnknownPool`, `UnknownResource`, `ResourceExceedsCapacity`, `ReservationConflict`, `Cycle`, `UnknownDependency`, `Full`, `Overloaded`, `DuplicateKeyInBatch`, `ReplaceMismatch(&'static str)`, `KeyConflict { id, status }`, `Invalid(&'static str)`. |
+| `Error` | `Submit(SubmitError)`, `Batch { index, error }` (a batch refused because of the task at `index`), `Update(UpdateError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
 | `UpdateError` | `NotFound`, `FixedStart`, `Invalid(&'static str)`. |
 | `TaskFailure` | `Ended { status, message }`, `OutputUnavailable { id }`, `Shutdown`; `status()`. |
 | `StoreError` | `Fenced`, `Unavailable(String)`, `Other(String)`; `is_transient()`. |
@@ -170,7 +171,8 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 |---|---|
 | `Core::new(CoreConfig)` | Create; `CoreConfig::validate()` reports problems without panicking. |
 | `submit`, `try_submit`, `submit_batch` | Admission. |
-| `submit_with`, `try_submit_with` | Admission with `SubmitOptions { on_key_conflict, renew_position }`: `KeyConflict::ReplaceQueued` replaces the task holding the key or stores the submission to run after it. Emits `Mutation::Replaced` or `Mutation::PendingReplacement`. |
+| `submit_batch_with(now, specs, &[KeyConflict])` | Atomic batch with one mode per task (or none for the configured default). |
+| `submit_with`, `try_submit_with` | Admission with `SubmitOptions { on_key_conflict, renew_position }`: `KeyConflict::Reject` compares `TaskSpec::fingerprint` with the one stored for the key and fails with `SubmitError::KeyConflict` when they differ; `KeyConflict::ReplaceQueued` replaces the task holding the key or stores the submission to run after it. Emits `Mutation::Replaced` or `Mutation::PendingReplacement`. |
 | `complete(now, lease, Outcome)`, `heartbeat(now, lease)` | Attempt feedback. |
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
 | `update(now, target, TaskPatch)` | Change a live task's priority, deadline or tags; emits `Mutation::Updated` and, with `emit_transitions`, a `StatusEvent` of `EventKind::Updated`. |

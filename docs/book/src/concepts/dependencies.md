@@ -6,7 +6,11 @@ A **key** is an optional unique name for a task.
 
 - **Deduplication**: submitting a task whose key belongs to a live task, or to a terminal task
   still in the retention window, does not create a new task. It returns the existing id with
-  `duplicate = true`. This makes producers safe to retry.
+  `duplicate = true`. This makes producers safe to retry. The new submission's content is
+  not looked at and not run, unless it asks otherwise:
+- **Conflicts reported**, on request: with `on_key_conflict = reject`, a submission that asks
+  for something else than the task holding its key is refused instead of being dropped. See
+  [Detecting conflicting submissions](key-conflicts.md).
 - **References**: dependencies, cancellation, status lookups and result waits accept a key
   wherever they accept an id.
 - **Latest wins**, on request: a submission with `on_key_conflict = replace_queued` replaces the
@@ -70,7 +74,8 @@ cycles closed through a task that is awaiting a key the new submission defines.
 
 `submit_batch` admits several tasks atomically. Dependencies may reference keys defined anywhere
 in the batch, in any order. If any task is invalid, would close a cycle, conflicts with a
-reservation or exceeds a bound, nothing is admitted and the error names the offending index.
+reservation, exceeds a bound or (with `reject`) reuses a key with other content, nothing is
+admitted and the error names the offending index.
 
 ## Complexity
 

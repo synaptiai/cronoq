@@ -44,7 +44,8 @@ It depends on the task that holds the key when the submission arrives.
 | Has started an attempt (running, or waiting for a retry) | `pending` | **The payload is frozen.** The task finishes with the payload it started with. The new submission is stored, replacing any stored before, and runs afterwards as a new task with the same key: the **successor**. |
 
 Without `replace_queued` nothing changes: a submission whose key is in use returns the existing
-task (`existing`) and its payload is dropped.
+task (`existing`) and its payload is dropped, or, with `reject`, is
+[reported as a conflict](key-conflicts.md) when it differs from that task.
 
 ### The freeze rule
 

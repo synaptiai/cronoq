@@ -107,6 +107,12 @@ task's). `submitBatch` refuses both options (`invalid_argument`), and `spec` doe
 them. Against a server that does not know the option, `submit` throws `unimplemented`. `Event.kind` is `"transition"`,
 `"updated"`, `"replaced"` or `"successor"`; the last three are delivered with `allTransitions`.
 
+`Task.onKeyConflict: "reject"` reports a `key` that belongs to a task submitted with other
+content as a `CronoqError` whose `keyConflict` is true, with the existing task in
+`conflictTask` and `conflictStatus`, instead of returning that task
+([Detecting conflicting submissions](../concepts/key-conflicts.md)). In `submitBatch`, use the
+same `onKeyConflict` for every task; a refused batch names the task in `batchIndex`.
+
 `update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:
 `deadlineIn` is seconds from now, `deadlineAt` a `Date`, at most one of the three deadline
 fields may be given, and `tags` replaces the task's tags (`{}` removes them). `Updated` has

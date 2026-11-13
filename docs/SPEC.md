@@ -167,6 +167,16 @@ pub enum MissPolicy { RunLate /*default*/, Skip, Fail }
 - Submitting a `key` that is already live, or still in the retention table, returns
   `Submitted { id, duplicate: true }` with the existing task's id. This gives idempotent
   submit within the retention window.
+- **Key conflicts** (`KeyConflict::Reject`, per submission, or as `CoreConfig::on_key_conflict`
+  for submissions that say `Configured`): `TaskSpec::fingerprint` is an opaque `u128` chosen by
+  the caller (the server derives it: SHA-256, truncated, over length-prefixed payload, content
+  type, pool, kind, priority and sorted dependencies). The engine stores it on the task and,
+  for a keyed task, in the retention table next to the status; it never computes or changes
+  it. A `Reject` submission whose key is live or retained is `Existing` when either side has no
+  fingerprint or both are equal, and `SubmitError::KeyConflict { id, status }` otherwise. A
+  replacement in place overwrites the task's fingerprint; an update does not. A batch is
+  checked before anything is admitted and fails with the first conflicting index. Recovery
+  restores fingerprints of live and terminal tasks (`RecoveredTerminal::fingerprint`).
 - **Replace by key** (`SubmitOptions { on_key_conflict: ReplaceQueued, renew_position }`), for
   work where only the newest value matters:
   - No live task holds the key (none, or a finished one in retention): a task is created

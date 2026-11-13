@@ -35,6 +35,10 @@ curl -s $CRONOQ/v1/tasks -H "$AUTH" -H "$JSON" -d '{
   binary data.
 - `key` makes the submission idempotent: sending it again returns the same id with
   `"duplicate": true`. Use it for every request you might retry.
+- Add `"on_key_conflict": "reject"` to be told when a key is reused with other content: a
+  retry still gets the same id, but a different payload under the same key is answered with 422
+  and the existing task, instead of being dropped
+  ([Detecting conflicting submissions](../concepts/key-conflicts.md)).
 - Add `"on_key_conflict": "replace_queued"` when only the newest value of a key is worth
   running: a waiting task with that key takes the new payload, and a running one is followed by
   it. The response's `outcome` says which ([Replacing a task by key](../concepts/replacing.md)).

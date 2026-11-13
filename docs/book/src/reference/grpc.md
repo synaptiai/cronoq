@@ -85,7 +85,9 @@ expires first the call fails with `DEADLINE_EXCEEDED` and the task keeps running
 
 | Value | Behaviour |
 |---|---|
-| `KEY_CONFLICT_UNSPECIFIED`, `KEY_CONFLICT_RETURN_EXISTING` | Return the existing task and drop this submission. |
+| `KEY_CONFLICT_UNSPECIFIED` | The server's default (`server.on_key_conflict`). |
+| `KEY_CONFLICT_RETURN_EXISTING` | Return the existing task and drop this submission. |
+| `KEY_CONFLICT_REJECT` | Return the existing task if this submission asks for the same thing, and fail otherwise ([Detecting conflicting submissions](../concepts/key-conflicts.md)). The server compares a fingerprint of payload, content type, pool, kind, priority and dependencies with the one stored when the task was submitted. A different one fails with `FAILED_PRECONDITION`, with the existing task's id and status in the response metadata `cronoq-conflict-task` and `cronoq-conflict-status`. |
 | `KEY_CONFLICT_REPLACE_QUEUED` | The newest submission wins: a task that has not started is replaced in place; one that has started keeps its payload and is followed by a new task with the same key. Needs a key. With `renew_position`, the task takes this submission's place in line. |
 
 `outcome` says what the submission did:
@@ -103,9 +105,13 @@ fixed start on either side) fails with `FAILED_PRECONDITION`. `renew_position` w
 `KEY_CONFLICT_REPLACE_QUEUED`, or `KEY_CONFLICT_REPLACE_QUEUED` without a key, is
 `INVALID_ARGUMENT`.
 
-`SubmitBatchRequest{tasks}` is admitted atomically: all tasks or none. Dependencies may name
-keys defined anywhere in the batch. The response lists one `SubmitResponse` per task, in request
-order, without `result`.
+`SubmitBatchRequest{tasks, on_key_conflict}` is admitted atomically: all tasks or none.
+Dependencies may name keys defined anywhere in the batch. The response lists one
+`SubmitResponse` per task, in request order, without `result`. `on_key_conflict` applies to
+every task and may be `KEY_CONFLICT_RETURN_EXISTING` or `KEY_CONFLICT_REJECT` (unspecified: the
+server's default); `KEY_CONFLICT_REPLACE_QUEUED` is `INVALID_ARGUMENT`. A batch that fails
+because of one task names it in the message (`tasks[1]: ...`) and in the response metadata
+`cronoq-batch-index`.
 
 With a durable store (Postgres or SQLite), `Submit`, `SubmitBatch`, `Cancel` and `Update`
 return after the change is stored.
@@ -328,7 +334,7 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle; oversize string or collection. |
 | `NOT_FOUND` | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | The key is already used by a task in a pool outside the credentials' scope. |
-| `FAILED_PRECONDITION` | Fixed-start reservation conflict; an `Update` of a task with a fixed start; a `KEY_CONFLICT_REPLACE_QUEUED` submission that does not match the task it would replace; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
+| `FAILED_PRECONDITION` | A key that belongs to a task submitted with other content, for a submission with `KEY_CONFLICT_REJECT` (told apart by the `cronoq-conflict-task` metadata); fixed-start reservation conflict; an `Update` of a task with a fixed start; a `KEY_CONFLICT_REPLACE_QUEUED` submission that does not match the task it would replace; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
 | `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
