@@ -7,6 +7,35 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+
+- Priority and urgency settings in the server and the Python package, and per pool everywhere.
+  The server reads `[priority]` (`base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and
+  `[urgency]` (`max`, `window_s`, `overdue_rate`, `overdue_cap`), and each pool accepts
+  `priority = { ... }` and `urgency = { ... }` to override them. Python has `PriorityConfig`
+  and `UrgencyConfig`, accepted by `Scheduler` and `Pool`. In Rust, `Pool::priority` and
+  `Pool::urgency` join the existing builder methods. Until now only the Rust builder could
+  change these, for all pools at once.
+- Snapshots report the priority and urgency settings in effect for each pool: `priority` and
+  `urgency` in `GET /v1/snapshot`, in `PoolSnapshot` over gRPC, and on the Rust and Python
+  snapshot types (`cronoq.client.PrioritySettings` and `UrgencySettings` in the Python client).
+
+### Changed
+
+- Priority and urgency settings are now checked. `Builder::build` returns `Error::Config`, the
+  server refuses to start, and `CoreConfig::validate` fails when a value is negative or not
+  finite, when the base scores are not strictly ordered (critical above high above normal above
+  low), or when an `age_cap` lets a lower class pass freshly submitted high or critical work by
+  waiting. Set `allow_overtaking_high` to accept the last. Before, only non-finite values were
+  reported, and only by `CoreConfig::validate`. The defaults pass unchanged.
+- **Breaking (Rust):** `PriorityConfig` has a new field, `allow_overtaking_high`, and
+  `PoolConfig` has new fields `priority` and `urgency`; `PoolSnapshot` has new fields
+  `priority` and `urgency`. Code that builds these with a struct literal needs
+  `..Default::default()` or the new fields.
+- The Postgres and SQLite stores list the mutation kinds they skip in each pass instead of
+  using a catch-all, so a new kind of `Mutation` fails to compile until every store handles it.
+  The store conformance test fails to compile likewise until it covers the new kind.
+
 ### Fixed
 
 - The Rust worker client (`cronoq_server::worker`) now gives its slots back when it starts
@@ -14,12 +43,6 @@ contain breaking changes; they are called out under **Changed**.
   worker could take one, the attempt failed and counted against the task's retry budget, so a
   task could be dead-lettered during a drain without running. The Go, TypeScript and Python
   clients already did this.
-
-### Changed
-
-- The Postgres and SQLite stores list the mutation kinds they skip in each pass instead of
-  using a catch-all, so a new kind of `Mutation` fails to compile until every store handles it.
-  The store conformance test fails to compile likewise until it covers the new kind.
 
 ## [0.2.2] - 2026-11-03
 

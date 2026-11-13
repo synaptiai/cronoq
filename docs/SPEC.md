@@ -210,6 +210,14 @@ score = base[class] + min(aging_rate[class] · wait, age_cap[class]) + urgency
 defaults: base = {Critical: 10000, High: 1000, Normal: 100, Low: 10}
           aging_rate = 2.0/s, age_cap = 800        (all configurable per class)
 ```
+The settings (`PriorityConfig`) and the urgency curve below (`UrgencyConfig`) are engine-wide
+(`CoreConfig::priority`, `CoreConfig::urgency`) with an optional override per pool
+(`PoolConfig::priority`, `PoolConfig::urgency`); scores are only compared within a pool.
+`PriorityConfig::validate` requires finite, non-negative values, strictly decreasing bases, and,
+unless `allow_overtaking_high` is set, `base[l] + age_cap[l] <= base[h]` for `h` in
+{Critical, High} and every lower class `l` that ages (`aging_rate[l] > 0`): waiting alone never passes fresh High or Critical
+work. The runtime builder, the server configuration and the Python types apply it; `Core::new`
+does not (it accepts any finite values).
 
 **Urgency** (fixes prototype bug #4: it must be monotonic). Let `d` be the duration
 estimate (§8), `lst = deadline − d` the latest start time, `slack = lst − now`, and

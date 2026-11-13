@@ -89,6 +89,18 @@ impl<P, O> Pool<P, O> {
         self.cfg.autoscale = None;
         self
     }
+    /// Per-class base scores and aging for this pool only (default: the scheduler's,
+    /// [`Builder::priority`]).
+    pub fn priority(mut self, p: PriorityConfig) -> Self {
+        self.cfg.priority = Some(p);
+        self
+    }
+    /// Deadline urgency curve for this pool only (default: the scheduler's,
+    /// [`Builder::urgency`]).
+    pub fn urgency(mut self, u: UrgencyConfig) -> Self {
+        self.cfg.urgency = Some(u);
+        self
+    }
     /// Direct access to all engine settings for this pool.
     pub fn configure(mut self, f: impl FnOnce(&mut PoolConfig)) -> Self {
         f(&mut self.cfg);
@@ -139,12 +151,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         self.core.resources.push(r);
         self
     }
-    /// Per-class base scores and aging.
+    /// Per-class base scores and aging, for pools without their own ([`Pool::priority`]).
+    /// [`Builder::build`] refuses settings that fail [`PriorityConfig::validate`].
     pub fn priority(mut self, p: PriorityConfig) -> Self {
         self.core.priority = p;
         self
     }
-    /// Deadline urgency curve.
+    /// Deadline urgency curve, for pools without their own ([`Pool::urgency`]).
     pub fn urgency(mut self, u: UrgencyConfig) -> Self {
         self.core.urgency = u;
         self
@@ -218,6 +231,8 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         if pools.is_empty() {
             return Err(Error::Config("at least one pool is required".into()));
         }
+        core.priority.validate().map_err(Error::Config)?;
+        core.urgency.validate().map_err(Error::Config)?;
         let clock = Clock::start();
         let base = TimeBase {
             unix_nanos_at_zero: clock.unix_nanos_at_zero(),
@@ -236,6 +251,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
             }
             if p.cfg.name.contains('\0') {
                 return Err(Error::Config("pool names must not contain NUL".into()));
+            }
+            let scoring = p.cfg.priority.as_ref().map_or(Ok(()), |c| c.validate());
+            let scoring = scoring.and(p.cfg.urgency.as_ref().map_or(Ok(()), |u| u.validate()));
+            if let Err(e) = scoring {
+                return Err(Error::Config(format!("pool '{}': {e}", p.cfg.name)));
             }
             rts.push(PoolRt {
                 name: p.cfg.name.clone(),

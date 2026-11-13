@@ -216,8 +216,9 @@ occurrence); schedules are sorted by name.
 `SnapshotResponse` carries `pools` (one `PoolSnapshot` per pool: `name`, `capacity`, `busy`,
 `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`,
 `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`,
-`wait_p50_s`, `wait_p90_s`, `wait_p99_s`, `cost`, `workers_connected`, and `groups`: one
-`WorkerGroup{labels, capacity, busy}` per set of worker labels, unlabeled first), `live_tasks`,
+`wait_p50_s`, `wait_p90_s`, `wait_p99_s`, `cost`, `workers_connected`, `groups`: one
+`WorkerGroup{labels, capacity, busy}` per set of worker labels, unlabeled first, and the
+`priority` and `urgency` settings in effect for the pool), `live_tasks`,
 `running`, `pending`, `workers_connected`, `unavailable_shards` and `totals` (`submitted`,
 `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`,
 `retries`, `timeouts`, `lease_expiries`, `stale_completions`). The [HTTP snapshot](http.md#get-v1snapshot) documents each

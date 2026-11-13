@@ -119,6 +119,134 @@ pub(crate) fn extract_priority(obj: &Bound<'_, PyAny>) -> PyResult<CorePriority>
     ))
 }
 
+/// Per-class scores: `base + min(aging_rate * seconds waited, age_cap)`. Each sequence holds
+/// four values, for critical, high, normal and low.
+#[pyclass(frozen, get_all, from_py_object, module = "cronoq._cronoq")]
+#[derive(Clone, Debug)]
+pub struct PriorityConfig {
+    pub base: [f64; 4],
+    pub aging_rate: [f64; 4],
+    pub age_cap: [f64; 4],
+    pub allow_overtaking_high: bool,
+}
+
+#[pymethods]
+impl PriorityConfig {
+    /// Values left out keep their defaults: `base=(10000, 1000, 100, 10)`,
+    /// `aging_rate=(2, 2, 2, 2)`, `age_cap=(800, 800, 800, 800)`.
+    ///
+    /// Raises `ValueError` unless every value is finite and not negative, the base scores are
+    /// strictly ordered, and no lower class can pass freshly submitted high or critical work
+    /// by waiting (`base[lower] + age_cap[lower] <= base[higher]`); pass
+    /// `allow_overtaking_high=True` to accept that.
+    #[new]
+    #[pyo3(signature = (base=None, aging_rate=None, age_cap=None, *, allow_overtaking_high=false))]
+    fn new(
+        base: Option<[f64; 4]>,
+        aging_rate: Option<[f64; 4]>,
+        age_cap: Option<[f64; 4]>,
+        allow_overtaking_high: bool,
+    ) -> PyResult<Self> {
+        let d = cronoq::PriorityConfig::default();
+        let c = PriorityConfig {
+            base: base.unwrap_or(d.base),
+            aging_rate: aging_rate.unwrap_or(d.aging_rate),
+            age_cap: age_cap.unwrap_or(d.age_cap),
+            allow_overtaking_high,
+        };
+        c.to_core().validate().map_err(PyValueError::new_err)?;
+        Ok(c)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PriorityConfig(base={:?}, aging_rate={:?}, age_cap={:?}, allow_overtaking_high={})",
+            self.base,
+            self.aging_rate,
+            self.age_cap,
+            if self.allow_overtaking_high {
+                "True"
+            } else {
+                "False"
+            },
+        )
+    }
+}
+
+impl PriorityConfig {
+    pub(crate) fn to_core(&self) -> cronoq::PriorityConfig {
+        cronoq::PriorityConfig {
+            base: self.base,
+            aging_rate: self.aging_rate,
+            age_cap: self.age_cap,
+            allow_overtaking_high: self.allow_overtaking_high,
+        }
+    }
+    pub(crate) fn from_core(c: &cronoq::PriorityConfig) -> Self {
+        PriorityConfig {
+            base: c.base,
+            aging_rate: c.aging_rate,
+            age_cap: c.age_cap,
+            allow_overtaking_high: c.allow_overtaking_high,
+        }
+    }
+}
+
+/// Score added to a task with a deadline as its latest start time approaches and passes
+/// (`window` in seconds).
+#[pyclass(frozen, get_all, from_py_object, module = "cronoq._cronoq")]
+#[derive(Clone, Debug)]
+pub struct UrgencyConfig {
+    pub max: f64,
+    pub window: f64,
+    pub overdue_rate: f64,
+    pub overdue_cap: f64,
+}
+
+#[pymethods]
+impl UrgencyConfig {
+    /// Raises `ValueError` unless every value is finite and not negative.
+    #[new]
+    #[pyo3(signature = (max=5000.0, window=5.0, overdue_rate=100.0, overdue_cap=3000.0))]
+    fn new(max: f64, window: f64, overdue_rate: f64, overdue_cap: f64) -> PyResult<Self> {
+        secs(window, "window")?;
+        let c = UrgencyConfig {
+            max,
+            window,
+            overdue_rate,
+            overdue_cap,
+        };
+        c.to_core().validate().map_err(PyValueError::new_err)?;
+        Ok(c)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "UrgencyConfig(max={:?}, window={:?}, overdue_rate={:?}, overdue_cap={:?})",
+            self.max, self.window, self.overdue_rate, self.overdue_cap,
+        )
+    }
+}
+
+impl UrgencyConfig {
+    pub(crate) fn to_core(&self) -> cronoq::UrgencyConfig {
+        cronoq::UrgencyConfig {
+            max: self.max,
+            window: Duration::from_secs_f64(self.window),
+            overdue_rate: self.overdue_rate,
+            overdue_cap: self.overdue_cap,
+        }
+    }
+    pub(crate) fn from_core(c: &cronoq::UrgencyConfig) -> Self {
+        UrgencyConfig {
+            max: c.max,
+            window: c.window.as_secs_f64(),
+            overdue_rate: c.overdue_rate,
+            overdue_cap: c.overdue_cap,
+        }
+    }
+}
+
 /// Retry behaviour for retryable failures.
 #[pyclass(frozen, get_all, from_py_object, module = "cronoq._cronoq")]
 #[derive(Clone, Debug)]
@@ -405,13 +533,15 @@ pub struct Pool {
 #[pymethods]
 impl Pool {
     /// `executor` is `async def run(ctx, payload)` or a plain function (run in a thread).
-    /// `autoscale=False` keeps exactly `initial` workers.
+    /// `autoscale=False` keeps exactly `initial` workers. `priority` and `urgency` set the
+    /// class scores and the deadline urgency curve for this pool only (default: the
+    /// scheduler's).
     #[new]
     #[pyo3(signature = (
         name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=None,
         max_pending=None, overflow="wait", retry=None, unknown_dependency="reject",
         await_timeout=None, default_duration=1.0, reservable_fraction=0.5,
-        tenant_weights=None, fair_share=false
+        tenant_weights=None, fair_share=false, priority=None, urgency=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -432,6 +562,8 @@ impl Pool {
         reservable_fraction: f64,
         tenant_weights: Option<std::collections::HashMap<String, f64>>,
         fair_share: bool,
+        priority: Option<PriorityConfig>,
+        urgency: Option<UrgencyConfig>,
     ) -> PyResult<Self> {
         if !executor.is_callable() {
             return Err(PyTypeError::new_err("executor must be callable"));
@@ -505,6 +637,8 @@ impl Pool {
         };
         cfg.default_duration = secs(default_duration, "default_duration")?;
         cfg.reservable_fraction = reservable_fraction;
+        cfg.priority = priority.map(|p| p.to_core());
+        cfg.urgency = urgency.map(|u| u.to_core());
         let is_async: bool = py
             .import("inspect")?
             .call_method1("iscoroutinefunction", (executor,))?

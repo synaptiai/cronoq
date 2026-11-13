@@ -460,6 +460,18 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             wait_p99_s: p.wait_p99.as_secs_f64(),
             cost: p.cost,
             workers_connected: workers(&p.name) as u64,
+            priority: Some(pb::PriorityConfig {
+                base: p.priority.base.to_vec(),
+                aging_rate: p.priority.aging_rate.to_vec(),
+                age_cap: p.priority.age_cap.to_vec(),
+                allow_overtaking_high: p.priority.allow_overtaking_high,
+            }),
+            urgency: Some(pb::UrgencyConfig {
+                max: p.urgency.max,
+                window_s: p.urgency.window.as_secs_f64(),
+                overdue_rate: p.urgency.overdue_rate,
+                overdue_cap: p.urgency.overdue_cap,
+            }),
             groups: p
                 .groups
                 .iter()

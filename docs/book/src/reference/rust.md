@@ -24,8 +24,8 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 |---|---|---|
 | `pool(Pool)` | – | Add a pool (at least one; the first is the default pool). |
 | `resource(ResourceConfig)` | – | Add a shared semaphore or token bucket. |
-| `priority(PriorityConfig)` | built-in | Class scores and aging. |
-| `urgency(UrgencyConfig)` | built-in | Deadline urgency curve. |
+| `priority(PriorityConfig)` | built-in | Class scores and aging, for pools without their own. `build()` returns `Error::Config` for values that fail `PriorityConfig::validate`. |
+| `urgency(UrgencyConfig)` | built-in | Deadline urgency curve, for pools without their own. Checked like `priority`. |
 | `store(impl Store)` / `store_arc(Arc<dyn Store>)` | `MemoryStore` | Persistence backend. |
 | `emit_transitions(bool)` | `false` | Broadcast every transition on `events()`, not only terminal ones. |
 | `queue_capacity(n)` | 8192 | Capacity of the submission channel. |
@@ -47,6 +47,7 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 | `executor(impl Executor)`, `executor_arc(..)`, `executor_fn(async fn)` | How attempts run. |
 | `scaler(impl Scaler)`, `scaler_arc(..)` | Capacity backend (default `SlotScaler`: in-process slots). |
 | `autoscale(AutoscaleConfig)`, `no_autoscale()` | Autoscaling policy. |
+| `priority(PriorityConfig)`, `urgency(UrgencyConfig)` | Class scores and deadline urgency for this pool only (default: the scheduler's). |
 | `configure(FnOnce(&mut PoolConfig))` | Every other pool setting (bounds, overflow, retry, lease TTL, max hold, tenant `fairness`, ...). |
 
 ### `Scheduler<P, O>`

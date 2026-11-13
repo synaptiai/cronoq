@@ -267,7 +267,13 @@ Results of finished tasks remain available while the leader's output cache
             "wait_p50_s": 0.2, "wait_p90_s": 1.4, "wait_p99_s": 2.9, "cost": 0.0,
             "workers_connected": 2,
             "groups": [{"labels": {}, "capacity": 3, "busy": 3},
-                       {"labels": {"gpu": "a100"}, "capacity": 1, "busy": 1}]}],
+                       {"labels": {"gpu": "a100"}, "capacity": 1, "busy": 1}],
+            "priority": {"base": [10000.0, 1000.0, 100.0, 10.0],
+                         "aging_rate": [2.0, 2.0, 2.0, 2.0],
+                         "age_cap": [800.0, 800.0, 800.0, 800.0],
+                         "allow_overtaking_high": false},
+            "urgency": {"max": 5000.0, "window_s": 5.0, "overdue_rate": 100.0,
+                        "overdue_cap": 3000.0}}],
  "totals": {"submitted": 130, "dispatched": 124, "succeeded": 118, "failed": 1,
             "dead_lettered": 0, "cancelled": 2, "skipped": 0, "missed": 0, "shed": 0,
             "retries": 4, "timeouts": 1, "lease_expiries": 0,
@@ -288,6 +294,7 @@ Results of finished tasks remain available while the leader's output cache
 | `pools[].wait_p50_s`, `wait_p90_s`, `wait_p99_s` | Time from submission to first start, over the metrics window. |
 | `pools[].cost` | Cost since start (`cost_per_worker_second` × worker-seconds). |
 | `pools[].groups` | Worker groups (workers with the same labels), unlabeled first: labels, slots and busy slots. |
+| `pools[].priority`, `urgency` | The [priority and urgency settings](configuration.md#priority-and-urgency) in effect for the pool. Arrays are in the order critical, high, normal, low. `null` for a pool reported by a shard that runs an older version. |
 | `totals` | Lifetime counters of this leader since it started. |
 
 Field meanings: [Metrics and quality signals](../concepts/metrics.md).

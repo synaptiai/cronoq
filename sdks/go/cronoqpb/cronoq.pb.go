@@ -2706,7 +2706,11 @@ type PoolSnapshot struct {
 	Cost               float64                `protobuf:"fixed64,18,opt,name=cost,proto3" json:"cost,omitempty"`
 	WorkersConnected   uint64                 `protobuf:"varint,19,opt,name=workers_connected,json=workersConnected,proto3" json:"workers_connected,omitempty"`
 	// Worker groups (workers with the same labels), unlabeled first.
-	Groups        []*WorkerGroup `protobuf:"bytes,20,rep,name=groups,proto3" json:"groups,omitempty"`
+	Groups []*WorkerGroup `protobuf:"bytes,20,rep,name=groups,proto3" json:"groups,omitempty"`
+	// Class scores and aging in effect for this pool.
+	Priority *PriorityConfig `protobuf:"bytes,21,opt,name=priority,proto3" json:"priority,omitempty"`
+	// Deadline urgency curve in effect for this pool.
+	Urgency       *UrgencyConfig `protobuf:"bytes,22,opt,name=urgency,proto3" json:"urgency,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2881,6 +2885,160 @@ func (x *PoolSnapshot) GetGroups() []*WorkerGroup {
 	return nil
 }
 
+func (x *PoolSnapshot) GetPriority() *PriorityConfig {
+	if x != nil {
+		return x.Priority
+	}
+	return nil
+}
+
+func (x *PoolSnapshot) GetUrgency() *UrgencyConfig {
+	if x != nil {
+		return x.Urgency
+	}
+	return nil
+}
+
+// Score of a waiting task: base + min(aging_rate * seconds waited, age_cap) + urgency. Each
+// list holds four values: critical, high, normal, low.
+type PriorityConfig struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Base      []float64              `protobuf:"fixed64,1,rep,packed,name=base,proto3" json:"base,omitempty"`
+	AgingRate []float64              `protobuf:"fixed64,2,rep,packed,name=aging_rate,json=agingRate,proto3" json:"aging_rate,omitempty"`
+	AgeCap    []float64              `protobuf:"fixed64,3,rep,packed,name=age_cap,json=ageCap,proto3" json:"age_cap,omitempty"`
+	// Whether waiting alone may let a lower class overtake fresh high or critical work.
+	AllowOvertakingHigh bool `protobuf:"varint,4,opt,name=allow_overtaking_high,json=allowOvertakingHigh,proto3" json:"allow_overtaking_high,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *PriorityConfig) Reset() {
+	*x = PriorityConfig{}
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PriorityConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PriorityConfig) ProtoMessage() {}
+
+func (x *PriorityConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PriorityConfig.ProtoReflect.Descriptor instead.
+func (*PriorityConfig) Descriptor() ([]byte, []int) {
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *PriorityConfig) GetBase() []float64 {
+	if x != nil {
+		return x.Base
+	}
+	return nil
+}
+
+func (x *PriorityConfig) GetAgingRate() []float64 {
+	if x != nil {
+		return x.AgingRate
+	}
+	return nil
+}
+
+func (x *PriorityConfig) GetAgeCap() []float64 {
+	if x != nil {
+		return x.AgeCap
+	}
+	return nil
+}
+
+func (x *PriorityConfig) GetAllowOvertakingHigh() bool {
+	if x != nil {
+		return x.AllowOvertakingHigh
+	}
+	return false
+}
+
+// Score added to a task with a deadline as its latest start time approaches and passes.
+type UrgencyConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Max           float64                `protobuf:"fixed64,1,opt,name=max,proto3" json:"max,omitempty"`
+	WindowS       float64                `protobuf:"fixed64,2,opt,name=window_s,json=windowS,proto3" json:"window_s,omitempty"`
+	OverdueRate   float64                `protobuf:"fixed64,3,opt,name=overdue_rate,json=overdueRate,proto3" json:"overdue_rate,omitempty"`
+	OverdueCap    float64                `protobuf:"fixed64,4,opt,name=overdue_cap,json=overdueCap,proto3" json:"overdue_cap,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UrgencyConfig) Reset() {
+	*x = UrgencyConfig{}
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UrgencyConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UrgencyConfig) ProtoMessage() {}
+
+func (x *UrgencyConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UrgencyConfig.ProtoReflect.Descriptor instead.
+func (*UrgencyConfig) Descriptor() ([]byte, []int) {
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *UrgencyConfig) GetMax() float64 {
+	if x != nil {
+		return x.Max
+	}
+	return 0
+}
+
+func (x *UrgencyConfig) GetWindowS() float64 {
+	if x != nil {
+		return x.WindowS
+	}
+	return 0
+}
+
+func (x *UrgencyConfig) GetOverdueRate() float64 {
+	if x != nil {
+		return x.OverdueRate
+	}
+	return 0
+}
+
+func (x *UrgencyConfig) GetOverdueCap() float64 {
+	if x != nil {
+		return x.OverdueCap
+	}
+	return 0
+}
+
 type WorkerGroup struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Labels        map[string]string      `protobuf:"bytes,1,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -2892,7 +3050,7 @@ type WorkerGroup struct {
 
 func (x *WorkerGroup) Reset() {
 	*x = WorkerGroup{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[33]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2904,7 +3062,7 @@ func (x *WorkerGroup) String() string {
 func (*WorkerGroup) ProtoMessage() {}
 
 func (x *WorkerGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[33]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2917,7 +3075,7 @@ func (x *WorkerGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerGroup.ProtoReflect.Descriptor instead.
 func (*WorkerGroup) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{33}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *WorkerGroup) GetLabels() map[string]string {
@@ -2964,7 +3122,7 @@ type Totals struct {
 
 func (x *Totals) Reset() {
 	*x = Totals{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[34]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2976,7 +3134,7 @@ func (x *Totals) String() string {
 func (*Totals) ProtoMessage() {}
 
 func (x *Totals) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[34]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2989,7 +3147,7 @@ func (x *Totals) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Totals.ProtoReflect.Descriptor instead.
 func (*Totals) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{34}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Totals) GetSubmitted() uint64 {
@@ -3099,7 +3257,7 @@ type SnapshotResponse struct {
 
 func (x *SnapshotResponse) Reset() {
 	*x = SnapshotResponse{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[35]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3111,7 +3269,7 @@ func (x *SnapshotResponse) String() string {
 func (*SnapshotResponse) ProtoMessage() {}
 
 func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[35]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3124,7 +3282,7 @@ func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{35}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *SnapshotResponse) GetPools() []*PoolSnapshot {
@@ -3193,7 +3351,7 @@ type RecurringRequest struct {
 
 func (x *RecurringRequest) Reset() {
 	*x = RecurringRequest{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[36]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3205,7 +3363,7 @@ func (x *RecurringRequest) String() string {
 func (*RecurringRequest) ProtoMessage() {}
 
 func (x *RecurringRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[36]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3218,7 +3376,7 @@ func (x *RecurringRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecurringRequest.ProtoReflect.Descriptor instead.
 func (*RecurringRequest) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{36}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RecurringRequest) GetName() string {
@@ -3265,7 +3423,7 @@ type RemoveRecurringRequest struct {
 
 func (x *RemoveRecurringRequest) Reset() {
 	*x = RemoveRecurringRequest{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[37]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3277,7 +3435,7 @@ func (x *RemoveRecurringRequest) String() string {
 func (*RemoveRecurringRequest) ProtoMessage() {}
 
 func (x *RemoveRecurringRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[37]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3290,7 +3448,7 @@ func (x *RemoveRecurringRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveRecurringRequest.ProtoReflect.Descriptor instead.
 func (*RemoveRecurringRequest) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{37}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *RemoveRecurringRequest) GetName() string {
@@ -3309,7 +3467,7 @@ type RemoveRecurringResponse struct {
 
 func (x *RemoveRecurringResponse) Reset() {
 	*x = RemoveRecurringResponse{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[38]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3321,7 +3479,7 @@ func (x *RemoveRecurringResponse) String() string {
 func (*RemoveRecurringResponse) ProtoMessage() {}
 
 func (x *RemoveRecurringResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[38]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3334,7 +3492,7 @@ func (x *RemoveRecurringResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveRecurringResponse.ProtoReflect.Descriptor instead.
 func (*RemoveRecurringResponse) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{38}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *RemoveRecurringResponse) GetRemoved() bool {
@@ -3360,7 +3518,7 @@ type WorkerInfo struct {
 
 func (x *WorkerInfo) Reset() {
 	*x = WorkerInfo{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[39]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3372,7 +3530,7 @@ func (x *WorkerInfo) String() string {
 func (*WorkerInfo) ProtoMessage() {}
 
 func (x *WorkerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[39]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3385,7 +3543,7 @@ func (x *WorkerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerInfo.ProtoReflect.Descriptor instead.
 func (*WorkerInfo) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{39}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *WorkerInfo) GetId() uint64 {
@@ -3448,7 +3606,7 @@ type ListWorkersResponse struct {
 
 func (x *ListWorkersResponse) Reset() {
 	*x = ListWorkersResponse{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[40]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3460,7 +3618,7 @@ func (x *ListWorkersResponse) String() string {
 func (*ListWorkersResponse) ProtoMessage() {}
 
 func (x *ListWorkersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[40]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3473,7 +3631,7 @@ func (x *ListWorkersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkersResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkersResponse) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{40}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ListWorkersResponse) GetWorkers() []*WorkerInfo {
@@ -3506,7 +3664,7 @@ type RecurringInfo struct {
 
 func (x *RecurringInfo) Reset() {
 	*x = RecurringInfo{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[41]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3518,7 +3676,7 @@ func (x *RecurringInfo) String() string {
 func (*RecurringInfo) ProtoMessage() {}
 
 func (x *RecurringInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[41]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3531,7 +3689,7 @@ func (x *RecurringInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecurringInfo.ProtoReflect.Descriptor instead.
 func (*RecurringInfo) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{41}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *RecurringInfo) GetName() string {
@@ -3601,7 +3759,7 @@ type ListRecurringResponse struct {
 
 func (x *ListRecurringResponse) Reset() {
 	*x = ListRecurringResponse{}
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[42]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3613,7 +3771,7 @@ func (x *ListRecurringResponse) String() string {
 func (*ListRecurringResponse) ProtoMessage() {}
 
 func (x *ListRecurringResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cronoq_v1_cronoq_proto_msgTypes[42]
+	mi := &file_cronoq_v1_cronoq_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3626,7 +3784,7 @@ func (x *ListRecurringResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRecurringResponse.ProtoReflect.Descriptor instead.
 func (*ListRecurringResponse) Descriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{42}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListRecurringResponse) GetSchedules() []*RecurringInfo {
@@ -3863,7 +4021,7 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\x05abort\x18\x03 \x01(\v2\x10.cronoq.v1.AbortH\x00R\x05abort\x121\n" +
 	"\bshutdown\x18\x04 \x01(\v2\x13.cronoq.v1.ShutdownH\x00R\bshutdownB\x05\n" +
 	"\x03msg\"\a\n" +
-	"\x05Empty\"\xa2\x05\n" +
+	"\x05Empty\"\x8d\x06\n" +
 	"\fPoolSnapshot\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bcapacity\x18\x02 \x01(\rR\bcapacity\x12\x12\n" +
@@ -3890,7 +4048,21 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"wait_p99_s\x18\x11 \x01(\x01R\bwaitP99S\x12\x12\n" +
 	"\x04cost\x18\x12 \x01(\x01R\x04cost\x12+\n" +
 	"\x11workers_connected\x18\x13 \x01(\x04R\x10workersConnected\x12.\n" +
-	"\x06groups\x18\x14 \x03(\v2\x16.cronoq.v1.WorkerGroupR\x06groups\"\xb4\x01\n" +
+	"\x06groups\x18\x14 \x03(\v2\x16.cronoq.v1.WorkerGroupR\x06groups\x125\n" +
+	"\bpriority\x18\x15 \x01(\v2\x19.cronoq.v1.PriorityConfigR\bpriority\x122\n" +
+	"\aurgency\x18\x16 \x01(\v2\x18.cronoq.v1.UrgencyConfigR\aurgency\"\x90\x01\n" +
+	"\x0ePriorityConfig\x12\x12\n" +
+	"\x04base\x18\x01 \x03(\x01R\x04base\x12\x1d\n" +
+	"\n" +
+	"aging_rate\x18\x02 \x03(\x01R\tagingRate\x12\x17\n" +
+	"\aage_cap\x18\x03 \x03(\x01R\x06ageCap\x122\n" +
+	"\x15allow_overtaking_high\x18\x04 \x01(\bR\x13allowOvertakingHigh\"\x80\x01\n" +
+	"\rUrgencyConfig\x12\x10\n" +
+	"\x03max\x18\x01 \x01(\x01R\x03max\x12\x19\n" +
+	"\bwindow_s\x18\x02 \x01(\x01R\awindowS\x12!\n" +
+	"\foverdue_rate\x18\x03 \x01(\x01R\voverdueRate\x12\x1f\n" +
+	"\voverdue_cap\x18\x04 \x01(\x01R\n" +
+	"overdueCap\"\xb4\x01\n" +
 	"\vWorkerGroup\x12:\n" +
 	"\x06labels\x18\x01 \x03(\v2\".cronoq.v1.WorkerGroup.LabelsEntryR\x06labels\x12\x1a\n" +
 	"\bcapacity\x18\x02 \x01(\rR\bcapacity\x12\x12\n" +
@@ -4036,7 +4208,7 @@ func file_cronoq_v1_cronoq_proto_rawDescGZIP() []byte {
 }
 
 var file_cronoq_v1_cronoq_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_cronoq_v1_cronoq_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_cronoq_v1_cronoq_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
 var file_cronoq_v1_cronoq_proto_goTypes = []any{
 	(Priority)(0),                   // 0: cronoq.v1.Priority
 	(TaskStatus)(0),                 // 1: cronoq.v1.TaskStatus
@@ -4076,23 +4248,25 @@ var file_cronoq_v1_cronoq_proto_goTypes = []any{
 	(*ServerMessage)(nil),           // 35: cronoq.v1.ServerMessage
 	(*Empty)(nil),                   // 36: cronoq.v1.Empty
 	(*PoolSnapshot)(nil),            // 37: cronoq.v1.PoolSnapshot
-	(*WorkerGroup)(nil),             // 38: cronoq.v1.WorkerGroup
-	(*Totals)(nil),                  // 39: cronoq.v1.Totals
-	(*SnapshotResponse)(nil),        // 40: cronoq.v1.SnapshotResponse
-	(*RecurringRequest)(nil),        // 41: cronoq.v1.RecurringRequest
-	(*RemoveRecurringRequest)(nil),  // 42: cronoq.v1.RemoveRecurringRequest
-	(*RemoveRecurringResponse)(nil), // 43: cronoq.v1.RemoveRecurringResponse
-	(*WorkerInfo)(nil),              // 44: cronoq.v1.WorkerInfo
-	(*ListWorkersResponse)(nil),     // 45: cronoq.v1.ListWorkersResponse
-	(*RecurringInfo)(nil),           // 46: cronoq.v1.RecurringInfo
-	(*ListRecurringResponse)(nil),   // 47: cronoq.v1.ListRecurringResponse
-	nil,                             // 48: cronoq.v1.TaskSpec.ResourcesEntry
-	nil,                             // 49: cronoq.v1.TaskSpec.TagsEntry
-	nil,                             // 50: cronoq.v1.TaskSpec.LabelsEntry
-	nil,                             // 51: cronoq.v1.Register.LabelsEntry
-	nil,                             // 52: cronoq.v1.Lease.TagsEntry
-	nil,                             // 53: cronoq.v1.WorkerGroup.LabelsEntry
-	nil,                             // 54: cronoq.v1.WorkerInfo.LabelsEntry
+	(*PriorityConfig)(nil),          // 38: cronoq.v1.PriorityConfig
+	(*UrgencyConfig)(nil),           // 39: cronoq.v1.UrgencyConfig
+	(*WorkerGroup)(nil),             // 40: cronoq.v1.WorkerGroup
+	(*Totals)(nil),                  // 41: cronoq.v1.Totals
+	(*SnapshotResponse)(nil),        // 42: cronoq.v1.SnapshotResponse
+	(*RecurringRequest)(nil),        // 43: cronoq.v1.RecurringRequest
+	(*RemoveRecurringRequest)(nil),  // 44: cronoq.v1.RemoveRecurringRequest
+	(*RemoveRecurringResponse)(nil), // 45: cronoq.v1.RemoveRecurringResponse
+	(*WorkerInfo)(nil),              // 46: cronoq.v1.WorkerInfo
+	(*ListWorkersResponse)(nil),     // 47: cronoq.v1.ListWorkersResponse
+	(*RecurringInfo)(nil),           // 48: cronoq.v1.RecurringInfo
+	(*ListRecurringResponse)(nil),   // 49: cronoq.v1.ListRecurringResponse
+	nil,                             // 50: cronoq.v1.TaskSpec.ResourcesEntry
+	nil,                             // 51: cronoq.v1.TaskSpec.TagsEntry
+	nil,                             // 52: cronoq.v1.TaskSpec.LabelsEntry
+	nil,                             // 53: cronoq.v1.Register.LabelsEntry
+	nil,                             // 54: cronoq.v1.Lease.TagsEntry
+	nil,                             // 55: cronoq.v1.WorkerGroup.LabelsEntry
+	nil,                             // 56: cronoq.v1.WorkerInfo.LabelsEntry
 }
 var file_cronoq_v1_cronoq_proto_depIdxs = []int32{
 	5,  // 0: cronoq.v1.Dep.target:type_name -> cronoq.v1.TaskRef
@@ -4101,9 +4275,9 @@ var file_cronoq_v1_cronoq_proto_depIdxs = []int32{
 	3,  // 3: cronoq.v1.TaskSpec.on_miss:type_name -> cronoq.v1.MissPolicy
 	7,  // 4: cronoq.v1.TaskSpec.retry:type_name -> cronoq.v1.RetryPolicy
 	6,  // 5: cronoq.v1.TaskSpec.deps:type_name -> cronoq.v1.Dep
-	48, // 6: cronoq.v1.TaskSpec.resources:type_name -> cronoq.v1.TaskSpec.ResourcesEntry
-	49, // 7: cronoq.v1.TaskSpec.tags:type_name -> cronoq.v1.TaskSpec.TagsEntry
-	50, // 8: cronoq.v1.TaskSpec.labels:type_name -> cronoq.v1.TaskSpec.LabelsEntry
+	50, // 6: cronoq.v1.TaskSpec.resources:type_name -> cronoq.v1.TaskSpec.ResourcesEntry
+	51, // 7: cronoq.v1.TaskSpec.tags:type_name -> cronoq.v1.TaskSpec.TagsEntry
+	52, // 8: cronoq.v1.TaskSpec.labels:type_name -> cronoq.v1.TaskSpec.LabelsEntry
 	8,  // 9: cronoq.v1.SubmitRequest.task:type_name -> cronoq.v1.TaskSpec
 	19, // 10: cronoq.v1.SubmitResponse.result:type_name -> cronoq.v1.TaskResult
 	8,  // 11: cronoq.v1.SubmitBatchRequest.tasks:type_name -> cronoq.v1.TaskSpec
@@ -4117,7 +4291,7 @@ var file_cronoq_v1_cronoq_proto_depIdxs = []int32{
 	1,  // 19: cronoq.v1.TaskResult.status:type_name -> cronoq.v1.TaskStatus
 	5,  // 20: cronoq.v1.WaitRequest.task:type_name -> cronoq.v1.TaskRef
 	1,  // 21: cronoq.v1.StatusEvent.status:type_name -> cronoq.v1.TaskStatus
-	51, // 22: cronoq.v1.Register.labels:type_name -> cronoq.v1.Register.LabelsEntry
+	53, // 22: cronoq.v1.Register.labels:type_name -> cronoq.v1.Register.LabelsEntry
 	23, // 23: cronoq.v1.WorkerMessage.register:type_name -> cronoq.v1.Register
 	24, // 24: cronoq.v1.WorkerMessage.heartbeat:type_name -> cronoq.v1.Heartbeat
 	25, // 25: cronoq.v1.WorkerMessage.complete:type_name -> cronoq.v1.Complete
@@ -4125,53 +4299,55 @@ var file_cronoq_v1_cronoq_proto_depIdxs = []int32{
 	27, // 27: cronoq.v1.WorkerMessage.set_slots:type_name -> cronoq.v1.SetSlots
 	28, // 28: cronoq.v1.WorkerMessage.nack:type_name -> cronoq.v1.Nack
 	29, // 29: cronoq.v1.WorkerMessage.cancelled:type_name -> cronoq.v1.Cancelled
-	52, // 30: cronoq.v1.Lease.tags:type_name -> cronoq.v1.Lease.TagsEntry
+	54, // 30: cronoq.v1.Lease.tags:type_name -> cronoq.v1.Lease.TagsEntry
 	0,  // 31: cronoq.v1.Lease.priority:type_name -> cronoq.v1.Priority
 	31, // 32: cronoq.v1.ServerMessage.registered:type_name -> cronoq.v1.Registered
 	32, // 33: cronoq.v1.ServerMessage.lease:type_name -> cronoq.v1.Lease
 	33, // 34: cronoq.v1.ServerMessage.abort:type_name -> cronoq.v1.Abort
 	34, // 35: cronoq.v1.ServerMessage.shutdown:type_name -> cronoq.v1.Shutdown
-	38, // 36: cronoq.v1.PoolSnapshot.groups:type_name -> cronoq.v1.WorkerGroup
-	53, // 37: cronoq.v1.WorkerGroup.labels:type_name -> cronoq.v1.WorkerGroup.LabelsEntry
-	37, // 38: cronoq.v1.SnapshotResponse.pools:type_name -> cronoq.v1.PoolSnapshot
-	39, // 39: cronoq.v1.SnapshotResponse.totals:type_name -> cronoq.v1.Totals
-	8,  // 40: cronoq.v1.RecurringRequest.template:type_name -> cronoq.v1.TaskSpec
-	4,  // 41: cronoq.v1.RecurringRequest.overlap:type_name -> cronoq.v1.Overlap
-	54, // 42: cronoq.v1.WorkerInfo.labels:type_name -> cronoq.v1.WorkerInfo.LabelsEntry
-	44, // 43: cronoq.v1.ListWorkersResponse.workers:type_name -> cronoq.v1.WorkerInfo
-	4,  // 44: cronoq.v1.RecurringInfo.overlap:type_name -> cronoq.v1.Overlap
-	46, // 45: cronoq.v1.ListRecurringResponse.schedules:type_name -> cronoq.v1.RecurringInfo
-	9,  // 46: cronoq.v1.Tasks.Submit:input_type -> cronoq.v1.SubmitRequest
-	11, // 47: cronoq.v1.Tasks.SubmitBatch:input_type -> cronoq.v1.SubmitBatchRequest
-	13, // 48: cronoq.v1.Tasks.Cancel:input_type -> cronoq.v1.CancelRequest
-	15, // 49: cronoq.v1.Tasks.Get:input_type -> cronoq.v1.GetRequest
-	17, // 50: cronoq.v1.Tasks.ListTasks:input_type -> cronoq.v1.ListTasksRequest
-	20, // 51: cronoq.v1.Tasks.Wait:input_type -> cronoq.v1.WaitRequest
-	21, // 52: cronoq.v1.Tasks.Watch:input_type -> cronoq.v1.WatchRequest
-	30, // 53: cronoq.v1.Workers.Work:input_type -> cronoq.v1.WorkerMessage
-	36, // 54: cronoq.v1.Admin.Snapshot:input_type -> cronoq.v1.Empty
-	41, // 55: cronoq.v1.Admin.AddRecurring:input_type -> cronoq.v1.RecurringRequest
-	42, // 56: cronoq.v1.Admin.RemoveRecurring:input_type -> cronoq.v1.RemoveRecurringRequest
-	36, // 57: cronoq.v1.Admin.ListWorkers:input_type -> cronoq.v1.Empty
-	36, // 58: cronoq.v1.Admin.ListRecurring:input_type -> cronoq.v1.Empty
-	10, // 59: cronoq.v1.Tasks.Submit:output_type -> cronoq.v1.SubmitResponse
-	12, // 60: cronoq.v1.Tasks.SubmitBatch:output_type -> cronoq.v1.SubmitBatchResponse
-	14, // 61: cronoq.v1.Tasks.Cancel:output_type -> cronoq.v1.CancelResponse
-	16, // 62: cronoq.v1.Tasks.Get:output_type -> cronoq.v1.TaskInfo
-	18, // 63: cronoq.v1.Tasks.ListTasks:output_type -> cronoq.v1.ListTasksResponse
-	19, // 64: cronoq.v1.Tasks.Wait:output_type -> cronoq.v1.TaskResult
-	22, // 65: cronoq.v1.Tasks.Watch:output_type -> cronoq.v1.StatusEvent
-	35, // 66: cronoq.v1.Workers.Work:output_type -> cronoq.v1.ServerMessage
-	40, // 67: cronoq.v1.Admin.Snapshot:output_type -> cronoq.v1.SnapshotResponse
-	36, // 68: cronoq.v1.Admin.AddRecurring:output_type -> cronoq.v1.Empty
-	43, // 69: cronoq.v1.Admin.RemoveRecurring:output_type -> cronoq.v1.RemoveRecurringResponse
-	45, // 70: cronoq.v1.Admin.ListWorkers:output_type -> cronoq.v1.ListWorkersResponse
-	47, // 71: cronoq.v1.Admin.ListRecurring:output_type -> cronoq.v1.ListRecurringResponse
-	59, // [59:72] is the sub-list for method output_type
-	46, // [46:59] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	40, // 36: cronoq.v1.PoolSnapshot.groups:type_name -> cronoq.v1.WorkerGroup
+	38, // 37: cronoq.v1.PoolSnapshot.priority:type_name -> cronoq.v1.PriorityConfig
+	39, // 38: cronoq.v1.PoolSnapshot.urgency:type_name -> cronoq.v1.UrgencyConfig
+	55, // 39: cronoq.v1.WorkerGroup.labels:type_name -> cronoq.v1.WorkerGroup.LabelsEntry
+	37, // 40: cronoq.v1.SnapshotResponse.pools:type_name -> cronoq.v1.PoolSnapshot
+	41, // 41: cronoq.v1.SnapshotResponse.totals:type_name -> cronoq.v1.Totals
+	8,  // 42: cronoq.v1.RecurringRequest.template:type_name -> cronoq.v1.TaskSpec
+	4,  // 43: cronoq.v1.RecurringRequest.overlap:type_name -> cronoq.v1.Overlap
+	56, // 44: cronoq.v1.WorkerInfo.labels:type_name -> cronoq.v1.WorkerInfo.LabelsEntry
+	46, // 45: cronoq.v1.ListWorkersResponse.workers:type_name -> cronoq.v1.WorkerInfo
+	4,  // 46: cronoq.v1.RecurringInfo.overlap:type_name -> cronoq.v1.Overlap
+	48, // 47: cronoq.v1.ListRecurringResponse.schedules:type_name -> cronoq.v1.RecurringInfo
+	9,  // 48: cronoq.v1.Tasks.Submit:input_type -> cronoq.v1.SubmitRequest
+	11, // 49: cronoq.v1.Tasks.SubmitBatch:input_type -> cronoq.v1.SubmitBatchRequest
+	13, // 50: cronoq.v1.Tasks.Cancel:input_type -> cronoq.v1.CancelRequest
+	15, // 51: cronoq.v1.Tasks.Get:input_type -> cronoq.v1.GetRequest
+	17, // 52: cronoq.v1.Tasks.ListTasks:input_type -> cronoq.v1.ListTasksRequest
+	20, // 53: cronoq.v1.Tasks.Wait:input_type -> cronoq.v1.WaitRequest
+	21, // 54: cronoq.v1.Tasks.Watch:input_type -> cronoq.v1.WatchRequest
+	30, // 55: cronoq.v1.Workers.Work:input_type -> cronoq.v1.WorkerMessage
+	36, // 56: cronoq.v1.Admin.Snapshot:input_type -> cronoq.v1.Empty
+	43, // 57: cronoq.v1.Admin.AddRecurring:input_type -> cronoq.v1.RecurringRequest
+	44, // 58: cronoq.v1.Admin.RemoveRecurring:input_type -> cronoq.v1.RemoveRecurringRequest
+	36, // 59: cronoq.v1.Admin.ListWorkers:input_type -> cronoq.v1.Empty
+	36, // 60: cronoq.v1.Admin.ListRecurring:input_type -> cronoq.v1.Empty
+	10, // 61: cronoq.v1.Tasks.Submit:output_type -> cronoq.v1.SubmitResponse
+	12, // 62: cronoq.v1.Tasks.SubmitBatch:output_type -> cronoq.v1.SubmitBatchResponse
+	14, // 63: cronoq.v1.Tasks.Cancel:output_type -> cronoq.v1.CancelResponse
+	16, // 64: cronoq.v1.Tasks.Get:output_type -> cronoq.v1.TaskInfo
+	18, // 65: cronoq.v1.Tasks.ListTasks:output_type -> cronoq.v1.ListTasksResponse
+	19, // 66: cronoq.v1.Tasks.Wait:output_type -> cronoq.v1.TaskResult
+	22, // 67: cronoq.v1.Tasks.Watch:output_type -> cronoq.v1.StatusEvent
+	35, // 68: cronoq.v1.Workers.Work:output_type -> cronoq.v1.ServerMessage
+	42, // 69: cronoq.v1.Admin.Snapshot:output_type -> cronoq.v1.SnapshotResponse
+	36, // 70: cronoq.v1.Admin.AddRecurring:output_type -> cronoq.v1.Empty
+	45, // 71: cronoq.v1.Admin.RemoveRecurring:output_type -> cronoq.v1.RemoveRecurringResponse
+	47, // 72: cronoq.v1.Admin.ListWorkers:output_type -> cronoq.v1.ListWorkersResponse
+	49, // 73: cronoq.v1.Admin.ListRecurring:output_type -> cronoq.v1.ListRecurringResponse
+	61, // [61:74] is the sub-list for method output_type
+	48, // [48:61] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_cronoq_v1_cronoq_proto_init() }
@@ -4206,14 +4382,14 @@ func file_cronoq_v1_cronoq_proto_init() {
 		(*ServerMessage_Abort)(nil),
 		(*ServerMessage_Shutdown)(nil),
 	}
-	file_cronoq_v1_cronoq_proto_msgTypes[41].OneofWrappers = []any{}
+	file_cronoq_v1_cronoq_proto_msgTypes[43].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cronoq_v1_cronoq_proto_rawDesc), len(file_cronoq_v1_cronoq_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   50,
+			NumMessages:   52,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

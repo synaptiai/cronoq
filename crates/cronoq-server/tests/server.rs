@@ -466,6 +466,70 @@ async fn occurrence_shaped_keys_are_reserved() {
 }
 
 #[tokio::test]
+async fn snapshot_reports_each_pools_priority_and_urgency_settings() {
+    let s = TestServer::start(
+        "[priority]\naging_rate = [1, 1, 4, 4]\n[urgency]\nwindow_s = 2.5\n\
+         [[pools]]\nname = \"default\"\n\
+         [[pools]]\nname = \"batch\"\n\
+         priority = { age_cap = [0, 0, 0, 5000], allow_overtaking_high = true }\n\
+         urgency = { max = 0 }\n",
+    )
+    .await;
+    let snap = s.snapshot().await;
+    let pool = |name: &str| {
+        snap["pools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let (default, batch) = (pool("default"), pool("batch"));
+    assert_eq!(
+        default["priority"],
+        serde_json::json!({
+            "base": [10000.0, 1000.0, 100.0, 10.0], "aging_rate": [1.0, 1.0, 4.0, 4.0],
+            "age_cap": [800.0, 800.0, 800.0, 800.0], "allow_overtaking_high": false,
+        })
+    );
+    assert_eq!(
+        default["urgency"],
+        serde_json::json!({
+            "max": 5000.0, "window_s": 2.5, "overdue_rate": 100.0, "overdue_cap": 3000.0,
+        })
+    );
+    // The pool's own keys win; the ones it leaves out keep the top-level values.
+    assert_eq!(
+        batch["priority"]["age_cap"],
+        serde_json::json!([0.0, 0.0, 0.0, 5000.0])
+    );
+    assert_eq!(
+        batch["priority"]["aging_rate"],
+        serde_json::json!([1.0, 1.0, 4.0, 4.0])
+    );
+    assert_eq!(batch["priority"]["allow_overtaking_high"], true);
+    assert_eq!(batch["urgency"]["max"], 0.0);
+    assert_eq!(batch["urgency"]["window_s"], 2.5);
+
+    // The same over gRPC.
+    let r = s
+        .admin(METRICS)
+        .await
+        .snapshot(pb::Empty {})
+        .await
+        .unwrap()
+        .into_inner();
+    let batch = r.pools.iter().find(|p| p.name == "batch").unwrap();
+    let p = batch.priority.as_ref().unwrap();
+    assert_eq!(p.age_cap, [0.0, 0.0, 0.0, 5000.0]);
+    assert_eq!(p.base, [10000.0, 1000.0, 100.0, 10.0]);
+    assert!(p.allow_overtaking_high);
+    assert_eq!(batch.urgency.as_ref().unwrap().window_s, 2.5);
+    s.stop().await;
+}
+
+#[tokio::test]
 async fn a_pool_min_bounds_desired_capacity_without_inventing_workers() {
     let s = TestServer::start("[[pools]]\nname = \"default\"\nmin = 2\nmax = 8\n").await;
     let mut desired = None;

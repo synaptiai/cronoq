@@ -505,7 +505,7 @@ class Empty(_message.Message):
     def __init__(self) -> None: ...
 
 class PoolSnapshot(_message.Message):
-    __slots__ = ("name", "capacity", "busy", "held", "desired", "pending_by_class", "reservations", "dispatched", "succeeded", "failed", "priority_adherence", "fixed_start_hit_rate", "utilization", "schedule_efficiency", "wait_p50_s", "wait_p90_s", "wait_p99_s", "cost", "workers_connected", "groups")
+    __slots__ = ("name", "capacity", "busy", "held", "desired", "pending_by_class", "reservations", "dispatched", "succeeded", "failed", "priority_adherence", "fixed_start_hit_rate", "utilization", "schedule_efficiency", "wait_p50_s", "wait_p90_s", "wait_p99_s", "cost", "workers_connected", "groups", "priority", "urgency")
     NAME_FIELD_NUMBER: _ClassVar[int]
     CAPACITY_FIELD_NUMBER: _ClassVar[int]
     BUSY_FIELD_NUMBER: _ClassVar[int]
@@ -526,6 +526,8 @@ class PoolSnapshot(_message.Message):
     COST_FIELD_NUMBER: _ClassVar[int]
     WORKERS_CONNECTED_FIELD_NUMBER: _ClassVar[int]
     GROUPS_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    URGENCY_FIELD_NUMBER: _ClassVar[int]
     name: str
     capacity: int
     busy: int
@@ -546,7 +548,33 @@ class PoolSnapshot(_message.Message):
     cost: float
     workers_connected: int
     groups: _containers.RepeatedCompositeFieldContainer[WorkerGroup]
-    def __init__(self, name: _Optional[str] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ..., held: _Optional[int] = ..., desired: _Optional[int] = ..., pending_by_class: _Optional[_Iterable[int]] = ..., reservations: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., priority_adherence: _Optional[float] = ..., fixed_start_hit_rate: _Optional[float] = ..., utilization: _Optional[float] = ..., schedule_efficiency: _Optional[float] = ..., wait_p50_s: _Optional[float] = ..., wait_p90_s: _Optional[float] = ..., wait_p99_s: _Optional[float] = ..., cost: _Optional[float] = ..., workers_connected: _Optional[int] = ..., groups: _Optional[_Iterable[_Union[WorkerGroup, _Mapping]]] = ...) -> None: ...
+    priority: PriorityConfig
+    urgency: UrgencyConfig
+    def __init__(self, name: _Optional[str] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ..., held: _Optional[int] = ..., desired: _Optional[int] = ..., pending_by_class: _Optional[_Iterable[int]] = ..., reservations: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., priority_adherence: _Optional[float] = ..., fixed_start_hit_rate: _Optional[float] = ..., utilization: _Optional[float] = ..., schedule_efficiency: _Optional[float] = ..., wait_p50_s: _Optional[float] = ..., wait_p90_s: _Optional[float] = ..., wait_p99_s: _Optional[float] = ..., cost: _Optional[float] = ..., workers_connected: _Optional[int] = ..., groups: _Optional[_Iterable[_Union[WorkerGroup, _Mapping]]] = ..., priority: _Optional[_Union[PriorityConfig, _Mapping]] = ..., urgency: _Optional[_Union[UrgencyConfig, _Mapping]] = ...) -> None: ...
+
+class PriorityConfig(_message.Message):
+    __slots__ = ("base", "aging_rate", "age_cap", "allow_overtaking_high")
+    BASE_FIELD_NUMBER: _ClassVar[int]
+    AGING_RATE_FIELD_NUMBER: _ClassVar[int]
+    AGE_CAP_FIELD_NUMBER: _ClassVar[int]
+    ALLOW_OVERTAKING_HIGH_FIELD_NUMBER: _ClassVar[int]
+    base: _containers.RepeatedScalarFieldContainer[float]
+    aging_rate: _containers.RepeatedScalarFieldContainer[float]
+    age_cap: _containers.RepeatedScalarFieldContainer[float]
+    allow_overtaking_high: bool
+    def __init__(self, base: _Optional[_Iterable[float]] = ..., aging_rate: _Optional[_Iterable[float]] = ..., age_cap: _Optional[_Iterable[float]] = ..., allow_overtaking_high: bool = ...) -> None: ...
+
+class UrgencyConfig(_message.Message):
+    __slots__ = ("max", "window_s", "overdue_rate", "overdue_cap")
+    MAX_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_S_FIELD_NUMBER: _ClassVar[int]
+    OVERDUE_RATE_FIELD_NUMBER: _ClassVar[int]
+    OVERDUE_CAP_FIELD_NUMBER: _ClassVar[int]
+    max: float
+    window_s: float
+    overdue_rate: float
+    overdue_cap: float
+    def __init__(self, max: _Optional[float] = ..., window_s: _Optional[float] = ..., overdue_rate: _Optional[float] = ..., overdue_cap: _Optional[float] = ...) -> None: ...
 
 class WorkerGroup(_message.Message):
     __slots__ = ("labels", "capacity", "busy")

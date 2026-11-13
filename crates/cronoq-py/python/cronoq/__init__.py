@@ -23,6 +23,7 @@ from ._cronoq import (
     Pool,
     PoolSnapshot,
     Priority,
+    PriorityConfig,
     Resource,
     RetryPolicy,
     Scheduler,
@@ -32,6 +33,7 @@ from ._cronoq import (
     Task,
     TaskContext,
     TaskHandle,
+    UrgencyConfig,
     __version__,
 )
 from .errors import (
@@ -56,6 +58,7 @@ __all__ = [
     "Pool",
     "PoolSnapshot",
     "Priority",
+    "PriorityConfig",
     "Resource",
     "Retryable",
     "RetryPolicy",
@@ -69,6 +72,7 @@ __all__ = [
     "TaskContext",
     "TaskFailed",
     "TaskHandle",
+    "UrgencyConfig",
     "__version__",
 ]
 

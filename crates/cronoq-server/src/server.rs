@@ -408,10 +408,15 @@ async fn lead(
             c.retention = limits.key_retention();
             c.retention_max = limits.key_retention_max;
             c.id_shard = shards.as_ref().map(|s| s.own().number);
+            c.priority = cfg.priority_config();
+            c.urgency = cfg.urgency_config();
         });
+    let (priority, urgency) = (cfg.priority_config(), cfg.urgency_config());
     let mut pools = FxHashMap::default();
     for p in &cfg.pools {
-        let pc = p.to_pool_config(limits);
+        let mut pc = p.to_pool_config(limits);
+        pc.priority = p.priority.as_ref().map(|s| s.over(&priority));
+        pc.urgency = p.urgency.as_ref().map(|s| s.over(&urgency));
         let name: Arc<str> = pc.name.clone();
         let lease_ttl = pc.lease_ttl.unwrap_or(Duration::from_secs(30));
         pools.insert(

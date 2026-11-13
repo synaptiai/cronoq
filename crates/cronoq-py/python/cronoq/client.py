@@ -64,6 +64,7 @@ __all__ = [
     "Lease",
     "PROTOCOL_VERSION",
     "PoolSnapshot",
+    "PrioritySettings",
     "RecurringInfo",
     "Reject",
     "Result",
@@ -72,6 +73,7 @@ __all__ = [
     "TaskInfo",
     "TaskPage",
     "Totals",
+    "UrgencySettings",
     "Worker",
     "WorkerGroup",
     "WorkerInfo",
@@ -322,6 +324,29 @@ class Event:
 
 
 @dataclass(frozen=True)
+class PrioritySettings:
+    """Class scores in effect for a pool: ``base + min(aging_rate * seconds waited, age_cap)``.
+
+    Each tuple holds four values, for critical, high, normal and low.
+    """
+
+    base: tuple[float, ...]
+    aging_rate: tuple[float, ...]
+    age_cap: tuple[float, ...]
+    allow_overtaking_high: bool
+
+
+@dataclass(frozen=True)
+class UrgencySettings:
+    """Deadline urgency curve in effect for a pool (``window`` in seconds)."""
+
+    max: float
+    window: float
+    overdue_rate: float
+    overdue_cap: float
+
+
+@dataclass(frozen=True)
 class WorkerGroup:
     """Workers of a pool that share one label set."""
 
@@ -352,6 +377,9 @@ class PoolSnapshot:
     cost: float
     workers_connected: int = 0
     groups: tuple[WorkerGroup, ...] = ()
+    #: ``None`` when the server is older than these settings.
+    priority: PrioritySettings | None = None
+    urgency: UrgencySettings | None = None
 
     @property
     def pending(self) -> int:
@@ -858,6 +886,22 @@ class Client:
                         WorkerGroup(labels=dict(g.labels), capacity=g.capacity, busy=g.busy)
                         for g in p.groups
                     ),
+                    priority=PrioritySettings(
+                        base=tuple(p.priority.base),
+                        aging_rate=tuple(p.priority.aging_rate),
+                        age_cap=tuple(p.priority.age_cap),
+                        allow_overtaking_high=p.priority.allow_overtaking_high,
+                    )
+                    if p.HasField("priority")
+                    else None,
+                    urgency=UrgencySettings(
+                        max=p.urgency.max,
+                        window=p.urgency.window_s,
+                        overdue_rate=p.urgency.overdue_rate,
+                        overdue_cap=p.urgency.overdue_cap,
+                    )
+                    if p.HasField("urgency")
+                    else None,
                 )
                 for p in r.pools
             ),

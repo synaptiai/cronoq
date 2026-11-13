@@ -65,6 +65,10 @@ pub struct PoolSnapshot {
     pub cost: f64,
     /// Worker groups by label set (the unlabeled group first).
     pub groups: Vec<GroupSnapshot>,
+    /// Class scores and aging in effect for this pool.
+    pub priority: crate::config::PriorityConfig,
+    /// Deadline urgency curve in effect for this pool.
+    pub urgency: crate::config::UrgencyConfig,
 }
 
 impl PoolSnapshot {
