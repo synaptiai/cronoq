@@ -76,6 +76,7 @@ async fn a_token_with_a_tenant_cannot_submit_for_another() {
     let e = c
         .submit_batch(pb::SubmitBatchRequest {
             tasks: vec![spec(b"ok"), tenant_spec("globex")],
+            ..Default::default()
         })
         .await
         .unwrap_err();

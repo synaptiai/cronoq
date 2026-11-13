@@ -67,10 +67,7 @@ pub async fn submit(
             task: Some(spec),
             wait: wait.is_some(),
             wait_timeout_s: wait.map(|d| d.as_secs_f64()),
-            on_key_conflict: match opts.on_key_conflict {
-                cronoq::KeyConflict::ReturnExisting => pb::KeyConflict::ReturnExisting,
-                cronoq::KeyConflict::ReplaceQueued => pb::KeyConflict::ReplaceQueued,
-            } as i32,
+            on_key_conflict: convert::key_conflict_to_pb(opts.on_key_conflict) as i32,
             renew_position: opts.renew_position,
         };
         return answer(sh, c.tasks.submit(bounded(app, req)).await);
@@ -83,6 +80,7 @@ pub async fn submit_batch(
     app: &AppState,
     p: &Principal,
     specs: Vec<pb::TaskSpec>,
+    mode: cronoq::KeyConflict,
 ) -> Result<pb::SubmitBatchResponse, Status> {
     if let Some(map) = routing(app, p) {
         // The shard of each task: `None` for this one.
@@ -99,7 +97,10 @@ pub async fn submit_batch(
                     check_pool(p, convert::spec_pool(s))?;
                 }
                 let mut c = clients(app, p, sh, "this batch")?;
-                let req = pb::SubmitBatchRequest { tasks: specs };
+                let req = pb::SubmitBatchRequest {
+                    tasks: specs,
+                    on_key_conflict: convert::key_conflict_to_pb(mode) as i32,
+                };
                 return answer(sh, c.tasks.submit_batch(bounded(app, req)).await);
             }
             [] | [None] => {}
@@ -114,7 +115,7 @@ pub async fn submit_batch(
             }
         }
     }
-    grpc::submit_batch(app, p, specs).await
+    grpc::submit_batch(app, p, specs, mode).await
 }
 
 /// Where a task lives.

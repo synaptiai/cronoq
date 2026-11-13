@@ -47,7 +47,10 @@ async fn grpc_submit_wait_with_remote_worker() {
         cond: pb::EdgeCond::OnSuccess as i32,
     });
     let r = c
-        .submit_batch(pb::SubmitBatchRequest { tasks: vec![b, a] })
+        .submit_batch(pb::SubmitBatchRequest {
+            tasks: vec![b, a],
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner();

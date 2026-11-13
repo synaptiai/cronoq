@@ -137,6 +137,7 @@ async fn each_server_serves_its_shard_and_names_the_others() {
     let e = c
         .submit_batch(pb::SubmitBatchRequest {
             tasks: vec![in_pool("default"), in_pool("llm")],
+            ..Default::default()
         })
         .await
         .unwrap_err();

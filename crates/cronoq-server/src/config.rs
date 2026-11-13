@@ -660,6 +660,32 @@ pub struct ServerConfig {
     /// not cross the network unencrypted. Trusted networks only.
     #[serde(default)]
     pub insecure_peer_http: bool,
+    /// What a submission whose key is already in use does when it does not say itself:
+    /// `return_existing` (the default) returns the existing task and drops the submission;
+    /// `reject` also compares what the two ask for and refuses a submission that differs.
+    #[serde(default)]
+    pub on_key_conflict: KeyConflictDefault,
+}
+
+/// The server-wide answer to a submission whose key is already in use.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyConflictDefault {
+    /// Return the existing task.
+    #[default]
+    ReturnExisting,
+    /// Return it only for a submission that asks for the same thing; refuse another.
+    Reject,
+}
+
+impl KeyConflictDefault {
+    /// The scheduler's setting.
+    pub fn mode(self) -> cronoq::KeyConflict {
+        match self {
+            KeyConflictDefault::ReturnExisting => cronoq::KeyConflict::ReturnExisting,
+            KeyConflictDefault::Reject => cronoq::KeyConflict::Reject,
+        }
+    }
 }
 
 /// How this server verifies (and identifies itself to) other shards' servers.
@@ -730,6 +756,7 @@ impl Default for ServerConfig {
             shard: None,
             peer_tls: None,
             insecure_peer_http: false,
+            on_key_conflict: KeyConflictDefault::default(),
         }
     }
 }

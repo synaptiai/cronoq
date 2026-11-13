@@ -203,6 +203,7 @@ async fn any_server_reaches_the_shard_of_a_task() {
     let r = via_cpu
         .submit_batch(pb::SubmitBatchRequest {
             tasks: vec![in_pool("llm", "b1"), in_pool("llm", "b2")],
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -211,6 +212,7 @@ async fn any_server_reaches_the_shard_of_a_task() {
     let e = via_cpu
         .submit_batch(pb::SubmitBatchRequest {
             tasks: vec![in_pool("default", "b3"), in_pool("llm", "b4")],
+            ..Default::default()
         })
         .await
         .unwrap_err();

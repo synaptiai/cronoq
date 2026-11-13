@@ -46,7 +46,12 @@ pub struct ConnInfo {
 
 /// An error response: `{"error": "...", "code": "..."}`.
 #[derive(Debug)]
-pub struct ApiError(pub StatusCode, pub String);
+pub struct ApiError(pub StatusCode, pub String, pub Option<Value>);
+
+/// An error with a message only.
+fn api_error(code: StatusCode, message: String) -> ApiError {
+    ApiError(code, message, None)
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -56,7 +61,12 @@ impl IntoResponse for ApiError {
             .unwrap_or("error")
             .to_ascii_lowercase()
             .replace(' ', "_");
-        (self.0, Json(json!({ "error": self.1, "code": code }))).into_response()
+        let mut body = json!({ "error": self.1, "code": code });
+        // Extra fields of a specific error (a key conflict names the existing task).
+        if let (Some(Value::Object(extra)), Value::Object(b)) = (self.2, &mut body) {
+            b.extend(extra);
+        }
+        (self.0, Json(body)).into_response()
     }
 }
 
@@ -75,7 +85,30 @@ impl From<tonic::Status> for ApiError {
             Unimplemented => StatusCode::NOT_IMPLEMENTED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        ApiError(code, s.message().to_string())
+        let meta = |name: &str| {
+            s.metadata()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let mut extra = serde_json::Map::new();
+        if let Some(i) = meta(crate::convert::BATCH_INDEX).and_then(|i| i.parse::<u64>().ok()) {
+            extra.insert("index".into(), i.into());
+        }
+        // A key that belongs to a task submitted with other content: the request is well
+        // formed but cannot be carried out as it is.
+        let code = match meta(crate::convert::CONFLICT_TASK) {
+            Some(id) => {
+                extra.insert("task_id".into(), id.into());
+                if let Some(st) = meta(crate::convert::CONFLICT_STATUS) {
+                    extra.insert("task_status".into(), st.into());
+                }
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            None => code,
+        };
+        let extra = (!extra.is_empty()).then_some(Value::Object(extra));
+        ApiError(code, s.message().to_string(), extra)
     }
 }
 
@@ -90,11 +123,11 @@ impl From<AuthError> for ApiError {
 }
 
 fn bad(m: impl Into<String>) -> ApiError {
-    ApiError(StatusCode::BAD_REQUEST, m.into())
+    api_error(StatusCode::BAD_REQUEST, m.into())
 }
 
 fn unavailable() -> ApiError {
-    ApiError(
+    api_error(
         StatusCode::SERVICE_UNAVAILABLE,
         "not the leader (standby or shutting down)".into(),
     )
@@ -115,7 +148,7 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for ApiJson<T> {
                     JsonRejection::BytesRejection(b) => b.status(),
                     _ => StatusCode::BAD_REQUEST,
                 };
-                Err(ApiError(status, e.body_text()))
+                Err(api_error(status, e.body_text()))
             }
         }
     }
@@ -131,7 +164,7 @@ fn app(st: &Shared) -> Result<&Arc<AppState>, ApiError> {
 /// hands the [`Principal`] to the handler.
 async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next) -> Response {
     if st.loopback_hosts_only && !loopback_host(&req) {
-        return ApiError(
+        return api_error(
             StatusCode::FORBIDDEN,
             "without auth the API only answers requests for a loopback host".into(),
         )
@@ -171,7 +204,9 @@ async fn gate(State((st, role)): State<(St, Role)>, mut req: Request, next: Next
     req.extensions_mut().insert(principal);
     match tokio::time::timeout(limit, next.run(req)).await {
         Ok(r) => r,
-        Err(_) => ApiError(StatusCode::GATEWAY_TIMEOUT, "request timed out".into()).into_response(),
+        Err(_) => {
+            api_error(StatusCode::GATEWAY_TIMEOUT, "request timed out".into()).into_response()
+        }
     }
 }
 
@@ -227,9 +262,9 @@ pub fn router(st: St) -> Router {
     gated(api, &st, Role::Client)
         .merge(gated(metrics, &st, Role::Metrics))
         .merge(health_routes())
-        .fallback(|| async { ApiError(StatusCode::NOT_FOUND, "no such route".into()) })
+        .fallback(|| async { api_error(StatusCode::NOT_FOUND, "no such route".into()) })
         .method_not_allowed_fallback(|| async {
-            ApiError(StatusCode::METHOD_NOT_ALLOWED, "method not allowed".into())
+            api_error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed".into())
         })
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(st)
@@ -474,13 +509,8 @@ impl TaskJson {
     /// The options of a single submission.
     fn submit_options(&self) -> Result<cronoq::SubmitOptions, ApiError> {
         let on_key_conflict = match self.on_key_conflict.as_deref() {
-            None | Some("return_existing") => pb::KeyConflict::ReturnExisting,
-            Some("replace_queued") => pb::KeyConflict::ReplaceQueued,
-            Some(p) => {
-                return Err(bad(format!(
-                    "unknown on_key_conflict '{p}' (return_existing, replace_queued)"
-                )));
-            }
+            None => pb::KeyConflict::Unspecified,
+            Some(name) => parse_key_conflict(name)?,
         };
         Ok(crate::convert::submit_options(
             on_key_conflict as i32,
@@ -693,6 +723,17 @@ fn priority_name(p: i32) -> Option<&'static str> {
 }
 
 /// `duplicate` decides for a response forwarded from a shard older than the field.
+fn parse_key_conflict(name: &str) -> Result<pb::KeyConflict, ApiError> {
+    match name {
+        "return_existing" => Ok(pb::KeyConflict::ReturnExisting),
+        "replace_queued" => Ok(pb::KeyConflict::ReplaceQueued),
+        "reject" => Ok(pb::KeyConflict::Reject),
+        p => Err(bad(format!(
+            "unknown on_key_conflict '{p}' (return_existing, replace_queued, reject)"
+        ))),
+    }
+}
+
 fn outcome_name(o: i32, duplicate: bool) -> &'static str {
     match pb::SubmitOutcome::try_from(o).unwrap_or(pb::SubmitOutcome::Unspecified) {
         pb::SubmitOutcome::Unspecified if duplicate => "existing",
@@ -756,6 +797,8 @@ async fn submit(
 #[serde(deny_unknown_fields)]
 struct BatchJson {
     tasks: Vec<TaskJson>,
+    /// What tasks whose key is in use do: `return_existing` or `reject`.
+    on_key_conflict: Option<String>,
 }
 
 async fn submit_batch(
@@ -764,6 +807,10 @@ async fn submit_batch(
     ApiJson(body): ApiJson<BatchJson>,
 ) -> Result<Json<Value>, ApiError> {
     let app = app(&st)?;
+    let mode = match body.on_key_conflict.as_deref() {
+        None => cronoq::KeyConflict::Configured,
+        Some(name) => crate::convert::key_conflict(parse_key_conflict(name)? as i32)?,
+    };
     let max = app.limits.max_tasks_per_batch;
     if body.tasks.len() > max {
         return Err(bad(format!("at most {max} tasks per batch")));
@@ -784,9 +831,12 @@ async fn submit_batch(
             Ok(spec)
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
-    let r = crate::route::submit_batch(app, &p, specs).await?;
+    let r = crate::route::submit_batch(app, &p, specs, mode).await?;
     Ok(Json(json!({
-        "tasks": r.tasks.iter().map(|t| json!({"id": t.id.to_string(), "duplicate": t.duplicate})).collect::<Vec<_>>()
+        "tasks": r.tasks.iter().map(|t| json!({
+            "id": t.id.to_string(), "duplicate": t.duplicate,
+            "outcome": outcome_name(t.outcome, t.duplicate),
+        })).collect::<Vec<_>>()
     })))
 }
 

@@ -429,6 +429,9 @@ pub async fn submit_one(
     if opts.renew_position {
         task = task.renew_position();
     }
+    if !replace {
+        task = task.on_key_conflict(opts.on_key_conflict);
+    }
     match wait {
         Some(timeout) => {
             let h = app.sched.submit(task).await.map_err(convert::error)?;
@@ -464,7 +467,13 @@ pub async fn submit_batch(
     app: &AppState,
     principal: &Principal,
     mut specs: Vec<pb::TaskSpec>,
+    mode: cronoq::KeyConflict,
 ) -> Result<pb::SubmitBatchResponse, Status> {
+    if mode == cronoq::KeyConflict::ReplaceQueued {
+        return Err(Status::invalid_argument(
+            "on_key_conflict = replace_queued is not supported in a batch",
+        ));
+    }
     let max = app.limits.max_tasks_per_batch;
     if specs.len() > max {
         return Err(Status::invalid_argument(format!(
@@ -500,7 +509,7 @@ pub async fn submit_batch(
             payload: Vec::new(),
             ..spec.clone()
         });
-        tasks.push(convert::task(spec, &app.limits)?);
+        tasks.push(convert::task(spec, &app.limits)?.on_key_conflict(mode));
     }
     let hs = app
         .sched
@@ -977,8 +986,10 @@ impl pb::tasks_server::Tasks for TasksService {
     ) -> Result<Response<pb::SubmitBatchResponse>, Status> {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let mode = convert::key_conflict(r.on_key_conflict)?;
         Ok(Response::new(
-            crate::route::submit_batch(app, &p, req.into_inner().tasks).await?,
+            crate::route::submit_batch(app, &p, r.tasks, mode).await?,
         ))
     }
 

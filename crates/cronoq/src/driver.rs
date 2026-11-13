@@ -907,8 +907,8 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 let _ = reply.send(Err(Error::Submit(SubmitError::Overloaded)));
                 None
             }
-            Err((_, e)) => {
-                let _ = reply.send(Err(Error::Submit(e)));
+            Err((index, error)) => {
+                let _ = reply.send(Err(Error::Batch { index, error }));
                 None
             }
         }
