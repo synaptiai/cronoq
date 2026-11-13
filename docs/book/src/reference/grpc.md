@@ -174,8 +174,11 @@ use `Get` / `Wait` to reconcile anything that happened while disconnected.
    retryable and the worker receives `Abort`.
 4. **Report exactly one outcome** per lease: `Complete`, `Fail`, `Nack` or `Cancelled`.
    Reports for leases the worker does not hold (already aborted, or unknown) are ignored.
-5. **`Nack`** offers the lease to another worker of the pool, without counting an attempt. If no
-   other worker has a free slot, the attempt fails as retryable.
+5. **`Nack`** hands the lease to another worker of the pool as the same attempt: same lease id
+   and attempt number, and no further attempt is counted. If no other worker has a free slot,
+   the attempt fails as retryable and counts against the task's retry budget like any other
+   failure. A worker that is shutting down should send `SetSlots` with `0` first, so the
+   server stops leasing to it.
 6. **`Abort`** means the server has already given up the attempt and freed the slot. Stop the
    handler; sending `Cancelled` afterwards is allowed and ignored.
 7. **Read the stream promptly.** Each worker has a bounded outbound queue (about one lease and

@@ -768,7 +768,8 @@ gRPC (`cronoq.v1`):
 **Worker protocol** (version 3). Workers that speak an older version are refused with the
 version they need. `Registered` returns the granted slots, the lease TTL and the largest
 accepted message, and lease ids carry the leader epoch. A worker may `Nack` a lease (it is
-offered to another worker without counting an attempt when possible) or report `Cancelled`.
+handed to another worker as the same attempt; if none can take it, the attempt fails as
+retryable and counts against the retry budget) or report `Cancelled`.
 On shutdown or loss of leadership the server sends `Shutdown` (with `not_leader`) and workers
 reconnect with backoff. A worker whose stream backs up (it stopped reading) is disconnected.
 

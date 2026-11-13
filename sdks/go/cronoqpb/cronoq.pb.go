@@ -1951,8 +1951,9 @@ func (x *SetSlots) GetSlots() uint32 {
 	return 0
 }
 
-// The worker cannot take this lease (e.g. it is draining); the server offers it to another
-// worker without counting an attempt when possible.
+// The worker cannot take this lease (e.g. it has no free slot); the server hands it to another
+// worker as the same attempt. If no other worker can take it, the attempt fails as retryable
+// and counts against the task's retry budget.
 type Nack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Lease         uint64                 `protobuf:"varint,1,opt,name=lease,proto3" json:"lease,omitempty"`
