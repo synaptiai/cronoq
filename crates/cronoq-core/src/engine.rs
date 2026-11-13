@@ -742,6 +742,7 @@ impl<P> Core<P> {
 
     /// Replace live task `id` with `spec`, which carries its key: in place if no attempt has
     /// started, as a stored successor otherwise.
+    #[allow(clippy::result_large_err)] // hands the spec back by value, like `try_submit`
     fn replace(
         &mut self,
         id: TaskId,
