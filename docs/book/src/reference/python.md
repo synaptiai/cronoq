@@ -44,6 +44,7 @@ the scheduler stops and further calls raise `SchedulerError`; calls before `star
 | `await enqueue(payload, **options)` | `int` | Submit without a handle; returns the id. |
 | `await submit_batch(tasks: Sequence[Task])` | `list[TaskHandle]` | Atomic batch; tasks may depend on each other by key. |
 | `await cancel(target)` | `bool` | Cancel by id or key; `False` if already finished. |
+| `await update(target, *, priority=None, deadline_in=None, deadline_at=None, clear_deadline=False, tags=None)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. Arguments left out keep their value; at most one of the three deadline arguments; `tags` replaces the task's tags. Raises `UpdateError`. |
 | `await status(target)` | `str \| None` | Status name, or `None` if unknown. |
 | `await handle(target)` | `TaskHandle \| None` | Attach to an existing task. |
 | `await snapshot()` | `Snapshot` | Metrics and quality signals. |
@@ -83,7 +84,10 @@ Strings must not contain NUL characters.
 ### Status events
 
 `sched.events()` returns an `EventStream`, an async iterator of `StatusEvent` (`id`, `pool`,
-`key`, `status`, `attempt`, `at` in Unix seconds, `message`).
+`key`, `status`, `attempt`, `at` in Unix seconds, `message`, `priority`, `kind`). `kind` is
+`"transition"` for a status change and `"updated"` for an [update](../concepts/updating.md) of
+the task, published with `emit_transitions=True`; `status` is then the task's unchanged status
+and `priority` the class after the change.
 
 ```python
 async with sched.events() as events:
@@ -168,6 +172,7 @@ executors.
 | `Resource.semaphore(name, permits)` / `Resource.token_bucket(name, rate, burst)` | Shared resources. |
 | `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `group` (labels of the worker group the attempt was assigned to), `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
 | `TaskHandle` | Awaitable; `id`, `duplicate`, `await result()`, `done()`, `cancel()`. |
+| `Updated` | Result of `update`: `id`, `status` (unchanged by the update), `deferred` (an attempt is running; the values apply to what follows it), `changed` (`False` when the task already had every value). |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
 | `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
 | `StatusEvent`, `EventStream` | See [status events](#status-events). |
@@ -184,6 +189,7 @@ All live in `cronoq` (and `cronoq.errors`), derive from `CronoqError` and can be
 | `Permanent(message="")` | By executors and worker handlers: fail without retrying. |
 | `TaskFailed` | Awaiting a task that did not succeed. `.status` (terminal status, `"shutdown"`, or `"succeeded"` when the output is no longer available), `.message`, `.task_id`. |
 | `SubmitError` | Submission rejected. `.code`: `unknown_pool`, `unknown_resource`, `resource_exceeds_capacity`, `reservation_conflict`, `cycle`, `unknown_dependency`, `full`, `overloaded`, `duplicate_key_in_batch`, `invalid`. |
+| `UpdateError` | `update` refused. `.code`: `not_found` (unknown or already finished), `fixed_start`, `invalid` (for example a reserved tag name). |
 | `SchedulerError` | Scheduler stopped, misconfigured, or its store failed. |
 | `EventsLagged` | An `events(on_lag="raise")` stream fell behind; `.skipped`. |
 
@@ -207,6 +213,7 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | `await submit(payload=None, *, wait=False, wait_timeout=None, call_timeout=None, **options)` | `Submitted(id, duplicate, result)` | Options as for [`task`](#taskpayloadnone-options). With `wait=True`, `result` is set when the task finished. |
 | `await submit_batch(specs)` | `list[Submitted]` | Atomic batch of specs built with `task(...)`. |
 | `await cancel(ref)` | `bool` | By id or key. |
+| `await update(ref, *, priority=None, deadline_in=None, deadline_at=None, clear_deadline=False, tags=None)` | `Updated(id, status, deferred, changed)` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. Raises `ClientError` `not_found` for an unknown or finished task and `failed_precondition` for one with a fixed start. |
 | `await get(ref)` | `TaskInfo` | Raises `ClientError` with code `not_found` for unknown tasks. |
 | `await list_tasks(*, pools=(), statuses=(), after=0, limit=0)` | `TaskPage(tasks, next_after)` | One page of tasks, live and finished, in id order. `statuses` are names such as `"running"`; `limit` defaults to 100, capped by the server's `limits.max_list`. Pass `next_after` as `after` for the next page (`None` on the last one). |
 | `iter_tasks(*, pools=(), statuses=(), page_size=0)` | async iterator of `TaskInfo` | Every matching task, fetched one page at a time. |
@@ -228,7 +235,8 @@ Result types (frozen dataclasses):
 | `TaskPage` | `tasks` (tuple of `TaskInfo`), `next_after` (`int` or `None`), `unavailable_shards` (shards that could not be reached) |
 | `WorkerInfo` | `id`, `name`, `pool`, `labels`, `slots`, `busy`, `connected_at` (Unix seconds) |
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
-| `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message` |
+| `Updated` | `id`, `status` (unchanged by the update), `deferred`, `changed` |
+| `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message`, `priority` (name, or `None` from an older server), `updated` (true for an event that reports an update, delivered with `all_transitions=True`) |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
 | `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
 | `WorkerGroup` | `labels`, `capacity`, `busy`: the connected workers of a pool that registered the same labels |

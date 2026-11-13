@@ -508,6 +508,10 @@ impl<P> Core<P> {
     pub fn complete(&mut self, now: Time, lease: LeaseId, outcome: Outcome) -> bool;
     pub fn heartbeat(&mut self, now: Time, lease: LeaseId) -> bool;
     pub fn cancel(&mut self, now: Time, target: &TaskRef) -> bool;
+    // Change a live task's priority, deadline or tags. A waiting task is re-queued in its new
+    // class by its original seq; a running attempt is left alone (`Updated::deferred`).
+    pub fn update(&mut self, now: Time, target: &TaskRef, patch: TaskPatch)
+        -> Result<Updated, UpdateError>;   // NotFound | FixedStart | Invalid
     pub fn set_capacity(&mut self, now: Time, pool: PoolId, capacity: u32);
     pub fn set_group_capacity(&mut self, now: Time, pool: PoolId, labels: &[(Arc<str>, Arc<str>)],
                               capacity: u32);
@@ -703,7 +707,9 @@ shard named by `--shard`.
     *wait p50/p90/p99* (log-linear histogram, about 9% resolution), *schedule efficiency*
     (work / (capacity · window)).
 - **Event stream**: `scheduler.events()` gives a broadcast of `StatusEvent`s (terminal ones by
-  default, every transition with `emit_transitions`); gRPC `Watch`.
+  default, every transition with `emit_transitions`); gRPC `Watch`. Each event carries the
+  task's priority and a kind: `Transition`, or `Updated` for a change made by `update`
+  (published with `emit_transitions` only, with the task's unchanged status).
 
 ---
 
@@ -766,7 +772,8 @@ server aborts the attempt. Ids are `bigint`s.
 
 ### Server (`cronoq-server --config cronoq.toml`)
 gRPC (`cronoq.v1`):
-- `Tasks`: Submit, SubmitBatch, Cancel, Get, ListTasks (pages of live and finished tasks),
+- `Tasks`: Submit, SubmitBatch, Cancel, Update (priority, deadline or tags of a task that has
+  not finished), Get, ListTasks (pages of live and finished tasks),
   Wait, Watch (stream).
 - `Workers.Work` (bidirectional stream): the worker sends `Register{pool, slots, worker_name,
   protocol_version, labels}`, then `Heartbeat`, `Complete`, `Fail`, `Nack`, `Cancelled` and

@@ -40,6 +40,7 @@ This page describes **worker protocol version 3**.
 | `Submit` | `SubmitRequest` → `SubmitResponse` | Submit one task; with `wait`, block until it finishes. |
 | `SubmitBatch` | `SubmitBatchRequest` → `SubmitBatchResponse` | Submit up to `max_tasks_per_batch` tasks atomically. |
 | `Cancel` | `CancelRequest{task}` → `CancelResponse{cancelled}` | Cancel by id or key; `false` if the task already finished. |
+| `Update` | `UpdateRequest` → `UpdateResponse{id, status, deferred, changed}` | [Change the priority, deadline or tags](#update) of a task that has not finished. |
 | `Get` | `GetRequest{task}` → `TaskInfo` | Task details; `NOT_FOUND` for unknown tasks. |
 | `ListTasks` | `ListTasksRequest` → `ListTasksResponse{tasks, next_after}` | One page of tasks, live and finished, in id order. |
 | `Wait` | `WaitRequest{task, timeout_s}` → `TaskResult` | Wait for the task to finish. |
@@ -82,8 +83,26 @@ expires first the call fails with `DEADLINE_EXCEEDED` and the task keeps running
 keys defined anywhere in the batch. The response lists one `SubmitResponse` per task, in request
 order, without `result`.
 
-With a durable store (Postgres or SQLite), `Submit`, `SubmitBatch` and `Cancel` return after
-the change is stored.
+With a durable store (Postgres or SQLite), `Submit`, `SubmitBatch`, `Cancel` and `Update`
+return after the change is stored.
+
+### `Update`
+
+`UpdateRequest` names what to change ([Updating queued tasks](../concepts/updating.md)); fields
+left unset keep their value.
+
+| Field | Description |
+|---|---|
+| `task` | The task, by id or key. |
+| `priority` | New class; `PRIORITY_UNSPECIFIED` keeps the current one. |
+| `deadline_in_s`, `deadline_unix_ns`, `clear_deadline` | New deadline relative to now, as an absolute time, or none. At most one may be set. |
+| `set_tags`, `tags` | With `set_tags`, `tags` replaces the task's tags (an empty map removes them). `tags` without `set_tags` is `INVALID_ARGUMENT`. Names starting with `cronoq.` are reserved. |
+
+`UpdateResponse.status` is the task's unchanged status. `deferred` is true when an attempt is
+running, which is not interrupted: the new values apply to what follows it. `changed` is false
+when the task already had every value given. The call fails with `NOT_FOUND` for a task that
+is unknown, already finished, or outside the credentials' pools or tenant, and with
+`FAILED_PRECONDITION` for a task with a fixed start.
 
 ### `TaskInfo`
 
@@ -134,7 +153,11 @@ if the server stops serving while waiting: wait again on the new leader.
 | `ids`, `keys` | Optional task filters (at most `max_tasks_per_batch` together). |
 | `all_transitions` | Deliver every transition (`BLOCKED`, `READY`, `RUNNING`, `RETRYING`, ...), not only terminal statuses. |
 
-Each `StatusEvent` carries `{id, pool, key, status, attempt, at_unix_ns, message}`. The stream
+Each `StatusEvent` carries `{id, pool, key, status, attempt, at_unix_ns, message, priority,
+kind}`. `kind` is `EVENT_KIND_TRANSITION` for a status change. With `all_transitions`, each
+`Update` that changed a task is delivered as an event of kind `EVENT_KIND_UPDATED`, whose
+`status` is the task's unchanged status and whose `priority` is the class after the change;
+servers before this field send neither `priority` nor `kind`. The stream
 ends with `UNAVAILABLE` when the server shuts down or loses leadership, and with `DATA_LOSS`
 when the client reads too slowly and events were dropped. Events are live only: reconnect and
 use `Get` / `Wait` to reconcile anything that happened while disconnected.
@@ -242,7 +265,7 @@ With [`[[shards]]`](configuration.md#shards), any server answers for every shard
 caller's token, and `ListTasks`, `Watch`, `ListWorkers`, `ListRecurring` and `Snapshot` cover all
 shards. The listing responses and `SnapshotResponse` name shards that could not be reached in
 `unavailable_shards`; `Get` and `Wait` by key name them in the `cronoq-unavailable-shards`
-response metadata, and `Cancel` by key is refused while any shard cannot be asked. A call that
+response metadata, and `Cancel` and `Update` by key are refused while any shard cannot be asked. A call that
 is not forwarded (client-certificate callers, plain-HTTP
 endpoints on other hosts, workers) gets `FAILED_PRECONDITION` with the shard's name and endpoint
 in the `cronoq-shard` and `cronoq-shard-endpoint` metadata. Workers reconnect to that endpoint
@@ -278,7 +301,7 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle; oversize string or collection. |
 | `NOT_FOUND` | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | The key is already used by a task in a pool outside the credentials' scope. |
-| `FAILED_PRECONDITION` | Fixed-start reservation conflict; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
+| `FAILED_PRECONDITION` | Fixed-start reservation conflict; an `Update` of a task with a fixed start; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
 | `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |

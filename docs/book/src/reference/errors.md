@@ -60,6 +60,7 @@ failures too.
 | Rust `Error` | Python | Meaning |
 |---|---|---|
 | `Submit(SubmitError)` | `SubmitError` | See above. |
+| `Update(UpdateError)` | `UpdateError` (`.code`) | An [update](../concepts/updating.md) was refused: `NotFound` / `not_found` (no task with this id or key that has not finished), `FixedStart` / `fixed_start` (tasks with a fixed start cannot be updated), `Invalid` / `invalid` (for example a tag name starting with `cronoq.`). The server answers `NOT_FOUND`, `FAILED_PRECONDITION` and `INVALID_ARGUMENT`. |
 | `Shutdown` | `SchedulerError` | The scheduler has stopped or is stopping. |
 | `Config(String)` | `ValueError` (at construction) or `SchedulerError` | Invalid configuration: no pools, missing executor, duplicate pool, `min > max`, bad cron or time zone, recurring template with one-shot fields. |
 | `Store(StoreError)` | `SchedulerError` | Persistence failed fatally (see below). |
@@ -95,7 +96,7 @@ return database messages to clients.
 | `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
-| `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
+| `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; an update of a task with a fixed start; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | – | 413, 415 | no | Body too large, wrong content type. |
 | `RESOURCE_EXHAUSTED` | 429 | yes, with backoff | Queue bounds reached. |
 | `INTERNAL` | 500 | maybe | Unexpected server error. |

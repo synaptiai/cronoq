@@ -43,6 +43,10 @@ it delay urgent work. If you want stronger mixing, change the settings below: a 
 The time is measured from **submission**. A task released by its dependencies, or retried after
 a failure, keeps its original place in its class.
 
+A task's class is not fixed at submission: [updating a queued task](updating.md) moves it to
+another class, where it keeps its place by submission order and the waiting time it has
+already accumulated.
+
 ## Why dispatch never rescans the backlog
 
 Within one class, every task ages at the same rate from its own submission time, so an older

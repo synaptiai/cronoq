@@ -64,6 +64,7 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `submit_batch(tasks)` | `Vec<TaskHandle<O>>` | Atomic batch; tasks may depend on each other by key. |
 | `handle(target)` | `Option<TaskHandle<O>>` | Attach to an existing task by id or key. |
 | `cancel(target)` | `bool` | `false` if the task already finished. |
+| `update(target, Update)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. `Update::new()` with `priority(p)`, `deadline_in(d)`, `deadline_at(t)`, `no_deadline()`, `tags(pairs)`. `Updated` has `id`, `status`, `deferred` and `changed`. |
 | `status(target)` | `Option<TaskStatus>` | `None` for unknown tasks. |
 | `list_tasks(pools, statuses, after, limit)` | `Vec<TaskSummary>` | Live tasks in id order, filtered by pool (any if empty) and status (any if empty), with ids above `after`. Finished tasks are listed by a durable store (`StoreQueries::list_finished`). |
 | `list_recurring()` | `Vec<RecurringInfo>` | Recurring schedules with their next occurrence and latest task. |
@@ -76,7 +77,7 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `stopped()` | `()` | Resolves when the scheduler stops for any reason. |
 | `shutdown(grace)` | `()` | Stop admitting, let running attempts finish for `grace`, then stop. |
 
-With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `add_recurring` and
+With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`, `add_recurring` and
 `remove_recurring` return only after the change is durable.
 
 `TaskHandle<O>` is a `Future<Output = Result<Arc<O>, TaskFailure>>` with `id()`,
@@ -112,7 +113,8 @@ attempts keep running.
 
 | Type | Variants |
 |---|---|
-| `Error` | `Submit(SubmitError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
+| `Error` | `Submit(SubmitError)`, `Update(UpdateError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
+| `UpdateError` | `NotFound`, `FixedStart`, `Invalid(&'static str)`. |
 | `TaskFailure` | `Ended { status, message }`, `OutputUnavailable { id }`, `Shutdown`; `status()`. |
 | `StoreError` | `Fenced`, `Unavailable(String)`, `Other(String)`; `is_transient()`. |
 | `ScaleError` | `External`, `Other(String)`. |
@@ -133,7 +135,7 @@ See [Errors and status codes](errors.md).
 ### Blocking facade
 
 `BlockingScheduler<P, O>` (from `Builder::build_blocking`) has the same operations without
-`async`: `submit`, `enqueue`, `enqueue_many`, `submit_batch`, `task_handle`, `cancel`, `status`,
+`async`: `submit`, `enqueue`, `enqueue_many`, `submit_batch`, `task_handle`, `cancel`, `update`, `status`,
 `snapshot`, `set_capacity`, `add_recurring`, `remove_recurring`, `events`, `scheduler`,
 `shutdown(grace)`. `BlockingHandle<O>` has `id()`, `cancel()`, `wait()` and
 `wait_timeout(d)`.
@@ -162,6 +164,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `submit`, `try_submit`, `submit_batch` | Admission. |
 | `complete(now, lease, Outcome)`, `heartbeat(now, lease)` | Attempt feedback. |
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
+| `update(now, target, TaskPatch)` | Change a live task's priority, deadline or tags; emits `Mutation::Updated` and, with `emit_transitions`, a `StatusEvent` of `EventKind::Updated`. |
 | `set_capacity(now, pool, n)`, `set_group_capacity(now, pool, labels, n)` | Capacity changes, for the whole pool or for the workers with exactly `labels`. |
 | `add_recurring`, `remove_recurring`, `recurring_names`, `list_recurring` | Cron schedules. |
 | `tick(now)`, `next_wakeup()` | Timers. |
