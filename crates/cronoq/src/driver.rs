@@ -617,9 +617,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 reply,
                 handle,
             } => {
+                // A replacement of a waiting task needs no room and must not wait for some:
+                // the task could start with its old payload meanwhile. If it does need room
+                // (the task has started), it joins the waiters then.
+                let replacing = opts.on_key_conflict == cronoq_core::KeyConflict::ReplaceQueued;
                 if closed {
                     let _ = reply.send(Err(Error::Shutdown));
-                } else if self.waits_behind(&spec) {
+                } else if !replacing && self.waits_behind(&spec) {
                     self.blocked.push_back(Blocked::One {
                         spec,
                         opts,

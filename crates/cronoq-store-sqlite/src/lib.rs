@@ -679,6 +679,11 @@ impl SqliteStore {
         .await
         .map_err(db)?;
 
+        // Replacements first: a task replaced and ended in one batch keeps the description it
+        // ended with.
+        for r in replaced.values() {
+            r.execute_replace(&mut tx).await?;
+        }
         // 1. Transitions of existing tasks first, so keys they release can be reused by tasks
         //    inserted in this batch.
         let mut missing = 0usize;
@@ -708,10 +713,7 @@ impl SqliteStore {
         for r in &inserts {
             r.execute(&mut tx).await?;
         }
-        // Replacements and changes of tasks inserted by an earlier batch.
-        for r in replaced.values() {
-            r.execute_replace(&mut tx).await?;
-        }
+        // Stored submissions, and changes of tasks inserted by an earlier batch.
         for id in &ended {
             sqlx::query("DELETE FROM cronoq_pending WHERE task_id = ?1")
                 .bind(id.0 as i64)
@@ -1186,7 +1188,15 @@ impl Store<Bytes, Bytes> for SqliteStore {
             }
         }
         drop(rows);
-        // Submissions stored to run after live tasks.
+        // Submissions stored to run after live tasks. One whose task is gone (pruned, or closed
+        // out by hand) has nothing to follow.
+        sqlx::query(
+            "DELETE FROM cronoq_pending \
+             WHERE task_id NOT IN (SELECT id FROM cronoq_tasks WHERE terminal = 0)",
+        )
+        .execute(pool)
+        .await
+        .map_err(db)?;
         let rows = sqlx::query(
             "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload,              deadline_unix_ns, NULL AS fixed_at_unix_ns, NULL AS fixed_tolerance_ns,              NULL AS fixed_on_miss, duration_hint_ns, timeout_ns, retry, deps, resources, tags,              labels, tenant, 0 AS attempt FROM cronoq_pending              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE terminal = 0) ORDER BY task_id",
         )

@@ -692,8 +692,10 @@ fn priority_name(p: i32) -> Option<&'static str> {
     }
 }
 
-fn outcome_name(o: i32) -> &'static str {
+/// `duplicate` decides for a response forwarded from a shard older than the field.
+fn outcome_name(o: i32, duplicate: bool) -> &'static str {
     match pb::SubmitOutcome::try_from(o).unwrap_or(pb::SubmitOutcome::Unspecified) {
+        pb::SubmitOutcome::Unspecified if duplicate => "existing",
         pb::SubmitOutcome::Unspecified | pb::SubmitOutcome::Created => "created",
         pb::SubmitOutcome::Existing => "existing",
         pb::SubmitOutcome::Replaced => "replaced",
@@ -742,7 +744,7 @@ async fn submit(
     };
     let r = crate::route::submit(app, &p, spec, opts, wait, &st.stop).await?;
     let mut v = json!({
-        "id": r.id.to_string(), "duplicate": r.duplicate, "outcome": outcome_name(r.outcome),
+        "id": r.id.to_string(), "duplicate": r.duplicate, "outcome": outcome_name(r.outcome, r.duplicate),
     });
     if let Some(res) = &r.result {
         v["result"] = result_json(res);

@@ -428,6 +428,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     renew_position: a.renew_position,
                 })
                 .await)?;
+            if a.replace && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+                // A server older than the option ignored it: with the key in use, this
+                // submission was dropped, not stored.
+                bail!("the server does not support --replace");
+            }
             if let Some(res) = &r.result {
                 return Ok(print_result(res, out));
             }

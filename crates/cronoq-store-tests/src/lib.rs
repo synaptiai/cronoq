@@ -553,6 +553,32 @@ pub async fn replacements_are_stored_and_dropped<H: Harness>(h: &H) {
     assert_eq!(ids, [20, 22]);
     assert_eq!(rec.tasks[1].spec.key.as_deref(), Some("running"));
 
+    // A task replaced and ended in one batch (a replace, then a cancel, while a commit was in
+    // flight) is recorded with the description it ended with.
+    let ended = vec![submitted_at(30, 20, S, keyed(b"e1", "ended"))];
+    store.commit(epoch, base, &ended, &[]).await.unwrap();
+    let ended = vec![
+        Mutation::Replaced {
+            id: TaskId(30),
+            seq: 20,
+            arrival: Time(S),
+            spec: keyed(b"e2", "ended")
+                .kind("second")
+                .priority(Priority::High),
+        },
+        status(30, TaskStatus::Cancelled, 0, 5 * S, None),
+    ];
+    store.commit(epoch, base, &ended, &[]).await.unwrap();
+    let rec30 = store
+        .get_task(&TaskRef::Id(TaskId(30)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (rec30.status, rec30.kind.as_str(), rec30.priority),
+        (Some(TaskStatus::Cancelled), "second", Priority::High)
+    );
+
     // A submission stored behind a task that ends in the same batch is not kept, and neither
     // is one stored behind a task that ends without a successor (a cancel).
     let fourth = vec![

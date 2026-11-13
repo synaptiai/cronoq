@@ -140,6 +140,15 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
       c.submit({ payload: "x", key: "title", renewPosition: true }),
       (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
     );
+    // A batch admits tasks as written, and a misspelt option is an error: neither is dropped.
+    await assert.rejects(
+      c.submitBatch([{ payload: "x", key: "title", onKeyConflict: "replace_queued" }]),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+    await assert.rejects(
+      c.submit({ payload: "x", key: "title", onKeyConflict: "newest" as never }),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
 
     const ac = new AbortController();
     const events: Array<{ kind: string; id: bigint; message: string }> = [];

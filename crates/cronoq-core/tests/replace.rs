@@ -259,9 +259,213 @@ fn a_successor_does_not_wait_for_the_dependencies_again() {
     assert_eq!(s.order(), [parent, child, successor]);
 }
 
+#[test]
+fn a_key_with_dependencies_can_be_replaced_again_after_its_successor() {
+    let cfg = || CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 1)],
+        persist: true,
+        ..Default::default()
+    };
+    let mut s = Sim::new(cfg());
+    s.submit(job(1.0).key("parent"));
+    let child = s.submit(keyed(10.0).after("parent"));
+    s.run_until(t(2.0));
+    s.replace(keyed(20.0).after("parent"), false).unwrap();
+    s.run_until(t(12.0));
+    // The successor is running. The same producer sends the next value, described the same
+    // way: stored behind the successor. Then one more task with the key, replaced in place.
+    let successor = s.try_submit(keyed(9.0)).unwrap().id;
+    assert_ne!(successor, child);
+    assert_eq!(s.status(successor), Some(TaskStatus::Running));
+    let r = s.replace(keyed(3.0).after("parent"), false).unwrap();
+    assert_eq!((r.id, r.outcome), (successor, SubmitOutcome::Pending));
+    // A replacement that names other dependencies is still refused.
+    assert_eq!(
+        s.replace(keyed(3.0), false),
+        Err(SubmitError::ReplaceMismatch("the dependencies differ"))
+    );
+    s.run_until(t(33.0));
+    let third = s.try_submit(keyed(9.0)).unwrap().id;
+    assert!(third != successor && s.status(third) == Some(TaskStatus::Running));
+    s.submit(job(50.0));
+    let waiting = s.replace(keyed(4.0).after("parent"), false).unwrap();
+    assert_eq!(waiting.outcome, SubmitOutcome::Pending);
+
+    // After a restart the successor is still a successor: it does not wait for the
+    // dependencies again, and takes a replacement that names them.
+    let mut tasks: Vec<RecoveredTask<Job>> = Vec::new();
+    for m in &s.persisted {
+        match m {
+            Mutation::Submitted {
+                id,
+                seq,
+                arrival,
+                spec,
+            } => tasks.push(RecoveredTask {
+                id: *id,
+                seq: *seq,
+                arrival: *arrival,
+                spec: spec.clone(),
+                attempt: 0,
+            }),
+            Mutation::Status { id, status, .. } if status.is_terminal() => {
+                tasks.retain(|t| t.id != *id)
+            }
+            _ => {}
+        }
+    }
+    let third_spec = tasks.iter().find(|t| t.id == third).unwrap();
+    assert_eq!(
+        third_spec.spec.deps.len(),
+        1,
+        "stored with its dependencies"
+    );
+    let mut r = Sim::new(cfg());
+    r.core.recover(
+        r.now,
+        Recovered {
+            tasks,
+            ..Default::default()
+        },
+    );
+    r.drain();
+    assert_ne!(r.status(third), Some(TaskStatus::Blocked));
+    r.replace(keyed(5.0).after("parent"), false).unwrap();
+    r.run_to_completion(500.0);
+    assert_eq!(r.core.live_tasks(), 0);
+}
+
+#[test]
+fn a_stored_replacement_follows_a_task_that_ends_while_it_is_recovered() {
+    // The lost attempt was the task's last: it is dead-lettered during recovery, and the
+    // submission stored behind it runs.
+    let mut pool = PoolConfig::fixed("default", 1);
+    pool.retry = RetryPolicy::none();
+    let mut r = Sim::new(CoreConfig {
+        pools: vec![pool],
+        persist: true,
+        ..Default::default()
+    });
+    r.core.recover(
+        r.now,
+        Recovered {
+            tasks: vec![RecoveredTask {
+                id: TaskId(1),
+                seq: 1,
+                arrival: Time::ZERO,
+                spec: keyed(10.0),
+                attempt: 1,
+            }],
+            pending: vec![RecoveredPending {
+                id: TaskId(1),
+                seq: 2,
+                arrival: Time::ZERO,
+                renew: false,
+                spec: keyed(2.0),
+            }],
+            ..Default::default()
+        },
+    );
+    r.drain();
+    assert_eq!(r.status(TaskId(1)), Some(TaskStatus::DeadLettered));
+    r.run_to_completion(50.0);
+    let successor = r.try_submit(keyed(9.0)).unwrap().id;
+    assert_ne!(successor, TaskId(1));
+    assert_eq!(payloads(&r, successor), [2.0]);
+    assert_eq!(r.core.snapshot(r.now).pools[0].pending(), 0);
+}
+
+#[test]
+fn renewing_the_position_works_in_a_pool_that_shares_capacity_between_tenants() {
+    for renew in [false, true] {
+        let mut pool = PoolConfig::fixed("default", 1);
+        pool.fairness = Some(Fairness::default());
+        let mut s = Sim::with_pool(pool);
+        s.submit(job(10.0).tenant("a"));
+        let a = s.submit(keyed(1.0).tenant("a"));
+        let b = s.submit(job(1.0).tenant("a"));
+        s.replace(keyed(2.0).tenant("a"), renew).unwrap();
+        let c = s.submit(job(1.0).tenant("a"));
+        s.run_to_completion(100.0);
+        let order = s.order()[1..].to_vec();
+        if renew {
+            assert_eq!(order, [b, a, c]);
+        } else {
+            assert_eq!(order, [a, b, c]);
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------
 // Refusals and bounds
 // ------------------------------------------------------------------------------------------
+
+#[test]
+fn replacing_needs_a_key() {
+    let mut s = one_worker();
+    assert_eq!(
+        s.replace(job(1.0), false),
+        Err(SubmitError::Invalid("replace_queued needs a key"))
+    );
+    assert_eq!(s.core.live_tasks(), 0);
+}
+
+#[test]
+fn a_stored_replacement_respects_the_bound_of_its_class_and_sheds_nothing() {
+    let mut pool = PoolConfig::fixed("default", 1);
+    pool.bounds.max_pending_per_class[Priority::High.index()] = Some(1);
+    pool.overflow = OverflowPolicy::Reject;
+    let mut s = Sim::with_pool(pool);
+    let running = s.submit(keyed(10.0));
+    s.submit(job(1.0).priority(Priority::High));
+    // The high class is full: a stored submission of that class is refused, directly or by
+    // overwriting one of another class, and what was stored stays.
+    assert_eq!(
+        s.replace(keyed(2.0).priority(Priority::High), false),
+        Err(SubmitError::Overloaded)
+    );
+    s.replace(keyed(3.0).priority(Priority::Low), false)
+        .unwrap();
+    assert_eq!(
+        s.replace(keyed(4.0).priority(Priority::High), false),
+        Err(SubmitError::Overloaded)
+    );
+    s.run_to_completion(100.0);
+    let successor = s.try_submit(keyed(9.0)).unwrap().id;
+    assert_ne!(successor, running);
+    assert_eq!(payloads(&s, successor), [3.0]);
+
+    // With a shedding policy, a stored submission still never evicts other work, least of
+    // all the task it waits for.
+    let mut pool = PoolConfig::fixed("default", 1);
+    pool.bounds.max_pending = Some(2);
+    pool.overflow = OverflowPolicy::ShedOldest;
+    pool.retry = RetryPolicy {
+        max_attempts: 5,
+        initial_backoff: secs(1.0),
+        multiplier: 1.0,
+        max_backoff: secs(1.0),
+        jitter: false,
+    };
+    let mut s = Sim::with_pool(pool);
+    let k = s.submit(
+        TaskSpec::new(Job::flaky(1.0, 1))
+            .key("k")
+            .priority(Priority::Low),
+    );
+    s.run_until(t(1.5));
+    s.submit(job(20.0).priority(Priority::High));
+    s.run_until(t(3.0));
+    let other = s.submit(job(1.0).priority(Priority::Low));
+    // `k` failed once and waits in line again, behind the long task; the queue is full.
+    assert_eq!(s.status(k), Some(TaskStatus::Ready));
+    assert_eq!(
+        s.replace(keyed(2.0).priority(Priority::Low), false),
+        Err(SubmitError::Overloaded)
+    );
+    assert_eq!(s.status(k), Some(TaskStatus::Ready));
+    assert_eq!(s.status(other), Some(TaskStatus::Ready));
+}
 
 #[test]
 fn a_replacement_that_differs_in_placement_is_refused() {
@@ -283,6 +487,11 @@ fn a_replacement_that_differs_in_placement_is_refused() {
         other => panic!("{other:?}"),
     };
     assert_eq!(refused(&mut s, base().pool("other")), "the pool differs");
+    // The tenant is checked before anything else about the task is revealed.
+    assert_eq!(
+        refused(&mut s, keyed(2.0).tenant("acme").pool("other")),
+        "the tenant differs"
+    );
     assert_eq!(
         refused(&mut s, keyed(2.0).resource("gpu", 2).after("parent")),
         "the resources differ"
@@ -430,7 +639,12 @@ fn replacements_are_reported_as_events_and_mutations_not_as_statuses() {
         panic!("the successor follows the end: {:?}", s.persisted);
     };
     assert_eq!(spec.key.as_deref(), Some("b"));
-    assert!(spec.deps.is_empty());
+    // It is marked with the task it follows.
+    assert!(
+        spec.tags
+            .iter()
+            .any(|(k, v)| &**k == "cronoq.follows" && **v == *blocker.to_string())
+    );
     let ev = s
         .events
         .iter()

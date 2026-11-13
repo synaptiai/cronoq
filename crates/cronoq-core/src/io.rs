@@ -460,6 +460,17 @@ impl<P> Clone for RecurringSpec<P> {
     }
 }
 
+impl StatusEvent {
+    /// For an event of kind [`EventKind::Successor`]: the task this one follows.
+    pub fn follows(&self) -> Option<TaskId> {
+        if self.kind != EventKind::Successor {
+            return None;
+        }
+        let id = self.message.as_deref()?.strip_prefix("follows task ")?;
+        id.parse().ok().map(TaskId)
+    }
+}
+
 /// Durable state change (emitted only with `CoreConfig::persist`).
 #[derive(Debug)]
 pub enum Mutation<P> {

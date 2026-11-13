@@ -810,6 +810,10 @@ class Client:
             if call_timeout is None:
                 call_timeout = float(wait_timeout) + _WAIT_DEADLINE_MARGIN
         r = await self._call(self._tasks.Submit, req, call_timeout)
+        if on_key_conflict == "replace_queued" and r.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED:
+            # A server older than the option ignored it: with the key in use, this submission
+            # was dropped, not stored.
+            raise ClientError("unimplemented", "the server does not support on_key_conflict")
         result = Result._from_pb(r.result) if r.HasField("result") else None
         return Submitted(r.id, r.duplicate, result, _outcome(r))
 

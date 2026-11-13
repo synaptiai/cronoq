@@ -328,7 +328,7 @@ async fn record_outcome(
         }
         cronoq::SubmitOutcome::Pending => {
             check_duplicate(app, principal, sub.id).await?;
-            app.info.on_pending(submit_meta(app, spec));
+            app.info.on_pending(sub.id.0, submit_meta(app, spec));
         }
     }
     Ok(())

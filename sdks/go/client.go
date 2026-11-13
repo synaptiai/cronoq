@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -237,13 +238,22 @@ func (c *Client) submit(ctx context.Context, req *pb.SubmitRequest, wait bool, t
 	if err != nil {
 		return Submitted{}, wrap(err)
 	}
+	if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED &&
+		r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+		// A server older than the option ignored it: with the key in use, this submission
+		// was dropped, not stored.
+		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.Replace"}
+	}
 	return submitted(r), nil
 }
 
 // SubmitBatch submits tasks atomically; they may depend on each other's keys.
 func (c *Client) SubmitBatch(ctx context.Context, tasks []Task) ([]Submitted, error) {
 	req := &pb.SubmitBatchRequest{}
-	for _, t := range tasks {
+	for i, t := range tasks {
+		if t.Replace || t.RenewPosition {
+			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: Replace and RenewPosition are not supported in a batch", i)}
+		}
 		req.Tasks = append(req.Tasks, t.Spec())
 	}
 	r, err := c.tasks.SubmitBatch(ctx, req)

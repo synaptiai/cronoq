@@ -42,7 +42,7 @@ type Task struct {
 	// Replace lets the newest submission of Key win. A task with the key that has not
 	// started is replaced in place (same id and place in line). One that has started keeps
 	// its payload, and this task runs after it as a new task with the same key. See
-	// [Submitted.Outcome]. Not used by SubmitBatch or [Task.Spec].
+	// [Submitted.Outcome]. SubmitBatch refuses it; [Task.Spec] does not carry it.
 	Replace bool
 	// RenewPosition, with Replace, takes this submission's place in line instead of keeping
 	// the place of the task it replaces.

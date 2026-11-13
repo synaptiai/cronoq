@@ -257,6 +257,10 @@ func TestReplaceByKey(t *testing.T) {
 	if _, err := c.Submit(ctx, cronoq.Task{Key: "title", RenewPosition: true}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
 		t.Fatalf("renew without replace: %v", err)
 	}
+	// A batch admits tasks as written: the option is refused, not dropped.
+	if _, err := c.SubmitBatch(ctx, []cronoq.Task{{Key: "title", Replace: true}}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("replace in a batch: %v", err)
+	}
 
 	events := make(chan cronoq.Event, 64)
 	watchCtx, stopWatch := context.WithCancel(ctx)
