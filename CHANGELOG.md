@@ -23,6 +23,9 @@ contain breaking changes; they are called out under **Changed**.
   release.
 - **Upcoming change:** the default `on_key_conflict` becomes `reject` in the next minor
   release. Set it explicitly to keep either behaviour across the upgrade.
+- Helm chart: `onKeyConflict` sets the server's `server.on_key_conflict`.
+- gRPC-Web: browsers can read the `cronoq-*` response metadata (conflicting task, batch index,
+  shard hints), which the server now lists in `access-control-expose-headers`.
 - Batch errors name the task that caused them: `Error::Batch { index, error }` in Rust,
   `SubmitError.index` in Python, `cronoq-batch-index` metadata over gRPC, `index` in the HTTP
   error body. Batch responses carry `outcome` per task.

@@ -76,6 +76,8 @@ pub struct AppState {
     pub pools: FxHashMap<Arc<str>, PoolInfo>,
     /// Request limits.
     pub limits: LimitsConfig,
+    /// What a submission whose key is in use does when it names no mode.
+    pub on_key_conflict: cronoq::KeyConflict,
     /// Durable store, for outputs and details no longer cached.
     pub queries: Option<Arc<dyn cronoq::StoreQueries<Bytes>>>,
     /// The shard layout, when pools are split between shards.

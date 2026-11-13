@@ -54,14 +54,26 @@ type Task struct {
 	// [Error.KeyConflict] true, instead of returning that task. A retry of the same
 	// submission is still answered with the task. In a batch, set it on every task or none.
 	RejectConflict bool
+	// ReturnExisting returns the task that holds Key whatever it was submitted with, also
+	// when the server's default is to report conflicts. Without any of the three options the
+	// server's default applies.
+	ReturnExisting bool
 }
 
 // request builds the submission of the task, with its options.
 func (t Task) request() (*pb.SubmitRequest, error) {
 	req := &pb.SubmitRequest{Task: t.Spec(), RenewPosition: t.RenewPosition}
+	chosen := 0
+	for _, on := range []bool{t.Replace, t.RejectConflict, t.ReturnExisting} {
+		if on {
+			chosen++
+		}
+	}
 	switch {
-	case t.Replace && t.RejectConflict:
-		return nil, &Error{Code: codes.InvalidArgument, Message: "Replace and RejectConflict exclude each other", BatchIndex: -1}
+	case chosen > 1:
+		return nil, &Error{Code: codes.InvalidArgument, Message: "Replace, RejectConflict and ReturnExisting exclude each other", BatchIndex: -1}
+	case t.ReturnExisting:
+		req.OnKeyConflict = pb.KeyConflict_KEY_CONFLICT_RETURN_EXISTING
 	case t.Replace:
 		req.OnKeyConflict = pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED
 	case t.RejectConflict:

@@ -42,6 +42,18 @@ The server computes the fingerprint from the request.
 A retry that only differs in the right-hand column is still a retry. Use
 [replace by key](replacing.md) when a key is *meant* to take new content.
 
+The fingerprint is taken over the request as it was sent:
+
+- **Payload bytes, not their meaning.** Two JSON encodings of one value (other key order,
+  other spacing) are different bytes. A retry through the same client sends the same bytes; a
+  producer that submits one key through two different clients should serialise the payload
+  itself. The HTTP API re-encodes a JSON `payload` in one canonical form, so key order and
+  spacing in an HTTP request body do not matter.
+- **Defaults count as what they stand for**: no pool or kind is `default`, no priority is
+  normal, no content type is `application/octet-stream`.
+- **Dependencies as written**, in any order: a parent named by key and the same parent named
+  by id are different references.
+
 In-process callers (the Rust and Python libraries) pass the fingerprint themselves, since the
 engine never looks inside a payload: any 128-bit value that is equal for equal requests, for
 example a digest of the payload bytes, or of the event the task was created from.
@@ -76,7 +88,9 @@ except cronoq.SubmitError as e:
   deadline or tags with [an update](updating.md) does not change it, so a retry of the original
   submission still matches afterwards.
 - **A replacement brings its own.** A submission that [replaces a task by key](replacing.md)
-  stores its fingerprint with the task, or with the successor it becomes.
+  stores its fingerprint with the task, or with the successor it becomes. The newest
+  submission accepted for a key is the one a later submission is compared with, also while it
+  is still stored behind a running task.
 - **No fingerprint matches anything.** A task submitted before fingerprints existed, or by an
   in-process caller that passed none, never conflicts; neither does a submission without one.
 - **As long as the key.** A finished task still answers for its key, with its fingerprint, for
@@ -120,11 +134,25 @@ keep either behaviour across the upgrade. A submission can always choose for its
 
 It is not the error a pool-restricted token gets for a key held in another pool
 (`ALREADY_EXISTS` / 409, "task key is already in use"): that one says the key is taken and
-nothing more, and it is checked first, so a conflict never describes a task the caller may not
-see.
+nothing more. A conflict never describes a task in a pool the caller may not use; such a
+caller gets the plain error instead.
+
+Browsers that call the server over gRPC-Web can read the three metadata values: the server
+lists them in `access-control-expose-headers`.
 
 The usual reaction to a conflict is to stop and look: log both submissions and set the item
 aside. Retrying cannot succeed while the key is held.
+
+## Upgrading
+
+A server from before this release does not know `reject`. It refuses a single submission that
+asks for it (`INVALID_ARGUMENT`), but it ignores the option on a batch and admits the tasks.
+The clients, and a server forwarding a batch to an older [shard](sharding.md), notice that from
+the response and fail the call with `UNIMPLEMENTED`; the batch has then been admitted without
+the check. Upgrade every server before relying on `reject` for batches.
+
+A server that forwards a submission to another shard sends its own default along, so the
+answer does not depend on which server received the call.
 
 ## Durability
 

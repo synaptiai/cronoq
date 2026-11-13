@@ -16,6 +16,9 @@ data:
     {{- if .Values.insecurePeerHttp }}
     insecure_peer_http = true
     {{- end }}
+    {{- with .Values.onKeyConflict }}
+    on_key_conflict = {{ . | quote }}
+    {{- end }}
     {{- with .Values.grpcWeb.allowedOrigins }}
 
     [server.grpc_web]

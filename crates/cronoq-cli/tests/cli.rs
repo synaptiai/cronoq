@@ -268,6 +268,19 @@ async fn tasks_can_be_submitted_inspected_listed_and_cancelled() {
         )
         .await;
     assert_eq!(o.status.code(), Some(2));
+    // Asking for the existing task whatever it holds.
+    let o = s
+        .cli(
+            CLIENT,
+            &["submit", "other", "--key", "greeting", "--return-existing"],
+        )
+        .await;
+    assert_eq!(
+        stdout(&o).trim(),
+        format!("{id} (duplicate)"),
+        "{}",
+        stderr(&o)
+    );
 
     // Update: by id and by key, then nothing left to change, then nothing asked.
     let o = s

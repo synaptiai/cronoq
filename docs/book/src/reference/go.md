@@ -93,6 +93,9 @@ an `*Error` whose `KeyConflict()` is true, with the existing task in `ConflictTa
 `ConflictStatus`, instead of returning that task
 ([Detecting conflicting submissions](../concepts/key-conflicts.md)). In `SubmitBatch`, set it on
 every task or on none; a refused batch names the task in `Error.BatchIndex` (-1 otherwise).
+`Task.ReturnExisting` asks for the existing task whatever it holds, also when the server's
+default is to report conflicts. With none of `Replace`, `RejectConflict` and `ReturnExisting`,
+the server's default applies.
 
 `Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,
 `ClearDeadline` (at most one of the three), and `Tags`, which replaces the task's tags when it

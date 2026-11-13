@@ -490,6 +490,7 @@ async fn lead(
         info,
         pools,
         limits: limits.clone(),
+        on_key_conflict: cfg.server.on_key_conflict.mode(),
         queries: queries.clone(),
         shards,
         peers,

@@ -741,11 +741,19 @@ impl<P> Core<P> {
 
     /// The conflict between task `id`, which holds a key, and a new submission of that key
     /// with `fingerprint`, if they were submitted with different fingerprints. One without a
-    /// fingerprint matches anything.
+    /// fingerprint matches anything. For a task with a submission stored to run after it, the
+    /// stored one is compared.
     fn key_conflict(&self, id: TaskId, fingerprint: Option<u128>) -> Option<SubmitError> {
         let new = fingerprint?;
         let (held, status) = match self.entry_by_id(id) {
-            Some(e) => (e.fingerprint, e.status),
+            // The newest submission accepted for the key is the one a retry repeats: the
+            // one stored to run after the task, if there is one.
+            Some(e) => (
+                e.next
+                    .as_ref()
+                    .map_or(e.fingerprint, |n| n.spec.fingerprint),
+                e.status,
+            ),
             None => (
                 self.retained_fp.get(&id).copied(),
                 self.retained.get(&id).map(|r| r.0)?,

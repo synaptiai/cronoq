@@ -366,6 +366,134 @@ async fn a_key_held_in_another_pool_is_not_described_to_a_scoped_token() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_scoped_token_never_learns_of_another_pools_task_even_in_a_race() {
+    let s = TestServer::start(&format!(
+        "[[pools]]\nname = \"default\"\n[[pools]]\nname = \"batch\"\n\
+         [[auth.tokens]]\ntoken = \"{BATCH_ONLY}\"\nrole = \"client\"\npools = [\"batch\"]\n"
+    ))
+    .await;
+    // For each key, an unrestricted client takes it in `default` while the scoped token
+    // submits it in `batch`, both at once: the key can be taken between the scoped
+    // submission's check and its admission. Whatever the order, the scoped caller is told
+    // at most that the key is in use.
+    let mut jobs = Vec::new();
+    for i in 0..300 {
+        let (mut any, mut scoped) = (s.tasks(CLIENT).await, s.tasks(BATCH_ONLY).await);
+        jobs.push(tokio::spawn(async move {
+            let key = format!("race-{i}");
+            let mut in_batch = keyed(b"scoped", &key);
+            in_batch.pool = "batch".into();
+            let as_batch = i % 2 == 0;
+            let theirs = any.submit(submit(keyed(b"theirs", &key), false));
+            let mine = async {
+                if as_batch {
+                    scoped
+                        .submit_batch(pb::SubmitBatchRequest {
+                            tasks: vec![in_batch],
+                            on_key_conflict: pb::KeyConflict::Reject as i32,
+                        })
+                        .await
+                        .map(|_| ())
+                } else {
+                    scoped.submit(reject(in_batch)).await.map(|_| ())
+                }
+            };
+            let (_, mine) = tokio::join!(theirs, mine);
+            mine.err()
+        }));
+    }
+    let mut refused = 0;
+    for j in jobs {
+        if let Some(e) = j.await.unwrap() {
+            refused += 1;
+            assert_eq!(e.code(), tonic::Code::AlreadyExists, "{e}");
+            assert!(e.metadata().get("cronoq-conflict-task").is_none(), "{e}");
+            assert!(!e.message().contains("belongs to task"), "{e}");
+        }
+    }
+    assert!(refused > 0, "some scoped submissions lost the race");
+    s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_refusal_of_one_task_of_a_batch_names_it() {
+    let s = TestServer::start("").await;
+    let mut c = s.tasks(CLIENT).await;
+    let index = |e: &tonic::Status| {
+        e.metadata()
+            .get("cronoq-batch-index")
+            .map(|v| v.to_str().unwrap().to_string())
+    };
+    // Refused by the server before the scheduler sees it: an unknown priority, a reserved key.
+    let mut bad_class = keyed(b"x", "b");
+    bad_class.priority = 99;
+    let e = c
+        .submit_batch(pb::SubmitBatchRequest {
+            tasks: vec![keyed(b"x", "a"), bad_class],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code(), index(&e)),
+        (tonic::Code::InvalidArgument, Some("1".into()))
+    );
+    // Refused by the scheduler: an unknown pool.
+    let mut bad_pool = keyed(b"x", "c");
+    bad_pool.pool = "nope".into();
+    let e = c
+        .submit_batch(pb::SubmitBatchRequest {
+            tasks: vec![keyed(b"x", "a"), keyed(b"x", "b"), bad_pool],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code(), index(&e)),
+        (tonic::Code::NotFound, Some("2".into()))
+    );
+
+    let http = reqwest::Client::new();
+    let r = http
+        .post(s.http("/v1/tasks:batch"))
+        .header("authorization", format!("Bearer {CLIENT}"))
+        .json(&json!({"tasks": [{"payload": 1}, {"payload": 1, "priority": "urgent"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["index"], 1, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().starts_with("tasks[1]:"),
+        "{body}"
+    );
+    s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bytes_sent_over_grpc_and_over_http_are_the_same_submission() {
+    let s = TestServer::start("").await;
+    let mut c = s.tasks(CLIENT).await;
+    // Raw bytes with no content type over gRPC, then the same bytes over HTTP, where a
+    // binary payload is given a content type.
+    let mut raw = keyed(b"\x00\x01\x02", "blob");
+    raw.content_type = String::new();
+    let first = c.submit(submit(raw, false)).await.unwrap().into_inner();
+    let r = reqwest::Client::new()
+        .post(s.http("/v1/tasks"))
+        .header("authorization", format!("Bearer {CLIENT}"))
+        .json(&json!({"payload_b64": "AAEC", "key": "blob", "on_key_conflict": "reject"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["id"], first.id.to_string());
+    s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn conflicts_are_detected_after_a_restart() {
     let dir = std::env::temp_dir().join(format!("cronoq-conflict-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

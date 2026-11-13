@@ -54,6 +54,14 @@ pub fn layers(cfg: &GrpcWebConfig, loopback_only: bool) -> GrpcWebStack {
             HeaderName::from_static("grpc-status"),
             HeaderName::from_static("grpc-message"),
             HeaderName::from_static("grpc-status-details-bin"),
+            // Details cronoq puts in response metadata: an error response is trailers-only,
+            // so a browser reads them as headers and must be allowed to.
+            HeaderName::from_static("cronoq-conflict-task"),
+            HeaderName::from_static("cronoq-conflict-status"),
+            HeaderName::from_static("cronoq-batch-index"),
+            HeaderName::from_static("cronoq-unavailable-shards"),
+            HeaderName::from_static("cronoq-shard"),
+            HeaderName::from_static("cronoq-shard-endpoint"),
         ])
         .max_age(Duration::from_secs(600));
     ServiceBuilder::new()

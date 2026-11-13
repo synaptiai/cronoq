@@ -264,14 +264,18 @@ func (c *Client) SubmitBatch(ctx context.Context, tasks []Task) ([]Submitted, er
 		if t.Replace || t.RenewPosition {
 			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: Replace and RenewPosition are not supported in a batch", i), BatchIndex: i}
 		}
-		// The mode is one per batch: every task asks for conflicts to be reported, or none.
-		if t.RejectConflict != tasks[0].RejectConflict {
-			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: set RejectConflict on every task of a batch or on none", i), BatchIndex: i}
+		// The mode is one per batch: every task names the same one.
+		if t.RejectConflict != tasks[0].RejectConflict || t.ReturnExisting != tasks[0].ReturnExisting {
+			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: set RejectConflict or ReturnExisting on every task of a batch or on none", i), BatchIndex: i}
 		}
 		req.Tasks = append(req.Tasks, t.Spec())
 	}
-	if len(tasks) > 0 && tasks[0].RejectConflict {
-		req.OnKeyConflict = pb.KeyConflict_KEY_CONFLICT_REJECT
+	if len(tasks) > 0 {
+		first, err := tasks[0].request()
+		if err != nil {
+			return nil, err
+		}
+		req.OnKeyConflict = first.OnKeyConflict
 	}
 	var trailer metadata.MD
 	r, err := c.tasks.SubmitBatch(ctx, req, grpc.Trailer(&trailer))
@@ -281,6 +285,10 @@ func (c *Client) SubmitBatch(ctx context.Context, tasks []Task) ([]Submitted, er
 	out := make([]Submitted, len(r.Tasks))
 	for i, s := range r.Tasks {
 		out[i] = submitted(s)
+		if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REJECT && s.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+			// A server older than the option ignored it and admitted the batch.
+			return out, &Error{Code: codes.Unimplemented, Message: "the server does not support RejectConflict for batches; the batch was submitted without it", BatchIndex: -1}
+		}
 	}
 	return out, nil
 }

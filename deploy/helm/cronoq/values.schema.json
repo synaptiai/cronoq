@@ -52,6 +52,7 @@
       }
     },
     "insecurePeerHttp": { "type": "boolean" },
+    "onKeyConflict": { "enum": ["", "return_existing", "reject"] },
     "grpcWeb": {
       "type": "object",
       "properties": {

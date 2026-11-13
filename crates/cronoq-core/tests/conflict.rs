@@ -163,6 +163,53 @@ fn an_update_keeps_the_fingerprint_and_a_replacement_stores_the_new_one() {
 }
 
 #[test]
+fn the_newest_accepted_submission_of_a_key_is_the_one_compared() {
+    let mut s = one_worker();
+    // The task runs with fingerprint 7; a replacement with fingerprint 8 is stored behind it.
+    let running = s.submit(keyed(10.0, 7));
+    assert_eq!(
+        s.replace(keyed(2.0, 8), false).unwrap().outcome,
+        SubmitOutcome::Pending
+    );
+    // A retry of that replacement is a duplicate; the superseded submission is a conflict.
+    assert_eq!(submit(&mut s, keyed(2.0, 8), reject()).unwrap().id, running);
+    assert!(matches!(
+        submit(&mut s, keyed(10.0, 7), reject()),
+        Err(SubmitError::KeyConflict { id, .. }) if id == running
+    ));
+    // The same answers once the task has ended and the successor holds the key.
+    s.run_until(t(11.0));
+    let successor = submit(&mut s, keyed(2.0, 8), reject()).unwrap().id;
+    assert_ne!(successor, running);
+    assert!(matches!(
+        submit(&mut s, keyed(10.0, 7), reject()),
+        Err(SubmitError::KeyConflict { id, .. }) if id == successor
+    ));
+}
+
+#[test]
+fn retention_by_count_takes_the_fingerprint_with_the_key() {
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 1)],
+        retention_max: 1,
+        ..Default::default()
+    });
+    let old = s.submit(TaskSpec::new(Job::ok(1.0)).key("old").fingerprint(1));
+    let kept = s.submit(TaskSpec::new(Job::ok(1.0)).key("kept").fingerprint(2));
+    s.run_to_completion(10.0);
+    let _ = s.core.snapshot(s.now);
+    // Only the newest finished task is remembered.
+    let other = |key: &str| TaskSpec::new(Job::ok(1.0)).key(key).fingerprint(9);
+    assert!(matches!(
+        submit(&mut s, other("kept"), reject()),
+        Err(SubmitError::KeyConflict { id, .. }) if id == kept
+    ));
+    let fresh = submit(&mut s, other("old"), reject()).unwrap();
+    assert_eq!(fresh.outcome, SubmitOutcome::Created);
+    assert_ne!(fresh.id, old);
+}
+
+#[test]
 fn a_batch_with_a_conflict_admits_nothing_and_names_the_index() {
     let mut s = one_worker();
     let first = s.submit(keyed(10.0, 7));

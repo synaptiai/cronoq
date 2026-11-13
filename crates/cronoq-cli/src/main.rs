@@ -190,6 +190,10 @@ struct SubmitArgs {
     /// content type, pool, kind, priority or dependencies), instead of returning that task.
     #[arg(long, requires = "key", conflicts_with = "replace")]
     reject_conflict: bool,
+    /// Return the task that holds --key whatever it was submitted with, also when the
+    /// server's default is to report conflicts.
+    #[arg(long, requires = "key", conflicts_with_all = ["replace", "reject_conflict"])]
+    return_existing: bool,
     /// Start at a fixed time, in seconds from now.
     #[arg(long, value_name = "SECONDS")]
     start_in: Option<f64>,
@@ -428,6 +432,8 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         pb::KeyConflict::ReplaceQueued
                     } else if a.reject_conflict {
                         pb::KeyConflict::Reject
+                    } else if a.return_existing {
+                        pb::KeyConflict::ReturnExisting
                     } else {
                         // The server's default.
                         pb::KeyConflict::Unspecified

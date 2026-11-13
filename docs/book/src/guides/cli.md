@@ -32,6 +32,7 @@ cronoq submit '{"doc": 42}' --json --pool llm --priority high --tenant acme \
 cronoq submit --file report.pdf --kind ocr --wait > text.txt
 cronoq submit '{"title": "Q3 plan"}' --json --key title:doc-42 --replace   # latest wins: prints "17 (replaced)" or "17 (pending)"
 cronoq submit --file edit.json --json --key edit:8842 --reject-conflict   # fail if the key holds other content
+                                            # (--return-existing: never fail, whatever the server's default)
 cronoq get 17                               # details; --key to look up by key
 cronoq get --key doc-42
 cronoq wait 17 --timeout 60                 # prints the output

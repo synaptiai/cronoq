@@ -820,12 +820,19 @@ async fn submit_batch(
         .into_iter()
         .enumerate()
         .map(|(i, t)| {
-            t.no_submit_options("in batches")
-                .map_err(|e| bad(format!("tasks[{i}]: {}", e.1)))?;
-            let (spec, wait, _) = t.into_proto()?;
+            // Every refusal of one task names it.
+            let at = |e: ApiError| {
+                ApiError(
+                    e.0,
+                    format!("tasks[{i}]: {}", e.1),
+                    Some(json!({ "index": i })),
+                )
+            };
+            t.no_submit_options("in batches").map_err(at)?;
+            let (spec, wait, _) = t.into_proto().map_err(at)?;
             if wait {
-                return Err(bad(format!(
-                    "tasks[{i}]: `wait` is not supported in batches; wait on each id"
+                return Err(at(bad(
+                    "`wait` is not supported in batches; wait on each id",
                 )));
             }
             Ok(spec)

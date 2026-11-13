@@ -882,6 +882,12 @@ class Client:
             raise ValueError("on_key_conflict='replace_queued' is not supported in a batch")
         req = pb.SubmitBatchRequest(tasks=list(tasks), on_key_conflict=cast(Any, _key_conflict(on_key_conflict)))
         r = await self._call(self._tasks.SubmitBatch, req)
+        if on_key_conflict == "reject" and any(t.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED for t in r.tasks):
+            # A server older than the option ignored it and admitted the batch.
+            raise ClientError(
+                "unimplemented",
+                "the server does not support on_key_conflict for batches; the batch was submitted without it",
+            )
         return [Submitted(t.id, t.duplicate, None, _outcome(t)) for t in r.tasks]
 
     async def cancel(self, ref: TaskRef) -> bool:

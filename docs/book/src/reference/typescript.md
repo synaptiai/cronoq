@@ -111,7 +111,9 @@ them. Against a server that does not know the option, `submit` throws `unimpleme
 content as a `CronoqError` whose `keyConflict` is true, with the existing task in
 `conflictTask` and `conflictStatus`, instead of returning that task
 ([Detecting conflicting submissions](../concepts/key-conflicts.md)). In `submitBatch`, use the
-same `onKeyConflict` for every task; a refused batch names the task in `batchIndex`.
+same `onKeyConflict` for every task (raw specs cannot be mixed with tasks that name one); a
+refused batch names the task in `batchIndex`. `"return_existing"` asks for the existing task
+whatever it holds; left out, the server's default applies.
 
 `update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:
 `deadlineIn` is seconds from now, `deadlineAt` a `Date`, at most one of the three deadline

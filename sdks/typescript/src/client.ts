@@ -454,7 +454,19 @@ export class Client {
         return spec(task);
       });
       const onKeyConflict = tasks.length > 0 && !("$typeName" in tasks[0]!) ? submitOptions(tasks[0] as Task).onKeyConflict : pb.KeyConflict.UNSPECIFIED;
-      return (await this.tasks.submitBatch({ tasks: specs, onKeyConflict }, rpc(opts))).tasks.map(submitted);
+      // A raw spec names no mode, so it cannot share a batch with tasks that name one.
+      if (modes.some((m) => m !== undefined) && tasks.some((t) => "$typeName" in t)) {
+        throw new CronoqError("invalid_argument", "a batch with onKeyConflict takes Tasks, not raw specs");
+      }
+      const r = await this.tasks.submitBatch({ tasks: specs, onKeyConflict }, rpc(opts));
+      if (onKeyConflict === pb.KeyConflict.REJECT && r.tasks.some((t) => t.outcome === pb.SubmitOutcome.UNSPECIFIED)) {
+        // A server older than the option ignored it and admitted the batch.
+        throw new CronoqError(
+          "unimplemented",
+          "the server does not support onKeyConflict for batches; the batch was submitted without it",
+        );
+      }
+      return r.tasks.map(submitted);
     });
   }
 
