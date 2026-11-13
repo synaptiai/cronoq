@@ -31,8 +31,9 @@ cronoq reports two kinds of telemetry:
 
 Snapshots also include totals since start (`submitted`, `succeeded`, `failed`, `dead_lettered`,
 `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`,
-`stale_completions`,
-`recurring_conflicts`, `recurring_invalid`).
+`stale_completions`, `superseded`,
+`recurring_conflicts`, `recurring_invalid`). `superseded` counts submissions dropped without
+running because a newer one [replaced them](replacing.md).
 
 ## Reading the signals
 

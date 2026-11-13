@@ -83,8 +83,10 @@ Handles are not required: `enqueue` submits without one, which is cheaper.
 
 Every terminal transition is published as a `StatusEvent { id, pool, key, status, attempt, at,
 message, priority, kind }`. With `emit_transitions` enabled, every intermediate transition is
-published as well, and so is each [update](updating.md) of a task, as an event of `kind`
-`Updated` that carries the task's unchanged status.
+published as well, and so are changes that are not transitions, each as an event of its own
+`kind` that carries the task's status at that moment: `Updated` for an [update](updating.md),
+`Replaced` when a submission [replaces a task by key](replacing.md) or is stored to run after
+it, and `Successor` for the task created from such a stored submission.
 Subscribe with `Scheduler::events()` in Rust, `sched.events()` in Python, or `Tasks/Watch` over
 gRPC (with `all_transitions` for intermediate ones). Slow subscribers lose the oldest events
 rather than slowing the scheduler down.

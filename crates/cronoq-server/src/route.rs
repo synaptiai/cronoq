@@ -55,6 +55,7 @@ pub async fn submit(
     app: &AppState,
     p: &Principal,
     spec: pb::TaskSpec,
+    opts: cronoq::SubmitOptions,
     wait: Option<Duration>,
     stop: &CancellationToken,
 ) -> Result<pb::SubmitResponse, Status> {
@@ -66,10 +67,15 @@ pub async fn submit(
             task: Some(spec),
             wait: wait.is_some(),
             wait_timeout_s: wait.map(|d| d.as_secs_f64()),
+            on_key_conflict: match opts.on_key_conflict {
+                cronoq::KeyConflict::ReturnExisting => pb::KeyConflict::ReturnExisting,
+                cronoq::KeyConflict::ReplaceQueued => pb::KeyConflict::ReplaceQueued,
+            } as i32,
+            renew_position: opts.renew_position,
         };
         return answer(sh, c.tasks.submit(bounded(app, req)).await);
     }
-    grpc::submit_one(app, p, spec, wait, stop).await
+    grpc::submit_one(app, p, spec, opts, wait, stop).await
 }
 
 /// Submit a batch atomically, on the one shard that serves all of its pools.
@@ -536,6 +542,7 @@ pub async fn snapshot(app: &AppState, p: &Principal) -> Result<pb::SnapshotRespo
             t.timeouts += o.timeouts;
             t.lease_expiries += o.lease_expiries;
             t.stale_completions += o.stale_completions;
+            t.superseded += o.superseded;
         }
         r.unavailable_shards = missing;
     }

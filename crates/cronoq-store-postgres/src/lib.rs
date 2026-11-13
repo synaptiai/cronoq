@@ -74,6 +74,28 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '[]'::jsonb",
     // v5: tenant, for fair sharing.
     "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS tenant TEXT",
+    // v6: submissions stored to run after a live task that has started (`replace_queued`).
+    // One row per live task at most; the row goes when the task ends.
+    "CREATE TABLE IF NOT EXISTS cronoq_pending (
+        task_id           BIGINT PRIMARY KEY,
+        seq               BIGINT NOT NULL,
+        arrival_unix_ns   BIGINT NOT NULL,
+        renew             BOOLEAN NOT NULL DEFAULT FALSE,
+        pool              TEXT NOT NULL,
+        kind              TEXT NOT NULL,
+        priority          SMALLINT NOT NULL,
+        key               TEXT,
+        payload           BYTEA NOT NULL,
+        deadline_unix_ns  BIGINT,
+        duration_hint_ns  BIGINT,
+        timeout_ns        BIGINT,
+        retry             JSONB,
+        deps              JSONB NOT NULL,
+        resources         JSONB NOT NULL,
+        tags              JSONB NOT NULL,
+        labels            JSONB NOT NULL DEFAULT '[]'::jsonb,
+        tenant            TEXT
+    )",
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -544,6 +566,12 @@ impl PgStore {
         let mut updated: HashMap<TaskId, usize> = HashMap::new();
         // Latest priority, deadline and tags of tasks changed in this batch (inserted earlier).
         let mut patches: HashMap<TaskId, (i16, Option<i64>, String)> = HashMap::new();
+        // Tasks inserted earlier whose whole description was replaced in this batch, the
+        // submissions stored to run after a live task (latest per task, with `renew`), and
+        // the tasks that ended in this batch: whatever was stored for those goes.
+        let mut replaced: HashMap<TaskId, Inserts> = HashMap::new();
+        let mut pending: HashMap<TaskId, (Inserts, bool)> = HashMap::new();
+        let mut ended: Vec<i64> = Vec::new();
         let now = now_unix();
         for m in batch {
             match m {
@@ -571,6 +599,10 @@ impl PgStore {
                         at: to_unix(base, *at),
                         message: message.as_deref().map(cleaned),
                     };
+                    if st.is_terminal() {
+                        pending.remove(id);
+                        ended.push(id.0 as i64);
+                    }
                     if let Some(&i) = inserted.get(id) {
                         ins.set_status(i, row);
                     } else {
@@ -595,12 +627,42 @@ impl PgStore {
                         deadline.map(|d| to_unix(base, d)),
                         tag_pairs_json(tags),
                     );
-                    match inserted.get(id) {
-                        Some(&i) => (ins.priority[i], ins.deadline[i], ins.tags[i]) = row,
-                        None => {
+                    match (inserted.get(id), replaced.get_mut(id)) {
+                        (Some(&i), _) => (ins.priority[i], ins.deadline[i], ins.tags[i]) = row,
+                        (None, Some(r)) => (r.priority[0], r.deadline[0], r.tags[0]) = row,
+                        (None, None) => {
                             patches.insert(*id, row);
                         }
                     }
+                }
+                Mutation::Replaced {
+                    id,
+                    seq,
+                    arrival,
+                    spec,
+                } => {
+                    let mut row = Inserts::default();
+                    row.push(base, now, *id, *seq, *arrival, spec);
+                    match inserted.get(id) {
+                        // Inserted in this batch: the row is written once, as replaced, with
+                        // whatever status it reached.
+                        Some(&i) => ins.overwrite(i, row),
+                        None => {
+                            patches.remove(id);
+                            replaced.insert(*id, row);
+                        }
+                    }
+                }
+                Mutation::PendingReplacement {
+                    id,
+                    seq,
+                    arrival,
+                    renew,
+                    spec,
+                } => {
+                    let mut row = Inserts::default();
+                    row.push(base, now, *id, *seq, *arrival, spec);
+                    pending.insert(*id, (row, *renew));
                 }
                 // Listed, not `_`: a new mutation kind must fail to compile here until it is
                 // handled (schedules are applied in the second pass).
@@ -633,6 +695,11 @@ impl PgStore {
 
         // 1. Transitions of existing tasks first, so keys they release can be reused by tasks
         //    inserted in this batch.
+        // Replacements first: a task replaced and ended in one batch keeps the description it
+        // ended with.
+        for row in replaced.into_values() {
+            row.execute_replace(&mut tx).await?;
+        }
         if !updates.is_empty() {
             let n = updates.len();
             let mut ids = Vec::with_capacity(n);
@@ -675,6 +742,17 @@ impl PgStore {
         // 2. New tasks, in one statement.
         if !ins.id.is_empty() {
             ins.execute(&mut tx).await?;
+        }
+        // Stored submissions.
+        if !ended.is_empty() {
+            sqlx::query("DELETE FROM cronoq_pending WHERE task_id = ANY($1::bigint[])")
+                .bind(ended)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        for (row, renew) in pending.into_values() {
+            row.execute_pending(&mut tx, renew).await?;
         }
         // Changes to tasks inserted by an earlier batch, in one statement.
         if !patches.is_empty() {
@@ -758,8 +836,11 @@ impl PgStore {
                     .map_err(db)?;
                 }
                 // Listed, not `_`: tasks were applied in the first pass.
-                Mutation::Submitted { .. } | Mutation::Status { .. } | Mutation::Updated { .. } => {
-                }
+                Mutation::Submitted { .. }
+                | Mutation::Status { .. }
+                | Mutation::Updated { .. }
+                | Mutation::Replaced { .. }
+                | Mutation::PendingReplacement { .. } => {}
             }
         }
         tx.commit().await.map_err(db)
@@ -975,6 +1056,37 @@ impl Store<Bytes, Bytes> for PgStore {
             }
         }
         drop(rows);
+        // Submissions stored to run after live tasks. One whose task is gone (pruned, or closed
+        // out by hand) has nothing to follow.
+        sqlx::query(
+            "DELETE FROM cronoq_pending \
+             WHERE task_id NOT IN (SELECT id FROM cronoq_tasks WHERE NOT terminal)",
+        )
+        .execute(pool)
+        .await
+        .map_err(db)?;
+        let rows = sqlx::query(
+            "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload,              deadline_unix_ns, NULL::bigint AS fixed_at_unix_ns, NULL::bigint AS fixed_tolerance_ns,              NULL::text AS fixed_on_miss, duration_hint_ns, timeout_ns, retry::text AS retry,              deps::text AS deps, resources::text AS resources, tags::text AS tags,              labels::text AS labels, tenant, 0::int AS attempt FROM cronoq_pending              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE NOT terminal) ORDER BY task_id",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+        for r in &rows {
+            match decode_task(base, r) {
+                Ok(t) => rec.pending.push(cronoq_core::RecoveredPending {
+                    id: t.id,
+                    seq: t.seq,
+                    arrival: t.arrival,
+                    renew: r.get::<bool, _>("renew"),
+                    spec: t.spec,
+                }),
+                Err(e) => {
+                    let id: i64 = r.get("id");
+                    tracing::error!(task = id, error = %e, "dropping undecodable stored replacement");
+                }
+            }
+        }
+        drop(rows);
         let now = now_unix();
         if !corrupt.is_empty() {
             let ids: Vec<i64> = corrupt.iter().map(|c| c.0).collect();
@@ -1151,6 +1263,79 @@ impl Inserts {
         self.attempt.push(0);
         self.updated.push(now);
         self.message.push(None);
+    }
+
+    /// Replace the description of the task at row `i` with the single row of `new`, keeping
+    /// the status the task reached.
+    fn overwrite(&mut self, i: usize, mut new: Inserts) {
+        macro_rules! take {
+            ($($f:ident),*) => { $( self.$f[i] = new.$f.pop().expect("one row"); )* };
+        }
+        take!(
+            seq, arrival, pool, kind, priority, key, payload, deadline, fixed_at, fixed_tol,
+            fixed_miss, hint, timeout, retry, deps, resources, tags, labels, tenant
+        );
+    }
+
+    /// Overwrite the description of a task that has not started with this single row,
+    /// keeping its id, status, attempt count and (it is the same) key.
+    async fn execute_replace(
+        mut self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE cronoq_tasks SET seq = $2, arrival_unix_ns = $3, kind = $4, priority = $5,              payload = $6, deadline_unix_ns = $7, duration_hint_ns = $8, timeout_ns = $9,              retry = $10::jsonb, tags = $11::jsonb, tenant = $12 WHERE id = $1 AND NOT terminal",
+        )
+        .bind(self.id[0])
+        .bind(self.seq[0])
+        .bind(self.arrival[0])
+        .bind(self.kind.pop())
+        .bind(self.priority[0])
+        .bind(self.payload.pop())
+        .bind(self.deadline[0])
+        .bind(self.hint[0])
+        .bind(self.timeout[0])
+        .bind(self.retry.pop().flatten())
+        .bind(self.tags.pop())
+        .bind(self.tenant.pop().flatten())
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    /// Store this single row as the submission that runs after live task `id`, in place of
+    /// any stored for it before.
+    async fn execute_pending(
+        mut self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        renew: bool,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool, kind, priority,              key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry, deps, resources,              tags, labels, tenant) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,              $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18)              ON CONFLICT (task_id) DO UPDATE SET seq = excluded.seq,              arrival_unix_ns = excluded.arrival_unix_ns, renew = excluded.renew,              pool = excluded.pool, kind = excluded.kind, priority = excluded.priority,              key = excluded.key, payload = excluded.payload,              deadline_unix_ns = excluded.deadline_unix_ns,              duration_hint_ns = excluded.duration_hint_ns, timeout_ns = excluded.timeout_ns,              retry = excluded.retry, deps = excluded.deps, resources = excluded.resources,              tags = excluded.tags, labels = excluded.labels, tenant = excluded.tenant",
+        )
+        .bind(self.id[0])
+        .bind(self.seq[0])
+        .bind(self.arrival[0])
+        .bind(renew)
+        .bind(self.pool.pop())
+        .bind(self.kind.pop())
+        .bind(self.priority[0])
+        .bind(self.key.pop().flatten())
+        .bind(self.payload.pop())
+        .bind(self.deadline[0])
+        .bind(self.hint[0])
+        .bind(self.timeout[0])
+        .bind(self.retry.pop().flatten())
+        .bind(self.deps.pop())
+        .bind(self.resources.pop())
+        .bind(self.tags.pop())
+        .bind(self.labels.pop())
+        .bind(self.tenant.pop().flatten())
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+        Ok(())
     }
 
     /// Apply a transition to the task at row `i`.

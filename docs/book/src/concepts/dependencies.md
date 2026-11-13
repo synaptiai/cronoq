@@ -9,6 +9,13 @@ A **key** is an optional unique name for a task.
   `duplicate = true`. This makes producers safe to retry.
 - **References**: dependencies, cancellation, status lookups and result waits accept a key
   wherever they accept an id.
+- **Latest wins**, on request: a submission with `on_key_conflict = replace_queued` replaces the
+  task that holds its key, or runs after it if it has already started. See
+  [Replacing a task by key](replacing.md).
+
+A key names one live task at a time. With `replace_queued` it can name a series of them, one
+after the other: a dependency or a lookup by key refers to the task that holds the key at that
+moment. Depend on an id to pin one task of the series.
 
 Keys stay reserved while the task is live and for the retention window after it ends
 (`limits.key_retention_s` on the server, `CoreConfig::retention` in the library; 1 hour by

@@ -95,11 +95,28 @@ struct Entry<P> {
     fixed: Option<Box<FixedInfo>>,
     /// Required worker labels, interned in `Core::constraints` (0 = none).
     constraint: u32,
-    /// Tenant, interned in `Core::tenants` (0 = none; only set in pools with fairness).
+    /// Tenant, interned in `Core::tenants` (0 = none).
     tenant: u32,
     /// Start tag in the class's fair queue (pools with fairness).
     vtag: u64,
+    /// Fingerprint of the dependencies the task was submitted with (see [`deps_sig`]).
+    deps_sig: u64,
+    /// A newer submission with this task's key, kept until the task ends because an attempt
+    /// has started and the payload of a started task never changes. It holds a place in the
+    /// pending bounds of its class.
+    next: Option<Box<Next<P>>>,
 }
+
+struct Next<P> {
+    spec: TaskSpec<P>,
+    seq: u64,
+    arrival: Time,
+    renew: bool,
+}
+
+/// Tag the engine puts on a successor: the id of the task it follows. A task that carries it
+/// does not wait for its dependencies, which the task it follows already passed.
+const FOLLOWS: &str = "cronoq.follows";
 
 struct Slot<P> {
     generation: u32,
@@ -336,6 +353,8 @@ pub struct Totals {
     pub timeouts: u64,
     /// Attempts aborted because their lease expired.
     pub lease_expiries: u64,
+    /// Submissions dropped without running because a newer one with their key replaced them.
+    pub superseded: u64,
     /// Recurring occurrences not created because the reservation limit was reached.
     pub recurring_conflicts: u64,
     /// Recovered recurring schedules not armed because the configuration no longer supports
@@ -617,12 +636,61 @@ impl<P> Core<P> {
         now: Time,
         spec: TaskSpec<P>,
     ) -> Result<Submitted, (SubmitError, TaskSpec<P>)> {
+        self.try_submit_with(now, spec, SubmitOptions::default())
+    }
+
+    /// Submit one task with [`SubmitOptions`].
+    ///
+    /// With [`KeyConflict::ReplaceQueued`] the newest submission of a key wins:
+    ///
+    /// - If no task holds the key, or the one that did has finished, a task is created
+    ///   ([`SubmitOutcome::Created`]).
+    /// - If the task holding the key has not started any attempt, it is replaced in place
+    ///   ([`SubmitOutcome::Replaced`]): it keeps its id, dependents, attempt count and, unless
+    ///   `renew_position` is set, its place in line, and takes the new payload, kind,
+    ///   priority, deadline, tags, timeout, retry policy and duration hint.
+    /// - If an attempt has started (running, or waiting for a retry), the payload is frozen:
+    ///   every attempt of one task sees the same payload. The submission is stored
+    ///   ([`SubmitOutcome::Pending`]), replacing any stored before, and holds a place in the
+    ///   pending bounds. When the task ends as succeeded, failed or dead-lettered, a new task
+    ///   with the same key is created from it: at the place in line the ended task held, or,
+    ///   with `renew_position`, at the place of the stored submission. That successor has no
+    ///   dependencies: the task it follows already passed them. A task that ends any other
+    ///   way (cancelled, shed) leaves no successor.
+    ///
+    /// A replacing submission must name the same pool, resources, worker labels, tenant and
+    /// dependencies as the task, and neither may have a fixed start: otherwise it is refused with [`SubmitError::ReplaceMismatch`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_submit_with(
+        &mut self,
+        now: Time,
+        spec: TaskSpec<P>,
+        opts: SubmitOptions,
+    ) -> Result<Submitted, (SubmitError, TaskSpec<P>)> {
         self.advance(now);
-        if let Some(id) = self.existing_key(spec.key.as_deref()) {
-            return Ok(Submitted {
-                id,
-                duplicate: true,
-            });
+        match opts.on_key_conflict {
+            KeyConflict::ReturnExisting => {
+                if let Some(id) = self.existing_key(spec.key.as_deref()) {
+                    // Advancing the clock may have made work ready.
+                    self.pump();
+                    return Ok(Submitted {
+                        id,
+                        duplicate: true,
+                        outcome: SubmitOutcome::Existing,
+                    });
+                }
+            }
+            KeyConflict::ReplaceQueued => {
+                let Some(key) = &spec.key else {
+                    self.pump();
+                    return Err((SubmitError::Invalid("replace_queued needs a key"), spec));
+                };
+                if let Some(id) = self.keys.get(key).copied() {
+                    let r = self.replace(id, spec, opts.renew_position);
+                    self.pump();
+                    return r;
+                }
+            }
         }
         let pool = match self.validate(&spec, &StrSet::default()) {
             Ok(p) => p,
@@ -653,7 +721,241 @@ impl<P> Core<P> {
         Ok(Submitted {
             id,
             duplicate: false,
+            outcome: SubmitOutcome::Created,
         })
+    }
+
+    /// Like [`Core::try_submit_with`], without handing the spec back on rejection.
+    pub fn submit_with(
+        &mut self,
+        now: Time,
+        spec: TaskSpec<P>,
+        opts: SubmitOptions,
+    ) -> Result<Submitted, SubmitError> {
+        self.try_submit_with(now, spec, opts).map_err(|(e, _)| e)
+    }
+
+    /// Replace live task `id` with `spec`, which carries its key: in place if no attempt has
+    /// started, as a stored successor otherwise.
+    #[allow(clippy::result_large_err)] // hands the spec back by value, like `try_submit`
+    fn replace(
+        &mut self,
+        id: TaskId,
+        spec: TaskSpec<P>,
+        renew: bool,
+    ) -> Result<Submitted, (SubmitError, TaskSpec<P>)> {
+        let k = self.index[&id];
+        let pool = match self.check_config(&spec) {
+            Ok(p) => p,
+            Err(e) => return Err((e, spec)),
+        };
+        // Looked up, not interned: a refused submission leaves nothing behind. Labels or a
+        // tenant the engine has never seen cannot be the task's.
+        let constraint = if spec.labels.is_empty() {
+            Some(0)
+        } else {
+            self.constraint_index.get(&normalize(&spec.labels)).copied()
+        };
+        let tenant = match &spec.tenant {
+            Some(t) => self.tenant_index.get(t).copied(),
+            None => Some(0),
+        };
+        let mismatch = {
+            let e = self.entry(k);
+            let same_resources = {
+                let mut want: Vec<(u16, u32)> = spec
+                    .resources
+                    .iter()
+                    .map(|(n, a)| (self.resource_index[n], *a))
+                    .collect();
+                let mut have: Vec<(u16, u32)> = e
+                    .resources
+                    .iter()
+                    .flat_map(|r| r.iter())
+                    .map(|(r, a)| (r.0, *a))
+                    .collect();
+                want.sort_unstable();
+                have.sort_unstable();
+                want == have
+            };
+            // The tenant first: a caller that may not touch the task learns nothing else
+            // about it.
+            if tenant != Some(e.tenant) {
+                Some("the tenant differs")
+            } else if e.fixed.is_some() {
+                Some("the task has a fixed start")
+            } else if spec.fixed_start.is_some() {
+                Some("a replacement cannot have a fixed start")
+            } else if pool != e.pool {
+                Some("the pool differs")
+            } else if !same_resources {
+                Some("the resources differ")
+            } else if constraint != Some(e.constraint) {
+                Some("the worker labels differ")
+            } else if deps_sig(&spec.deps) != e.deps_sig {
+                Some("the dependencies differ")
+            } else if spec.deadline == Some(Time::MAX) {
+                Some("the deadline is too far in the future")
+            } else {
+                None
+            }
+        };
+        if let Some(what) = mismatch {
+            return Err((SubmitError::ReplaceMismatch(what), spec));
+        }
+        let started = {
+            let e = self.entry(k);
+            e.attempt > 0 || e.lease.is_some()
+        };
+        let class = spec.priority.index();
+        if started {
+            // A stored submission never sheds other work to make room (it could shed the very
+            // task it waits for): it is refused when its place is not free.
+            let held = self.entry(k).next.as_ref().map(|n| n.spec.priority.index());
+            match held {
+                Some(old) if old == class => self.totals.superseded += 1,
+                Some(old) => {
+                    // Another class: its bound applies, counted without the place given up.
+                    self.release_place(pool, old);
+                    if let Err(e) = self.check_bounds(pool, spec.priority, 1, false) {
+                        self.reserve(pool, old);
+                        return Err((e, spec));
+                    }
+                    self.reserve(pool, class);
+                    self.totals.superseded += 1;
+                }
+                None => {
+                    if let Err(e) = self.check_bounds(pool, spec.priority, 1, false) {
+                        return Err((e, spec));
+                    }
+                    self.reserve(pool, class);
+                }
+            }
+            let seq = self.alloc_seq();
+            let arrival = self.now;
+            if self.cfg.persist {
+                self.actions
+                    .push_back(Action::Persist(Box::new(Mutation::PendingReplacement {
+                        id,
+                        seq,
+                        arrival,
+                        renew,
+                        spec: spec.clone(),
+                    })));
+            }
+            self.entry_mut(k).next = Some(Box::new(Next {
+                spec,
+                seq,
+                arrival,
+                renew,
+            }));
+            self.note(
+                k,
+                EventKind::Replaced,
+                Some("stored to run after this task".into()),
+            );
+            return Ok(Submitted {
+                id,
+                duplicate: true,
+                outcome: SubmitOutcome::Pending,
+            });
+        }
+        let (seq, arrival) = if renew {
+            (self.alloc_seq(), self.now)
+        } else {
+            let e = self.entry(k);
+            (e.seq, e.arrival)
+        };
+        // A successor stays one: it keeps the tag that names the task it follows.
+        let mut spec = spec;
+        spec.tags.retain(|(name, _)| &**name != FOLLOWS);
+        let follows = self
+            .entry(k)
+            .tags
+            .iter()
+            .flat_map(|t| t.iter())
+            .find(|(name, _)| &**name == FOLLOWS)
+            .cloned();
+        spec.tags.extend(follows);
+        if self.cfg.persist {
+            self.actions
+                .push_back(Action::Persist(Box::new(Mutation::Replaced {
+                    id,
+                    seq,
+                    arrival,
+                    spec: spec.clone(),
+                })));
+        }
+        let kind = self.intern_kind(&spec.kind);
+        {
+            let e = self.entry_mut(k);
+            e.payload = spec.payload;
+            e.kind = kind;
+            e.hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
+            e.timeout_ns = spec.timeout.map(nanos).unwrap_or(0);
+            e.retry = spec.retry.map(Box::new);
+        }
+        self.reposition(
+            k,
+            class as u8,
+            spec.deadline.unwrap_or(Time::MAX),
+            Some(spec.tags.into()),
+            renew.then_some((seq, arrival)),
+        );
+        self.totals.superseded += 1;
+        self.note(k, EventKind::Replaced, None);
+        self.mark_dirty(pool);
+        Ok(Submitted {
+            id,
+            duplicate: true,
+            outcome: SubmitOutcome::Replaced,
+        })
+    }
+
+    /// Publish an event about live task `k` that is not a change of status.
+    fn note(&mut self, k: Key, kind: EventKind, message: Option<Arc<str>>) {
+        if !self.emit_transitions {
+            return;
+        }
+        let e = self.entry(k);
+        let ev = StatusEvent {
+            id: e.id,
+            pool: PoolId(e.pool),
+            key: e.key.clone(),
+            status: e.status,
+            attempt: e.attempt,
+            at: self.now,
+            message,
+            priority: Priority::from_index(e.class as usize).unwrap_or_default(),
+            kind,
+        };
+        self.actions.push_back(Action::Status(ev));
+    }
+
+    /// Hold one place in the pending bounds of `class` for a stored replacement.
+    fn reserve(&mut self, pool: u16, class: usize) {
+        let p = &mut self.pools[pool as usize];
+        p.pending += 1;
+        p.pending_class[class] += 1;
+        self.total_pending += 1;
+        self.pending_class[class] += 1;
+    }
+
+    /// Give a held place back without telling waiting submitters: the caller takes one again.
+    fn release_place(&mut self, pool: u16, class: usize) {
+        let p = &mut self.pools[pool as usize];
+        p.pending -= 1;
+        p.pending_class[class] -= 1;
+        self.total_pending -= 1;
+        self.pending_class[class] -= 1;
+    }
+
+    fn unreserve(&mut self, pool: u16, class: usize) {
+        self.release_place(pool, class);
+        if self.space_waiters {
+            self.space_waiters = false;
+            self.actions.push_back(Action::SpaceAvailable);
+        }
     }
 
     /// Submit several tasks atomically. Dependencies may reference keys defined in the batch
@@ -759,7 +1061,8 @@ impl<P> Core<P> {
         let mut out = vec![
             Submitted {
                 id: TaskId(0),
-                duplicate: false
+                duplicate: false,
+                outcome: SubmitOutcome::Created,
             };
             n
         ];
@@ -771,6 +1074,7 @@ impl<P> Core<P> {
                 out[i] = Submitted {
                     id,
                     duplicate: true,
+                    outcome: SubmitOutcome::Existing,
                 };
                 continue;
             }
@@ -780,6 +1084,7 @@ impl<P> Core<P> {
             out[i] = Submitted {
                 id,
                 duplicate: false,
+                outcome: SubmitOutcome::Created,
             };
         }
         self.advance(now);
@@ -1421,9 +1726,9 @@ impl<P> Core<P> {
         }
         let kind = self.intern_kind(&spec.kind);
         let constraint = self.intern_constraint(&spec.labels);
-        let tenant = match (&spec.tenant, self.pools[pool as usize].fair.is_some()) {
-            (Some(t), true) => self.intern_tenant(t),
-            _ => 0,
+        let tenant = match &spec.tenant {
+            Some(t) => self.intern_tenant(t),
+            None => 0,
         };
         let hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
         let resources = if spec.resources.is_empty() {
@@ -1461,7 +1766,10 @@ impl<P> Core<P> {
             UnknownDependency::Reject => None,
         };
         let mut parents = Vec::with_capacity(spec.deps.len());
-        for d in spec.deps.iter() {
+        // A successor keeps the dependencies it was submitted with (a later replacement must
+        // name the same ones), but does not wait for them again.
+        let passed = spec.tags.iter().any(|(name, _)| &**name == FOLLOWS);
+        for d in spec.deps.iter().filter(|_| !passed) {
             let recovering = self.recovering_keys.is_some();
             let p = match &d.target {
                 TaskRef::Id(pid) => match self.index.get(pid) {
@@ -1533,6 +1841,8 @@ impl<P> Core<P> {
             constraint,
             tenant,
             vtag: 0,
+            deps_sig: deps_sig(&spec.deps),
+            next: None,
         };
         let key = self.slab_insert(entry);
         self.index.insert(id, key);
@@ -1913,14 +2223,12 @@ impl<P> Core<P> {
                 "tags starting with `cronoq.` are reserved",
             ));
         }
-        let (id, pool, status, old_class, old_deadline, loc, kind, hint_ns) = {
+        let (id, pool, status, old_class, old_deadline) = {
             let e = self.entry(k);
             if e.fixed.is_some() {
                 return Err(UpdateError::FixedStart);
             }
-            (
-                e.id, e.pool, e.status, e.class, e.deadline, e.loc, e.kind, e.hint_ns,
-            )
+            (e.id, e.pool, e.status, e.class, e.deadline)
         };
         let class = patch.priority.map_or(old_class, |p| p as u8);
         let deadline = match patch.deadline {
@@ -1965,70 +2273,7 @@ impl<P> Core<P> {
                 changed,
             });
         }
-        // A task in a ready queue leaves it under its old class and deadline, and goes back
-        // under the new ones.
-        let queued = matches!(loc, Loc::Lane | Loc::Edf | Loc::Fair);
-        if queued {
-            self.unqueue(k);
-        }
-        if class != old_class {
-            let (was_pending, retrying) = {
-                let e = self.entry(k);
-                (e.pending, e.status == TaskStatus::Retrying)
-            };
-            let (from, to) = (old_class as usize, class as usize);
-            let p = &mut self.pools[pool as usize];
-            if was_pending {
-                p.pending_class[from] -= 1;
-                p.pending_class[to] += 1;
-                self.pending_class[from] -= 1;
-                self.pending_class[to] += 1;
-            }
-            if retrying {
-                p.retrying[from] -= 1;
-                p.retrying[to] += 1;
-            }
-        }
-        let lst = if deadline == Time::MAX {
-            Time::MAX
-        } else {
-            deadline - self.estimate_raw(pool, Some(kind), hint_ns)
-        };
-        // In a pool with fair sharing, a task that is eligible to run and has no deadline is
-        // ordered by a tag of its class: it needs a new one when its class changed or when it
-        // had a deadline until now (and so never had a tag).
-        let eligible = queued || matches!(loc, Loc::Parked(_) | Loc::LabelWait);
-        let fair = self.pools[pool as usize].fair.is_some();
-        let retag = fair
-            && eligible
-            && deadline == Time::MAX
-            && (class != old_class || old_deadline != Time::MAX);
-        let vtag = if retag {
-            let tenant = self.entry(k).tenant;
-            if class != old_class && old_deadline == Time::MAX {
-                // The task was charged to its tenant in the old class when it got its tag
-                // there. Give that back, so a change of class costs the tenant nothing extra.
-                self.fair_refund(pool, old_class as usize, tenant);
-            }
-            Some(self.fair_tag(pool, class as usize, tenant))
-        } else {
-            None
-        };
-        {
-            let e = self.entry_mut(k);
-            e.class = class;
-            e.deadline = deadline;
-            e.lst = lst;
-            if let Some(t) = tags {
-                e.tags = (!t.is_empty()).then_some(t);
-            }
-            if let Some(v) = vtag {
-                e.vtag = v;
-            }
-        }
-        if queued {
-            self.requeue_ready(k);
-        }
+        self.reposition(k, class, deadline, tags, None);
         let e = self.entry(k);
         let (key, attempt, all_tags) = (
             e.key.clone(),
@@ -2067,6 +2312,91 @@ impl<P> Core<P> {
             deferred,
             changed,
         })
+    }
+
+    /// Give a live task a new class, deadline, tags and (with `renew`) submission order, moving
+    /// it between the ready queues and the per-class counters as needed. `tags`, if given, are
+    /// the task's complete new tags.
+    fn reposition(
+        &mut self,
+        k: Key,
+        class: u8,
+        deadline: Time,
+        tags: Option<Tags>,
+        renew: Option<(u64, Time)>,
+    ) {
+        let (pool, old_class, old_deadline, loc, kind, hint_ns) = {
+            let e = self.entry(k);
+            (e.pool, e.class, e.deadline, e.loc, e.kind, e.hint_ns)
+        };
+        // A task in a ready queue leaves it under its old class and deadline, and goes back
+        // under the new ones.
+        let queued = matches!(loc, Loc::Lane | Loc::Edf | Loc::Fair);
+        if queued {
+            self.unqueue(k);
+        }
+        if class != old_class {
+            let (was_pending, retrying) = {
+                let e = self.entry(k);
+                (e.pending, e.status == TaskStatus::Retrying)
+            };
+            let (from, to) = (old_class as usize, class as usize);
+            let p = &mut self.pools[pool as usize];
+            if was_pending {
+                p.pending_class[from] -= 1;
+                p.pending_class[to] += 1;
+                self.pending_class[from] -= 1;
+                self.pending_class[to] += 1;
+            }
+            if retrying {
+                p.retrying[from] -= 1;
+                p.retrying[to] += 1;
+            }
+        }
+        let lst = if deadline == Time::MAX {
+            Time::MAX
+        } else {
+            deadline - self.estimate_raw(pool, Some(kind), hint_ns)
+        };
+        // In a pool with fair sharing, a task that is eligible to run and has no deadline is
+        // ordered by a tag of its class: it needs a new one when its class changed or when it
+        // had a deadline until now (and so never had a tag).
+        let eligible = queued || matches!(loc, Loc::Parked(_) | Loc::LabelWait);
+        let fair = self.pools[pool as usize].fair.is_some();
+        let retag = fair
+            && eligible
+            && deadline == Time::MAX
+            && (class != old_class || old_deadline != Time::MAX || renew.is_some());
+        let vtag = if retag {
+            let tenant = self.entry(k).tenant;
+            if (class != old_class || renew.is_some()) && old_deadline == Time::MAX {
+                // The task was charged to its tenant in the old class when it got its tag
+                // there. Give that back, so a change of class costs the tenant nothing extra.
+                self.fair_refund(pool, old_class as usize, tenant);
+            }
+            Some(self.fair_tag(pool, class as usize, tenant))
+        } else {
+            None
+        };
+        {
+            let e = self.entry_mut(k);
+            e.class = class;
+            e.deadline = deadline;
+            e.lst = lst;
+            if let Some(t) = tags {
+                e.tags = (!t.is_empty()).then_some(t);
+            }
+            if let Some(v) = vtag {
+                e.vtag = v;
+            }
+            if let Some((seq, arrival)) = renew {
+                e.seq = seq;
+                e.arrival = arrival;
+            }
+        }
+        if queued {
+            self.requeue_ready(k);
+        }
     }
 
     /// Report the capacity actually available in a pool (its unlabeled workers).
@@ -2481,6 +2811,9 @@ impl<P> Core<P> {
         // Keys that will exist once recovery completes; dependencies on any other unknown key
         // belong to parents that finished outside the retention window.
         self.recovering_keys = Some(tasks.iter().filter_map(|t| t.spec.key.clone()).collect());
+        // Where each task with a stored submission stood, in case it ends during recovery.
+        let waited_for: FxHashSet<TaskId> = rec.pending.iter().map(|p| p.id).collect();
+        let mut placed: FxHashMap<TaskId, (u16, u64, Time)> = FxHashMap::default();
         for t in tasks {
             self.next_id = self.next_id.max(t.id.0 + 1);
             self.next_seq = self.next_seq.max(t.seq + 1);
@@ -2514,6 +2847,9 @@ impl<P> Core<P> {
                 );
                 continue;
             }
+            if waited_for.contains(&t.id) {
+                placed.insert(t.id, (pool.unwrap(), t.seq, t.arrival));
+            }
             self.insert(
                 now,
                 t.id,
@@ -2526,6 +2862,36 @@ impl<P> Core<P> {
             );
         }
         self.recovering_keys = None;
+        for p in rec.pending {
+            self.next_seq = self.next_seq.max(p.seq + 1);
+            let next = Next {
+                spec: p.spec,
+                seq: p.seq,
+                arrival: p.arrival,
+                renew: p.renew,
+            };
+            match self.index.get(&p.id).copied() {
+                Some(k) => {
+                    if self.entry(k).next.is_none() {
+                        let pool = self.entry(k).pool;
+                        self.reserve(pool, next.spec.priority.index());
+                        self.entry_mut(k).next = Some(Box::new(next));
+                    }
+                }
+                // The task ended while it was recovered (its lost attempt was its last): the
+                // stored submission follows it now. A task closed out because its pool or
+                // resource is gone takes the stored submission with it.
+                None => {
+                    let ran_out = matches!(
+                        self.retained.get(&p.id),
+                        Some((TaskStatus::Failed | TaskStatus::DeadLettered, _))
+                    );
+                    if let (true, Some(&(pool, seq, arrival))) = (ran_out, placed.get(&p.id)) {
+                        self.spawn_successor(p.id, pool, seq, arrival, next);
+                    }
+                }
+            }
+        }
         // The latest live occurrence of each schedule restores its overlap guard.
         let mut latest: StrMap<(TaskId, Time)> = StrMap::default();
         for k in self.index.values() {
@@ -2895,7 +3261,17 @@ impl<P> Core<P> {
                 TaskStatus::Shed => self.totals.shed += 1,
                 _ => {}
             }
-            let e = self.slab_remove(k);
+            let mut e = self.slab_remove(k);
+            // A stored replacement gives its place in the bounds back, and runs next if the
+            // task ran to an end of its own.
+            let successor = e.next.take().and_then(|next| {
+                self.unreserve(e.pool, next.spec.priority.index());
+                matches!(
+                    status,
+                    TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::DeadLettered
+                )
+                .then_some((e.id, e.pool, e.seq, e.arrival, next))
+            });
             if e.has_awaits
                 && let Some(keys) = self.awaited_by.remove(&e.id)
             {
@@ -2947,7 +3323,36 @@ impl<P> Core<P> {
                     ));
                 }
             }
+            if let Some((old, pool, seq, arrival, next)) = successor {
+                self.spawn_successor(old, pool, seq, arrival, *next);
+            }
         }
+    }
+
+    /// Create the task that follows `old` from the submission stored for it: at the place in
+    /// line `old` held (`seq`, `arrival`), or at the stored submission's with `renew`.
+    fn spawn_successor(&mut self, old: TaskId, pool: u16, seq: u64, arrival: Time, next: Next<P>) {
+        let Next {
+            mut spec,
+            seq: new_seq,
+            arrival: new_arrival,
+            renew,
+        } = next;
+        spec.tags.retain(|(name, _)| &**name != FOLLOWS);
+        spec.tags.push((FOLLOWS.into(), old.0.to_string().into()));
+        let (seq, arrival) = if renew {
+            (new_seq, new_arrival)
+        } else {
+            (seq, arrival)
+        };
+        let id = self.alloc_id();
+        self.insert(self.now, id, seq, arrival, spec, pool, 0, None);
+        let nk = self.index[&id];
+        self.note(
+            nk,
+            EventKind::Successor,
+            Some(format!("follows task {old}").into()),
+        );
     }
 
     fn retain(&mut self, id: TaskId, key: Option<Arc<str>>, status: TaskStatus, at: Time) {
@@ -3720,6 +4125,28 @@ impl<P> Core<P> {
             if e.pending {
                 pending_class[e.pool as usize][e.class as usize] += 1;
             }
+            if let Some(next) = &e.next {
+                // A stored replacement holds one place in the bounds of its own class, and
+                // exists only for a task whose payload is frozen.
+                assert!(
+                    e.attempt > 0 || e.lease.is_some(),
+                    "task {id} has a stored replacement but never started"
+                );
+                assert!(e.fixed.is_none() && next.spec.fixed_start.is_none());
+                assert_eq!(
+                    next.spec.key, e.key,
+                    "task {id}: replacement of another key"
+                );
+                pending[e.pool as usize] += 1;
+                pending_class[e.pool as usize][next.spec.priority.index()] += 1;
+            }
+            if let Some(key) = &e.key {
+                assert_eq!(
+                    self.keys.get(key),
+                    Some(id),
+                    "live task {id} does not hold its key"
+                );
+            }
             if e.status == TaskStatus::Retrying {
                 retrying[e.pool as usize][e.class as usize] += 1;
             }
@@ -3850,6 +4277,25 @@ fn nanos(d: Duration) -> u64 {
 }
 
 #[inline]
+/// Fingerprint of a task's dependencies as submitted, in any order: two submissions name the
+/// same dependencies when these are equal. A dependency named by key and the same one named
+/// by id differ.
+fn deps_sig(deps: &[Dep]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut parts: Vec<(u8, u64, &str, u8)> = deps
+        .iter()
+        .map(|d| match &d.target {
+            TaskRef::Id(id) => (0, id.0, "", d.cond as u8),
+            TaskRef::Key(k) => (1, 0, &**k, d.cond as u8),
+        })
+        .collect();
+    parts.sort_unstable();
+    parts.dedup();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    parts.hash(&mut h);
+    h.finish()
+}
+
 fn edge_satisfied(cond: EdgeCond, parent: TaskStatus) -> bool {
     match cond {
         EdgeCond::OnSuccess => parent == TaskStatus::Succeeded,

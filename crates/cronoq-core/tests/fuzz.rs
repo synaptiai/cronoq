@@ -77,7 +77,14 @@ fn run(seed: u64) {
                         ..Default::default()
                     });
                 }
-                if let Ok(x) = sim.try_submit(s) {
+                // Some submissions ask to replace the task that holds their key.
+                let r = if r.n(4) == 0 {
+                    let renew = r.n(2) == 0;
+                    sim.replace(s, renew)
+                } else {
+                    sim.try_submit(s)
+                };
+                if let Ok(x) = r {
                     ids.push(x.id);
                 }
             }

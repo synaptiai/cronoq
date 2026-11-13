@@ -231,6 +231,100 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
+func TestReplaceByKey(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	ctx := ctxFor(t)
+
+	// Nothing serves the pool yet: the first task stays queued and is replaced in place.
+	first, err := c.Submit(ctx, cronoq.Task{Payload: []byte("v1"), Key: "title"})
+	if err != nil || first.Outcome != cronoq.OutcomeCreated {
+		t.Fatalf("first = %+v, %v", first, err)
+	}
+	newer, err := c.Submit(ctx, cronoq.Task{Payload: []byte("v2"), Key: "title", Replace: true})
+	if err != nil || newer.ID != first.ID || !newer.Duplicate || newer.Outcome != cronoq.OutcomeReplaced {
+		t.Fatalf("replace = %+v, %v", newer, err)
+	}
+	same, err := c.Submit(ctx, cronoq.Task{Payload: []byte("v3"), Key: "title"})
+	if err != nil || same.ID != first.ID || same.Outcome != cronoq.OutcomeExisting {
+		t.Fatalf("plain = %+v, %v", same, err)
+	}
+	var e *cronoq.Error
+	mismatch := cronoq.Task{Payload: []byte("x"), Key: "title", Replace: true, Labels: map[string]string{"gpu": "a"}}
+	if _, err := c.Submit(ctx, mismatch); !errors.As(err, &e) || e.Code != codes.FailedPrecondition {
+		t.Fatalf("mismatch: %v", err)
+	}
+	if _, err := c.Submit(ctx, cronoq.Task{Key: "title", RenewPosition: true}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("renew without replace: %v", err)
+	}
+	// A batch admits tasks as written: the option is refused, not dropped.
+	if _, err := c.SubmitBatch(ctx, []cronoq.Task{{Key: "title", Replace: true}}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("replace in a batch: %v", err)
+	}
+
+	events := make(chan cronoq.Event, 64)
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go func() {
+		o := cronoq.WatchOptions{Keys: []string{"title"}, AllTransitions: true}
+		for ev, err := range c.Watch(watchCtx, o) {
+			if err != nil {
+				return
+			}
+			events <- ev
+		}
+	}()
+	time.Sleep(200 * time.Millisecond)
+
+	var mu sync.Mutex
+	var seen []string
+	started, release := make(chan struct{}, 4), make(chan struct{})
+	worker(t, s.target(), cronoq.WorkerOptions{Slots: 1}, func(ctx context.Context, l *cronoq.Lease) ([]byte, error) {
+		mu.Lock()
+		seen = append(seen, string(l.Payload))
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		return l.Payload, nil
+	})
+	<-started
+	// The task has started: its payload stays, and the newest submission follows it.
+	for _, v := range []string{"v4", "v5"} {
+		stored, err := c.Submit(ctx, cronoq.Task{Payload: []byte(v), Key: "title", Replace: true, RenewPosition: true})
+		if err != nil || stored.ID != first.ID || stored.Outcome != cronoq.OutcomePending {
+			t.Fatalf("stored = %+v, %v", stored, err)
+		}
+	}
+	close(release)
+	r, err := c.Wait(ctx, cronoq.ID(first.ID), 10*time.Second)
+	if err != nil || string(r.Output) != "v2" {
+		t.Fatalf("first result = %+v, %v", r, err)
+	}
+	var successor uint64
+	for successor == 0 {
+		select {
+		case ev := <-events:
+			if ev.Kind == cronoq.EventSuccessor {
+				successor = ev.ID
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no successor event")
+		}
+	}
+	if successor == first.ID {
+		t.Fatal("the successor is a new task")
+	}
+	r, err = c.Wait(ctx, cronoq.ID(successor), 10*time.Second)
+	if err != nil || string(r.Output) != "v5" {
+		t.Fatalf("successor result = %+v, %v", r, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[0] != "v2" || seen[1] != "v5" {
+		t.Fatalf("payloads run: %v", seen)
+	}
+}
+
 func TestHandlerOutcomes(t *testing.T) {
 	s := startServer(t)
 	c := client(t, s)

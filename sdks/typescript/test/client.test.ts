@@ -121,6 +121,72 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     await watching;
   });
 
+  test("replace by key: the newest submission wins", async () => {
+    const c = connect(s.target, { token: CLIENT });
+    // Nothing serves the pool yet: the first task stays queued and is replaced in place.
+    const first = await c.submit({ payload: "v1", key: "title" });
+    assert.equal(first.outcome, "created");
+    const newer = await c.submit({ payload: "v2", key: "title", onKeyConflict: "replace_queued" });
+    assert.deepEqual(
+      { id: newer.id, duplicate: newer.duplicate, outcome: newer.outcome },
+      { id: first.id, duplicate: true, outcome: "replaced" },
+    );
+    assert.equal((await c.submit({ payload: "v3", key: "title" })).outcome, "existing");
+    await assert.rejects(
+      c.submit({ payload: "x", key: "title", labels: { gpu: "a" }, onKeyConflict: "replace_queued" }),
+      (e: unknown) => e instanceof CronoqError && e.code === "failed_precondition",
+    );
+    await assert.rejects(
+      c.submit({ payload: "x", key: "title", renewPosition: true }),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+    // A batch admits tasks as written, and a misspelt option is an error: neither is dropped.
+    await assert.rejects(
+      c.submitBatch([{ payload: "x", key: "title", onKeyConflict: "replace_queued" }]),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+    await assert.rejects(
+      c.submit({ payload: "x", key: "title", onKeyConflict: "newest" as never }),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+
+    const ac = new AbortController();
+    const events: Array<{ kind: string; id: bigint; message: string }> = [];
+    const watching = (async () => {
+      for await (const e of c.watch({ keys: ["title"], allTransitions: true }, { signal: ac.signal })) events.push(e);
+    })();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const seen: string[] = [];
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    // The server is shared with the other tests: finish whatever else is still queued.
+    const stop = worker(s.target, async (l) => {
+      if (l.key !== "title") return l.payload;
+      seen.push(l.text());
+      await released;
+      return l.payload;
+    });
+    await waitFor(() => seen.length === 1, "the first attempt");
+    // The task has started: its payload stays, and the newest submission follows it.
+    for (const v of ["v4", "v5"]) {
+      const stored = await c.submit({ payload: v, key: "title", onKeyConflict: "replace_queued", renewPosition: true });
+      assert.deepEqual({ id: stored.id, outcome: stored.outcome }, { id: first.id, outcome: "pending" });
+    }
+    release();
+    assert.equal(text((await c.wait(first.id, 10)).output), "v2");
+    await waitFor(() => events.some((e) => e.kind === "successor"), "a successor event");
+    const successor = events.find((e) => e.kind === "successor")!;
+    assert.notEqual(successor.id, first.id);
+    assert.equal(successor.message, `follows task ${first.id}`);
+    assert.equal(events.filter((e) => e.kind === "replaced" && e.id === first.id).length, 2);
+    assert.equal(text((await c.wait(successor.id, 10)).output), "v5");
+    assert.deepEqual(seen, ["v2", "v5"]);
+    ac.abort();
+    await watching;
+    await stop();
+  });
+
   test("handler outcomes and fencing tokens", async () => {
     const attempts = new Map<bigint, number[]>();
     const stop = worker(

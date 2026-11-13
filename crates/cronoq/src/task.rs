@@ -28,6 +28,7 @@ pub struct Task<P> {
     start: Option<When>,
     tolerance: Option<Duration>,
     on_miss: Option<MissPolicy>,
+    pub(crate) opts: cronoq_core::SubmitOptions,
 }
 
 impl<P> Clone for Task<P> {
@@ -38,6 +39,7 @@ impl<P> Clone for Task<P> {
             start: self.start,
             tolerance: self.tolerance,
             on_miss: self.on_miss,
+            opts: self.opts,
         }
     }
 }
@@ -50,6 +52,7 @@ impl<P> From<TaskSpec<P>> for Task<P> {
             start: None,
             tolerance: None,
             on_miss: None,
+            opts: cronoq_core::SubmitOptions::default(),
         }
     }
 }
@@ -172,10 +175,37 @@ impl<P> Task<P> {
         self
     }
 
+    /// The newest submission of this task's key wins ("latest wins"). Needs a [`Task::key`].
+    ///
+    /// If the task holding the key has not started, it is replaced in place: same id,
+    /// dependents and place in line, with this task's payload, kind, priority, deadline, tags,
+    /// timeout and retry policy. If an attempt of it has started, its payload is frozen, and
+    /// this task is stored to run as a new task with the same key once that one succeeds,
+    /// fails or is dead-lettered (a newer submission replaces the stored one). If no live task
+    /// holds the key, this task is submitted as usual.
+    ///
+    /// The task must name the same pool, resources, worker labels and dependencies as the one
+    /// it replaces, and neither may have a fixed start. Not available in
+    /// [`Scheduler::submit_batch`](crate::Scheduler::submit_batch),
+    /// [`Scheduler::enqueue_many`](crate::Scheduler::enqueue_many) or schedules.
+    /// [`Submitted::outcome`](crate::Submitted::outcome) tells which of these happened.
+    pub fn replace_queued(mut self) -> Self {
+        self.opts.on_key_conflict = cronoq_core::KeyConflict::ReplaceQueued;
+        self
+    }
+    /// With [`Task::replace_queued`]: take this submission's place in line, and start its
+    /// waiting time now, instead of keeping the place of the task it replaces.
+    pub fn renew_position(mut self) -> Self {
+        self.opts.renew_position = true;
+        self
+    }
+
     /// Fields that only make sense for a single task: absolute deadlines, fixed starts and
     /// dependencies. (A relative deadline and a key work per occurrence.)
     fn one_shot_fields(&self) -> Option<&'static str> {
-        if matches!(self.deadline, Some(When::At(_))) || self.spec.deadline.is_some() {
+        if self.opts != cronoq_core::SubmitOptions::default() {
+            Some("replace_queued (occurrences are separate tasks)")
+        } else if matches!(self.deadline, Some(When::At(_))) || self.spec.deadline.is_some() {
             Some("an absolute deadline (use deadline_in, relative to each occurrence)")
         } else if self.start.is_some() || self.spec.fixed_start.is_some() {
             Some("a fixed start")

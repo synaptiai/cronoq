@@ -279,14 +279,14 @@ pub async fn await_handle(
     })
 }
 
-fn record_submit(app: &AppState, id: TaskId, spec: &pb::TaskSpec) {
+/// What the task cache holds for a task submitted as `spec`.
+fn submit_meta(app: &AppState, spec: &pb::TaskSpec) -> TaskMeta {
     let pool = convert::spec_pool(spec);
     let max_attempts = match &spec.retry {
         Some(r) => r.max_attempts.max(1),
         None => app.pool(pool).map(|p| p.max_attempts).unwrap_or(0),
     };
-    app.info.on_submit(
-        id.0,
+    {
         TaskMeta {
             pool: Arc::from(pool),
             key: (!spec.key.is_empty()).then(|| Arc::from(spec.key.as_str())),
@@ -300,8 +300,38 @@ fn record_submit(app: &AppState, id: TaskId, spec: &pb::TaskSpec) {
             tenant: (!spec.tenant.is_empty()).then(|| Arc::from(spec.tenant.as_str())),
             priority: convert::priority(spec.priority).ok(),
             ..Default::default()
-        },
-    );
+        }
+    }
+}
+
+fn record_submit(app: &AppState, id: TaskId, spec: &pb::TaskSpec) {
+    app.info.on_submit(id.0, submit_meta(app, spec));
+}
+
+/// Record what a submission did in the task cache, and keep a duplicate from revealing a
+/// task of a pool the caller may not use.
+async fn record_outcome(
+    app: &AppState,
+    principal: &Principal,
+    sub: cronoq::Submitted,
+    spec: &pb::TaskSpec,
+    renewed: bool,
+) -> Result<(), Status> {
+    match sub.outcome {
+        cronoq::SubmitOutcome::Created => record_submit(app, sub.id, spec),
+        // The key may have been taken in another pool since the check before submitting.
+        cronoq::SubmitOutcome::Existing => check_duplicate(app, principal, sub.id).await?,
+        cronoq::SubmitOutcome::Replaced => {
+            check_duplicate(app, principal, sub.id).await?;
+            app.info
+                .on_replace(sub.id.0, submit_meta(app, spec), renewed);
+        }
+        cronoq::SubmitOutcome::Pending => {
+            check_duplicate(app, principal, sub.id).await?;
+            app.info.on_pending(sub.id.0, submit_meta(app, spec));
+        }
+    }
+    Ok(())
 }
 
 /// For pool-restricted callers, refuse task keys and dependencies that belong to tasks of
@@ -374,9 +404,16 @@ pub async fn submit_one(
     app: &AppState,
     principal: &Principal,
     mut spec: pb::TaskSpec,
+    opts: cronoq::SubmitOptions,
     wait: Option<Duration>,
     stop: &CancellationToken,
 ) -> Result<pb::SubmitResponse, Status> {
+    let replace = opts.on_key_conflict == cronoq::KeyConflict::ReplaceQueued;
+    if replace && spec.key.is_empty() {
+        return Err(Status::invalid_argument(
+            "on_key_conflict = replace_queued needs a key",
+        ));
+    }
     pin_tenant(principal, &mut spec)?;
     check_pool(principal, convert::spec_pool(&spec))?;
     check_spec_shard(app, &spec)?;
@@ -385,35 +422,38 @@ pub async fn submit_one(
         payload: Vec::new(),
         ..spec.clone()
     };
-    let task = convert::task(spec, &app.limits)?;
+    let mut task = convert::task(spec, &app.limits)?;
+    if replace {
+        task = task.replace_queued();
+    }
+    if opts.renew_position {
+        task = task.renew_position();
+    }
     match wait {
         Some(timeout) => {
             let h = app.sched.submit(task).await.map_err(convert::error)?;
-            let (id, duplicate) = (h.id(), h.is_duplicate());
-            if duplicate {
-                // The key may have been taken in another pool since the check above.
-                check_duplicate(app, principal, id).await?;
-            } else {
-                record_submit(app, id, &meta);
-            }
+            let sub = cronoq::Submitted {
+                id: h.id(),
+                duplicate: h.is_duplicate(),
+                outcome: h.outcome(),
+            };
+            record_outcome(app, principal, sub, &meta, opts.renew_position).await?;
             let result = await_handle(app, h, timeout, stop).await?;
             Ok(pb::SubmitResponse {
-                id: id.0,
-                duplicate,
+                id: sub.id.0,
+                duplicate: sub.duplicate,
                 result: Some(result),
+                outcome: convert::outcome(sub.outcome) as i32,
             })
         }
         None => {
             let s = app.sched.enqueue(task).await.map_err(convert::error)?;
-            if s.duplicate {
-                check_duplicate(app, principal, s.id).await?;
-            } else {
-                record_submit(app, s.id, &meta);
-            }
+            record_outcome(app, principal, s, &meta, opts.renew_position).await?;
             Ok(pb::SubmitResponse {
                 id: s.id.0,
                 duplicate: s.duplicate,
                 result: None,
+                outcome: convert::outcome(s.outcome) as i32,
             })
         }
     }
@@ -481,6 +521,7 @@ pub async fn submit_batch(
                 id: h.id().0,
                 duplicate: h.is_duplicate(),
                 result: None,
+                outcome: convert::outcome(h.outcome()) as i32,
             })
             .collect(),
     })
@@ -779,12 +820,16 @@ pub async fn authorize_task_of_tenant(
         return Ok(target);
     };
     let id = resolve_id(app, &target).await?.ok_or_else(not_found)?;
-    // The task cache knows the tenant of tasks submitted to this process. After a restart, or
-    // for a task a schedule created, its entry comes from events, which carry no tenant: then
-    // the store knows, and without a store the scheduler does for pools that share capacity
-    // between tenants. A task whose tenant cannot be established is not reachable.
-    let mut tenant = app.info.get(id.0).and_then(|m| m.tenant);
-    if tenant.is_none()
+    // The scheduler knows the tenant of every task that has not finished. For a finished one
+    // (a cancel that will answer `false`), the task cache or the store does; a finished task
+    // whose tenant neither holds any more is not reachable.
+    let live = app.sched.task(id).await.map_err(convert::error)?;
+    let mut tenant = match &live {
+        Some(t) => t.tenant.clone(),
+        None => app.info.get(id.0).and_then(|m| m.tenant),
+    };
+    if live.is_none()
+        && tenant.is_none()
         && let Some(q) = &app.queries
     {
         tenant = q
@@ -792,14 +837,6 @@ pub async fn authorize_task_of_tenant(
             .await
             .map_err(store_error)?
             .and_then(|r| r.tenant.map(|t| Arc::from(t.as_str())));
-    }
-    if tenant.is_none() {
-        tenant = app
-            .sched
-            .task(id)
-            .await
-            .map_err(convert::error)?
-            .and_then(|t| t.tenant);
     }
     match tenant {
         Some(t) if t == *pinned => Ok(TaskRef::Id(id)),
@@ -928,8 +965,9 @@ impl pb::tasks_server::Tasks for TasksService {
         } else {
             None
         };
+        let opts = convert::submit_options(r.on_key_conflict, r.renew_position)?;
         Ok(Response::new(
-            crate::route::submit(app, &p, spec, wait, &self.shared.stop).await?,
+            crate::route::submit(app, &p, spec, opts, wait, &self.shared.stop).await?,
         ))
     }
 

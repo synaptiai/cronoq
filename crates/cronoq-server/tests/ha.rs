@@ -272,6 +272,7 @@ async fn answers_unavailable_and_honors_shutdown(store: &str) {
             task: Some(pb::TaskSpec::default()),
             wait: false,
             wait_timeout_s: None,
+            ..Default::default()
         })
         .await
         .unwrap_err();

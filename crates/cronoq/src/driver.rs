@@ -48,6 +48,7 @@ type Deferred = Box<dyn FnOnce(Option<&Error>) + Send>;
 pub(crate) enum Cmd<P, O> {
     Submit {
         spec: TaskSpec<P>,
+        opts: cronoq_core::SubmitOptions,
         reply: SubmitReply<O>,
         handle: bool,
     },
@@ -158,6 +159,7 @@ struct ManyGroup {
 enum Blocked<P, O> {
     One {
         spec: TaskSpec<P>,
+        opts: cronoq_core::SubmitOptions,
         reply: SubmitReply<O>,
         handle: bool,
     },
@@ -611,19 +613,25 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         match cmd {
             Cmd::Submit {
                 spec,
+                opts,
                 reply,
                 handle,
             } => {
+                // A replacement of a waiting task needs no room and must not wait for some:
+                // the task could start with its old payload meanwhile. If it does need room
+                // (the task has started), it joins the waiters then.
+                let replacing = opts.on_key_conflict == cronoq_core::KeyConflict::ReplaceQueued;
                 if closed {
                     let _ = reply.send(Err(Error::Shutdown));
-                } else if self.waits_behind(&spec) {
+                } else if !replacing && self.waits_behind(&spec) {
                     self.blocked.push_back(Blocked::One {
                         spec,
+                        opts,
                         reply,
                         handle,
                     });
                 } else {
-                    self.submit_one(now, spec, reply, handle);
+                    self.submit_one(now, spec, opts, reply, handle);
                 }
             }
             Cmd::SubmitBatch { specs, reply } => {
@@ -764,11 +772,12 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         &mut self,
         now: cronoq_core::Time,
         spec: TaskSpec<P>,
+        opts: cronoq_core::SubmitOptions,
         reply: SubmitReply<O>,
         handle: bool,
     ) {
         let pool = spec.pool.clone();
-        match self.core.try_submit(now, spec) {
+        match self.core.try_submit_with(now, spec, opts) {
             Ok(sub) => {
                 if !sub.duplicate {
                     self.metrics.submitted(&pool);
@@ -784,6 +793,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             Err((SubmitError::Full, spec)) if self.fits_when_empty(std::slice::from_ref(&spec)) => {
                 self.blocked.push_back(Blocked::One {
                     spec,
+                    opts,
                     reply,
                     handle,
                 });
@@ -924,9 +934,10 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             match b {
                 Blocked::One {
                     spec,
+                    opts,
                     reply,
                     handle,
-                } => self.submit_one(now, spec, reply, handle),
+                } => self.submit_one(now, spec, opts, reply, handle),
                 Blocked::Many { spec, slot, group } => {
                     self.submit_many(now, spec, slot, &group);
                 }

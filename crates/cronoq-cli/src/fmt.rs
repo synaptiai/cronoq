@@ -26,6 +26,27 @@ pub fn status(s: i32) -> &'static str {
     }
 }
 
+/// What a status event reports when it is not a change of status (`None` for a transition).
+pub fn event_kind(kind: i32) -> Option<&'static str> {
+    match pb::EventKind::try_from(kind).unwrap_or(pb::EventKind::Transition) {
+        pb::EventKind::Transition => None,
+        pb::EventKind::Updated => Some("updated"),
+        pb::EventKind::Replaced => Some("replaced"),
+        pb::EventKind::Successor => Some("successor"),
+    }
+}
+
+/// What a submission did. A server older than the field only says whether the key existed.
+pub fn outcome(outcome: i32, duplicate: bool) -> &'static str {
+    match pb::SubmitOutcome::try_from(outcome).unwrap_or(pb::SubmitOutcome::Unspecified) {
+        pb::SubmitOutcome::Unspecified if duplicate => "existing",
+        pb::SubmitOutcome::Unspecified | pb::SubmitOutcome::Created => "created",
+        pb::SubmitOutcome::Existing => "existing",
+        pb::SubmitOutcome::Replaced => "replaced",
+        pb::SubmitOutcome::Pending => "pending",
+    }
+}
+
 /// The wire status for a lower-case name.
 pub fn status_value(name: &str) -> Option<pb::TaskStatus> {
     let s = pb::TaskStatus::from_str_name(&format!("TASK_STATUS_{}", name.to_ascii_uppercase()))?;

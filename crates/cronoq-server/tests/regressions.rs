@@ -1049,6 +1049,7 @@ async fn waits_are_capped_by_max_wait() {
             task: Some(spec(b"x")),
             wait: true,
             wait_timeout_s: Some(3600.0),
+            ..Default::default()
         })
         .await;
     assert_eq!(r.unwrap_err().code(), tonic::Code::DeadlineExceeded);

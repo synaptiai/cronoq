@@ -24,6 +24,8 @@ export {
   type TaskInfo,
   type TaskPage,
   type TaskRef,
+  type EventKind,
+  type Outcome,
   type Update,
   type Updated,
 } from "./client.js";

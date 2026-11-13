@@ -112,6 +112,7 @@ fn recovered_recurring_does_not_replay_missed_occurrences() {
     s.core.recover(
         s.now,
         Recovered {
+            pending: Vec::new(),
             tasks: vec![],
             terminal: vec![],
             recurring: vec![RecoveredRecurring {
@@ -155,6 +156,7 @@ fn recovered_fixed_task_respects_budget_and_miss_policy() {
     s.core.recover(
         s.now,
         Recovered {
+            pending: Vec::new(),
             tasks: vec![RecoveredTask {
                 id: TaskId(1),
                 seq: 0,
@@ -247,6 +249,7 @@ fn recovery_closes_tasks_for_removed_pools() {
     s.core.recover(
         s.now,
         Recovered {
+            pending: Vec::new(),
             tasks: vec![RecoveredTask {
                 id: TaskId(7),
                 seq: 0,
@@ -338,6 +341,7 @@ fn recurring_template_with_zero_attempts_is_rejected() {
 fn recovered_schedule_with_removed_resource_is_not_armed() {
     let mut s = gpu_sim();
     let rec = Recovered {
+        pending: Vec::new(),
         tasks: vec![],
         terminal: vec![],
         recurring: vec![RecoveredRecurring {
@@ -358,6 +362,7 @@ fn recovered_schedule_with_removed_resource_is_not_armed() {
 fn recovered_task_over_lowered_capacity_fails_instead_of_blocking() {
     let mut s = gpu_sim();
     let rec = Recovered {
+        pending: Vec::new(),
         tasks: vec![RecoveredTask {
             id: TaskId(1),
             seq: 0,

@@ -286,11 +286,10 @@ fn render_events(f: &mut Frame, st: &State, area: Rect, now: i64) {
     let rows = st.events.recent.iter().map(|e| {
         row(vec![
             fmt::ago(e.at_unix_ns, now),
-            if e.kind == pb::EventKind::Updated as i32 {
-                // An update, not a transition: the status did not change.
-                format!("updated ({})", fmt::priority(e.priority).unwrap_or("-"))
-            } else {
-                fmt::status(e.status).to_string()
+            match fmt::event_kind(e.kind) {
+                // Not a transition: the status did not change.
+                Some(note) => format!("{note} ({})", fmt::priority(e.priority).unwrap_or("-")),
+                None => fmt::status(e.status).to_string(),
             },
             e.id.to_string(),
             e.pool.clone(),

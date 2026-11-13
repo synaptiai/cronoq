@@ -166,6 +166,36 @@ impl CodecStore {
                     Mutation::RecurringRemove { name } => {
                         Mutation::RecurringRemove { name: name.clone() }
                     }
+                    Mutation::Replaced {
+                        id,
+                        seq,
+                        arrival,
+                        spec,
+                    } => {
+                        let bytes = enc(&spec.payload)?;
+                        Mutation::Replaced {
+                            id: *id,
+                            seq: *seq,
+                            arrival: *arrival,
+                            spec: spec.clone().map_payload(Arc::new(bytes)),
+                        }
+                    }
+                    Mutation::PendingReplacement {
+                        id,
+                        seq,
+                        arrival,
+                        renew,
+                        spec,
+                    } => {
+                        let bytes = enc(&spec.payload)?;
+                        Mutation::PendingReplacement {
+                            id: *id,
+                            seq: *seq,
+                            arrival: *arrival,
+                            renew: *renew,
+                            spec: spec.clone().map_payload(Arc::new(bytes)),
+                        }
+                    }
                     Mutation::Updated {
                         id,
                         priority,
@@ -231,8 +261,30 @@ impl Store<PyObj, PyObj> for CodecStore {
                 tasks: Vec::with_capacity(rec.tasks.len()),
                 terminal: rec.terminal,
                 recurring: Vec::with_capacity(rec.recurring.len()),
+                pending: Vec::with_capacity(rec.pending.len()),
                 next_id: rec.next_id,
             };
+            for p in rec.pending {
+                match self.codec.decode(py, &p.spec.payload) {
+                    Ok(payload) => out.pending.push(cronoq::core::RecoveredPending {
+                        id: p.id,
+                        seq: p.seq,
+                        arrival: p.arrival,
+                        renew: p.renew,
+                        spec: p.spec.map_payload(Arc::new(payload)),
+                    }),
+                    // The task it waits for is recovered as it was; only this newer
+                    // submission is lost.
+                    Err(e) => warn(
+                        py,
+                        &format!(
+                            "submission stored to run after task {} not recovered: cannot \
+                             decode its payload: {e}",
+                            p.id
+                        ),
+                    ),
+                }
+            }
             for t in rec.tasks {
                 match self.codec.decode(py, &t.spec.payload) {
                     Ok(p) => out.tasks.push(cronoq::core::RecoveredTask {

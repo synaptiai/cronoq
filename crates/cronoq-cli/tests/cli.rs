@@ -174,6 +174,56 @@ async fn tasks_can_be_submitted_inspected_listed_and_cancelled() {
         );
     }
 
+    // Latest wins: the queued task takes the new payload and keeps its id.
+    let o = s
+        .cli(
+            CLIENT,
+            &[
+                "submit",
+                "newer",
+                "--key",
+                "greeting",
+                "--tenant",
+                "acme",
+                "--replace",
+            ],
+        )
+        .await;
+    assert_eq!(
+        stdout(&o).trim(),
+        format!("{id} (replaced)"),
+        "{}",
+        stderr(&o)
+    );
+    let v = json(
+        &s.cli(
+            CLIENT,
+            &[
+                "-o",
+                "json",
+                "submit",
+                "newest",
+                "--key",
+                "greeting",
+                "--tenant",
+                "acme",
+                "--replace",
+                "--renew-position",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(v["id"], id);
+    assert_eq!(v["outcome"], "replaced");
+    let o = s.cli(CLIENT, &["submit", "x", "--replace"]).await;
+    assert_eq!(o.status.code(), Some(2), "--replace needs --key");
+    // A replacement must belong to the same tenant as the task.
+    let o = s
+        .cli(CLIENT, &["submit", "x", "--key", "greeting", "--replace"])
+        .await;
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("the tenant differs"), "{}", stderr(&o));
+
     // Update: by id and by key, then nothing left to change, then nothing asked.
     let o = s
         .cli(

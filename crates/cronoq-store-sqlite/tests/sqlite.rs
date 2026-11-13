@@ -162,3 +162,53 @@ async fn nul_characters_are_replaced() {
     assert_eq!(t.key.as_deref(), Some("a\u{FFFD}b"));
     assert_eq!(t.message.as_deref(), Some("bad\u{FFFD}byte"));
 }
+
+// A database written by a release before stored replacements (schema version 1) gains the
+// new table when it is opened, keeps its tasks, and a newer schema than this build knows is
+// refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_database_is_upgraded_in_place() {
+    let db = TestDb::new();
+    let store = db.open().await;
+    let epoch = store.acquire_leadership().await.unwrap();
+    store
+        .commit(epoch, BASE, &[submitted(1)], &[])
+        .await
+        .unwrap();
+    // Put the file back to what version 1 looked like.
+    for sql in [
+        "DROP TABLE cronoq_pending",
+        "UPDATE cronoq_schema_version SET version = 1",
+    ] {
+        sqlx::query(sql).execute(store.pool()).await.unwrap();
+    }
+    store.release_leadership().await;
+    drop(store);
+
+    let store = db.open().await;
+    let version: i64 = sqlx::query_scalar("SELECT version FROM cronoq_schema_version")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(version, 2);
+    let epoch = store.acquire_leadership().await.unwrap();
+    let stored = Mutation::PendingReplacement {
+        id: TaskId(1),
+        seq: 2,
+        arrival: Time(now()),
+        renew: false,
+        spec: TaskSpec::new(Bytes::from_static(b"y")),
+    };
+    store.commit(epoch, BASE, &[stored], &[]).await.unwrap();
+    let rec = store.recover(BASE).await.unwrap();
+    assert_eq!((rec.tasks.len(), rec.pending.len()), (1, 1));
+
+    sqlx::query("UPDATE cronoq_schema_version SET version = 99")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert!(
+        store.migrate().await.is_err(),
+        "newer schema must be refused"
+    );
+}

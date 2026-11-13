@@ -1,7 +1,7 @@
 import { create } from "@bufbuild/protobuf";
 import { createClient, type Client as RpcClient, type Interceptor, type Transport } from "@connectrpc/connect";
 
-import { wrap } from "./errors.js";
+import { CronoqError, wrap } from "./errors.js";
 import * as pb from "./gen/cronoq/v1/cronoq_pb.js";
 
 /**
@@ -122,6 +122,62 @@ export interface Task {
   labels?: Record<string, string>;
   /** Replaces the pool's retry policy with this many attempts and the server's default backoff. */
   maxAttempts?: number;
+  /**
+   * What to do when `key` is in use. `"return_existing"` (the default) returns that task and
+   * drops this one. `"replace_queued"` lets the newest submission win: a task that has not
+   * started is replaced in place (same id and place in line); one that has started keeps its
+   * payload, and this task runs after it as a new task with the same key. See
+   * {@link Submitted.outcome}. `submitBatch` refuses it; {@link spec} does not carry it.
+   */
+  onKeyConflict?: "return_existing" | "replace_queued";
+  /** With `"replace_queued"`: take this submission's place in line. */
+  renewPosition?: boolean;
+}
+
+/** The options of a single submission of `t`. */
+function submitOptions(t: Task): { onKeyConflict: pb.KeyConflict; renewPosition: boolean } {
+  let onKeyConflict: pb.KeyConflict;
+  switch (t.onKeyConflict) {
+    case undefined:
+    case "return_existing":
+      onKeyConflict = pb.KeyConflict.RETURN_EXISTING;
+      break;
+    case "replace_queued":
+      onKeyConflict = pb.KeyConflict.REPLACE_QUEUED;
+      break;
+    default:
+      throw new CronoqError("invalid_argument", `unknown onKeyConflict '${String(t.onKeyConflict)}'`);
+  }
+  return { onKeyConflict, renewPosition: t.renewPosition ?? false };
+}
+
+/** The result of a single submission of `t`. */
+function accepted(t: Task, r: pb.SubmitResponse): Submitted {
+  if (t.onKeyConflict === "replace_queued" && r.outcome === pb.SubmitOutcome.UNSPECIFIED) {
+    // A server older than the option ignored it: with the key in use, this submission was
+    // dropped, not stored.
+    throw new CronoqError("unimplemented", "the server does not support onKeyConflict");
+  }
+  return submitted(r);
+}
+
+/** What an accepted submission did. */
+export type Outcome = "created" | "existing" | "replaced" | "pending";
+
+/** What an {@link Event} reports. */
+export type EventKind = "transition" | "updated" | "replaced" | "successor";
+
+function eventKind(k: pb.EventKind): EventKind {
+  switch (k) {
+    case pb.EventKind.UPDATED:
+      return "updated";
+    case pb.EventKind.REPLACED:
+      return "replaced";
+    case pb.EventKind.SUCCESSOR:
+      return "successor";
+    default:
+      return "transition";
+  }
 }
 
 /** The raw spec of a task, for fields {@link Task} does not cover. */
@@ -173,10 +229,38 @@ export interface Submitted {
   duplicate: boolean;
   /** Set by {@link Client.submitAndWait}. */
   result?: Result;
+  /**
+   * What the submission did: `"created"`; `"existing"` (the key was in use and the task is
+   * returned unchanged); `"replaced"` (the task had not started and now carries this
+   * submission); or `"pending"` (the task has started, so this submission runs after it as a
+   * new task with the same key: `id` and `result` are the running task's).
+   */
+  outcome: Outcome;
+}
+
+function outcome(r: pb.SubmitResponse): Outcome {
+  switch (r.outcome) {
+    case pb.SubmitOutcome.CREATED:
+      return "created";
+    case pb.SubmitOutcome.EXISTING:
+      return "existing";
+    case pb.SubmitOutcome.REPLACED:
+      return "replaced";
+    case pb.SubmitOutcome.PENDING:
+      return "pending";
+    default:
+      // A server older than the field only says whether the key existed.
+      return r.duplicate ? "existing" : "created";
+  }
 }
 
 function submitted(r: pb.SubmitResponse): Submitted {
-  return { id: r.id, duplicate: r.duplicate, result: r.result ? result(r.result) : undefined };
+  return {
+    id: r.id,
+    duplicate: r.duplicate,
+    result: r.result ? result(r.result) : undefined,
+    outcome: outcome(r),
+  };
 }
 
 /** A task's details; fields other than `id` and `status` are best effort. */
@@ -235,6 +319,13 @@ export interface Event {
    * `status` is its unchanged status. Only delivered with `allTransitions`.
    */
   updated: boolean;
+  /**
+   * What the event reports. Kinds other than `"transition"` are only delivered with
+   * `allTransitions`, and `status` is then the task's status at that moment. `"replaced"`: a
+   * submission with the task's key replaced it or was stored to run after it. `"successor"`:
+   * the task was created from such a stored submission; `message` names the task it follows.
+   */
+  kind: EventKind;
 }
 
 /** What to change on a task that has not finished; fields left out keep their value. */
@@ -311,7 +402,9 @@ export class Client {
 
   /** Submit one task. */
   submit(task: Task, opts: CallOptions = {}): Promise<Submitted> {
-    return this.call(async () => submitted(await this.tasks.submit({ task: spec(task) }, rpc(opts))));
+    return this.call(async () =>
+      accepted(task, await this.tasks.submit({ task: spec(task), ...submitOptions(task) }, rpc(opts))),
+    );
   }
 
   /**
@@ -321,14 +414,32 @@ export class Client {
   submitAndWait(task: Task, waitTimeout?: number, opts: CallOptions = {}): Promise<Submitted> {
     const o = { ...opts, timeout: opts.timeout ?? (waitTimeout === undefined ? undefined : waitTimeout + 5) };
     return this.call(async () =>
-      submitted(await this.tasks.submit({ task: spec(task), wait: true, waitTimeoutS: waitTimeout }, rpc(o))),
+      accepted(
+        task,
+        await this.tasks.submit(
+          { task: spec(task), wait: true, waitTimeoutS: waitTimeout, ...submitOptions(task) },
+          rpc(o),
+        ),
+      ),
     );
   }
 
   /** Submit raw specs atomically; they may depend on each other's keys. */
   submitBatch(tasks: Array<Task | pb.TaskSpec>, opts: CallOptions = {}): Promise<Submitted[]> {
-    const specs = tasks.map((t) => ("$typeName" in t ? (t as pb.TaskSpec) : spec(t as Task)));
-    return this.call(async () => (await this.tasks.submitBatch({ tasks: specs }, rpc(opts))).tasks.map(submitted));
+    return this.call(async () => {
+      const specs = tasks.map((t, i) => {
+        if ("$typeName" in t) return t as pb.TaskSpec;
+        const task = t as Task;
+        if (task.onKeyConflict !== undefined || task.renewPosition) {
+          throw new CronoqError(
+            "invalid_argument",
+            `tasks[${i}]: onKeyConflict and renewPosition are not supported in a batch`,
+          );
+        }
+        return spec(task);
+      });
+      return (await this.tasks.submitBatch({ tasks: specs }, rpc(opts))).tasks.map(submitted);
+    });
   }
 
   /** A task's details. */
@@ -418,6 +529,7 @@ export class Client {
           message: e.message,
           priority: priorityName(e.priority),
           updated: e.kind === pb.EventKind.UPDATED,
+          kind: eventKind(e.kind),
         };
       }
     } catch (e) {

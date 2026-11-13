@@ -56,10 +56,11 @@ pub use task::{Recurring, Task, Update, When};
 pub use cronoq_core as core;
 /// Engine types re-exported for convenience.
 pub use cronoq_core::{
-    AutoscaleConfig, Bounds, Dep, EdgeCond, Fairness, GroupSnapshot, Labels, LeaseId, MissPolicy,
-    Mutation, OverflowPolicy, OverlapPolicy, PoolConfig, PoolId, PoolSnapshot, Priority,
-    PriorityConfig, Recovered, RecoveredTask, RecoveredTerminal, RecurringInfo, RecurringSpec,
-    ResourceConfig, ResourceKind, RetryPolicy, Snapshot, StatusEvent, SubmitError, Submitted,
-    TaskId, TaskRef, TaskSpec, TaskStatus, TaskSummary, Time, UnknownDependency, UrgencyConfig,
+    AutoscaleConfig, Bounds, Dep, EdgeCond, Fairness, GroupSnapshot, KeyConflict, Labels, LeaseId,
+    MissPolicy, Mutation, OverflowPolicy, OverlapPolicy, PoolConfig, PoolId, PoolSnapshot,
+    Priority, PriorityConfig, Recovered, RecoveredTask, RecoveredTerminal, RecurringInfo,
+    RecurringSpec, ResourceConfig, ResourceKind, RetryPolicy, Snapshot, StatusEvent, SubmitError,
+    SubmitOptions, SubmitOutcome, Submitted, TaskId, TaskRef, TaskSpec, TaskStatus, TaskSummary,
+    Time, UnknownDependency, UrgencyConfig,
 };
 pub use cronoq_core::{EventKind, TaskPatch, UpdateError, Updated};

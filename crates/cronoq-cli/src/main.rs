@@ -178,6 +178,14 @@ struct SubmitArgs {
     /// Unique key: deduplicates submissions.
     #[arg(long)]
     key: Option<String>,
+    /// Latest wins: replace the task that holds --key if it has not started; if it has, run
+    /// this submission after it as a new task with the same key.
+    #[arg(long, requires = "key")]
+    replace: bool,
+    /// With --replace: take this submission's place in line instead of keeping the place of
+    /// the task it replaces.
+    #[arg(long, requires = "replace")]
+    renew_position: bool,
     /// Start at a fixed time, in seconds from now.
     #[arg(long, value_name = "SECONDS")]
     start_in: Option<f64>,
@@ -412,17 +420,33 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     task: Some(spec),
                     wait: a.wait,
                     wait_timeout_s: a.wait_timeout,
+                    on_key_conflict: if a.replace {
+                        pb::KeyConflict::ReplaceQueued
+                    } else {
+                        pb::KeyConflict::ReturnExisting
+                    } as i32,
+                    renew_position: a.renew_position,
                 })
                 .await)?;
+            if a.replace && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+                // A server older than the option ignored it: with the key in use, this
+                // submission was dropped, not stored.
+                bail!("the server does not support --replace");
+            }
             if let Some(res) = &r.result {
                 return Ok(print_result(res, out));
             }
             match out {
                 Output::Json => print_json(&serde_json::json!({
                     "id": r.id.to_string(), "duplicate": r.duplicate,
+                    "outcome": fmt::outcome(r.outcome, r.duplicate),
                 })),
-                Output::Text if r.duplicate => println!("{} (duplicate)", r.id),
-                Output::Text => println!("{}", r.id),
+                Output::Text => match fmt::outcome(r.outcome, r.duplicate) {
+                    "created" => println!("{}", r.id),
+                    "existing" => println!("{} (duplicate)", r.id),
+                    // Replaced in place, or stored to run after the task with this id.
+                    other => println!("{} ({other})", r.id),
+                },
             }
         }
         Command::Get(t) => {
@@ -678,22 +702,20 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                             "at_unix_ns": ev.at_unix_ns.to_string(), "message": ev.message,
                             "priority": fmt::priority(ev.priority),
                             "updated": ev.kind == pb::EventKind::Updated as i32,
+                            "kind": fmt::event_kind(ev.kind).unwrap_or("transition"),
                         })
                     ),
                     Output::Text => {
-                        let updated = ev.kind == pb::EventKind::Updated as i32;
+                        // An update, replacement or successor is not a change of status.
+                        let note = fmt::event_kind(ev.kind);
                         let mut line = format!(
                             "{}  {:<13} {}  pool={}",
                             fmt::time(ev.at_unix_ns),
-                            if updated {
-                                "updated"
-                            } else {
-                                fmt::status(ev.status)
-                            },
+                            note.unwrap_or_else(|| fmt::status(ev.status)),
                             ev.id,
                             ev.pool
                         );
-                        if updated {
+                        if note.is_some() {
                             line.push_str(&format!(
                                 " status={} priority={}",
                                 fmt::status(ev.status),

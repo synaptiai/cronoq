@@ -377,6 +377,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         TaskHandle {
             id: sub.id,
             duplicate: sub.duplicate,
+            outcome: sub.outcome,
             rx,
             cancel: self.inner.cancel.clone(),
         }
@@ -385,10 +386,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
     /// Submit a task and get a handle that resolves with its output. With a persistent
     /// store, returns once the submission is durable.
     pub async fn submit(&self, task: impl Into<Task<P>>) -> Result<TaskHandle<O>, Error> {
-        let spec = task.into().resolve(&self.inner.clock)?;
+        let task = task.into();
+        let opts = task.opts;
+        let spec = task.resolve(&self.inner.clock)?;
         let (sub, rx) = self
             .call(|reply| Cmd::Submit {
                 spec,
+                opts,
                 reply,
                 handle: true,
             })
@@ -398,10 +402,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
 
     /// Submit without a result handle (lowest overhead).
     pub async fn enqueue(&self, task: impl Into<Task<P>>) -> Result<Submitted, Error> {
-        let spec = task.into().resolve(&self.inner.clock)?;
+        let task = task.into();
+        let opts = task.opts;
+        let spec = task.resolve(&self.inner.clock)?;
         let (sub, _) = self
             .call(|reply| Cmd::Submit {
                 spec,
+                opts,
                 reply,
                 handle: false,
             })
@@ -421,7 +428,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         let mut specs = Vec::with_capacity(tasks.len());
         let mut early: Vec<Option<Error>> = Vec::with_capacity(tasks.len());
         for t in tasks {
-            match t.resolve(&self.inner.clock) {
+            match no_replace(t).and_then(|t| t.resolve(&self.inner.clock)) {
                 Ok(s) => {
                     specs.push(s);
                     early.push(None);
@@ -449,7 +456,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
     pub async fn submit_batch(&self, tasks: Vec<Task<P>>) -> Result<Vec<TaskHandle<O>>, Error> {
         let specs = tasks
             .into_iter()
-            .map(|t| t.resolve(&self.inner.clock))
+            .map(|t| no_replace(t)?.resolve(&self.inner.clock))
             .collect::<Result<Vec<_>, _>>()?;
         let subs = self
             .call(|reply| Cmd::SubmitBatch { specs, reply })
@@ -470,6 +477,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
                 Submitted {
                     id,
                     duplicate: false,
+                    outcome: cronoq_core::SubmitOutcome::Existing,
                 },
                 rx,
             )
@@ -660,6 +668,17 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
     }
 }
 
+/// Batches admit tasks as written: replacing by key is for single submissions.
+fn no_replace<P>(t: Task<P>) -> Result<Task<P>, Error> {
+    if t.opts == cronoq_core::SubmitOptions::default() {
+        Ok(t)
+    } else {
+        Err(Error::Submit(cronoq_core::SubmitError::Invalid(
+            "replace_queued is not supported in a batch",
+        )))
+    }
+}
+
 pub(crate) type ResultRx<O> = oneshot::Receiver<Result<Arc<O>, TaskFailure>>;
 
 /// Resolves with the task's output once it reaches a terminal status.
@@ -669,6 +688,7 @@ pub(crate) type ResultRx<O> = oneshot::Receiver<Result<Arc<O>, TaskFailure>>;
 pub struct TaskHandle<O> {
     id: TaskId,
     duplicate: bool,
+    outcome: cronoq_core::SubmitOutcome,
     rx: ResultRx<O>,
     cancel: mpsc::UnboundedSender<TaskId>,
 }
@@ -690,6 +710,14 @@ impl<O> TaskHandle<O> {
     /// The submission matched an existing key; this handle tracks that task.
     pub fn is_duplicate(&self) -> bool {
         self.duplicate
+    }
+    /// What the submission that returned this handle did: created a task, found an existing
+    /// one, replaced it, or was stored to run after it
+    /// ([`Task::replace_queued`](crate::Task::replace_queued)). A handle of a submission that
+    /// was stored ([`SubmitOutcome::Pending`](cronoq_core::SubmitOutcome::Pending)) tracks the
+    /// running task, not its successor: use [`Scheduler::handle`] with the key once it ended.
+    pub fn outcome(&self) -> cronoq_core::SubmitOutcome {
+        self.outcome
     }
     /// Request cancellation (fire and forget; the handle then resolves as cancelled). It
     /// takes effect before any scheduler call made after it from the same task or thread.
