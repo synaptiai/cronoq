@@ -377,7 +377,7 @@ pub struct CoreConfig {
     /// Maximum number of remembered terminal statuses.
     pub retention_max: usize,
     /// What a submission whose key is already in use does when it does not say itself
-    /// ([`KeyConflict::Configured`]): `ReturnExisting` (the default; `Configured` here means
+    /// ([`KeyConflict::Configured`](crate::KeyConflict::Configured)): `ReturnExisting` (the default; `Configured` here means
     /// the same) or `Reject`.
     pub on_key_conflict: crate::KeyConflict,
     /// Emit `Action::Persist` mutations.
