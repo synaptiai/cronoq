@@ -286,7 +286,12 @@ fn render_events(f: &mut Frame, st: &State, area: Rect, now: i64) {
     let rows = st.events.recent.iter().map(|e| {
         row(vec![
             fmt::ago(e.at_unix_ns, now),
-            fmt::status(e.status).to_string(),
+            if e.kind == pb::EventKind::Updated as i32 {
+                // An update, not a transition: the status did not change.
+                format!("updated ({})", fmt::priority(e.priority).unwrap_or("-"))
+            } else {
+                fmt::status(e.status).to_string()
+            },
             e.id.to_string(),
             e.pool.clone(),
             match (e.key.is_empty(), e.message.is_empty()) {

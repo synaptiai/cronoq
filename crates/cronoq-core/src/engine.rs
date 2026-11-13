@@ -1213,6 +1213,19 @@ impl<P> Core<P> {
         start
     }
 
+    /// Take back the charge of one task of `tenant` in `class` of a fair pool, for a task that
+    /// leaves the class without running there. The tenant's later tasks in the class keep
+    /// their tags; its next one starts one task's cost earlier.
+    fn fair_refund(&mut self, pool: u16, class: usize, tenant: u32) {
+        let f = self.pools[pool as usize].fair.as_mut().unwrap();
+        let Some(&cost) = f.cost.get(&tenant) else {
+            return;
+        };
+        if let Some(fin) = f.finish.get_mut(&(class as u8, tenant)) {
+            *fin = fin.saturating_sub(cost);
+        }
+    }
+
     fn intern_constraint(&mut self, labels: &[(Arc<str>, Arc<str>)]) -> u32 {
         if labels.is_empty() {
             return 0;
@@ -1837,6 +1850,8 @@ impl<P> Core<P> {
     pub fn cancel(&mut self, now: Time, target: &TaskRef) -> bool {
         self.advance(now);
         let Some(key) = self.lookup(target) else {
+            // Advancing the clock may have made work ready.
+            self.pump();
             return false;
         };
         if let Some(lease) = self.entry(key).lease
@@ -1876,9 +1891,21 @@ impl<P> Core<P> {
         patch: TaskPatch,
     ) -> Result<Updated, UpdateError> {
         self.advance(now);
+        let r = self.apply_update(target, patch);
+        // Also when nothing changed: advancing the clock may have made work ready.
+        self.pump();
+        r
+    }
+
+    fn apply_update(&mut self, target: &TaskRef, patch: TaskPatch) -> Result<Updated, UpdateError> {
         let Some(k) = self.lookup(target) else {
             return Err(UpdateError::NotFound);
         };
+        if patch.deadline == Some(Some(Time::MAX)) {
+            return Err(UpdateError::Invalid(
+                "the deadline is too far in the future; remove it instead",
+            ));
+        }
         if let Some(tags) = &patch.tags
             && tags.iter().any(|(name, _)| name.starts_with("cronoq."))
         {
@@ -1900,23 +1927,34 @@ impl<P> Core<P> {
             None => old_deadline,
             Some(d) => d.unwrap_or(Time::MAX),
         };
-        // The task's tags after the change: the engine's own, then the caller's.
+        // The task's tags after the change: the caller's, then the engine's own.
         let tags: Option<Tags> = patch.tags.map(|new| {
-            let mut all: Vec<(Arc<str>, Arc<str>)> = self
-                .entry(k)
-                .tags
-                .iter()
-                .flat_map(|t| t.iter())
-                .filter(|(name, _)| name.starts_with("cronoq."))
-                .cloned()
-                .collect();
-            all.extend(new);
+            let mut all = new;
+            all.extend(
+                self.entry(k)
+                    .tags
+                    .iter()
+                    .flat_map(|t| t.iter())
+                    .filter(|(name, _)| name.starts_with("cronoq."))
+                    .cloned(),
+            );
             all.into()
         });
-        let tags_changed = tags.as_ref().is_some_and(|t| {
-            let e = self.entry(k);
-            e.tags.as_ref().map_or(!t.is_empty(), |old| old != t)
+        // The same pairs in another order are not a change.
+        let tags = tags.filter(|t| {
+            let sorted = |tags: &[(Arc<str>, Arc<str>)]| {
+                let mut v: Vec<_> = tags.to_vec();
+                v.sort();
+                v
+            };
+            let old = self
+                .entry(k)
+                .tags
+                .as_ref()
+                .map_or(Vec::new(), |o| sorted(o));
+            old != sorted(t)
         });
+        let tags_changed = tags.is_some();
         let deferred = status == TaskStatus::Running;
         let changed = class != old_class || deadline != old_deadline || tags_changed;
         if !changed {
@@ -1967,6 +2005,11 @@ impl<P> Core<P> {
             && (class != old_class || old_deadline != Time::MAX);
         let vtag = if retag {
             let tenant = self.entry(k).tenant;
+            if class != old_class && old_deadline == Time::MAX {
+                // The task was charged to its tenant in the old class when it got its tag
+                // there. Give that back, so a change of class costs the tenant nothing extra.
+                self.fair_refund(pool, old_class as usize, tenant);
+            }
             Some(self.fair_tag(pool, class as usize, tenant))
         } else {
             None
@@ -2131,21 +2174,26 @@ impl<P> Core<P> {
             .collect();
         ids.sort_unstable_by_key(|(id, _)| *id);
         ids.truncate(limit);
-        ids.into_iter()
-            .map(|(id, k)| {
-                let e = self.entry(k);
-                TaskSummary {
-                    id,
-                    key: e.key.clone(),
-                    pool: self.pools[e.pool as usize].cfg.name.clone(),
-                    kind: self.kinds[e.kind as usize].clone(),
-                    priority: Priority::from_index(e.class as usize).unwrap_or_default(),
-                    status: e.status,
-                    attempt: e.attempt,
-                    tenant: (e.tenant != 0).then(|| self.tenants[e.tenant as usize].clone()),
-                }
-            })
-            .collect()
+        ids.into_iter().map(|(_, k)| self.summary(k)).collect()
+    }
+
+    /// One live task, by id or key; `None` for a task that is unknown or has finished.
+    pub fn task(&self, target: &TaskRef) -> Option<TaskSummary> {
+        self.lookup(target).map(|k| self.summary(k))
+    }
+
+    fn summary(&self, k: Key) -> TaskSummary {
+        let e = self.entry(k);
+        TaskSummary {
+            id: e.id,
+            key: e.key.clone(),
+            pool: self.pools[e.pool as usize].cfg.name.clone(),
+            kind: self.kinds[e.kind as usize].clone(),
+            priority: Priority::from_index(e.class as usize).unwrap_or_default(),
+            status: e.status,
+            attempt: e.attempt,
+            tenant: (e.tenant != 0).then(|| self.tenants[e.tenant as usize].clone()),
+        }
     }
 
     /// Number of distinct unknown keys that live tasks are waiting for.

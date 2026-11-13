@@ -66,6 +66,7 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `cancel(target)` | `bool` | `false` if the task already finished. |
 | `update(target, Update)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. `Update::new()` with `priority(p)`, `deadline_in(d)`, `deadline_at(t)`, `no_deadline()`, `tags(pairs)`. `Updated` has `id`, `status`, `deferred` and `changed`. |
 | `status(target)` | `Option<TaskStatus>` | `None` for unknown tasks. |
+| `task(target)` | `Option<TaskSummary>` | One task that has not finished (pool, kind, key, priority, status, attempt, tenant); `None` if unknown or finished. |
 | `list_tasks(pools, statuses, after, limit)` | `Vec<TaskSummary>` | Live tasks in id order, filtered by pool (any if empty) and status (any if empty), with ids above `after`. Finished tasks are listed by a durable store (`StoreQueries::list_finished`). |
 | `list_recurring()` | `Vec<RecurringInfo>` | Recurring schedules with their next occurrence and latest task. |
 | `snapshot()` | `Snapshot` | Metrics and quality signals. |

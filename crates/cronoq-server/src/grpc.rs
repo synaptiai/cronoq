@@ -749,11 +749,16 @@ pub async fn update(
     target: TaskRef,
     update: cronoq::Update,
 ) -> Result<pb::UpdateResponse, Status> {
+    let priority = update.new_priority();
     let u = app
         .sched
         .update(target, update)
         .await
         .map_err(convert::error)?;
+    if let Some(p) = priority {
+        // Lookups read the priority from this cache, which the event stream fills later.
+        app.info.set_priority(u.id.0, p);
+    }
     Ok(pb::UpdateResponse {
         id: u.id.0,
         status: convert::status(u.status) as i32,
@@ -774,17 +779,28 @@ pub async fn authorize_task_of_tenant(
         return Ok(target);
     };
     let id = resolve_id(app, &target).await?.ok_or_else(not_found)?;
-    let tenant = match app.info.get(id.0) {
-        Some(m) => m.tenant,
-        None => match &app.queries {
-            Some(q) => q
-                .get_task(&TaskRef::Id(id))
-                .await
-                .map_err(store_error)?
-                .and_then(|r| r.tenant.map(|t| Arc::from(t.as_str()))),
-            None => None,
-        },
-    };
+    // The task cache knows the tenant of tasks submitted to this process. After a restart, or
+    // for a task a schedule created, its entry comes from events, which carry no tenant: then
+    // the store knows, and without a store the scheduler does for pools that share capacity
+    // between tenants. A task whose tenant cannot be established is not reachable.
+    let mut tenant = app.info.get(id.0).and_then(|m| m.tenant);
+    if tenant.is_none()
+        && let Some(q) = &app.queries
+    {
+        tenant = q
+            .get_task(&TaskRef::Id(id))
+            .await
+            .map_err(store_error)?
+            .and_then(|r| r.tenant.map(|t| Arc::from(t.as_str())));
+    }
+    if tenant.is_none() {
+        tenant = app
+            .sched
+            .task(id)
+            .await
+            .map_err(convert::error)?
+            .and_then(|t| t.tenant);
+    }
     match tenant {
         Some(t) if t == *pinned => Ok(TaskRef::Id(id)),
         _ => Err(not_found()),

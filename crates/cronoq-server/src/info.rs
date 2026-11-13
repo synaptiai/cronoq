@@ -130,8 +130,16 @@ impl TaskInfoCache {
         if e.key.is_none() {
             e.key = ev.key.clone();
         }
-        e.status = Some(ev.status);
         e.priority = Some(ev.priority);
+        if ev.kind == cronoq::EventKind::Updated {
+            // Not a transition: the status, attempt and timestamps stand.
+            if e.status.is_none() {
+                e.status = Some(ev.status);
+            }
+            Self::evict(&mut st, self.cap);
+            return;
+        }
+        e.status = Some(ev.status);
         e.attempt = e.attempt.max(ev.attempt);
         if ev.status == TaskStatus::Running {
             e.started_ns = Some(at_ns);
@@ -143,6 +151,13 @@ impl TaskInfoCache {
             e.message = Some(m.clone());
         }
         Self::evict(&mut st, self.cap);
+    }
+
+    /// Record the priority of a task that was just updated, if the task is known here.
+    pub fn set_priority(&self, id: u64, priority: Priority) {
+        if let Some(m) = self.inner.lock().unwrap().map.get_mut(&id) {
+            m.priority = Some(priority);
+        }
     }
 
     /// Details of a task.
@@ -221,6 +236,25 @@ mod tests {
             (Some(TaskStatus::Failed), 1, Some(10), Some(20))
         );
         assert_eq!(m.message.as_deref(), Some("boom"));
+        // An update is not a transition: only the priority follows it.
+        let updated = StatusEvent {
+            priority: cronoq::Priority::High,
+            kind: cronoq::EventKind::Updated,
+            attempt: 7,
+            ..ev(TaskStatus::Running, None)
+        };
+        c.on_event(&updated, &p, 500);
+        let m = c.get(1).unwrap();
+        assert_eq!(
+            (m.status, m.attempt, m.started_ns, m.finished_ns, m.priority),
+            (
+                Some(TaskStatus::Failed),
+                1,
+                Some(10),
+                Some(20),
+                Some(cronoq::Priority::High)
+            )
+        );
         assert_eq!(c.id_for_key("k1"), Some(1));
         c.on_submit(
             2,

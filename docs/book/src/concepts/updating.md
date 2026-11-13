@@ -21,7 +21,9 @@ Everything else is fixed at submission: payload, kind, pool, key, dependencies, 
 labels, tenant, retry policy and timeout.
 
 Fields that are not named keep their value. Naming the values a task already has succeeds and
-changes nothing (`changed` is false in the answer), so an update can be repeated safely.
+changes nothing (`changed` is false in the answer, and nothing is stored or published), so an
+update can be repeated safely. The same tags in another order are the same tags. A deadline too
+far in the future for the scheduler's clock is refused as invalid; remove the deadline instead.
 
 ```rust
 use cronoq::{Priority, Update};
@@ -51,7 +53,7 @@ curl -s -X PATCH $CRONOQ/v1/tasks/by-key/index-doc-42 -H "$AUTH" \
 | Waiting for a [resource](resources.md) | The values are stored, but the task keeps its place among that resource's waiters, which are served in the order they started waiting whatever their class. The new priority counts once the resource lets the task through. |
 | Running | The attempt is not interrupted and keeps the tags it started with. The new values apply to what follows it: a retry, if the attempt fails. The answer says `deferred: true`. |
 | Finished, or unknown | Refused: *not found*. A finished task has nothing left to schedule. |
-| Scheduled with a [fixed start](fixed-starts.md) | Refused: *fixed start*. Its slot was reserved against the pool's capacity when it was admitted; cancel and resubmit it to change it. |
+| Submitted with a [fixed start](fixed-starts.md), in any status, including occurrences of a recurring schedule | Refused: *fixed start*. Its slot was reserved against the pool's capacity when it was admitted; cancel and resubmit it to change it. |
 
 An update never changes a task's status and never counts as an attempt.
 
@@ -61,8 +63,10 @@ not change.
 
 In a pool that [shares capacity between tenants](fairness.md), tasks without a deadline are
 ordered by tenant share and not by submission order. A task that changes class there (or loses
-its deadline) joins its tenant's work in the new class as of the update; the tenant's share is
-the same as before.
+its deadline) joins its tenant's work in the new class as of the update, behind what the tenant
+already has waiting in that class. The tenant is charged for the task in its new class and
+refunded in the old one, so changing class costs a tenant none of its share, however often it
+is done.
 
 ## Events
 
@@ -82,6 +86,8 @@ restores the task with its new priority, deadline and tags. No schema migration 
 
 Over the server, `Update` needs the `client` role, like `Cancel`. Credentials limited to
 certain pools or pinned to a tenant can only update tasks in those pools and of that tenant;
-any other task is reported as not found. With [shards](sharding.md), an update is forwarded to
+any other task is reported as not found. So is a task whose tenant the server can no longer
+establish, which can happen only without a durable store, for a task old enough to have left
+the server's task cache (`outputs.info_entries`). With [shards](sharding.md), an update is forwarded to
 the shard that holds the task; an update by key is refused while a shard cannot be asked,
 since that shard might hold the same key.

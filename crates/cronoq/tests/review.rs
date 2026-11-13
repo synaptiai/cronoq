@@ -356,6 +356,78 @@ async fn cancel_and_recurring_wait_for_durability() {
     add.await.unwrap().unwrap();
 }
 
+// --- An update is acknowledged, and its event published, only once it is durable; a store
+//     failure reaches the caller.
+#[tokio::test]
+async fn update_waits_for_durability() {
+    let store = Arc::new(ScriptedStore::default());
+    let gate = Arc::new(Notify::new());
+    let g = gate.clone();
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 1).executor_fn(move |_c, x: Arc<u64>| {
+                let g = g.clone();
+                async move {
+                    if *x == 0 {
+                        g.notified().await;
+                    }
+                    Ok::<_, TaskError>(*x)
+                }
+            }),
+        )
+        .emit_transitions(true)
+        .store(Shared(store.clone()))
+        .build()
+        .await
+        .unwrap();
+    let blocker = s.submit(Task::new(0)).await.unwrap();
+    while s.status(blocker.id()).await.unwrap() != Some(TaskStatus::Running) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    s.enqueue(Task::new(1).key("k").priority(Priority::Low))
+        .await
+        .unwrap();
+    let mut events = s.events();
+    let commits = store.commits.load(Ordering::SeqCst);
+
+    store.hold.store(true, Ordering::SeqCst);
+    let s2 = s.clone();
+    let update =
+        tokio::spawn(async move { s2.update("k", Update::new().priority(Priority::High)).await });
+    // An update that changes nothing answers in order, behind the one still being stored.
+    let s3 = s.clone();
+    let same =
+        tokio::spawn(async move { s3.update("k", Update::new().priority(Priority::High)).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !update.is_finished() && !same.is_finished(),
+        "acked before commit"
+    );
+    assert!(events.try_recv().is_err(), "published before commit");
+    store.hold.store(false, Ordering::SeqCst);
+    store.gate.notify_waiters();
+    let r = update.await.unwrap().unwrap();
+    assert!(r.changed && !r.deferred);
+    assert!(!same.await.unwrap().unwrap().changed);
+    assert_eq!(store.commits.load(Ordering::SeqCst), commits + 1);
+    let e = events.recv().await.unwrap();
+    assert_eq!(
+        (e.kind, e.priority, e.status),
+        (EventKind::Updated, Priority::High, TaskStatus::Ready)
+    );
+
+    // A store that fails for good: the caller is told, not answered as if it had worked.
+    store.other.store(100, Ordering::SeqCst);
+    let r = s
+        .update("k", Update::new().priority(Priority::Critical))
+        .await;
+    assert!(
+        matches!(r, Err(Error::Store(StoreError::Other(_)))),
+        "{r:?}"
+    );
+    gate.notify_waiters();
+}
+
 // --- Leadership is released when recovery fails, so a standby can take over.
 #[tokio::test]
 async fn failed_recovery_releases_leadership() {

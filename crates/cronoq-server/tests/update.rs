@@ -212,6 +212,15 @@ async fn a_promoted_task_is_leased_first_and_a_running_one_is_left_alone() {
         .into_inner();
     assert!(r.deferred && r.changed);
     assert_eq!(r.status, pb::TaskStatus::Running as i32);
+    // An update is not a transition: the attempt's start time stands. Wait for the update's
+    // event to pass through the server before reading it.
+    let started = info(&mut c, running).await.started_unix_ns;
+    assert!(started.is_some());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = info(&mut c, running).await;
+    assert_eq!(after.started_unix_ns, started);
+    assert_eq!(after.status, pb::TaskStatus::Running as i32);
+    assert_eq!(after.priority, pb::Priority::Critical as i32);
 
     let complete = |lease: u64| pb::WorkerMessage {
         msg: Some(pb::worker_message::Msg::Complete(pb::Complete {
@@ -423,6 +432,17 @@ async fn credentials_limit_which_tasks_can_be_updated() {
             .changed
     );
 
+    // By key as well.
+    let mut keyed = spec(b"globex-keyed");
+    keyed.tenant = "globex".into();
+    keyed.key = "globex-key".into();
+    queued(&mut any, keyed, pb::Priority::Low).await;
+    let e = acme
+        .update(priority(by_key("globex-key"), pb::Priority::High))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::NotFound);
+
     // Credentials limited to a pool reach that pool's tasks only.
     let e = batch
         .update(priority(by_id(own), pb::Priority::Critical))
@@ -452,6 +472,69 @@ async fn credentials_limit_which_tasks_can_be_updated() {
         assert_eq!(e.code(), tonic::Code::PermissionDenied);
     }
     s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sending_the_tags_a_task_has_changes_nothing() {
+    let s = TestServer::start("").await;
+    let mut c = s.tasks(CLIENT).await;
+    let mut tagged = spec(b"x");
+    tagged.content_type = "text/plain".into();
+    tagged.tags = [("team".to_string(), "search".to_string())].into();
+    let id = queued(&mut c, tagged, pb::Priority::Normal).await;
+    let tags = |v: &str| pb::UpdateRequest {
+        set_tags: true,
+        tags: [("team".to_string(), v.to_string())].into(),
+        ..update(by_id(id))
+    };
+    assert!(!c.update(tags("search")).await.unwrap().into_inner().changed);
+    assert!(c.update(tags("ads")).await.unwrap().into_inner().changed);
+    assert!(!c.update(tags("ads")).await.unwrap().into_inner().changed);
+    s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tenant_credentials_reach_their_tasks_after_a_restart() {
+    let dir = std::env::temp_dir().join(format!("cronoq-update-tenant-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = format!(
+        "[store]\nkind = \"sqlite\"\npath = \"{}\"\n\
+         [[auth.tokens]]\ntoken = \"{ACME}\"\nrole = \"client\"\ntenant = \"acme\"\n",
+        dir.join("state.db").display()
+    );
+    let s = TestServer::start(&cfg).await;
+    let mut acme = s.tasks(ACME).await;
+    let mut any = s.tasks(CLIENT).await;
+    let a = queued(&mut acme, spec(b"a"), pb::Priority::Low).await;
+    let b = queued(&mut acme, spec(b"b"), pb::Priority::Low).await;
+    let mut theirs = spec(b"globex");
+    theirs.tenant = "globex".into();
+    let theirs = queued(&mut any, theirs, pb::Priority::Low).await;
+    s.stop().await;
+
+    // The new process knows these tasks from its store and from events only.
+    let s = TestServer::start(&cfg).await;
+    let mut acme = s.tasks(ACME).await;
+    let mut w = raw_worker(&s, WORKER, register("default", 1))
+        .await
+        .unwrap();
+    let leased = next_lease(&mut w).await.task_id;
+    for id in [a, b] {
+        let r = acme
+            .update(priority(by_id(id), pb::Priority::High))
+            .await
+            .unwrap_or_else(|e| panic!("task {id} (leased: {leased}): {e}"))
+            .into_inner();
+        assert!(r.changed);
+    }
+    let e = acme
+        .update(priority(by_id(theirs), pb::Priority::High))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::NotFound);
+    s.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread")]

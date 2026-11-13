@@ -513,6 +513,16 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         self.call(|reply| Cmd::Status { target, reply }).await
     }
 
+    /// One task that has not finished, by id or key, as the engine holds it: `None` for a task
+    /// that is unknown or has finished.
+    pub async fn task(
+        &self,
+        target: impl Into<TaskRef>,
+    ) -> Result<Option<crate::TaskSummary>, Error> {
+        let target = target.into();
+        self.call(|reply| Cmd::Task { target, reply }).await
+    }
+
     /// Live tasks in id order: those in one of `pools` (any if empty) with one of `statuses`
     /// (any if empty) and ids above `after`, at most `limit`. Finished tasks are not included;
     /// a durable store lists those

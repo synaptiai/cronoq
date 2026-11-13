@@ -21,6 +21,8 @@ contain breaking changes; they are called out under **Changed**.
 - Status events carry the task's `priority` and a `kind`. With `emit_transitions`
   (`all_transitions` over `Watch`), an update is published as an event of kind `Updated` with
   the task's unchanged status.
+- `Scheduler::task(target)` (Rust) and `Core::task`: one task that has not finished, by id or
+  key, with its pool, kind, priority, status, attempt and tenant.
 - Priority and urgency settings in the server and the Python package, and per pool everywhere.
   The server reads `[priority]` (`base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and
   `[urgency]` (`max`, `window_s`, `overdue_rate`, `overdue_cap`), and each pool accepts
@@ -54,6 +56,9 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Fixed
 
+- A cancel of an unknown or finished task that was the first call after a retry or a delayed
+  start became due left that work waiting until the next call to the scheduler. It is now
+  dispatched at once.
 - The Rust worker client (`cronoq_server::worker`) now gives its slots back when it starts
   draining. Before, the server kept leasing to it and it refused each lease; when no other
   worker could take one, the attempt failed and counted against the task's retry budget, so a

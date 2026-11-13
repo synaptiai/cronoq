@@ -793,7 +793,8 @@ class Client:
             raise ValueError("use only one of deadline_in, deadline_at and clear_deadline")
         req = pb.UpdateRequest(
             task=_ref(ref),
-            priority=cast(Any, _priority(priority)),
+            # Unspecified keeps the task's class.
+            priority=cast(Any, pb.PRIORITY_UNSPECIFIED if priority is None else _priority(priority)),
             clear_deadline=bool(clear_deadline),
         )
         if deadline_in is not None:

@@ -279,6 +279,10 @@ impl Update {
         self
     }
 
+    /// The priority class this update moves the task to, if it names one.
+    pub fn new_priority(&self) -> Option<Priority> {
+        self.priority
+    }
     pub(crate) fn resolve(self, clock: &Clock) -> Result<cronoq_core::TaskPatch, Error> {
         if let Some(tags) = &self.tags
             && tags

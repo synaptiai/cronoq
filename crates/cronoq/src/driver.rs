@@ -76,6 +76,10 @@ pub(crate) enum Cmd<P, O> {
         target: TaskRef,
         reply: Reply<Option<TaskStatus>>,
     },
+    Task {
+        target: TaskRef,
+        reply: Reply<Option<cronoq_core::TaskSummary>>,
+    },
     ListTasks {
         pools: Vec<Arc<str>>,
         statuses: Vec<TaskStatus>,
@@ -691,6 +695,9 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             },
             Cmd::Status { target, reply } => {
                 let _ = reply.send(self.core.status(&target));
+            }
+            Cmd::Task { target, reply } => {
+                let _ = reply.send(self.core.task(&target));
             }
             Cmd::ListTasks {
                 pools,

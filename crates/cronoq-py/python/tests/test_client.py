@@ -311,6 +311,13 @@ async def test_update_queued_task(client: Client) -> None:
     assert seen[-1].updated and seen[-1].priority == "high" and seen[-1].status == "ready"
     again = await client.update(sub.id, priority="high")
     assert not again.changed
+    # Arguments left out keep their value: the class stays high.
+    only_deadline = await client.update(sub.id, deadline_in=120)
+    assert only_deadline.changed
+    assert (await client.get(sub.id)).priority == "high"
+    same_tags = await client.update(sub.id, tags={"b": "2"})
+    assert not same_tags.changed
+    assert (await client.get(sub.id)).priority == "high"
 
     with pytest.raises(ValueError):
         await client.update("upd", deadline_in=1, clear_deadline=True)

@@ -235,17 +235,100 @@ fn tags_are_replaced_except_the_engines_own() {
         panic!("an update is persisted");
     };
     let stored: Vec<(&str, &str)> = tags.iter().map(|(k, v)| (&**k, &**v)).collect();
-    assert_eq!(stored, [("cronoq.note", "kept"), ("new", "2")]);
+    assert_eq!(stored, [("new", "2"), ("cronoq.note", "kept")]);
 
     s.run_to_completion(100.0);
     let started = s.started.iter().find(|x| x.id == id).unwrap();
     assert_eq!(
         started.tags,
         [
-            ("cronoq.note".to_string(), "kept".to_string()),
-            ("new".to_string(), "2".to_string())
+            ("new".to_string(), "2".to_string()),
+            ("cronoq.note".to_string(), "kept".to_string())
         ]
     );
+}
+
+#[test]
+fn the_same_tags_in_any_order_are_not_a_change() {
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 1)],
+        persist: true,
+        ..Default::default()
+    });
+    s.submit(job(10.0));
+    // As the server submits them: the caller's tags, then the engine's own.
+    let id = s.submit(
+        job(1.0)
+            .tag("b", "2")
+            .tag("a", "1")
+            .tag("cronoq.content_type", "text/plain"),
+    );
+    let before = s.persisted.len();
+    for tags in [[("a", "1"), ("b", "2")], [("b", "2"), ("a", "1")]] {
+        let tags = tags
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect();
+        let r = s.update(id, TaskPatch::default().tags(tags)).unwrap();
+        assert!(!r.changed);
+    }
+    assert_eq!(s.persisted.len(), before, "nothing is written");
+    let fewer = TaskPatch::default().tags(vec![("a".into(), "1".into())]);
+    assert!(s.update(id, fewer).unwrap().changed);
+}
+
+#[test]
+fn a_deadline_beyond_the_clock_is_refused() {
+    let mut s = one_worker();
+    s.submit(job(10.0));
+    let id = s.submit(job(1.0).deadline(t(50.0)));
+    assert!(matches!(
+        s.update(id, TaskPatch::default().deadline(Time::MAX)),
+        Err(UpdateError::Invalid(_))
+    ));
+    // A deadline that has already passed is accepted: the task is as urgent as it can be.
+    let other = s.submit(job(1.0));
+    assert!(
+        s.update(other, TaskPatch::default().deadline(t(0.0)))
+            .unwrap()
+            .changed
+    );
+    s.run_to_completion(100.0);
+    assert_eq!(after_blocker(&s), [other, id]);
+}
+
+#[test]
+fn an_update_that_changes_nothing_still_dispatches_work_that_became_due() {
+    for attempt in 0..3 {
+        let mut s = one_worker();
+        let flaky = s.submit(TaskSpec::new(Job::flaky(1.0, 1)).retry(RetryPolicy {
+            max_attempts: 3,
+            initial_backoff: secs(10.0),
+            jitter: false,
+            ..Default::default()
+        }));
+        s.run_until(t(2.0));
+        assert_eq!(s.status(flaky), Some(TaskStatus::Retrying));
+        // The first call after the retry became due is an update with nothing to do.
+        s.now = t(20.0);
+        match attempt {
+            0 => assert_eq!(
+                s.update(TaskId(u64::MAX), class(Priority::High)),
+                Err(UpdateError::NotFound)
+            ),
+            1 => assert!(!s.update(flaky, class(Priority::Normal)).unwrap().changed),
+            _ => {
+                let now = s.now;
+                assert!(!s.core.cancel(now, &TaskRef::Id(TaskId(u64::MAX))));
+                s.drain();
+            }
+        }
+        assert_eq!(
+            s.status(flaky),
+            Some(TaskStatus::Running),
+            "case {attempt}: the retry starts without another call"
+        );
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -376,6 +459,32 @@ fn updates_in_a_fair_pool_keep_the_fair_queues_consistent() {
     );
 }
 
+#[test]
+fn changing_class_back_and_forth_costs_the_tenant_nothing() {
+    let run = |flips: usize| {
+        let mut pool = PoolConfig::fixed("default", 1);
+        pool.fairness = Some(Fairness::default());
+        let mut s = Sim::with_pool(pool);
+        s.submit(job(10.0).tenant("z"));
+        let a1 = s.submit(job(1.0).tenant("a"));
+        for _ in 0..flips {
+            s.update(a1, class(Priority::High)).unwrap();
+            s.update(a1, class(Priority::Normal)).unwrap();
+        }
+        let a2 = s.submit(job(1.0).tenant("a"));
+        let b: Vec<TaskId> = (0..3).map(|_| s.submit(job(1.0).tenant("b"))).collect();
+        s.run_to_completion(100.0);
+        let order = after_blocker(&s);
+        let pos = |id| order.iter().position(|x| *x == id).unwrap();
+        (pos(a1), pos(a2), pos(b[0]), pos(b[1]), pos(b[2]))
+    };
+    let untouched = run(0);
+    assert_eq!(run(1), untouched);
+    assert_eq!(run(5), untouched);
+    // Tenant a still alternates with tenant b.
+    assert!(untouched.1 < untouched.4, "{untouched:?}");
+}
+
 // ------------------------------------------------------------------------------------------
 // Events and durability
 // ------------------------------------------------------------------------------------------
@@ -463,6 +572,14 @@ fn an_updated_task_recovers_with_its_new_values() {
     let low = s.submit(job(1.0).priority(Priority::Low));
     let normal = s.submit(job(1.0));
     s.update(low, class(Priority::High)).unwrap();
+    let late = s.submit(job(1.0).priority(Priority::Low));
+    s.update(
+        late,
+        TaskPatch::default()
+            .deadline(t(12.0))
+            .tags(vec![("why".into(), "due".into())]),
+    )
+    .unwrap();
 
     // Rebuild the engine from what was persisted, as a store would hand it back.
     let mut tasks: Vec<RecoveredTask<Job>> = Vec::new();
@@ -508,4 +625,10 @@ fn an_updated_task_recovers_with_its_new_values() {
     let order = r.order();
     let pos = |id| order.iter().position(|x| *x == id).unwrap();
     assert!(pos(low) < pos(normal), "{order:?}");
+    assert!(
+        pos(late) < pos(normal),
+        "the deadline is restored: {order:?}"
+    );
+    let started = r.started.iter().find(|x| x.id == late).unwrap();
+    assert_eq!(started.tags, [("why".to_string(), "due".to_string())]);
 }
