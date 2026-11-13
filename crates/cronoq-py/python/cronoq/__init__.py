@@ -33,6 +33,7 @@ from ._cronoq import (
     Task,
     TaskContext,
     TaskHandle,
+    Updated,
     UrgencyConfig,
     __version__,
 )
@@ -44,6 +45,7 @@ from .errors import (
     SchedulerError,
     SubmitError,
     TaskFailed,
+    UpdateError,
 )
 
 __all__ = [
@@ -72,6 +74,8 @@ __all__ = [
     "TaskContext",
     "TaskFailed",
     "TaskHandle",
+    "UpdateError",
+    "Updated",
     "UrgencyConfig",
     "__version__",
 ]

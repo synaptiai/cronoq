@@ -26,7 +26,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file cronoq/v1/cronoq.proto.
  */
 export const file_cronoq_v1_cronoq: GenFile = /*@__PURE__*/
-  fileDesc("ChZjcm9ub3EvdjEvY3Jvbm9xLnByb3RvEgljcm9ub3EudjEiMAoHVGFza1JlZhIMCgJpZBgBIAEoBEgAEg0KA2tleRgCIAEoCUgAQggKBnRhcmdldCJMCgNEZXASIgoGdGFyZ2V0GAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSIQoEY29uZBgCIAEoDjITLmNyb25vcS52MS5FZGdlQ29uZCJ5CgtSZXRyeVBvbGljeRIUCgxtYXhfYXR0ZW1wdHMYASABKA0SGQoRaW5pdGlhbF9iYWNrb2ZmX3MYAiABKAESEgoKbXVsdGlwbGllchgDIAEoARIVCg1tYXhfYmFja29mZl9zGAQgASgBEg4KBmppdHRlchgFIAEoCCLbBgoIVGFza1NwZWMSDwoHcGF5bG9hZBgBIAEoDBIUCgxjb250ZW50X3R5cGUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRwb29sGAQgASgJEiUKCHByaW9yaXR5GAUgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EgsKA2tleRgGIAEoCRIaCg1kZWFkbGluZV9pbl9zGAcgASgBSACIAQESHQoQZGVhZGxpbmVfdW5peF9ucxgIIAEoA0gBiAEBEhcKCnN0YXJ0X2luX3MYCSABKAFIAogBARIaCg1zdGFydF91bml4X25zGAogASgDSAOIAQESGAoLdG9sZXJhbmNlX3MYCyABKAFIBIgBARImCgdvbl9taXNzGAwgASgOMhUuY3Jvbm9xLnYxLk1pc3NQb2xpY3kSHAoPZHVyYXRpb25faGludF9zGA0gASgBSAWIAQESFgoJdGltZW91dF9zGA4gASgBSAaIAQESJQoFcmV0cnkYDyABKAsyFi5jcm9ub3EudjEuUmV0cnlQb2xpY3kSHAoEZGVwcxgQIAMoCzIOLmNyb25vcS52MS5EZXASNQoJcmVzb3VyY2VzGBEgAygLMiIuY3Jvbm9xLnYxLlRhc2tTcGVjLlJlc291cmNlc0VudHJ5EisKBHRhZ3MYEiADKAsyHS5jcm9ub3EudjEuVGFza1NwZWMuVGFnc0VudHJ5Ei8KBmxhYmVscxgTIAMoCzIfLmNyb25vcS52MS5UYXNrU3BlYy5MYWJlbHNFbnRyeRIOCgZ0ZW5hbnQYFCABKAkaMAoOUmVzb3VyY2VzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgNOgI4ARorCglUYWdzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ARotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQhAKDl9kZWFkbGluZV9pbl9zQhMKEV9kZWFkbGluZV91bml4X25zQg0KC19zdGFydF9pbl9zQhAKDl9zdGFydF91bml4X25zQg4KDF90b2xlcmFuY2Vfc0ISChBfZHVyYXRpb25faGludF9zQgwKCl90aW1lb3V0X3MicAoNU3VibWl0UmVxdWVzdBIhCgR0YXNrGAEgASgLMhMuY3Jvbm9xLnYxLlRhc2tTcGVjEgwKBHdhaXQYAiABKAgSGwoOd2FpdF90aW1lb3V0X3MYAyABKAFIAIgBAUIRCg9fd2FpdF90aW1lb3V0X3MiVgoOU3VibWl0UmVzcG9uc2USCgoCaWQYASABKAQSEQoJZHVwbGljYXRlGAIgASgIEiUKBnJlc3VsdBgDIAEoCzIVLmNyb25vcS52MS5UYXNrUmVzdWx0IjgKElN1Ym1pdEJhdGNoUmVxdWVzdBIiCgV0YXNrcxgBIAMoCzITLmNyb25vcS52MS5UYXNrU3BlYyI/ChNTdWJtaXRCYXRjaFJlc3BvbnNlEigKBXRhc2tzGAEgAygLMhkuY3Jvbm9xLnYxLlN1Ym1pdFJlc3BvbnNlIjEKDUNhbmNlbFJlcXVlc3QSIAoEdGFzaxgBIAEoCzISLmNyb25vcS52MS5UYXNrUmVmIiMKDkNhbmNlbFJlc3BvbnNlEhEKCWNhbmNlbGxlZBgBIAEoCCIuCgpHZXRSZXF1ZXN0EiAKBHRhc2sYASABKAsyEi5jcm9ub3EudjEuVGFza1JlZiKHAwoIVGFza0luZm8SCgoCaWQYASABKAQSJQoGc3RhdHVzGAIgASgOMhUuY3Jvbm9xLnYxLlRhc2tTdGF0dXMSDAoEcG9vbBgDIAEoCRILCgNrZXkYBCABKAkSDAoEa2luZBgFIAEoCRIPCgdhdHRlbXB0GAYgASgNEhQKDG1heF9hdHRlbXB0cxgHIAEoDRIcCg9jcmVhdGVkX3VuaXhfbnMYCCABKANIAIgBARIcCg9zdGFydGVkX3VuaXhfbnMYCSABKANIAYgBARIdChBmaW5pc2hlZF91bml4X25zGAogASgDSAKIAQESDwoHbWVzc2FnZRgLIAEoCRIYChBvdXRwdXRfYXZhaWxhYmxlGAwgASgIEg4KBnRlbmFudBgNIAEoCRIlCghwcmlvcml0eRgOIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eUISChBfY3JlYXRlZF91bml4X25zQhIKEF9zdGFydGVkX3VuaXhfbnNCEwoRX2ZpbmlzaGVkX3VuaXhfbnMiaAoQTGlzdFRhc2tzUmVxdWVzdBINCgVwb29scxgBIAMoCRInCghzdGF0dXNlcxgCIAMoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEg0KBWFmdGVyGAMgASgEEg0KBWxpbWl0GAQgASgNImcKEUxpc3RUYXNrc1Jlc3BvbnNlEiIKBXRhc2tzGAEgAygLMhMuY3Jvbm9xLnYxLlRhc2tJbmZvEhIKCm5leHRfYWZ0ZXIYAiABKAQSGgoSdW5hdmFpbGFibGVfc2hhcmRzGAMgAygJIooBCgpUYXNrUmVzdWx0EgoKAmlkGAEgASgEEiUKBnN0YXR1cxgCIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEhMKBm91dHB1dBgDIAEoDEgAiAEBEg8KB21lc3NhZ2UYBCABKAkSGAoQb3V0cHV0X2F2YWlsYWJsZRgFIAEoCEIJCgdfb3V0cHV0IlUKC1dhaXRSZXF1ZXN0EiAKBHRhc2sYASABKAsyEi5jcm9ub3EudjEuVGFza1JlZhIWCgl0aW1lb3V0X3MYAiABKAFIAIgBAUIMCgpfdGltZW91dF9zIlEKDFdhdGNoUmVxdWVzdBINCgVwb29scxgBIAMoCRILCgNpZHMYAiADKAQSDAoEa2V5cxgDIAMoCRIXCg9hbGxfdHJhbnNpdGlvbnMYBCABKAgikQEKC1N0YXR1c0V2ZW50EgoKAmlkGAEgASgEEgwKBHBvb2wYAiABKAkSCwoDa2V5GAMgASgJEiUKBnN0YXR1cxgEIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEg8KB2F0dGVtcHQYBSABKA0SEgoKYXRfdW5peF9ucxgGIAEoAxIPCgdtZXNzYWdlGAcgASgJIrYBCghSZWdpc3RlchIMCgRwb29sGAEgASgJEg0KBXNsb3RzGAIgASgNEhMKC3dvcmtlcl9uYW1lGAMgASgJEhgKEHByb3RvY29sX3ZlcnNpb24YBCABKA0SLwoGbGFiZWxzGAUgAygLMh8uY3Jvbm9xLnYxLlJlZ2lzdGVyLkxhYmVsc0VudHJ5Gi0KC0xhYmVsc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiGgoJSGVhcnRiZWF0Eg0KBWxlYXNlGAEgASgEIj8KCENvbXBsZXRlEg0KBWxlYXNlGAEgASgEEg4KBm91dHB1dBgCIAEoDBIUCgxjb250ZW50X3R5cGUYAyABKAkiZwoERmFpbBINCgVsZWFzZRgBIAEoBBIPCgdtZXNzYWdlGAIgASgJEhEKCXBlcm1hbmVudBgDIAEoCBIaCg1yZXRyeV9hZnRlcl9zGAQgASgBSACIAQFCEAoOX3JldHJ5X2FmdGVyX3MiGQoIU2V0U2xvdHMSDQoFc2xvdHMYASABKA0iJQoETmFjaxINCgVsZWFzZRgBIAEoBBIOCgZyZWFzb24YAiABKAkiGgoJQ2FuY2VsbGVkEg0KBWxlYXNlGAEgASgEIqoCCg1Xb3JrZXJNZXNzYWdlEicKCHJlZ2lzdGVyGAEgASgLMhMuY3Jvbm9xLnYxLlJlZ2lzdGVySAASKQoJaGVhcnRiZWF0GAIgASgLMhQuY3Jvbm9xLnYxLkhlYXJ0YmVhdEgAEicKCGNvbXBsZXRlGAMgASgLMhMuY3Jvbm9xLnYxLkNvbXBsZXRlSAASHwoEZmFpbBgEIAEoCzIPLmNyb25vcS52MS5GYWlsSAASKAoJc2V0X3Nsb3RzGAUgASgLMhMuY3Jvbm9xLnYxLlNldFNsb3RzSAASHwoEbmFjaxgGIAEoCzIPLmNyb25vcS52MS5OYWNrSAASKQoJY2FuY2VsbGVkGAcgASgLMhQuY3Jvbm9xLnYxLkNhbmNlbGxlZEgAQgUKA21zZyKNAQoKUmVnaXN0ZXJlZBIRCgl3b3JrZXJfaWQYASABKAQSGAoLbGVhc2VfdHRsX3MYAiABKAFIAIgBARINCgVzbG90cxgDIAEoDRIYChBwcm90b2NvbF92ZXJzaW9uGAQgASgNEhkKEW1heF9tZXNzYWdlX2J5dGVzGAUgASgEQg4KDF9sZWFzZV90dGxfcyKKAwoFTGVhc2USDQoFbGVhc2UYASABKAQSDwoHdGFza19pZBgCIAEoBBIPCgdhdHRlbXB0GAMgASgNEg8KB3BheWxvYWQYBCABKAwSFAoMY29udGVudF90eXBlGAUgASgJEgwKBGtpbmQYBiABKAkSCwoDa2V5GAcgASgJEigKBHRhZ3MYCCADKAsyGi5jcm9ub3EudjEuTGVhc2UuVGFnc0VudHJ5EhYKCXRpbWVvdXRfcxgJIAEoAUgAiAEBEh0KEGRlYWRsaW5lX3VuaXhfbnMYCiABKANIAYgBARIMCgRwb29sGAsgASgJEiUKCHByaW9yaXR5GAwgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EhgKC2xlYXNlX3R0bF9zGA0gASgBSAKIAQEaKwoJVGFnc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAFCDAoKX3RpbWVvdXRfc0ITChFfZGVhZGxpbmVfdW5peF9uc0IOCgxfbGVhc2VfdHRsX3MiJgoFQWJvcnQSDQoFbGVhc2UYASABKAQSDgoGcmVhc29uGAIgASgJIi4KCFNodXRkb3duEg4KBnJlYXNvbhgBIAEoCRISCgpub3RfbGVhZGVyGAIgASgIIrIBCg1TZXJ2ZXJNZXNzYWdlEisKCnJlZ2lzdGVyZWQYASABKAsyFS5jcm9ub3EudjEuUmVnaXN0ZXJlZEgAEiEKBWxlYXNlGAIgASgLMhAuY3Jvbm9xLnYxLkxlYXNlSAASIQoFYWJvcnQYAyABKAsyEC5jcm9ub3EudjEuQWJvcnRIABInCghzaHV0ZG93bhgEIAEoCzITLmNyb25vcS52MS5TaHV0ZG93bkgAQgUKA21zZyIHCgVFbXB0eSKTBAoMUG9vbFNuYXBzaG90EgwKBG5hbWUYASABKAkSEAoIY2FwYWNpdHkYAiABKA0SDAoEYnVzeRgDIAEoDRIMCgRoZWxkGAQgASgNEg8KB2Rlc2lyZWQYBSABKA0SGAoQcGVuZGluZ19ieV9jbGFzcxgGIAMoBBIUCgxyZXNlcnZhdGlvbnMYByABKAQSEgoKZGlzcGF0Y2hlZBgIIAEoBBIRCglzdWNjZWVkZWQYCSABKAQSDgoGZmFpbGVkGAogASgEEhoKEnByaW9yaXR5X2FkaGVyZW5jZRgLIAEoARIcChRmaXhlZF9zdGFydF9oaXRfcmF0ZRgMIAEoARITCgt1dGlsaXphdGlvbhgNIAEoARIbChNzY2hlZHVsZV9lZmZpY2llbmN5GA4gASgBEhIKCndhaXRfcDUwX3MYDyABKAESEgoKd2FpdF9wOTBfcxgQIAEoARISCgp3YWl0X3A5OV9zGBEgASgBEgwKBGNvc3QYEiABKAESGQoRd29ya2Vyc19jb25uZWN0ZWQYEyABKAQSJgoGZ3JvdXBzGBQgAygLMhYuY3Jvbm9xLnYxLldvcmtlckdyb3VwEisKCHByaW9yaXR5GBUgASgLMhkuY3Jvbm9xLnYxLlByaW9yaXR5Q29uZmlnEikKB3VyZ2VuY3kYFiABKAsyGC5jcm9ub3EudjEuVXJnZW5jeUNvbmZpZyJiCg5Qcmlvcml0eUNvbmZpZxIMCgRiYXNlGAEgAygBEhIKCmFnaW5nX3JhdGUYAiADKAESDwoHYWdlX2NhcBgDIAMoARIdChVhbGxvd19vdmVydGFraW5nX2hpZ2gYBCABKAgiWQoNVXJnZW5jeUNvbmZpZxILCgNtYXgYASABKAESEAoId2luZG93X3MYAiABKAESFAoMb3ZlcmR1ZV9yYXRlGAMgASgBEhMKC292ZXJkdWVfY2FwGAQgASgBIpABCgtXb3JrZXJHcm91cBIyCgZsYWJlbHMYASADKAsyIi5jcm9ub3EudjEuV29ya2VyR3JvdXAuTGFiZWxzRW50cnkSEAoIY2FwYWNpdHkYAiABKA0SDAoEYnVzeRgDIAEoDRotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIoECCgZUb3RhbHMSEQoJc3VibWl0dGVkGAEgASgEEhIKCmRpc3BhdGNoZWQYAiABKAQSEQoJc3VjY2VlZGVkGAMgASgEEg4KBmZhaWxlZBgEIAEoBBIVCg1kZWFkX2xldHRlcmVkGAUgASgEEhEKCWNhbmNlbGxlZBgGIAEoBBIPCgdza2lwcGVkGAcgASgEEg4KBm1pc3NlZBgIIAEoBBIMCgRzaGVkGAkgASgEEg8KB3JldHJpZXMYCiABKAQSEAoIdGltZW91dHMYCyABKAQSFgoObGVhc2VfZXhwaXJpZXMYDCABKAQSGQoRc3RhbGVfY29tcGxldGlvbnMYDSABKAQiygEKEFNuYXBzaG90UmVzcG9uc2USJgoFcG9vbHMYASADKAsyFy5jcm9ub3EudjEuUG9vbFNuYXBzaG90EhIKCmxpdmVfdGFza3MYAiABKAQSDwoHcnVubmluZxgDIAEoBBIPCgdwZW5kaW5nGAQgASgEEiEKBnRvdGFscxgFIAEoCzIRLmNyb25vcS52MS5Ub3RhbHMSGQoRd29ya2Vyc19jb25uZWN0ZWQYBiABKAQSGgoSdW5hdmFpbGFibGVfc2hhcmRzGAcgAygJIowBChBSZWN1cnJpbmdSZXF1ZXN0EgwKBG5hbWUYASABKAkSDAoEY3JvbhgCIAEoCRIKCgJ0ehgDIAEoCRIlCgh0ZW1wbGF0ZRgEIAEoCzITLmNyb25vcS52MS5UYXNrU3BlYxIjCgdvdmVybGFwGAYgASgOMhIuY3Jvbm9xLnYxLk92ZXJsYXBKBAgFEAYiJgoWUmVtb3ZlUmVjdXJyaW5nUmVxdWVzdBIMCgRuYW1lGAEgASgJIioKF1JlbW92ZVJlY3VycmluZ1Jlc3BvbnNlEg8KB3JlbW92ZWQYASABKAgizgEKCldvcmtlckluZm8SCgoCaWQYASABKAQSDAoEbmFtZRgCIAEoCRIMCgRwb29sGAMgASgJEjEKBmxhYmVscxgEIAMoCzIhLmNyb25vcS52MS5Xb3JrZXJJbmZvLkxhYmVsc0VudHJ5Eg0KBXNsb3RzGAUgASgNEgwKBGJ1c3kYBiABKA0SGQoRY29ubmVjdGVkX3VuaXhfbnMYByABKAMaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASJZChNMaXN0V29ya2Vyc1Jlc3BvbnNlEiYKB3dvcmtlcnMYASADKAsyFS5jcm9ub3EudjEuV29ya2VySW5mbxIaChJ1bmF2YWlsYWJsZV9zaGFyZHMYAiADKAki0AEKDVJlY3VycmluZ0luZm8SDAoEbmFtZRgBIAEoCRIMCgRjcm9uGAIgASgJEgoKAnR6GAMgASgJEgwKBHBvb2wYBCABKAkSDAoEa2luZBgFIAEoCRIjCgdvdmVybGFwGAYgASgOMhIuY3Jvbm9xLnYxLk92ZXJsYXASGQoMbmV4dF91bml4X25zGAcgASgDSACIAQESGQoMbGFzdF90YXNrX2lkGAggASgESAGIAQFCDwoNX25leHRfdW5peF9uc0IPCg1fbGFzdF90YXNrX2lkImAKFUxpc3RSZWN1cnJpbmdSZXNwb25zZRIrCglzY2hlZHVsZXMYASADKAsyGC5jcm9ub3EudjEuUmVjdXJyaW5nSW5mbxIaChJ1bmF2YWlsYWJsZV9zaGFyZHMYAiADKAkqdQoIUHJpb3JpdHkSGAoUUFJJT1JJVFlfVU5TUEVDSUZJRUQQABIVChFQUklPUklUWV9DUklUSUNBTBABEhEKDVBSSU9SSVRZX0hJR0gQAhITCg9QUklPUklUWV9OT1JNQUwQAxIQCgxQUklPUklUWV9MT1cQBCrbAgoKVGFza1N0YXR1cxIbChdUQVNLX1NUQVRVU19VTlNQRUNJRklFRBAAEhcKE1RBU0tfU1RBVFVTX0JMT0NLRUQQARIZChVUQVNLX1NUQVRVU19TQ0hFRFVMRUQQAhIVChFUQVNLX1NUQVRVU19SRUFEWRADEhcKE1RBU0tfU1RBVFVTX1JVTk5JTkcQBBIYChRUQVNLX1NUQVRVU19SRVRSWUlORxAFEhkKFVRBU0tfU1RBVFVTX1NVQ0NFRURFRBAGEhYKElRBU0tfU1RBVFVTX0ZBSUxFRBAHEh0KGVRBU0tfU1RBVFVTX0RFQURfTEVUVEVSRUQQCBIZChVUQVNLX1NUQVRVU19DQU5DRUxMRUQQCRIXChNUQVNLX1NUQVRVU19TS0lQUEVEEAoSFgoSVEFTS19TVEFUVVNfTUlTU0VEEAsSFAoQVEFTS19TVEFUVVNfU0hFRBAMKnQKCEVkZ2VDb25kEhkKFUVER0VfQ09ORF9VTlNQRUNJRklFRBAAEhgKFEVER0VfQ09ORF9PTl9TVUNDRVNTEAESGQoVRURHRV9DT05EX09OX0NPTVBMRVRFEAISGAoURURHRV9DT05EX09OX0ZBSUxVUkUQAypvCgpNaXNzUG9saWN5EhsKF01JU1NfUE9MSUNZX1VOU1BFQ0lGSUVEEAASGAoUTUlTU19QT0xJQ1lfUlVOX0xBVEUQARIUChBNSVNTX1BPTElDWV9TS0lQEAISFAoQTUlTU19QT0xJQ1lfRkFJTBADKngKB092ZXJsYXASFwoTT1ZFUkxBUF9VTlNQRUNJRklFRBAAEhAKDE9WRVJMQVBfU0tJUBABEhEKDU9WRVJMQVBfQUxMT1cQAhIRCg1PVkVSTEFQX1FVRVVFEAMSHAoYT1ZFUkxBUF9RVUVVRV9PTl9TVUNDRVNTEAQywQMKBVRhc2tzEj0KBlN1Ym1pdBIYLmNyb25vcS52MS5TdWJtaXRSZXF1ZXN0GhkuY3Jvbm9xLnYxLlN1Ym1pdFJlc3BvbnNlEkwKC1N1Ym1pdEJhdGNoEh0uY3Jvbm9xLnYxLlN1Ym1pdEJhdGNoUmVxdWVzdBoeLmNyb25vcS52MS5TdWJtaXRCYXRjaFJlc3BvbnNlEj0KBkNhbmNlbBIYLmNyb25vcS52MS5DYW5jZWxSZXF1ZXN0GhkuY3Jvbm9xLnYxLkNhbmNlbFJlc3BvbnNlEjEKA0dldBIVLmNyb25vcS52MS5HZXRSZXF1ZXN0GhMuY3Jvbm9xLnYxLlRhc2tJbmZvEkYKCUxpc3RUYXNrcxIbLmNyb25vcS52MS5MaXN0VGFza3NSZXF1ZXN0GhwuY3Jvbm9xLnYxLkxpc3RUYXNrc1Jlc3BvbnNlEjUKBFdhaXQSFi5jcm9ub3EudjEuV2FpdFJlcXVlc3QaFS5jcm9ub3EudjEuVGFza1Jlc3VsdBI6CgVXYXRjaBIXLmNyb25vcS52MS5XYXRjaFJlcXVlc3QaFi5jcm9ub3EudjEuU3RhdHVzRXZlbnQwATJJCgdXb3JrZXJzEj4KBFdvcmsSGC5jcm9ub3EudjEuV29ya2VyTWVzc2FnZRoYLmNyb25vcS52MS5TZXJ2ZXJNZXNzYWdlKAEwATLhAgoFQWRtaW4SOQoIU25hcHNob3QSEC5jcm9ub3EudjEuRW1wdHkaGy5jcm9ub3EudjEuU25hcHNob3RSZXNwb25zZRI9CgxBZGRSZWN1cnJpbmcSGy5jcm9ub3EudjEuUmVjdXJyaW5nUmVxdWVzdBoQLmNyb25vcS52MS5FbXB0eRJYCg9SZW1vdmVSZWN1cnJpbmcSIS5jcm9ub3EudjEuUmVtb3ZlUmVjdXJyaW5nUmVxdWVzdBoiLmNyb25vcS52MS5SZW1vdmVSZWN1cnJpbmdSZXNwb25zZRI/CgtMaXN0V29ya2VycxIQLmNyb25vcS52MS5FbXB0eRoeLmNyb25vcS52MS5MaXN0V29ya2Vyc1Jlc3BvbnNlEkMKDUxpc3RSZWN1cnJpbmcSEC5jcm9ub3EudjEuRW1wdHkaIC5jcm9ub3EudjEuTGlzdFJlY3VycmluZ1Jlc3BvbnNlYgZwcm90bzM");
+  fileDesc("ChZjcm9ub3EvdjEvY3Jvbm9xLnByb3RvEgljcm9ub3EudjEiMAoHVGFza1JlZhIMCgJpZBgBIAEoBEgAEg0KA2tleRgCIAEoCUgAQggKBnRhcmdldCJMCgNEZXASIgoGdGFyZ2V0GAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSIQoEY29uZBgCIAEoDjITLmNyb25vcS52MS5FZGdlQ29uZCJ5CgtSZXRyeVBvbGljeRIUCgxtYXhfYXR0ZW1wdHMYASABKA0SGQoRaW5pdGlhbF9iYWNrb2ZmX3MYAiABKAESEgoKbXVsdGlwbGllchgDIAEoARIVCg1tYXhfYmFja29mZl9zGAQgASgBEg4KBmppdHRlchgFIAEoCCLbBgoIVGFza1NwZWMSDwoHcGF5bG9hZBgBIAEoDBIUCgxjb250ZW50X3R5cGUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRwb29sGAQgASgJEiUKCHByaW9yaXR5GAUgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EgsKA2tleRgGIAEoCRIaCg1kZWFkbGluZV9pbl9zGAcgASgBSACIAQESHQoQZGVhZGxpbmVfdW5peF9ucxgIIAEoA0gBiAEBEhcKCnN0YXJ0X2luX3MYCSABKAFIAogBARIaCg1zdGFydF91bml4X25zGAogASgDSAOIAQESGAoLdG9sZXJhbmNlX3MYCyABKAFIBIgBARImCgdvbl9taXNzGAwgASgOMhUuY3Jvbm9xLnYxLk1pc3NQb2xpY3kSHAoPZHVyYXRpb25faGludF9zGA0gASgBSAWIAQESFgoJdGltZW91dF9zGA4gASgBSAaIAQESJQoFcmV0cnkYDyABKAsyFi5jcm9ub3EudjEuUmV0cnlQb2xpY3kSHAoEZGVwcxgQIAMoCzIOLmNyb25vcS52MS5EZXASNQoJcmVzb3VyY2VzGBEgAygLMiIuY3Jvbm9xLnYxLlRhc2tTcGVjLlJlc291cmNlc0VudHJ5EisKBHRhZ3MYEiADKAsyHS5jcm9ub3EudjEuVGFza1NwZWMuVGFnc0VudHJ5Ei8KBmxhYmVscxgTIAMoCzIfLmNyb25vcS52MS5UYXNrU3BlYy5MYWJlbHNFbnRyeRIOCgZ0ZW5hbnQYFCABKAkaMAoOUmVzb3VyY2VzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgNOgI4ARorCglUYWdzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ARotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQhAKDl9kZWFkbGluZV9pbl9zQhMKEV9kZWFkbGluZV91bml4X25zQg0KC19zdGFydF9pbl9zQhAKDl9zdGFydF91bml4X25zQg4KDF90b2xlcmFuY2Vfc0ISChBfZHVyYXRpb25faGludF9zQgwKCl90aW1lb3V0X3MicAoNU3VibWl0UmVxdWVzdBIhCgR0YXNrGAEgASgLMhMuY3Jvbm9xLnYxLlRhc2tTcGVjEgwKBHdhaXQYAiABKAgSGwoOd2FpdF90aW1lb3V0X3MYAyABKAFIAIgBAUIRCg9fd2FpdF90aW1lb3V0X3MiVgoOU3VibWl0UmVzcG9uc2USCgoCaWQYASABKAQSEQoJZHVwbGljYXRlGAIgASgIEiUKBnJlc3VsdBgDIAEoCzIVLmNyb25vcS52MS5UYXNrUmVzdWx0IjgKElN1Ym1pdEJhdGNoUmVxdWVzdBIiCgV0YXNrcxgBIAMoCzITLmNyb25vcS52MS5UYXNrU3BlYyI/ChNTdWJtaXRCYXRjaFJlc3BvbnNlEigKBXRhc2tzGAEgAygLMhkuY3Jvbm9xLnYxLlN1Ym1pdFJlc3BvbnNlIjEKDUNhbmNlbFJlcXVlc3QSIAoEdGFzaxgBIAEoCzISLmNyb25vcS52MS5UYXNrUmVmIiMKDkNhbmNlbFJlc3BvbnNlEhEKCWNhbmNlbGxlZBgBIAEoCCLDAgoNVXBkYXRlUmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSJQoIcHJpb3JpdHkYAiABKA4yEy5jcm9ub3EudjEuUHJpb3JpdHkSGgoNZGVhZGxpbmVfaW5fcxgDIAEoAUgAiAEBEh0KEGRlYWRsaW5lX3VuaXhfbnMYBCABKANIAYgBARIWCg5jbGVhcl9kZWFkbGluZRgFIAEoCBIQCghzZXRfdGFncxgGIAEoCBIwCgR0YWdzGAcgAygLMiIuY3Jvbm9xLnYxLlVwZGF0ZVJlcXVlc3QuVGFnc0VudHJ5GisKCVRhZ3NFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQhAKDl9kZWFkbGluZV9pbl9zQhMKEV9kZWFkbGluZV91bml4X25zImYKDlVwZGF0ZVJlc3BvbnNlEgoKAmlkGAEgASgEEiUKBnN0YXR1cxgCIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEhAKCGRlZmVycmVkGAMgASgIEg8KB2NoYW5nZWQYBCABKAgiLgoKR2V0UmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYihwMKCFRhc2tJbmZvEgoKAmlkGAEgASgEEiUKBnN0YXR1cxgCIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEgwKBHBvb2wYAyABKAkSCwoDa2V5GAQgASgJEgwKBGtpbmQYBSABKAkSDwoHYXR0ZW1wdBgGIAEoDRIUCgxtYXhfYXR0ZW1wdHMYByABKA0SHAoPY3JlYXRlZF91bml4X25zGAggASgDSACIAQESHAoPc3RhcnRlZF91bml4X25zGAkgASgDSAGIAQESHQoQZmluaXNoZWRfdW5peF9ucxgKIAEoA0gCiAEBEg8KB21lc3NhZ2UYCyABKAkSGAoQb3V0cHV0X2F2YWlsYWJsZRgMIAEoCBIOCgZ0ZW5hbnQYDSABKAkSJQoIcHJpb3JpdHkYDiABKA4yEy5jcm9ub3EudjEuUHJpb3JpdHlCEgoQX2NyZWF0ZWRfdW5peF9uc0ISChBfc3RhcnRlZF91bml4X25zQhMKEV9maW5pc2hlZF91bml4X25zImgKEExpc3RUYXNrc1JlcXVlc3QSDQoFcG9vbHMYASADKAkSJwoIc3RhdHVzZXMYAiADKA4yFS5jcm9ub3EudjEuVGFza1N0YXR1cxINCgVhZnRlchgDIAEoBBINCgVsaW1pdBgEIAEoDSJnChFMaXN0VGFza3NSZXNwb25zZRIiCgV0YXNrcxgBIAMoCzITLmNyb25vcS52MS5UYXNrSW5mbxISCgpuZXh0X2FmdGVyGAIgASgEEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgDIAMoCSKKAQoKVGFza1Jlc3VsdBIKCgJpZBgBIAEoBBIlCgZzdGF0dXMYAiABKA4yFS5jcm9ub3EudjEuVGFza1N0YXR1cxITCgZvdXRwdXQYAyABKAxIAIgBARIPCgdtZXNzYWdlGAQgASgJEhgKEG91dHB1dF9hdmFpbGFibGUYBSABKAhCCQoHX291dHB1dCJVCgtXYWl0UmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSFgoJdGltZW91dF9zGAIgASgBSACIAQFCDAoKX3RpbWVvdXRfcyJRCgxXYXRjaFJlcXVlc3QSDQoFcG9vbHMYASADKAkSCwoDaWRzGAIgAygEEgwKBGtleXMYAyADKAkSFwoPYWxsX3RyYW5zaXRpb25zGAQgASgIItwBCgtTdGF0dXNFdmVudBIKCgJpZBgBIAEoBBIMCgRwb29sGAIgASgJEgsKA2tleRgDIAEoCRIlCgZzdGF0dXMYBCABKA4yFS5jcm9ub3EudjEuVGFza1N0YXR1cxIPCgdhdHRlbXB0GAUgASgNEhIKCmF0X3VuaXhfbnMYBiABKAMSDwoHbWVzc2FnZRgHIAEoCRIlCghwcmlvcml0eRgIIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eRIiCgRraW5kGAkgASgOMhQuY3Jvbm9xLnYxLkV2ZW50S2luZCK2AQoIUmVnaXN0ZXISDAoEcG9vbBgBIAEoCRINCgVzbG90cxgCIAEoDRITCgt3b3JrZXJfbmFtZRgDIAEoCRIYChBwcm90b2NvbF92ZXJzaW9uGAQgASgNEi8KBmxhYmVscxgFIAMoCzIfLmNyb25vcS52MS5SZWdpc3Rlci5MYWJlbHNFbnRyeRotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIhoKCUhlYXJ0YmVhdBINCgVsZWFzZRgBIAEoBCI/CghDb21wbGV0ZRINCgVsZWFzZRgBIAEoBBIOCgZvdXRwdXQYAiABKAwSFAoMY29udGVudF90eXBlGAMgASgJImcKBEZhaWwSDQoFbGVhc2UYASABKAQSDwoHbWVzc2FnZRgCIAEoCRIRCglwZXJtYW5lbnQYAyABKAgSGgoNcmV0cnlfYWZ0ZXJfcxgEIAEoAUgAiAEBQhAKDl9yZXRyeV9hZnRlcl9zIhkKCFNldFNsb3RzEg0KBXNsb3RzGAEgASgNIiUKBE5hY2sSDQoFbGVhc2UYASABKAQSDgoGcmVhc29uGAIgASgJIhoKCUNhbmNlbGxlZBINCgVsZWFzZRgBIAEoBCKqAgoNV29ya2VyTWVzc2FnZRInCghyZWdpc3RlchgBIAEoCzITLmNyb25vcS52MS5SZWdpc3RlckgAEikKCWhlYXJ0YmVhdBgCIAEoCzIULmNyb25vcS52MS5IZWFydGJlYXRIABInCghjb21wbGV0ZRgDIAEoCzITLmNyb25vcS52MS5Db21wbGV0ZUgAEh8KBGZhaWwYBCABKAsyDy5jcm9ub3EudjEuRmFpbEgAEigKCXNldF9zbG90cxgFIAEoCzITLmNyb25vcS52MS5TZXRTbG90c0gAEh8KBG5hY2sYBiABKAsyDy5jcm9ub3EudjEuTmFja0gAEikKCWNhbmNlbGxlZBgHIAEoCzIULmNyb25vcS52MS5DYW5jZWxsZWRIAEIFCgNtc2cijQEKClJlZ2lzdGVyZWQSEQoJd29ya2VyX2lkGAEgASgEEhgKC2xlYXNlX3R0bF9zGAIgASgBSACIAQESDQoFc2xvdHMYAyABKA0SGAoQcHJvdG9jb2xfdmVyc2lvbhgEIAEoDRIZChFtYXhfbWVzc2FnZV9ieXRlcxgFIAEoBEIOCgxfbGVhc2VfdHRsX3MiigMKBUxlYXNlEg0KBWxlYXNlGAEgASgEEg8KB3Rhc2tfaWQYAiABKAQSDwoHYXR0ZW1wdBgDIAEoDRIPCgdwYXlsb2FkGAQgASgMEhQKDGNvbnRlbnRfdHlwZRgFIAEoCRIMCgRraW5kGAYgASgJEgsKA2tleRgHIAEoCRIoCgR0YWdzGAggAygLMhouY3Jvbm9xLnYxLkxlYXNlLlRhZ3NFbnRyeRIWCgl0aW1lb3V0X3MYCSABKAFIAIgBARIdChBkZWFkbGluZV91bml4X25zGAogASgDSAGIAQESDAoEcG9vbBgLIAEoCRIlCghwcmlvcml0eRgMIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eRIYCgtsZWFzZV90dGxfcxgNIAEoAUgCiAEBGisKCVRhZ3NFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQgwKCl90aW1lb3V0X3NCEwoRX2RlYWRsaW5lX3VuaXhfbnNCDgoMX2xlYXNlX3R0bF9zIiYKBUFib3J0Eg0KBWxlYXNlGAEgASgEEg4KBnJlYXNvbhgCIAEoCSIuCghTaHV0ZG93bhIOCgZyZWFzb24YASABKAkSEgoKbm90X2xlYWRlchgCIAEoCCKyAQoNU2VydmVyTWVzc2FnZRIrCgpyZWdpc3RlcmVkGAEgASgLMhUuY3Jvbm9xLnYxLlJlZ2lzdGVyZWRIABIhCgVsZWFzZRgCIAEoCzIQLmNyb25vcS52MS5MZWFzZUgAEiEKBWFib3J0GAMgASgLMhAuY3Jvbm9xLnYxLkFib3J0SAASJwoIc2h1dGRvd24YBCABKAsyEy5jcm9ub3EudjEuU2h1dGRvd25IAEIFCgNtc2ciBwoFRW1wdHkikwQKDFBvb2xTbmFwc2hvdBIMCgRuYW1lGAEgASgJEhAKCGNhcGFjaXR5GAIgASgNEgwKBGJ1c3kYAyABKA0SDAoEaGVsZBgEIAEoDRIPCgdkZXNpcmVkGAUgASgNEhgKEHBlbmRpbmdfYnlfY2xhc3MYBiADKAQSFAoMcmVzZXJ2YXRpb25zGAcgASgEEhIKCmRpc3BhdGNoZWQYCCABKAQSEQoJc3VjY2VlZGVkGAkgASgEEg4KBmZhaWxlZBgKIAEoBBIaChJwcmlvcml0eV9hZGhlcmVuY2UYCyABKAESHAoUZml4ZWRfc3RhcnRfaGl0X3JhdGUYDCABKAESEwoLdXRpbGl6YXRpb24YDSABKAESGwoTc2NoZWR1bGVfZWZmaWNpZW5jeRgOIAEoARISCgp3YWl0X3A1MF9zGA8gASgBEhIKCndhaXRfcDkwX3MYECABKAESEgoKd2FpdF9wOTlfcxgRIAEoARIMCgRjb3N0GBIgASgBEhkKEXdvcmtlcnNfY29ubmVjdGVkGBMgASgEEiYKBmdyb3VwcxgUIAMoCzIWLmNyb25vcS52MS5Xb3JrZXJHcm91cBIrCghwcmlvcml0eRgVIAEoCzIZLmNyb25vcS52MS5Qcmlvcml0eUNvbmZpZxIpCgd1cmdlbmN5GBYgASgLMhguY3Jvbm9xLnYxLlVyZ2VuY3lDb25maWciYgoOUHJpb3JpdHlDb25maWcSDAoEYmFzZRgBIAMoARISCgphZ2luZ19yYXRlGAIgAygBEg8KB2FnZV9jYXAYAyADKAESHQoVYWxsb3dfb3ZlcnRha2luZ19oaWdoGAQgASgIIlkKDVVyZ2VuY3lDb25maWcSCwoDbWF4GAEgASgBEhAKCHdpbmRvd19zGAIgASgBEhQKDG92ZXJkdWVfcmF0ZRgDIAEoARITCgtvdmVyZHVlX2NhcBgEIAEoASKQAQoLV29ya2VyR3JvdXASMgoGbGFiZWxzGAEgAygLMiIuY3Jvbm9xLnYxLldvcmtlckdyb3VwLkxhYmVsc0VudHJ5EhAKCGNhcGFjaXR5GAIgASgNEgwKBGJ1c3kYAyABKA0aLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKBAgoGVG90YWxzEhEKCXN1Ym1pdHRlZBgBIAEoBBISCgpkaXNwYXRjaGVkGAIgASgEEhEKCXN1Y2NlZWRlZBgDIAEoBBIOCgZmYWlsZWQYBCABKAQSFQoNZGVhZF9sZXR0ZXJlZBgFIAEoBBIRCgljYW5jZWxsZWQYBiABKAQSDwoHc2tpcHBlZBgHIAEoBBIOCgZtaXNzZWQYCCABKAQSDAoEc2hlZBgJIAEoBBIPCgdyZXRyaWVzGAogASgEEhAKCHRpbWVvdXRzGAsgASgEEhYKDmxlYXNlX2V4cGlyaWVzGAwgASgEEhkKEXN0YWxlX2NvbXBsZXRpb25zGA0gASgEIsoBChBTbmFwc2hvdFJlc3BvbnNlEiYKBXBvb2xzGAEgAygLMhcuY3Jvbm9xLnYxLlBvb2xTbmFwc2hvdBISCgpsaXZlX3Rhc2tzGAIgASgEEg8KB3J1bm5pbmcYAyABKAQSDwoHcGVuZGluZxgEIAEoBBIhCgZ0b3RhbHMYBSABKAsyES5jcm9ub3EudjEuVG90YWxzEhkKEXdvcmtlcnNfY29ubmVjdGVkGAYgASgEEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgHIAMoCSKMAQoQUmVjdXJyaW5nUmVxdWVzdBIMCgRuYW1lGAEgASgJEgwKBGNyb24YAiABKAkSCgoCdHoYAyABKAkSJQoIdGVtcGxhdGUYBCABKAsyEy5jcm9ub3EudjEuVGFza1NwZWMSIwoHb3ZlcmxhcBgGIAEoDjISLmNyb25vcS52MS5PdmVybGFwSgQIBRAGIiYKFlJlbW92ZVJlY3VycmluZ1JlcXVlc3QSDAoEbmFtZRgBIAEoCSIqChdSZW1vdmVSZWN1cnJpbmdSZXNwb25zZRIPCgdyZW1vdmVkGAEgASgIIs4BCgpXb3JrZXJJbmZvEgoKAmlkGAEgASgEEgwKBG5hbWUYAiABKAkSDAoEcG9vbBgDIAEoCRIxCgZsYWJlbHMYBCADKAsyIS5jcm9ub3EudjEuV29ya2VySW5mby5MYWJlbHNFbnRyeRINCgVzbG90cxgFIAEoDRIMCgRidXN5GAYgASgNEhkKEWNvbm5lY3RlZF91bml4X25zGAcgASgDGi0KC0xhYmVsc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiWQoTTGlzdFdvcmtlcnNSZXNwb25zZRImCgd3b3JrZXJzGAEgAygLMhUuY3Jvbm9xLnYxLldvcmtlckluZm8SGgoSdW5hdmFpbGFibGVfc2hhcmRzGAIgAygJItABCg1SZWN1cnJpbmdJbmZvEgwKBG5hbWUYASABKAkSDAoEY3JvbhgCIAEoCRIKCgJ0ehgDIAEoCRIMCgRwb29sGAQgASgJEgwKBGtpbmQYBSABKAkSIwoHb3ZlcmxhcBgGIAEoDjISLmNyb25vcS52MS5PdmVybGFwEhkKDG5leHRfdW5peF9ucxgHIAEoA0gAiAEBEhkKDGxhc3RfdGFza19pZBgIIAEoBEgBiAEBQg8KDV9uZXh0X3VuaXhfbnNCDwoNX2xhc3RfdGFza19pZCJgChVMaXN0UmVjdXJyaW5nUmVzcG9uc2USKwoJc2NoZWR1bGVzGAEgAygLMhguY3Jvbm9xLnYxLlJlY3VycmluZ0luZm8SGgoSdW5hdmFpbGFibGVfc2hhcmRzGAIgAygJKnUKCFByaW9yaXR5EhgKFFBSSU9SSVRZX1VOU1BFQ0lGSUVEEAASFQoRUFJJT1JJVFlfQ1JJVElDQUwQARIRCg1QUklPUklUWV9ISUdIEAISEwoPUFJJT1JJVFlfTk9STUFMEAMSEAoMUFJJT1JJVFlfTE9XEAQq2wIKClRhc2tTdGF0dXMSGwoXVEFTS19TVEFUVVNfVU5TUEVDSUZJRUQQABIXChNUQVNLX1NUQVRVU19CTE9DS0VEEAESGQoVVEFTS19TVEFUVVNfU0NIRURVTEVEEAISFQoRVEFTS19TVEFUVVNfUkVBRFkQAxIXChNUQVNLX1NUQVRVU19SVU5OSU5HEAQSGAoUVEFTS19TVEFUVVNfUkVUUllJTkcQBRIZChVUQVNLX1NUQVRVU19TVUNDRUVERUQQBhIWChJUQVNLX1NUQVRVU19GQUlMRUQQBxIdChlUQVNLX1NUQVRVU19ERUFEX0xFVFRFUkVEEAgSGQoVVEFTS19TVEFUVVNfQ0FOQ0VMTEVEEAkSFwoTVEFTS19TVEFUVVNfU0tJUFBFRBAKEhYKElRBU0tfU1RBVFVTX01JU1NFRBALEhQKEFRBU0tfU1RBVFVTX1NIRUQQDCp0CghFZGdlQ29uZBIZChVFREdFX0NPTkRfVU5TUEVDSUZJRUQQABIYChRFREdFX0NPTkRfT05fU1VDQ0VTUxABEhkKFUVER0VfQ09ORF9PTl9DT01QTEVURRACEhgKFEVER0VfQ09ORF9PTl9GQUlMVVJFEAMqbwoKTWlzc1BvbGljeRIbChdNSVNTX1BPTElDWV9VTlNQRUNJRklFRBAAEhgKFE1JU1NfUE9MSUNZX1JVTl9MQVRFEAESFAoQTUlTU19QT0xJQ1lfU0tJUBACEhQKEE1JU1NfUE9MSUNZX0ZBSUwQAyo+CglFdmVudEtpbmQSGQoVRVZFTlRfS0lORF9UUkFOU0lUSU9OEAASFgoSRVZFTlRfS0lORF9VUERBVEVEEAEqeAoHT3ZlcmxhcBIXChNPVkVSTEFQX1VOU1BFQ0lGSUVEEAASEAoMT1ZFUkxBUF9TS0lQEAESEQoNT1ZFUkxBUF9BTExPVxACEhEKDU9WRVJMQVBfUVVFVUUQAxIcChhPVkVSTEFQX1FVRVVFX09OX1NVQ0NFU1MQBDKABAoFVGFza3MSPQoGU3VibWl0EhguY3Jvbm9xLnYxLlN1Ym1pdFJlcXVlc3QaGS5jcm9ub3EudjEuU3VibWl0UmVzcG9uc2USTAoLU3VibWl0QmF0Y2gSHS5jcm9ub3EudjEuU3VibWl0QmF0Y2hSZXF1ZXN0Gh4uY3Jvbm9xLnYxLlN1Ym1pdEJhdGNoUmVzcG9uc2USPQoGQ2FuY2VsEhguY3Jvbm9xLnYxLkNhbmNlbFJlcXVlc3QaGS5jcm9ub3EudjEuQ2FuY2VsUmVzcG9uc2USPQoGVXBkYXRlEhguY3Jvbm9xLnYxLlVwZGF0ZVJlcXVlc3QaGS5jcm9ub3EudjEuVXBkYXRlUmVzcG9uc2USMQoDR2V0EhUuY3Jvbm9xLnYxLkdldFJlcXVlc3QaEy5jcm9ub3EudjEuVGFza0luZm8SRgoJTGlzdFRhc2tzEhsuY3Jvbm9xLnYxLkxpc3RUYXNrc1JlcXVlc3QaHC5jcm9ub3EudjEuTGlzdFRhc2tzUmVzcG9uc2USNQoEV2FpdBIWLmNyb25vcS52MS5XYWl0UmVxdWVzdBoVLmNyb25vcS52MS5UYXNrUmVzdWx0EjoKBVdhdGNoEhcuY3Jvbm9xLnYxLldhdGNoUmVxdWVzdBoWLmNyb25vcS52MS5TdGF0dXNFdmVudDABMkkKB1dvcmtlcnMSPgoEV29yaxIYLmNyb25vcS52MS5Xb3JrZXJNZXNzYWdlGhguY3Jvbm9xLnYxLlNlcnZlck1lc3NhZ2UoATABMuECCgVBZG1pbhI5CghTbmFwc2hvdBIQLmNyb25vcS52MS5FbXB0eRobLmNyb25vcS52MS5TbmFwc2hvdFJlc3BvbnNlEj0KDEFkZFJlY3VycmluZxIbLmNyb25vcS52MS5SZWN1cnJpbmdSZXF1ZXN0GhAuY3Jvbm9xLnYxLkVtcHR5ElgKD1JlbW92ZVJlY3VycmluZxIhLmNyb25vcS52MS5SZW1vdmVSZWN1cnJpbmdSZXF1ZXN0GiIuY3Jvbm9xLnYxLlJlbW92ZVJlY3VycmluZ1Jlc3BvbnNlEj8KC0xpc3RXb3JrZXJzEhAuY3Jvbm9xLnYxLkVtcHR5Gh4uY3Jvbm9xLnYxLkxpc3RXb3JrZXJzUmVzcG9uc2USQwoNTGlzdFJlY3VycmluZxIQLmNyb25vcS52MS5FbXB0eRogLmNyb25vcS52MS5MaXN0UmVjdXJyaW5nUmVzcG9uc2ViBnByb3RvMw");
 
 /**
  * @generated from message cronoq.v1.TaskRef
@@ -373,6 +373,100 @@ export const CancelResponseSchema: GenMessage<CancelResponse> = /*@__PURE__*/
   messageDesc(file_cronoq_v1_cronoq, 9);
 
 /**
+ * Change a task that has not finished. What is not named keeps its value.
+ *
+ * @generated from message cronoq.v1.UpdateRequest
+ */
+export type UpdateRequest = Message<"cronoq.v1.UpdateRequest"> & {
+  /**
+   * @generated from field: cronoq.v1.TaskRef task = 1;
+   */
+  task?: TaskRef | undefined;
+
+  /**
+   * New priority class; PRIORITY_UNSPECIFIED keeps the current one.
+   *
+   * @generated from field: cronoq.v1.Priority priority = 2;
+   */
+  priority: Priority;
+
+  /**
+   * At most one of these three; none keeps the current deadline.
+   *
+   * @generated from field: optional double deadline_in_s = 3;
+   */
+  deadlineInS?: number | undefined;
+
+  /**
+   * @generated from field: optional int64 deadline_unix_ns = 4;
+   */
+  deadlineUnixNs?: bigint | undefined;
+
+  /**
+   * @generated from field: bool clear_deadline = 5;
+   */
+  clearDeadline: boolean;
+
+  /**
+   * Replace the task's tags with `tags` (also when `tags` is empty). Keys starting with
+   * "cronoq." are reserved.
+   *
+   * @generated from field: bool set_tags = 6;
+   */
+  setTags: boolean;
+
+  /**
+   * @generated from field: map<string, string> tags = 7;
+   */
+  tags: { [key: string]: string };
+};
+
+/**
+ * Describes the message cronoq.v1.UpdateRequest.
+ * Use `create(UpdateRequestSchema)` to create a new message.
+ */
+export const UpdateRequestSchema: GenMessage<UpdateRequest> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 10);
+
+/**
+ * @generated from message cronoq.v1.UpdateResponse
+ */
+export type UpdateResponse = Message<"cronoq.v1.UpdateResponse"> & {
+  /**
+   * @generated from field: uint64 id = 1;
+   */
+  id: bigint;
+
+  /**
+   * The task's status, which an update never changes.
+   *
+   * @generated from field: cronoq.v1.TaskStatus status = 2;
+   */
+  status: TaskStatus;
+
+  /**
+   * An attempt is running: it is not interrupted, and the new values apply to what follows.
+   *
+   * @generated from field: bool deferred = 3;
+   */
+  deferred: boolean;
+
+  /**
+   * False when every value given was already in place.
+   *
+   * @generated from field: bool changed = 4;
+   */
+  changed: boolean;
+};
+
+/**
+ * Describes the message cronoq.v1.UpdateResponse.
+ * Use `create(UpdateResponseSchema)` to create a new message.
+ */
+export const UpdateResponseSchema: GenMessage<UpdateResponse> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 11);
+
+/**
  * @generated from message cronoq.v1.GetRequest
  */
 export type GetRequest = Message<"cronoq.v1.GetRequest"> & {
@@ -387,7 +481,7 @@ export type GetRequest = Message<"cronoq.v1.GetRequest"> & {
  * Use `create(GetRequestSchema)` to create a new message.
  */
 export const GetRequestSchema: GenMessage<GetRequest> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 10);
+  messageDesc(file_cronoq_v1_cronoq, 12);
 
 /**
  * Task details. Fields other than id and status are best effort: they are known for tasks
@@ -479,7 +573,7 @@ export type TaskInfo = Message<"cronoq.v1.TaskInfo"> & {
  * Use `create(TaskInfoSchema)` to create a new message.
  */
 export const TaskInfoSchema: GenMessage<TaskInfo> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 11);
+  messageDesc(file_cronoq_v1_cronoq, 13);
 
 /**
  * Tasks in id order (newest last). Live tasks come from the engine; finished ones from the
@@ -523,7 +617,7 @@ export type ListTasksRequest = Message<"cronoq.v1.ListTasksRequest"> & {
  * Use `create(ListTasksRequestSchema)` to create a new message.
  */
 export const ListTasksRequestSchema: GenMessage<ListTasksRequest> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 12);
+  messageDesc(file_cronoq_v1_cronoq, 14);
 
 /**
  * @generated from message cronoq.v1.ListTasksResponse
@@ -554,7 +648,7 @@ export type ListTasksResponse = Message<"cronoq.v1.ListTasksResponse"> & {
  * Use `create(ListTasksResponseSchema)` to create a new message.
  */
 export const ListTasksResponseSchema: GenMessage<ListTasksResponse> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 13);
+  messageDesc(file_cronoq_v1_cronoq, 15);
 
 /**
  * @generated from message cronoq.v1.TaskResult
@@ -595,7 +689,7 @@ export type TaskResult = Message<"cronoq.v1.TaskResult"> & {
  * Use `create(TaskResultSchema)` to create a new message.
  */
 export const TaskResultSchema: GenMessage<TaskResult> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 14);
+  messageDesc(file_cronoq_v1_cronoq, 16);
 
 /**
  * @generated from message cronoq.v1.WaitRequest
@@ -619,7 +713,7 @@ export type WaitRequest = Message<"cronoq.v1.WaitRequest"> & {
  * Use `create(WaitRequestSchema)` to create a new message.
  */
 export const WaitRequestSchema: GenMessage<WaitRequest> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 15);
+  messageDesc(file_cronoq_v1_cronoq, 17);
 
 /**
  * @generated from message cronoq.v1.WatchRequest
@@ -659,7 +753,7 @@ export type WatchRequest = Message<"cronoq.v1.WatchRequest"> & {
  * Use `create(WatchRequestSchema)` to create a new message.
  */
 export const WatchRequestSchema: GenMessage<WatchRequest> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 16);
+  messageDesc(file_cronoq_v1_cronoq, 18);
 
 /**
  * @generated from message cronoq.v1.StatusEvent
@@ -699,6 +793,18 @@ export type StatusEvent = Message<"cronoq.v1.StatusEvent"> & {
    * @generated from field: string message = 7;
    */
   message: string;
+
+  /**
+   * The task's priority class at the time of the event (UNSPECIFIED from older servers).
+   *
+   * @generated from field: cronoq.v1.Priority priority = 8;
+   */
+  priority: Priority;
+
+  /**
+   * @generated from field: cronoq.v1.EventKind kind = 9;
+   */
+  kind: EventKind;
 };
 
 /**
@@ -706,7 +812,7 @@ export type StatusEvent = Message<"cronoq.v1.StatusEvent"> & {
  * Use `create(StatusEventSchema)` to create a new message.
  */
 export const StatusEventSchema: GenMessage<StatusEvent> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 17);
+  messageDesc(file_cronoq_v1_cronoq, 19);
 
 /**
  * @generated from message cronoq.v1.Register
@@ -747,7 +853,7 @@ export type Register = Message<"cronoq.v1.Register"> & {
  * Use `create(RegisterSchema)` to create a new message.
  */
 export const RegisterSchema: GenMessage<Register> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 18);
+  messageDesc(file_cronoq_v1_cronoq, 20);
 
 /**
  * @generated from message cronoq.v1.Heartbeat
@@ -764,7 +870,7 @@ export type Heartbeat = Message<"cronoq.v1.Heartbeat"> & {
  * Use `create(HeartbeatSchema)` to create a new message.
  */
 export const HeartbeatSchema: GenMessage<Heartbeat> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 19);
+  messageDesc(file_cronoq_v1_cronoq, 21);
 
 /**
  * @generated from message cronoq.v1.Complete
@@ -791,7 +897,7 @@ export type Complete = Message<"cronoq.v1.Complete"> & {
  * Use `create(CompleteSchema)` to create a new message.
  */
 export const CompleteSchema: GenMessage<Complete> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 20);
+  messageDesc(file_cronoq_v1_cronoq, 22);
 
 /**
  * @generated from message cronoq.v1.Fail
@@ -823,7 +929,7 @@ export type Fail = Message<"cronoq.v1.Fail"> & {
  * Use `create(FailSchema)` to create a new message.
  */
 export const FailSchema: GenMessage<Fail> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 21);
+  messageDesc(file_cronoq_v1_cronoq, 23);
 
 /**
  * @generated from message cronoq.v1.SetSlots
@@ -840,7 +946,7 @@ export type SetSlots = Message<"cronoq.v1.SetSlots"> & {
  * Use `create(SetSlotsSchema)` to create a new message.
  */
 export const SetSlotsSchema: GenMessage<SetSlots> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 22);
+  messageDesc(file_cronoq_v1_cronoq, 24);
 
 /**
  * The worker cannot take this lease (e.g. it has no free slot); the server hands it to another
@@ -866,7 +972,7 @@ export type Nack = Message<"cronoq.v1.Nack"> & {
  * Use `create(NackSchema)` to create a new message.
  */
 export const NackSchema: GenMessage<Nack> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 23);
+  messageDesc(file_cronoq_v1_cronoq, 25);
 
 /**
  * The handler observed cancellation of this lease.
@@ -885,7 +991,7 @@ export type Cancelled = Message<"cronoq.v1.Cancelled"> & {
  * Use `create(CancelledSchema)` to create a new message.
  */
 export const CancelledSchema: GenMessage<Cancelled> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 24);
+  messageDesc(file_cronoq_v1_cronoq, 26);
 
 /**
  * @generated from message cronoq.v1.WorkerMessage
@@ -944,7 +1050,7 @@ export type WorkerMessage = Message<"cronoq.v1.WorkerMessage"> & {
  * Use `create(WorkerMessageSchema)` to create a new message.
  */
 export const WorkerMessageSchema: GenMessage<WorkerMessage> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 25);
+  messageDesc(file_cronoq_v1_cronoq, 27);
 
 /**
  * @generated from message cronoq.v1.Registered
@@ -987,7 +1093,7 @@ export type Registered = Message<"cronoq.v1.Registered"> & {
  * Use `create(RegisteredSchema)` to create a new message.
  */
 export const RegisteredSchema: GenMessage<Registered> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 26);
+  messageDesc(file_cronoq_v1_cronoq, 28);
 
 /**
  * @generated from message cronoq.v1.Lease
@@ -1064,7 +1170,7 @@ export type Lease = Message<"cronoq.v1.Lease"> & {
  * Use `create(LeaseSchema)` to create a new message.
  */
 export const LeaseSchema: GenMessage<Lease> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 27);
+  messageDesc(file_cronoq_v1_cronoq, 29);
 
 /**
  * @generated from message cronoq.v1.Abort
@@ -1086,7 +1192,7 @@ export type Abort = Message<"cronoq.v1.Abort"> & {
  * Use `create(AbortSchema)` to create a new message.
  */
 export const AbortSchema: GenMessage<Abort> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 28);
+  messageDesc(file_cronoq_v1_cronoq, 30);
 
 /**
  * The server is going away: finish or abandon running leases and reconnect (with backoff).
@@ -1110,7 +1216,7 @@ export type Shutdown = Message<"cronoq.v1.Shutdown"> & {
  * Use `create(ShutdownSchema)` to create a new message.
  */
 export const ShutdownSchema: GenMessage<Shutdown> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 29);
+  messageDesc(file_cronoq_v1_cronoq, 31);
 
 /**
  * @generated from message cronoq.v1.ServerMessage
@@ -1151,7 +1257,7 @@ export type ServerMessage = Message<"cronoq.v1.ServerMessage"> & {
  * Use `create(ServerMessageSchema)` to create a new message.
  */
 export const ServerMessageSchema: GenMessage<ServerMessage> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 30);
+  messageDesc(file_cronoq_v1_cronoq, 32);
 
 /**
  * @generated from message cronoq.v1.Empty
@@ -1164,7 +1270,7 @@ export type Empty = Message<"cronoq.v1.Empty"> & {
  * Use `create(EmptySchema)` to create a new message.
  */
 export const EmptySchema: GenMessage<Empty> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 31);
+  messageDesc(file_cronoq_v1_cronoq, 33);
 
 /**
  * @generated from message cronoq.v1.PoolSnapshot
@@ -1294,7 +1400,7 @@ export type PoolSnapshot = Message<"cronoq.v1.PoolSnapshot"> & {
  * Use `create(PoolSnapshotSchema)` to create a new message.
  */
 export const PoolSnapshotSchema: GenMessage<PoolSnapshot> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 32);
+  messageDesc(file_cronoq_v1_cronoq, 34);
 
 /**
  * Score of a waiting task: base + min(aging_rate * seconds waited, age_cap) + urgency. Each
@@ -1331,7 +1437,7 @@ export type PriorityConfig = Message<"cronoq.v1.PriorityConfig"> & {
  * Use `create(PriorityConfigSchema)` to create a new message.
  */
 export const PriorityConfigSchema: GenMessage<PriorityConfig> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 33);
+  messageDesc(file_cronoq_v1_cronoq, 35);
 
 /**
  * Score added to a task with a deadline as its latest start time approaches and passes.
@@ -1365,7 +1471,7 @@ export type UrgencyConfig = Message<"cronoq.v1.UrgencyConfig"> & {
  * Use `create(UrgencyConfigSchema)` to create a new message.
  */
 export const UrgencyConfigSchema: GenMessage<UrgencyConfig> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 34);
+  messageDesc(file_cronoq_v1_cronoq, 36);
 
 /**
  * @generated from message cronoq.v1.WorkerGroup
@@ -1392,7 +1498,7 @@ export type WorkerGroup = Message<"cronoq.v1.WorkerGroup"> & {
  * Use `create(WorkerGroupSchema)` to create a new message.
  */
 export const WorkerGroupSchema: GenMessage<WorkerGroup> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 35);
+  messageDesc(file_cronoq_v1_cronoq, 37);
 
 /**
  * @generated from message cronoq.v1.Totals
@@ -1472,7 +1578,7 @@ export type Totals = Message<"cronoq.v1.Totals"> & {
  * Use `create(TotalsSchema)` to create a new message.
  */
 export const TotalsSchema: GenMessage<Totals> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 36);
+  messageDesc(file_cronoq_v1_cronoq, 38);
 
 /**
  * @generated from message cronoq.v1.SnapshotResponse
@@ -1521,7 +1627,7 @@ export type SnapshotResponse = Message<"cronoq.v1.SnapshotResponse"> & {
  * Use `create(SnapshotResponseSchema)` to create a new message.
  */
 export const SnapshotResponseSchema: GenMessage<SnapshotResponse> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 37);
+  messageDesc(file_cronoq_v1_cronoq, 39);
 
 /**
  * A cron schedule. The template's `deadline_in_s` is relative to each occurrence's start, its
@@ -1563,7 +1669,7 @@ export type RecurringRequest = Message<"cronoq.v1.RecurringRequest"> & {
  * Use `create(RecurringRequestSchema)` to create a new message.
  */
 export const RecurringRequestSchema: GenMessage<RecurringRequest> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 38);
+  messageDesc(file_cronoq_v1_cronoq, 40);
 
 /**
  * @generated from message cronoq.v1.RemoveRecurringRequest
@@ -1580,7 +1686,7 @@ export type RemoveRecurringRequest = Message<"cronoq.v1.RemoveRecurringRequest">
  * Use `create(RemoveRecurringRequestSchema)` to create a new message.
  */
 export const RemoveRecurringRequestSchema: GenMessage<RemoveRecurringRequest> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 39);
+  messageDesc(file_cronoq_v1_cronoq, 41);
 
 /**
  * @generated from message cronoq.v1.RemoveRecurringResponse
@@ -1597,7 +1703,7 @@ export type RemoveRecurringResponse = Message<"cronoq.v1.RemoveRecurringResponse
  * Use `create(RemoveRecurringResponseSchema)` to create a new message.
  */
 export const RemoveRecurringResponseSchema: GenMessage<RemoveRecurringResponse> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 40);
+  messageDesc(file_cronoq_v1_cronoq, 42);
 
 /**
  * A connected remote worker.
@@ -1650,7 +1756,7 @@ export type WorkerInfo = Message<"cronoq.v1.WorkerInfo"> & {
  * Use `create(WorkerInfoSchema)` to create a new message.
  */
 export const WorkerInfoSchema: GenMessage<WorkerInfo> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 41);
+  messageDesc(file_cronoq_v1_cronoq, 43);
 
 /**
  * @generated from message cronoq.v1.ListWorkersResponse
@@ -1674,7 +1780,7 @@ export type ListWorkersResponse = Message<"cronoq.v1.ListWorkersResponse"> & {
  * Use `create(ListWorkersResponseSchema)` to create a new message.
  */
 export const ListWorkersResponseSchema: GenMessage<ListWorkersResponse> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 42);
+  messageDesc(file_cronoq_v1_cronoq, 44);
 
 /**
  * @generated from message cronoq.v1.RecurringInfo
@@ -1732,7 +1838,7 @@ export type RecurringInfo = Message<"cronoq.v1.RecurringInfo"> & {
  * Use `create(RecurringInfoSchema)` to create a new message.
  */
 export const RecurringInfoSchema: GenMessage<RecurringInfo> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 43);
+  messageDesc(file_cronoq_v1_cronoq, 45);
 
 /**
  * @generated from message cronoq.v1.ListRecurringResponse
@@ -1756,7 +1862,7 @@ export type ListRecurringResponse = Message<"cronoq.v1.ListRecurringResponse"> &
  * Use `create(ListRecurringResponseSchema)` to create a new message.
  */
 export const ListRecurringResponseSchema: GenMessage<ListRecurringResponse> = /*@__PURE__*/
-  messageDesc(file_cronoq_v1_cronoq, 44);
+  messageDesc(file_cronoq_v1_cronoq, 46);
 
 /**
  * @generated from enum cronoq.v1.Priority
@@ -1939,6 +2045,33 @@ export const MissPolicySchema: GenEnum<MissPolicy> = /*@__PURE__*/
   enumDesc(file_cronoq_v1_cronoq, 3);
 
 /**
+ * What a status event reports.
+ *
+ * @generated from enum cronoq.v1.EventKind
+ */
+export enum EventKind {
+  /**
+   * The task changed status.
+   *
+   * @generated from enum value: EVENT_KIND_TRANSITION = 0;
+   */
+  TRANSITION = 0,
+
+  /**
+   * The task was changed by Update; `status` is its unchanged status.
+   *
+   * @generated from enum value: EVENT_KIND_UPDATED = 1;
+   */
+  UPDATED = 1,
+}
+
+/**
+ * Describes the enum cronoq.v1.EventKind.
+ */
+export const EventKindSchema: GenEnum<EventKind> = /*@__PURE__*/
+  enumDesc(file_cronoq_v1_cronoq, 4);
+
+/**
  * What a recurring occurrence does while the previous one is still live.
  *
  * @generated from enum cronoq.v1.Overlap
@@ -1981,7 +2114,7 @@ export enum Overlap {
  * Describes the enum cronoq.v1.Overlap.
  */
 export const OverlapSchema: GenEnum<Overlap> = /*@__PURE__*/
-  enumDesc(file_cronoq_v1_cronoq, 4);
+  enumDesc(file_cronoq_v1_cronoq, 5);
 
 /**
  * @generated from service cronoq.v1.Tasks
@@ -2010,6 +2143,17 @@ export const Tasks: GenService<{
     methodKind: "unary";
     input: typeof CancelRequestSchema;
     output: typeof CancelResponseSchema;
+  },
+  /**
+   * Change the priority, deadline or tags of a task that has not finished. NOT_FOUND for an
+   * unknown or finished task, FAILED_PRECONDITION for a task with a fixed start.
+   *
+   * @generated from rpc cronoq.v1.Tasks.Update
+   */
+  update: {
+    methodKind: "unary";
+    input: typeof UpdateRequestSchema;
+    output: typeof UpdateResponseSchema;
   },
   /**
    * @generated from rpc cronoq.v1.Tasks.Get

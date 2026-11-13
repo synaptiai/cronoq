@@ -166,6 +166,19 @@ impl CodecStore {
                     Mutation::RecurringRemove { name } => {
                         Mutation::RecurringRemove { name: name.clone() }
                     }
+                    Mutation::Updated {
+                        id,
+                        priority,
+                        deadline,
+                        tags,
+                        at,
+                    } => Mutation::Updated {
+                        id: *id,
+                        priority: *priority,
+                        deadline: *deadline,
+                        tags: tags.clone(),
+                        at: *at,
+                    },
                     Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
                         name: name.clone(),
                         next: *next,

@@ -290,6 +290,40 @@ async def test_failure_mapping(server: Server, client: Client) -> None:
         assert boom.result.text() == "boom@3", "generic exceptions are retryable"
 
 
+async def test_update_queued_task(client: Client) -> None:
+    # No workers are connected, so the tasks stay queued.
+    sub = await client.submit("later", key="upd", priority="low", tags={"a": "1"})
+    seen: list[Any] = []
+
+    async def collect() -> None:
+        async for e in client.watch(keys=["upd"], all_transitions=True):
+            seen.append(e)
+            if e.updated:
+                return
+
+    watcher = asyncio.create_task(collect())
+    await asyncio.sleep(0.2)
+    r = await client.update("upd", priority="high", deadline_in=60, tags={"b": "2"})
+    assert (r.id, r.status, r.deferred, r.changed) == (sub.id, "ready", False, True)
+    info = await client.get(sub.id)
+    assert info.priority == "high" and info.status == "ready"
+    await asyncio.wait_for(watcher, 5)
+    assert seen[-1].updated and seen[-1].priority == "high" and seen[-1].status == "ready"
+    again = await client.update(sub.id, priority="high")
+    assert not again.changed
+
+    with pytest.raises(ValueError):
+        await client.update("upd", deadline_in=1, clear_deadline=True)
+    with pytest.raises(ClientError) as missing:
+        await client.update("no-such-task", priority="low")
+    assert missing.value.code == "not_found"
+    fixed = await client.submit("fixed", start_in=3600)
+    with pytest.raises(ClientError) as refused:
+        await client.update(fixed.id, priority="low")
+    assert refused.value.code == "failed_precondition"
+    assert await client.cancel("upd") and await client.cancel(fixed.id)
+
+
 async def test_cancel_queued_task(client: Client) -> None:
     # No workers are connected, so the task stays queued.
     sub = await client.submit("never", key="cancel-me")

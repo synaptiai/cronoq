@@ -44,6 +44,11 @@ class MissPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     MISS_POLICY_SKIP: _ClassVar[MissPolicy]
     MISS_POLICY_FAIL: _ClassVar[MissPolicy]
 
+class EventKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EVENT_KIND_TRANSITION: _ClassVar[EventKind]
+    EVENT_KIND_UPDATED: _ClassVar[EventKind]
+
 class Overlap(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     OVERLAP_UNSPECIFIED: _ClassVar[Overlap]
@@ -77,6 +82,8 @@ MISS_POLICY_UNSPECIFIED: MissPolicy
 MISS_POLICY_RUN_LATE: MissPolicy
 MISS_POLICY_SKIP: MissPolicy
 MISS_POLICY_FAIL: MissPolicy
+EVENT_KIND_TRANSITION: EventKind
+EVENT_KIND_UPDATED: EventKind
 OVERLAP_UNSPECIFIED: Overlap
 OVERLAP_SKIP: Overlap
 OVERLAP_ALLOW: Overlap
@@ -222,6 +229,43 @@ class CancelResponse(_message.Message):
     cancelled: bool
     def __init__(self, cancelled: bool = ...) -> None: ...
 
+class UpdateRequest(_message.Message):
+    __slots__ = ("task", "priority", "deadline_in_s", "deadline_unix_ns", "clear_deadline", "set_tags", "tags")
+    class TagsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    TASK_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_IN_S_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_UNIX_NS_FIELD_NUMBER: _ClassVar[int]
+    CLEAR_DEADLINE_FIELD_NUMBER: _ClassVar[int]
+    SET_TAGS_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    task: TaskRef
+    priority: Priority
+    deadline_in_s: float
+    deadline_unix_ns: int
+    clear_deadline: bool
+    set_tags: bool
+    tags: _containers.ScalarMap[str, str]
+    def __init__(self, task: _Optional[_Union[TaskRef, _Mapping]] = ..., priority: _Optional[_Union[Priority, str]] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., clear_deadline: bool = ..., set_tags: bool = ..., tags: _Optional[_Mapping[str, str]] = ...) -> None: ...
+
+class UpdateResponse(_message.Message):
+    __slots__ = ("id", "status", "deferred", "changed")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    DEFERRED_FIELD_NUMBER: _ClassVar[int]
+    CHANGED_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    status: TaskStatus
+    deferred: bool
+    changed: bool
+    def __init__(self, id: _Optional[int] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., deferred: bool = ..., changed: bool = ...) -> None: ...
+
 class GetRequest(_message.Message):
     __slots__ = ("task",)
     TASK_FIELD_NUMBER: _ClassVar[int]
@@ -317,7 +361,7 @@ class WatchRequest(_message.Message):
     def __init__(self, pools: _Optional[_Iterable[str]] = ..., ids: _Optional[_Iterable[int]] = ..., keys: _Optional[_Iterable[str]] = ..., all_transitions: bool = ...) -> None: ...
 
 class StatusEvent(_message.Message):
-    __slots__ = ("id", "pool", "key", "status", "attempt", "at_unix_ns", "message")
+    __slots__ = ("id", "pool", "key", "status", "attempt", "at_unix_ns", "message", "priority", "kind")
     ID_FIELD_NUMBER: _ClassVar[int]
     POOL_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
@@ -325,6 +369,8 @@ class StatusEvent(_message.Message):
     ATTEMPT_FIELD_NUMBER: _ClassVar[int]
     AT_UNIX_NS_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
     id: int
     pool: str
     key: str
@@ -332,7 +378,9 @@ class StatusEvent(_message.Message):
     attempt: int
     at_unix_ns: int
     message: str
-    def __init__(self, id: _Optional[int] = ..., pool: _Optional[str] = ..., key: _Optional[str] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., attempt: _Optional[int] = ..., at_unix_ns: _Optional[int] = ..., message: _Optional[str] = ...) -> None: ...
+    priority: Priority
+    kind: EventKind
+    def __init__(self, id: _Optional[int] = ..., pool: _Optional[str] = ..., key: _Optional[str] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., attempt: _Optional[int] = ..., at_unix_ns: _Optional[int] = ..., message: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., kind: _Optional[_Union[EventKind, str]] = ...) -> None: ...
 
 class Register(_message.Message):
     __slots__ = ("pool", "slots", "worker_name", "protocol_version", "labels")

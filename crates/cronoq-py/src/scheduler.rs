@@ -16,7 +16,7 @@ use crate::executor::{LoopClosed, PyExecutor};
 use crate::store::{Codec, CodecStore, SqliteStore};
 use crate::types::{
     Dep, Opts, Pool, PriorityConfig, PyObj, Resource, RetryPolicy, Task, UrgencyConfig,
-    extract_ref, parse_miss, parse_overlap, secs,
+    extract_priority, extract_ref, parse_miss, parse_overlap, secs, to_system_time,
 };
 
 type Sched = cronoq::Scheduler<PyObj, PyObj>;
@@ -533,6 +533,64 @@ impl Scheduler {
         spawn_py(py, async move { s.cancel(target).await.map_err(to_pyerr) })
     }
 
+    /// Change the priority, deadline or tags of a task that has not finished, by key (str)
+    /// or id (int). Arguments left out keep their value.
+    ///
+    /// A waiting task takes the new values at once: with a new `priority` it moves to that
+    /// class and keeps its place by submission order there. A running attempt is not
+    /// interrupted; the values apply to what follows it (`Updated.deferred`). `deadline_in`
+    /// (seconds from now), `deadline_at` (a `datetime` or Unix seconds) and
+    /// `clear_deadline=True` exclude each other. `tags` replaces the task's tags.
+    ///
+    /// Raises `UpdateError` for a task that is unknown or finished (`not_found`) or has a
+    /// fixed start (`fixed_start`).
+    #[pyo3(signature = (target, *, priority=None, deadline_in=None, deadline_at=None, clear_deadline=false, tags=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn update<'py>(
+        &self,
+        py: Python<'py>,
+        target: &Bound<'py, PyAny>,
+        priority: Option<&Bound<'py, PyAny>>,
+        deadline_in: Option<f64>,
+        deadline_at: Option<&Bound<'py, PyAny>>,
+        clear_deadline: bool,
+        tags: Option<std::collections::BTreeMap<String, String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (s, target) = (self.sched(py)?, extract_ref(target)?);
+        let named =
+            deadline_in.is_some() as u8 + deadline_at.is_some() as u8 + clear_deadline as u8;
+        if named > 1 {
+            return Err(PyValueError::new_err(
+                "use only one of deadline_in, deadline_at and clear_deadline",
+            ));
+        }
+        let mut u = cronoq::Update::new();
+        if let Some(p) = priority {
+            u = u.priority(extract_priority(p)?);
+        }
+        if let Some(d) = deadline_in {
+            u = u.deadline_in(secs(d, "deadline_in")?);
+        }
+        if let Some(d) = deadline_at {
+            u = u.deadline_at(to_system_time(d)?);
+        }
+        if clear_deadline {
+            u = u.no_deadline();
+        }
+        if let Some(t) = tags {
+            u = u.tags(t);
+        }
+        spawn_py(py, async move {
+            let r = s.update(target, u).await.map_err(to_pyerr)?;
+            Ok(Updated {
+                id: r.id.0,
+                status: r.status.name().to_string(),
+                deferred: r.deferred,
+                changed: r.changed,
+            })
+        })
+    }
+
     /// Status name (e.g. "running", "succeeded") or None if unknown.
     fn status<'py>(
         &self,
@@ -885,7 +943,35 @@ impl TaskHandle {
 // ---------------------------------------------------------------------------------------------
 // Events
 
-/// A task status transition.
+/// Result of `Scheduler.update`.
+#[pyclass(frozen, get_all, module = "cronoq._cronoq")]
+#[derive(Clone, Debug)]
+pub struct Updated {
+    /// Task id.
+    id: u64,
+    /// The task's status name, which an update never changes.
+    status: String,
+    /// An attempt is running: it is not interrupted, and the new values apply to what
+    /// follows it.
+    deferred: bool,
+    /// False when every value given was already in place.
+    changed: bool,
+}
+
+#[pymethods]
+impl Updated {
+    fn __repr__(&self) -> String {
+        format!(
+            "Updated(id={}, status={:?}, deferred={}, changed={})",
+            self.id,
+            self.status,
+            if self.deferred { "True" } else { "False" },
+            if self.changed { "True" } else { "False" },
+        )
+    }
+}
+
+/// A task status transition, or a change made by `Scheduler.update` (`kind == "updated"`).
 #[pyclass(frozen, get_all, module = "cronoq._cronoq")]
 #[derive(Clone, Debug)]
 pub struct StatusEvent {
@@ -903,6 +989,11 @@ pub struct StatusEvent {
     at: f64,
     /// Failure or skip reason, if any.
     message: Option<String>,
+    /// The task's priority class name at the time of the event.
+    priority: String,
+    /// `"transition"` for a status change; `"updated"` when the task was changed by
+    /// `Scheduler.update` and `status` is its unchanged status.
+    kind: String,
 }
 
 #[pymethods]
@@ -1036,6 +1127,12 @@ fn convert(e: &CoreEvent, pools: &[Arc<str>], clock: &cronoq::Clock) -> StatusEv
         attempt: e.attempt,
         at,
         message: e.message.as_deref().map(str::to_string),
+        priority: e.priority.name().to_string(),
+        kind: match e.kind {
+            cronoq::EventKind::Transition => "transition",
+            cronoq::EventKind::Updated => "updated",
+        }
+        .to_string(),
     }
 }
 

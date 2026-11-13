@@ -32,6 +32,7 @@ __all__ = [
     "Task",
     "TaskContext",
     "TaskHandle",
+    "Updated",
     "UrgencyConfig",
     "__version__",
 ]
@@ -272,6 +273,15 @@ class StatusEvent:
     attempt: int
     at: float
     message: str | None
+    priority: str
+    kind: Literal["transition", "updated"]
+
+@final
+class Updated:
+    id: int
+    status: str
+    deferred: bool
+    changed: bool
 
 @final
 class EventStream:
@@ -371,6 +381,16 @@ class Scheduler:
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
+    def update(
+        self,
+        target: _TaskRefLike,
+        *,
+        priority: _PriorityLike | None = None,
+        deadline_in: float | None = None,
+        deadline_at: _TimeLike | None = None,
+        clear_deadline: bool = False,
+        tags: Mapping[str, str] | None = None,
+    ) -> Awaitable[Updated]: ...
     def status(self, target: _TaskRefLike) -> Awaitable[str | None]: ...
     def handle(self, target: _TaskRefLike) -> Awaitable[TaskHandle | None]: ...
     def snapshot(self) -> Awaitable[Snapshot]: ...

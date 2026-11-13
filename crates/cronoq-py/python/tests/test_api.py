@@ -115,6 +115,57 @@ async def test_timeouts_cancel_the_coroutine():
         await asyncio.wait_for(cancelled.wait(), 2)
 
 
+async def test_update_moves_a_queued_task_and_spares_a_running_one():
+    order: list[str] = []
+    gate = asyncio.Event()
+
+    async def run(ctx, payload):
+        if payload == "first":
+            await gate.wait()
+        order.append(payload)
+
+    async with Scheduler([Pool("default", run, max=1, autoscale=False)], emit_transitions=True) as s:
+        events = s.events()
+        first = await s.submit("first", key="first")
+        while await s.status("first") != "running":
+            await asyncio.sleep(0.01)
+        a = await s.submit("a", key="a", priority="low")
+        b = await s.submit("b", key="b", priority="low")
+
+        r = await s.update("b", priority="high", deadline_in=30, tags={"why": "urgent"})
+        assert (r.id, r.status, r.deferred, r.changed) == (b.id, "ready", False, True)
+        assert "Updated(" in repr(r)
+        assert not (await s.update(b.id, priority="high")).changed
+
+        running = await s.update("first", priority="low")
+        assert running.deferred and running.status == "running"
+
+        with pytest.raises(cronoq.UpdateError) as missing:
+            await s.update("nope", priority="low")
+        assert missing.value.code == "not_found"
+        with pytest.raises(ValueError):
+            await s.update("b", deadline_in=1, clear_deadline=True)
+        await s.submit("fixed", key="fixed", start_in=3600)
+        with pytest.raises(cronoq.UpdateError) as refused:
+            await s.update("fixed", tags={})
+        assert refused.value.code == "fixed_start"
+        assert await s.cancel("fixed")
+
+        gate.set()
+        await asyncio.gather(first.result(), a.result(), b.result())
+        assert order == ["first", "b", "a"]
+
+        seen = []
+        async for e in events:
+            if e.kind == "updated":
+                seen.append((e.id, e.priority, e.status))
+            if e.id == a.id and e.status == "succeeded":
+                break
+        assert (b.id, "high", "ready") in seen
+        with pytest.raises(cronoq.UpdateError):
+            await s.update("b", priority="low")
+
+
 async def test_cancellation_of_running_and_queued_tasks():
     started = asyncio.Event()
 

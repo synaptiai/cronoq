@@ -49,6 +49,11 @@ class TasksStub(object):
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.CancelRequest.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.CancelResponse.FromString,
                 _registered_method=True)
+        self.Update = channel.unary_unary(
+                '/cronoq.v1.Tasks/Update',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.UpdateRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.UpdateResponse.FromString,
+                _registered_method=True)
         self.Get = channel.unary_unary(
                 '/cronoq.v1.Tasks/Get',
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.GetRequest.SerializeToString,
@@ -88,6 +93,14 @@ class TasksServicer(object):
 
     def Cancel(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Update(self, request, context):
+        """Change the priority, deadline or tags of a task that has not finished. NOT_FOUND for an
+        unknown or finished task, FAILED_PRECONDITION for a task with a fixed start.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -135,6 +148,11 @@ def add_TasksServicer_to_server(servicer, server):
                     servicer.Cancel,
                     request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.CancelRequest.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.CancelResponse.SerializeToString,
+            ),
+            'Update': grpc.unary_unary_rpc_method_handler(
+                    servicer.Update,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.UpdateRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.UpdateResponse.SerializeToString,
             ),
             'Get': grpc.unary_unary_rpc_method_handler(
                     servicer.Get,
@@ -238,6 +256,33 @@ class Tasks(object):
             '/cronoq.v1.Tasks/Cancel',
             cronoq_dot_v1_dot_cronoq__pb2.CancelRequest.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.CancelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Update(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Tasks/Update',
+            cronoq_dot_v1_dot_cronoq__pb2.UpdateRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.UpdateResponse.FromString,
             options,
             channel_credentials,
             insecure,

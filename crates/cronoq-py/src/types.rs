@@ -674,7 +674,7 @@ impl Pool {
     }
 }
 
-fn to_system_time(obj: &Bound<'_, PyAny>) -> PyResult<SystemTime> {
+pub(crate) fn to_system_time(obj: &Bound<'_, PyAny>) -> PyResult<SystemTime> {
     let ts: f64 = if obj.hasattr("timestamp")? {
         obj.call_method0("timestamp")?.extract()?
     } else {

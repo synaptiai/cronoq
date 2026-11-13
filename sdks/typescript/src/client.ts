@@ -228,6 +228,38 @@ export interface Event {
   attempt: number;
   at: Date;
   message: string;
+  /** The task's class at the time of the event (`undefined` from older servers). */
+  priority?: Priority;
+  /**
+   * The event is not a status change: the task was changed by {@link Client.update} and
+   * `status` is its unchanged status. Only delivered with `allTransitions`.
+   */
+  updated: boolean;
+}
+
+/** What to change on a task that has not finished; fields left out keep their value. */
+export interface Update {
+  /** Move the task to this class. */
+  priority?: Priority;
+  /** Set the deadline this many seconds from now. */
+  deadlineIn?: number;
+  /** Set the deadline to this time. */
+  deadlineAt?: Date;
+  /** Remove the deadline. */
+  clearDeadline?: boolean;
+  /** Replace the task's tags (an empty object removes them). */
+  tags?: Record<string, string>;
+}
+
+/** Result of {@link Client.update}. */
+export interface Updated {
+  id: bigint;
+  /** The task's status, which an update never changes. */
+  status: Status;
+  /** An attempt is running: it is not interrupted, and the new values apply to what follows. */
+  deferred: boolean;
+  /** `false` when every value given was already in place. */
+  changed: boolean;
 }
 
 /** One page of tasks in id order. */
@@ -318,6 +350,31 @@ export class Client {
     return this.call(async () => (await this.tasks.cancel({ task: ref(task) }, rpc(opts))).cancelled);
   }
 
+  /**
+   * Change the priority, deadline or tags of a task that has not finished. A waiting task takes
+   * the new values at once and keeps its place by submission order in its new class. Rejects
+   * with `not_found` for an unknown or finished task and `failed_precondition` for a task with
+   * a fixed start.
+   */
+  update(task: TaskRef, changes: Update, opts: CallOptions = {}): Promise<Updated> {
+    return this.call(async () => {
+      const r = await this.tasks.update(
+        {
+          task: ref(task),
+          priority: priorityValue(changes.priority),
+          deadlineInS: changes.deadlineIn,
+          deadlineUnixNs:
+            changes.deadlineAt === undefined ? undefined : BigInt(changes.deadlineAt.getTime()) * 1_000_000n,
+          clearDeadline: changes.clearDeadline ?? false,
+          setTags: changes.tags !== undefined,
+          tags: changes.tags ?? {},
+        },
+        rpc(opts),
+      );
+      return { id: r.id, status: statusName(r.status), deferred: r.deferred, changed: r.changed };
+    });
+  }
+
   /** One page of tasks by pool and status. */
   listTasks(
     filter: { pools?: string[]; statuses?: Status[]; after?: bigint; limit?: number } = {},
@@ -359,6 +416,8 @@ export class Client {
           attempt: e.attempt,
           at: new Date(Number(e.atUnixNs / 1_000_000n)),
           message: e.message,
+          priority: priorityName(e.priority),
+          updated: e.kind === pb.EventKind.UPDATED,
         };
       }
     } catch (e) {

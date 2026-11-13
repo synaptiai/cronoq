@@ -32,6 +32,22 @@ class SubmitError(CronoqError):
         return (type(self), (self.code, self.message))
 
 
+class UpdateError(CronoqError):
+    """An update of a task was refused.
+
+    ``code`` is one of: ``not_found`` (no live task with this id or key: unknown, or already
+    finished), ``fixed_start`` (tasks with a fixed start cannot be updated), ``invalid``.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.code, self.message))
+
+
 class SchedulerError(CronoqError):
     """The scheduler is shut down or stopped, misconfigured, or its store failed."""
 
