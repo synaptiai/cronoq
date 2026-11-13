@@ -57,4 +57,6 @@ tenant = "acme"   # tasks from this token are acme's; naming another tenant is r
 ```
 
 A task submitted with such a token gets its tenant filled in; a task that names another tenant
-is refused with `PERMISSION_DENIED`.
+is refused with `PERMISSION_DENIED`. Such a token can [update](updating.md) and cancel its own
+tenant's tasks only, so one tenant cannot demote or cancel another's work; other tasks are
+reported as not found. It can still read other tenants' tasks in its pools.

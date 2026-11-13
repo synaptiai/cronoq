@@ -18,6 +18,12 @@ Every token or certificate mapping can be limited to `pools = [...]`. Scoped cre
 submit into, serve, watch or look up tasks of other pools; those tasks look like they do not
 exist. Keys, however, are one namespace across pools (see the threat model).
 
+Credentials can also be pinned to a `tenant`. What they submit belongs to that tenant, and the
+calls that change a task, `Update` and `Cancel`, reach that tenant's tasks only: any other task
+is reported as not found. Reading is not limited by the pin: such credentials can still look up,
+wait for and watch other tenants' tasks in their pools. Use separate pools, and credentials
+limited to them, when tenants must not see each other's tasks.
+
 ## Checklist
 
 1. **Configure credentials.** Without `[[auth.tokens]]` or `[[auth.certs]]`, authentication is

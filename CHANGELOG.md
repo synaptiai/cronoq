@@ -46,6 +46,10 @@ contain breaking changes; they are called out under **Changed**.
   `PoolConfig` has new fields `priority` and `urgency`; `PoolSnapshot` has new fields
   `priority` and `urgency`. Code that builds these with a struct literal needs
   `..Default::default()` or the new fields.
+- Credentials pinned to a tenant can cancel that tenant's tasks only, as they can update them:
+  `Cancel` of another tenant's task, or of a task without a tenant, answers `NOT_FOUND` (404)
+  instead of cancelling it. Reading (`Get`, `Wait`, `Watch`, listings) is unchanged.
+  Credentials without a `tenant` are unaffected.
 - **Breaking (Rust):** `StatusEvent` has new fields `priority` and `kind`, `Mutation` has a new
   variant `Updated`, and `Error` has a new variant `Update`. A custom `Store` must apply
   `Mutation::Updated` (set the task's priority, deadline and tags), or updates are lost on
