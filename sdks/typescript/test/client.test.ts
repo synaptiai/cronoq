@@ -223,6 +223,73 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     await c.cancel("op-7");
   });
 
+  test("ordering keys: one at a time, in submission order, halted and resumed", async () => {
+    const c = connect(s.target, { token: CLIENT });
+    const admin = connect(s.target, { token: ADMIN });
+    // Queued before a worker connects: a low task, a critical one, one that fails and halts
+    // the key, and one more.
+    const task = (payload: string, more: object = {}) => c.submit({ payload, orderingKey: "account-1", ...more });
+    const first = await task("ord-one", { priority: "low" });
+    await task("ord-two", { priority: "critical" });
+    const bad = await task("ord-bad", { haltOnFailure: true, maxAttempts: 1 });
+    const last = await task("ord-last");
+    const info = await admin.ordering("account-1");
+    assert.deepEqual(
+      { tasks: info.tasks, head: info.head, effective: info.effective, floor: info.floor, halted: info.halted },
+      { tasks: 4n, head: first.id, effective: "critical", floor: undefined, halted: false },
+    );
+    await assert.rejects(
+      c.submit({ payload: "x", haltOnFailure: true }),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+    await assert.rejects(
+      c.submit({ payload: "x", orderingKey: "k", startIn: 60 }),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+
+    const seen: string[] = [];
+    let active = 0;
+    let overlap = 0;
+    const stop = worker(
+      s.target,
+      async (l) => {
+        // Other tests may have left tasks queued: only this test's count.
+        if (!l.text().startsWith("ord-")) return "";
+        overlap = Math.max(overlap, ++active);
+        seen.push(l.text());
+        await new Promise((r) => setTimeout(r, 20));
+        active--;
+        if (l.text() === "ord-bad") throw new Permanent("boom");
+        return l.text();
+      },
+      { slots: 4 },
+    );
+    assert.equal((await c.wait(bad.id, 10)).status, "failed");
+    await waitFor(async () => (await admin.haltedOrderings()).includes("account-1"), "the key to halt");
+    await new Promise((r) => setTimeout(r, 200));
+    // One at a time, in submission order; the failure halted the key before the last task.
+    assert.deepEqual({ seen, overlap }, { seen: ["ord-one", "ord-two", "ord-bad"], overlap: 1 });
+
+    // Changing a key needs the admin role.
+    await assert.rejects(
+      c.resume({ orderingKey: "account-1" }),
+      (e: unknown) => e instanceof CronoqError && e.code === "permission_denied",
+    );
+    await admin.setOrderingFloor("account-1", "high", { persist: true });
+    const halted = await admin.ordering("account-1");
+    assert.deepEqual(
+      { halted: halted.halted, floor: halted.floor, persist: halted.persist, effective: halted.effective, head: halted.head },
+      { halted: true, floor: "high", persist: true, effective: "high", head: last.id },
+    );
+    await admin.setOrderingFloor("account-1", undefined);
+    assert.equal(await admin.resume({ orderingKey: "account-1" }), true);
+    assert.equal(await admin.resume({ orderingKey: "account-1" }), false);
+    assert.equal(text((await c.wait(last.id, 10)).output), "ord-last");
+    const gone = await admin.ordering("account-1");
+    assert.deepEqual({ tasks: gone.tasks, head: gone.head, effective: gone.effective }, { tasks: 0n, head: undefined, effective: undefined });
+    await stop();
+  });
+
   test("handler outcomes and fencing tokens", async () => {
     const attempts = new Map<bigint, number[]>();
     const stop = worker(

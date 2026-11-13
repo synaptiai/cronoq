@@ -119,3 +119,34 @@ def test_json_codec_round_trips():
     c = cronoq.JsonCodec()
     v = {"a": [1, 2.5, None, True], "ü": "ñ"}
     assert c.decode(c.encode(v)) == v
+
+
+async def test_ordering_keys_survive_a_restart(tmp_path):
+    order = []
+
+    async def run(ctx, payload):
+        order.append(payload)
+        if payload == "bad":
+            raise cronoq.Permanent("boom")
+        return payload
+
+    first = Scheduler([Pool("default", run, max=4)], store=store(tmp_path))
+    await first.start()
+    bad = await first.submit("bad", ordering_key="acct", halt_on_failure=True, key="bad")
+    for name in ["b", "c", "d"]:
+        await first.enqueue(name, ordering_key="acct", key=name)
+    await first.set_ordering_floor("vip", "high", persist=True)
+    with pytest.raises(cronoq.TaskFailed):
+        await bad
+    await first.shutdown(grace=1)
+
+    async with Scheduler([Pool("default", run, max=4)], store=store(tmp_path)) as second:
+        info = await second.ordering("acct")
+        assert info.halted and info.tasks == 3
+        assert (await second.ordering("vip")).floor == "high"
+        await asyncio.sleep(0.1)
+        assert order == ["bad"]
+        assert await second.resume_ordering("acct")
+        last = await second.handle("d")
+        assert last is not None and await last == "d"
+    assert order == ["bad", "b", "c", "d"]

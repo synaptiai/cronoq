@@ -1309,8 +1309,174 @@ pub async fn remove_recurring(app: &AppState, name: &str) -> Result<bool, Status
         .map_err(convert::error)
 }
 
+/// The pool and key of a call about an ordering key, checked: the default pool if none is
+/// named, a pool the caller may use, and a key within the limits.
+pub fn ordering_target(
+    p: &Principal,
+    limits: &LimitsConfig,
+    pool: &str,
+    key: &str,
+) -> Result<String, Status> {
+    let pool = if pool.is_empty() { "default" } else { pool };
+    convert::check_str("pool", pool, 64)?;
+    check_pool(p, pool)?;
+    convert::check_str("ordering key", key, limits.max_key_len)?;
+    Ok(pool.to_string())
+}
+
+/// Like [`ordering_target`] for a call that changes the key. Credentials pinned to a tenant
+/// reach that tenant's tasks only, and a key may hold tasks of others: they are refused.
+pub fn ordering_change(
+    p: &Principal,
+    limits: &LimitsConfig,
+    pool: &str,
+    key: &str,
+) -> Result<String, Status> {
+    let pool = ordering_target(p, limits, pool, key)?;
+    if key.is_empty() {
+        return Err(Status::invalid_argument("an ordering key is required"));
+    }
+    if p.tenant.is_some() {
+        return Err(Status::permission_denied(
+            "credentials pinned to a tenant cannot change an ordering key",
+        ));
+    }
+    Ok(pool)
+}
+
+/// An ordering key of a pool of this shard.
+pub async fn get_ordering(
+    app: &AppState,
+    pool: &str,
+    key: &str,
+) -> Result<pb::OrderingInfo, Status> {
+    check_pool_shard(app, pool)?;
+    let info = app
+        .sched
+        .ordering(pool, key)
+        .await
+        .map_err(convert::error)?;
+    let class = |c: Option<cronoq::Priority>| c.map(|c| convert::priority_to_pb(c) as i32);
+    Ok(match info {
+        Some(i) => pb::OrderingInfo {
+            pool: pool.to_string(),
+            key: key.to_string(),
+            tasks: i.tasks as u64,
+            head: i.head.map(|id| id.0),
+            effective: class(i.effective).unwrap_or_default(),
+            floor: class(i.floor),
+            persist: i.persist,
+            halted: i.halted,
+        },
+        None => pb::OrderingInfo {
+            pool: pool.to_string(),
+            key: key.to_string(),
+            ..Default::default()
+        },
+    })
+}
+
+/// Most halted ordering keys one call lists.
+pub const MAX_HALTED_LIST: u32 = 1000;
+
+/// The halted ordering keys of a pool of this shard.
+pub async fn list_halted_orderings(
+    app: &AppState,
+    pool: &str,
+    limit: u32,
+) -> Result<Vec<String>, Status> {
+    check_pool_shard(app, pool)?;
+    let limit = match limit {
+        0 => 100,
+        n => n.min(MAX_HALTED_LIST),
+    };
+    let keys = app
+        .sched
+        .halted_orderings(pool, limit as usize)
+        .await
+        .map_err(convert::error)?;
+    Ok(keys.iter().map(|k| k.to_string()).collect())
+}
+
+/// Set or remove the floor of an ordering key of a pool of this shard.
+pub async fn set_ordering_floor(
+    app: &AppState,
+    pool: &str,
+    key: &str,
+    floor: Option<cronoq::Priority>,
+    persist: bool,
+) -> Result<(), Status> {
+    check_pool_shard(app, pool)?;
+    app.sched
+        .set_ordering_floor(pool, key, floor, persist)
+        .await
+        .map_err(convert::error)
+}
+
+/// Resume a halted ordering key of a pool of this shard.
+pub async fn resume_ordering(app: &AppState, pool: &str, key: &str) -> Result<bool, Status> {
+    check_pool_shard(app, pool)?;
+    app.sched
+        .resume_ordering(pool, key)
+        .await
+        .map_err(convert::error)
+}
+
 #[tonic::async_trait]
 impl pb::admin_server::Admin for AdminService {
+    async fn get_ordering(
+        &self,
+        req: Request<pb::OrderingRequest>,
+    ) -> Result<Response<pb::OrderingInfo>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
+        let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let pool = ordering_target(&p, &app.limits, &r.pool, &r.key)?;
+        Ok(Response::new(
+            crate::route::get_ordering(app, &p, &pool, &r.key).await?,
+        ))
+    }
+
+    async fn list_halted_orderings(
+        &self,
+        req: Request<pb::ListHaltedOrderingsRequest>,
+    ) -> Result<Response<pb::ListHaltedOrderingsResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
+        let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let pool = ordering_target(&p, &app.limits, &r.pool, "")?;
+        let keys = crate::route::list_halted_orderings(app, &p, &pool, r.limit).await?;
+        Ok(Response::new(pb::ListHaltedOrderingsResponse { keys }))
+    }
+
+    async fn set_ordering_floor(
+        &self,
+        req: Request<pb::SetOrderingFloorRequest>,
+    ) -> Result<Response<pb::Empty>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
+        let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let pool = ordering_change(&p, &app.limits, &r.pool, &r.key)?;
+        let floor = r.floor.map(convert::priority).transpose()?;
+        if r.persist && floor.is_none() {
+            return Err(Status::invalid_argument("persist needs a floor"));
+        }
+        crate::route::set_ordering_floor(app, &p, &pool, &r.key, floor, r.persist).await?;
+        Ok(Response::new(pb::Empty {}))
+    }
+
+    async fn resume(
+        &self,
+        req: Request<pb::ResumeRequest>,
+    ) -> Result<Response<pb::ResumeResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
+        let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let pool = ordering_change(&p, &app.limits, &r.pool, &r.ordering_key)?;
+        let resumed = crate::route::resume_ordering(app, &p, &pool, &r.ordering_key).await?;
+        Ok(Response::new(pb::ResumeResponse { resumed }))
+    }
+
     async fn snapshot(
         &self,
         req: Request<pb::Empty>,

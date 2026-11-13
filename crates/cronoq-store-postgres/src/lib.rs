@@ -52,8 +52,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use cronoq::{Store, StoreError, StoreQueries, TimeBase};
 use cronoq_core::{
-    Mutation, Priority, Recovered, RecoveredRecurring, RecoveredTask, RecoveredTerminal, TaskId,
-    TaskRef, TaskSpec, TaskStatus,
+    Mutation, OrderFailure, Priority, Recovered, RecoveredRecurring, RecoveredTask,
+    RecoveredTerminal, TaskId, TaskRef, TaskSpec, TaskStatus,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Row};
@@ -100,6 +100,22 @@ const MIGRATIONS: &[&str] = &[
     // a later submission of its key asks for conflicts to be reported.
     "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS fingerprint BYTEA",
     "ALTER TABLE cronoq_pending ADD COLUMN IF NOT EXISTS fingerprint BYTEA",
+    // v9 to v13: ordering keys. Tasks of one pool that share an ordering key run one at a
+    // time, in submission order (`seq`). The key and what a failure does to it are stored
+    // with each task; a key's own state (class floor, halted) has a row only while it
+    // differs from the default.
+    "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS ordering_key TEXT",
+    "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS halt_on_failure BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE cronoq_pending ADD COLUMN IF NOT EXISTS ordering_key TEXT",
+    "ALTER TABLE cronoq_pending ADD COLUMN IF NOT EXISTS halt_on_failure BOOLEAN NOT NULL DEFAULT false",
+    "CREATE TABLE IF NOT EXISTS cronoq_ordering (
+        pool     TEXT NOT NULL,
+        key      TEXT NOT NULL,
+        floor    SMALLINT,
+        persist  BOOLEAN NOT NULL DEFAULT false,
+        halted   BOOLEAN NOT NULL DEFAULT false,
+        PRIMARY KEY (pool, key)
+    )",
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -672,7 +688,8 @@ impl PgStore {
                 // handled (schedules are applied in the second pass).
                 Mutation::RecurringUpsert { .. }
                 | Mutation::RecurringRemove { .. }
-                | Mutation::RecurringNext { .. } => {}
+                | Mutation::RecurringNext { .. }
+                | Mutation::Ordering { .. } => {}
             }
         }
 
@@ -839,6 +856,38 @@ impl PgStore {
                     .await
                     .map_err(db)?;
                 }
+                Mutation::Ordering {
+                    pool,
+                    key,
+                    floor,
+                    persist,
+                    halted,
+                } => {
+                    if floor.is_none() && !halted {
+                        // Back to the default: no row.
+                        sqlx::query("DELETE FROM cronoq_ordering WHERE pool = $1 AND key = $2")
+                            .bind(clean(pool))
+                            .bind(clean(key))
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(db)?;
+                    } else {
+                        sqlx::query(
+                            "INSERT INTO cronoq_ordering (pool, key, floor, persist, halted) \
+                             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (pool, key) DO UPDATE SET \
+                             floor = excluded.floor, persist = excluded.persist, \
+                             halted = excluded.halted",
+                        )
+                        .bind(clean(pool))
+                        .bind(clean(key))
+                        .bind(floor.map(|f| f as i16))
+                        .bind(*persist)
+                        .bind(*halted)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                    }
+                }
                 // Listed, not `_`: tasks were applied in the first pass.
                 Mutation::Submitted { .. }
                 | Mutation::Status { .. }
@@ -886,6 +935,10 @@ fn decode_task(base: TimeBase, r: &sqlx::postgres::PgRow) -> Result<RecoveredTas
     spec.labels = tags_from(&r.get::<String, _>("labels"))?;
     spec.tenant = r.get::<Option<String>, _>("tenant").map(Into::into);
     spec.fingerprint = fingerprint_from(r.get("fingerprint"));
+    spec.ordering_key = r.get::<Option<String>, _>("ordering_key").map(Into::into);
+    if r.get::<bool, _>("halt_on_failure") {
+        spec.on_failure = OrderFailure::Halt;
+    }
     Ok(RecoveredTask {
         id: TaskId(r.get::<i64, _>("id") as u64),
         seq: r.get::<i64, _>("seq") as u64,
@@ -1048,7 +1101,8 @@ impl Store<Bytes, Bytes> for PgStore {
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
              fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
              retry::text AS retry, deps::text AS deps, resources::text AS resources, \
-             tags::text AS tags, labels::text AS labels, tenant, fingerprint, attempt \
+             tags::text AS tags, labels::text AS labels, tenant, fingerprint, ordering_key, \
+             halt_on_failure, attempt \
              FROM cronoq_tasks \
              WHERE NOT terminal \
              ORDER BY id",
@@ -1082,7 +1136,8 @@ impl Store<Bytes, Bytes> for PgStore {
              deadline_unix_ns, NULL::bigint AS fixed_at_unix_ns, NULL::bigint AS fixed_tolerance_ns, \
              NULL::text AS fixed_on_miss, duration_hint_ns, timeout_ns, retry::text AS retry, \
              deps::text AS deps, resources::text AS resources, tags::text AS tags, \
-             labels::text AS labels, tenant, fingerprint, 0::int AS attempt FROM cronoq_pending \
+             labels::text AS labels, tenant, fingerprint, ordering_key, halt_on_failure, \
+             0::int AS attempt FROM cronoq_pending \
              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE NOT terminal) ORDER BY task_id",
         )
         .fetch_all(pool)
@@ -1155,6 +1210,26 @@ impl Store<Bytes, Bytes> for PgStore {
                 at: from_unix(base, now),
                 fingerprint: None,
             }));
+
+        // Ordering keys with a floor or a halt.
+        let rows = sqlx::query(
+            "SELECT pool, key, floor, persist, halted FROM cronoq_ordering ORDER BY pool, key",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+        for r in rows {
+            let floor = r
+                .get::<Option<i16>, _>("floor")
+                .and_then(|f| Priority::from_index(f.max(0) as usize));
+            rec.ordering.push(cronoq_core::RecoveredOrdering {
+                pool: r.get::<String, _>("pool").into(),
+                key: r.get::<String, _>("key").into(),
+                floor,
+                persist: r.get("persist"),
+                halted: r.get("halted"),
+            });
+        }
 
         let rows = sqlx::query(
             "SELECT name, spec::text AS spec, template_payload, next_unix_ns, last_task_id \
@@ -1239,6 +1314,8 @@ struct Inserts {
     labels: Vec<String>,
     tenant: Vec<Option<String>>,
     fingerprint: Vec<Option<Vec<u8>>>,
+    ordering_key: Vec<Option<String>>,
+    halt: Vec<bool>,
     status: Vec<&'static str>,
     terminal: Vec<bool>,
     attempt: Vec<i32>,
@@ -1279,6 +1356,9 @@ impl Inserts {
         self.tenant.push(s.tenant.as_deref().map(cleaned));
         self.fingerprint
             .push(s.fingerprint.map(|f| f.to_be_bytes().to_vec()));
+        self.ordering_key
+            .push(s.ordering_key.as_deref().map(cleaned));
+        self.halt.push(s.on_failure == OrderFailure::Halt);
         self.status.push(QUEUED);
         self.terminal.push(false);
         self.attempt.push(0);
@@ -1312,7 +1392,9 @@ impl Inserts {
             tags,
             labels,
             tenant,
-            fingerprint
+            fingerprint,
+            ordering_key,
+            halt
         );
     }
 
@@ -1325,7 +1407,8 @@ impl Inserts {
         sqlx::query(
             "UPDATE cronoq_tasks SET seq = $2, arrival_unix_ns = $3, kind = $4, priority = $5, \
              payload = $6, deadline_unix_ns = $7, duration_hint_ns = $8, timeout_ns = $9, \
-             retry = $10::jsonb, tags = $11::jsonb, tenant = $12, fingerprint = $13 \
+             retry = $10::jsonb, tags = $11::jsonb, tenant = $12, fingerprint = $13, \
+             halt_on_failure = $14 \
              WHERE id = $1 AND NOT terminal",
         )
         .bind(self.id[0])
@@ -1341,6 +1424,7 @@ impl Inserts {
         .bind(self.tags.pop())
         .bind(self.tenant.pop().flatten())
         .bind(self.fingerprint.pop().flatten())
+        .bind(self.halt[0])
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1357,8 +1441,9 @@ impl Inserts {
         sqlx::query(
             "INSERT INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool, kind, priority, \
              key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry, deps, resources, \
-             tags, labels, tenant, fingerprint) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
-             $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19) \
+             tags, labels, tenant, fingerprint, ordering_key, halt_on_failure) VALUES ($1, $2, \
+             $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, \
+             $16::jsonb, $17::jsonb, $18, $19, $20, $21) \
              ON CONFLICT (task_id) DO UPDATE SET seq = excluded.seq, \
              arrival_unix_ns = excluded.arrival_unix_ns, renew = excluded.renew, \
              pool = excluded.pool, kind = excluded.kind, priority = excluded.priority, \
@@ -1367,7 +1452,8 @@ impl Inserts {
              duration_hint_ns = excluded.duration_hint_ns, timeout_ns = excluded.timeout_ns, \
              retry = excluded.retry, deps = excluded.deps, resources = excluded.resources, \
              tags = excluded.tags, labels = excluded.labels, tenant = excluded.tenant, \
-             fingerprint = excluded.fingerprint",
+             fingerprint = excluded.fingerprint, ordering_key = excluded.ordering_key, \
+             halt_on_failure = excluded.halt_on_failure",
         )
         .bind(self.id[0])
         .bind(self.seq[0])
@@ -1388,6 +1474,8 @@ impl Inserts {
         .bind(self.labels.pop())
         .bind(self.tenant.pop().flatten())
         .bind(self.fingerprint.pop().flatten())
+        .bind(self.ordering_key.pop().flatten())
+        .bind(self.halt[0])
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1413,18 +1501,19 @@ impl Inserts {
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
              retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, labels, tenant, \
-             fingerprint) \
+             fingerprint, ordering_key, halt_on_failure) \
              SELECT u.id, u.seq, u.arrival, u.pool, u.kind, u.priority, u.key, u.payload, u.deadline, u.fixed_at, \
              u.fixed_tol, u.fixed_miss, u.hint, u.timeout, u.retry::jsonb, u.deps::jsonb, u.resources::jsonb, \
              u.tags::jsonb, u.status, u.terminal, u.attempt, u.updated, u.message, u.labels::jsonb, u.tenant, \
-             u.fingerprint \
+             u.fingerprint, u.ordering_key, u.halt \
              FROM UNNEST($1::bigint[], $2::bigint[], $3::bigint[], $4::text[], $5::text[], $6::smallint[], \
              $7::text[], $8::bytea[], $9::bigint[], $10::bigint[], $11::bigint[], $12::text[], $13::bigint[], \
              $14::bigint[], $15::text[], $16::text[], $17::text[], $18::text[], $19::text[], $20::bool[], \
-             $21::int[], $22::bigint[], $23::text[], $24::text[], $25::text[], $26::bytea[]) \
+             $21::int[], $22::bigint[], $23::text[], $24::text[], $25::text[], $26::bytea[], \
+             $27::text[], $28::bool[]) \
              AS u(id, seq, arrival, pool, kind, priority, key, payload, deadline, fixed_at, fixed_tol, fixed_miss, \
              hint, timeout, retry, deps, resources, tags, status, terminal, attempt, updated, message, labels, \
-             tenant, fingerprint) \
+             tenant, fingerprint, ordering_key, halt) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
@@ -1453,6 +1542,8 @@ impl Inserts {
         .bind(self.labels)
         .bind(self.tenant)
         .bind(self.fingerprint)
+        .bind(self.ordering_key)
+        .bind(self.halt)
         .execute(&mut **tx)
         .await
         .map_err(db)?;

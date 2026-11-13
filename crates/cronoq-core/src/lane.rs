@@ -30,7 +30,7 @@ impl<K: Copy + PartialEq> Lane<K> {
     pub fn first(&self) -> Option<K> {
         self.q.front().map(|e| e.1)
     }
-    #[inline]
+    #[cfg(test)]
     pub fn last(&self) -> Option<K> {
         self.q.back().map(|e| e.1)
     }
@@ -51,6 +51,10 @@ impl<K: Copy + PartialEq> Lane<K> {
     pub fn get(&self, seq: u64) -> Option<K> {
         let i = self.q.partition_point(|&(s, _)| s < seq);
         self.q.get(i).filter(|e| e.0 == seq).map(|e| e.1)
+    }
+    /// The entries in sequence order.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = K> + '_ {
+        self.q.iter().map(|e| e.1)
     }
     #[inline]
     pub fn len(&self) -> usize {

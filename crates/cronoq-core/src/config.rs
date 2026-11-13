@@ -380,6 +380,9 @@ pub struct CoreConfig {
     /// ([`KeyConflict::Configured`](crate::KeyConflict::Configured)): `ReturnExisting` (the default; `Configured` here means
     /// the same) or `Reject`.
     pub on_key_conflict: crate::KeyConflict,
+    /// Most ordering keys that may hold a stored setting (a class floor that persists) at one
+    /// time. Reaching it refuses a new setting, never a submission.
+    pub max_ordering_settings: usize,
     /// Emit `Action::Persist` mutations.
     pub persist: bool,
     /// Unix time (ns) corresponding to `Time::ZERO`; used for cron schedules.
@@ -408,6 +411,7 @@ impl Default for CoreConfig {
             retention: Duration::from_secs(3600),
             retention_max: 1_000_000,
             on_key_conflict: crate::KeyConflict::ReturnExisting,
+            max_ordering_settings: 100_000,
             persist: false,
             epoch_unix_nanos: 0,
             id_epoch: 0,

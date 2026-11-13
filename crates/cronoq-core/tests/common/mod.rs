@@ -41,6 +41,7 @@ impl Job {
 #[derive(Clone, Debug)]
 pub struct Started {
     pub id: TaskId,
+    pub lease: LeaseId,
     pub at: Time,
     pub group: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)>,
     pub pool: PoolId,
@@ -60,6 +61,8 @@ pub struct Sim {
     pub events: Vec<StatusEvent>,
     pub scales: Vec<(Time, PoolId, u32)>,
     pub aborts: Vec<(LeaseId, AbortReason)>,
+    /// When each attempt that ended did so (completed or aborted).
+    pub attempt_end: std::collections::HashMap<LeaseId, Time>,
     pub persisted: Vec<Mutation<Job>>,
     pub space_available: usize,
     /// Apply `ScaleTo` immediately (in-process slot scaler).
@@ -88,6 +91,7 @@ impl Sim {
             events: Vec::new(),
             scales: Vec::new(),
             aborts: Vec::new(),
+            attempt_end: Default::default(),
             persisted: Vec::new(),
             space_available: 0,
             auto_capacity: true,
@@ -140,6 +144,7 @@ impl Sim {
                 Action::Dispatch(d) => {
                     self.started.push(Started {
                         id: d.id,
+                        lease: d.lease,
                         at: self.now,
                         group: d.group.to_vec(),
                         pool: d.pool,
@@ -159,6 +164,7 @@ impl Sim {
                 }
                 Action::Abort { lease, reason, .. } => {
                     self.running.retain(|(_, l), _| *l != lease);
+                    self.attempt_end.entry(lease).or_insert(self.now);
                     self.aborts.push((lease, reason));
                 }
                 Action::ScaleTo { pool, desired } => {
@@ -202,6 +208,7 @@ impl Sim {
                 } else {
                     Outcome::Success
                 };
+                self.attempt_end.entry(k.1).or_insert(self.now);
                 self.core.complete(self.now, k.1, outcome);
             } else {
                 self.core.tick(self.now);
@@ -253,6 +260,19 @@ impl Sim {
             .map(|s| s.group.clone())
     }
 
+    /// Resume every halted ordering key. Returns how many there were.
+    pub fn resume_halted(&mut self) -> usize {
+        let mut n = 0;
+        for p in 0..self.core.snapshot(self.now).pools.len() {
+            let pool = PoolId(p as u16);
+            for key in self.core.halted_orderings(pool, usize::MAX) {
+                n += self.core.resume_ordering(self.now, pool, &key) as usize;
+            }
+        }
+        self.drain();
+        n
+    }
+
     pub fn running_leases(&self) -> Vec<LeaseId> {
         self.running.keys().map(|(_, l)| *l).collect()
     }
@@ -260,6 +280,7 @@ impl Sim {
     pub fn complete_all_running_now(&mut self, outcome: Outcome) {
         let all: Vec<_> = std::mem::take(&mut self.running).into_iter().collect();
         for ((_, lease), _) in all {
+            self.attempt_end.entry(lease).or_insert(self.now);
             self.core.complete(self.now, lease, outcome.clone());
         }
         self.drain();

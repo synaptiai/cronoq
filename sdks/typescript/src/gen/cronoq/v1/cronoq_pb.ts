@@ -26,7 +26,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file cronoq/v1/cronoq.proto.
  */
 export const file_cronoq_v1_cronoq: GenFile = /*@__PURE__*/
-  fileDesc("ChZjcm9ub3EvdjEvY3Jvbm9xLnByb3RvEgljcm9ub3EudjEiMAoHVGFza1JlZhIMCgJpZBgBIAEoBEgAEg0KA2tleRgCIAEoCUgAQggKBnRhcmdldCJMCgNEZXASIgoGdGFyZ2V0GAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSIQoEY29uZBgCIAEoDjITLmNyb25vcS52MS5FZGdlQ29uZCJ5CgtSZXRyeVBvbGljeRIUCgxtYXhfYXR0ZW1wdHMYASABKA0SGQoRaW5pdGlhbF9iYWNrb2ZmX3MYAiABKAESEgoKbXVsdGlwbGllchgDIAEoARIVCg1tYXhfYmFja29mZl9zGAQgASgBEg4KBmppdHRlchgFIAEoCCLbBgoIVGFza1NwZWMSDwoHcGF5bG9hZBgBIAEoDBIUCgxjb250ZW50X3R5cGUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRwb29sGAQgASgJEiUKCHByaW9yaXR5GAUgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EgsKA2tleRgGIAEoCRIaCg1kZWFkbGluZV9pbl9zGAcgASgBSACIAQESHQoQZGVhZGxpbmVfdW5peF9ucxgIIAEoA0gBiAEBEhcKCnN0YXJ0X2luX3MYCSABKAFIAogBARIaCg1zdGFydF91bml4X25zGAogASgDSAOIAQESGAoLdG9sZXJhbmNlX3MYCyABKAFIBIgBARImCgdvbl9taXNzGAwgASgOMhUuY3Jvbm9xLnYxLk1pc3NQb2xpY3kSHAoPZHVyYXRpb25faGludF9zGA0gASgBSAWIAQESFgoJdGltZW91dF9zGA4gASgBSAaIAQESJQoFcmV0cnkYDyABKAsyFi5jcm9ub3EudjEuUmV0cnlQb2xpY3kSHAoEZGVwcxgQIAMoCzIOLmNyb25vcS52MS5EZXASNQoJcmVzb3VyY2VzGBEgAygLMiIuY3Jvbm9xLnYxLlRhc2tTcGVjLlJlc291cmNlc0VudHJ5EisKBHRhZ3MYEiADKAsyHS5jcm9ub3EudjEuVGFza1NwZWMuVGFnc0VudHJ5Ei8KBmxhYmVscxgTIAMoCzIfLmNyb25vcS52MS5UYXNrU3BlYy5MYWJlbHNFbnRyeRIOCgZ0ZW5hbnQYFCABKAkaMAoOUmVzb3VyY2VzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgNOgI4ARorCglUYWdzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ARotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQhAKDl9kZWFkbGluZV9pbl9zQhMKEV9kZWFkbGluZV91bml4X25zQg0KC19zdGFydF9pbl9zQhAKDl9zdGFydF91bml4X25zQg4KDF90b2xlcmFuY2Vfc0ISChBfZHVyYXRpb25faGludF9zQgwKCl90aW1lb3V0X3MiuQEKDVN1Ym1pdFJlcXVlc3QSIQoEdGFzaxgBIAEoCzITLmNyb25vcS52MS5UYXNrU3BlYxIMCgR3YWl0GAIgASgIEhsKDndhaXRfdGltZW91dF9zGAMgASgBSACIAQESLwoPb25fa2V5X2NvbmZsaWN0GAQgASgOMhYuY3Jvbm9xLnYxLktleUNvbmZsaWN0EhYKDnJlbmV3X3Bvc2l0aW9uGAUgASgIQhEKD193YWl0X3RpbWVvdXRfcyKBAQoOU3VibWl0UmVzcG9uc2USCgoCaWQYASABKAQSEQoJZHVwbGljYXRlGAIgASgIEiUKBnJlc3VsdBgDIAEoCzIVLmNyb25vcS52MS5UYXNrUmVzdWx0EikKB291dGNvbWUYBCABKA4yGC5jcm9ub3EudjEuU3VibWl0T3V0Y29tZSJpChJTdWJtaXRCYXRjaFJlcXVlc3QSIgoFdGFza3MYASADKAsyEy5jcm9ub3EudjEuVGFza1NwZWMSLwoPb25fa2V5X2NvbmZsaWN0GAIgASgOMhYuY3Jvbm9xLnYxLktleUNvbmZsaWN0Ij8KE1N1Ym1pdEJhdGNoUmVzcG9uc2USKAoFdGFza3MYASADKAsyGS5jcm9ub3EudjEuU3VibWl0UmVzcG9uc2UiMQoNQ2FuY2VsUmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYiIwoOQ2FuY2VsUmVzcG9uc2USEQoJY2FuY2VsbGVkGAEgASgIIsMCCg1VcGRhdGVSZXF1ZXN0EiAKBHRhc2sYASABKAsyEi5jcm9ub3EudjEuVGFza1JlZhIlCghwcmlvcml0eRgCIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eRIaCg1kZWFkbGluZV9pbl9zGAMgASgBSACIAQESHQoQZGVhZGxpbmVfdW5peF9ucxgEIAEoA0gBiAEBEhYKDmNsZWFyX2RlYWRsaW5lGAUgASgIEhAKCHNldF90YWdzGAYgASgIEjAKBHRhZ3MYByADKAsyIi5jcm9ub3EudjEuVXBkYXRlUmVxdWVzdC5UYWdzRW50cnkaKwoJVGFnc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAFCEAoOX2RlYWRsaW5lX2luX3NCEwoRX2RlYWRsaW5lX3VuaXhfbnMiZgoOVXBkYXRlUmVzcG9uc2USCgoCaWQYASABKAQSJQoGc3RhdHVzGAIgASgOMhUuY3Jvbm9xLnYxLlRhc2tTdGF0dXMSEAoIZGVmZXJyZWQYAyABKAgSDwoHY2hhbmdlZBgEIAEoCCIuCgpHZXRSZXF1ZXN0EiAKBHRhc2sYASABKAsyEi5jcm9ub3EudjEuVGFza1JlZiKHAwoIVGFza0luZm8SCgoCaWQYASABKAQSJQoGc3RhdHVzGAIgASgOMhUuY3Jvbm9xLnYxLlRhc2tTdGF0dXMSDAoEcG9vbBgDIAEoCRILCgNrZXkYBCABKAkSDAoEa2luZBgFIAEoCRIPCgdhdHRlbXB0GAYgASgNEhQKDG1heF9hdHRlbXB0cxgHIAEoDRIcCg9jcmVhdGVkX3VuaXhfbnMYCCABKANIAIgBARIcCg9zdGFydGVkX3VuaXhfbnMYCSABKANIAYgBARIdChBmaW5pc2hlZF91bml4X25zGAogASgDSAKIAQESDwoHbWVzc2FnZRgLIAEoCRIYChBvdXRwdXRfYXZhaWxhYmxlGAwgASgIEg4KBnRlbmFudBgNIAEoCRIlCghwcmlvcml0eRgOIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eUISChBfY3JlYXRlZF91bml4X25zQhIKEF9zdGFydGVkX3VuaXhfbnNCEwoRX2ZpbmlzaGVkX3VuaXhfbnMiaAoQTGlzdFRhc2tzUmVxdWVzdBINCgVwb29scxgBIAMoCRInCghzdGF0dXNlcxgCIAMoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEg0KBWFmdGVyGAMgASgEEg0KBWxpbWl0GAQgASgNImcKEUxpc3RUYXNrc1Jlc3BvbnNlEiIKBXRhc2tzGAEgAygLMhMuY3Jvbm9xLnYxLlRhc2tJbmZvEhIKCm5leHRfYWZ0ZXIYAiABKAQSGgoSdW5hdmFpbGFibGVfc2hhcmRzGAMgAygJIooBCgpUYXNrUmVzdWx0EgoKAmlkGAEgASgEEiUKBnN0YXR1cxgCIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEhMKBm91dHB1dBgDIAEoDEgAiAEBEg8KB21lc3NhZ2UYBCABKAkSGAoQb3V0cHV0X2F2YWlsYWJsZRgFIAEoCEIJCgdfb3V0cHV0IlUKC1dhaXRSZXF1ZXN0EiAKBHRhc2sYASABKAsyEi5jcm9ub3EudjEuVGFza1JlZhIWCgl0aW1lb3V0X3MYAiABKAFIAIgBAUIMCgpfdGltZW91dF9zIlEKDFdhdGNoUmVxdWVzdBINCgVwb29scxgBIAMoCRILCgNpZHMYAiADKAQSDAoEa2V5cxgDIAMoCRIXCg9hbGxfdHJhbnNpdGlvbnMYBCABKAgi3AEKC1N0YXR1c0V2ZW50EgoKAmlkGAEgASgEEgwKBHBvb2wYAiABKAkSCwoDa2V5GAMgASgJEiUKBnN0YXR1cxgEIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEg8KB2F0dGVtcHQYBSABKA0SEgoKYXRfdW5peF9ucxgGIAEoAxIPCgdtZXNzYWdlGAcgASgJEiUKCHByaW9yaXR5GAggASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EiIKBGtpbmQYCSABKA4yFC5jcm9ub3EudjEuRXZlbnRLaW5kIrYBCghSZWdpc3RlchIMCgRwb29sGAEgASgJEg0KBXNsb3RzGAIgASgNEhMKC3dvcmtlcl9uYW1lGAMgASgJEhgKEHByb3RvY29sX3ZlcnNpb24YBCABKA0SLwoGbGFiZWxzGAUgAygLMh8uY3Jvbm9xLnYxLlJlZ2lzdGVyLkxhYmVsc0VudHJ5Gi0KC0xhYmVsc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiGgoJSGVhcnRiZWF0Eg0KBWxlYXNlGAEgASgEIj8KCENvbXBsZXRlEg0KBWxlYXNlGAEgASgEEg4KBm91dHB1dBgCIAEoDBIUCgxjb250ZW50X3R5cGUYAyABKAkiZwoERmFpbBINCgVsZWFzZRgBIAEoBBIPCgdtZXNzYWdlGAIgASgJEhEKCXBlcm1hbmVudBgDIAEoCBIaCg1yZXRyeV9hZnRlcl9zGAQgASgBSACIAQFCEAoOX3JldHJ5X2FmdGVyX3MiGQoIU2V0U2xvdHMSDQoFc2xvdHMYASABKA0iJQoETmFjaxINCgVsZWFzZRgBIAEoBBIOCgZyZWFzb24YAiABKAkiGgoJQ2FuY2VsbGVkEg0KBWxlYXNlGAEgASgEIqoCCg1Xb3JrZXJNZXNzYWdlEicKCHJlZ2lzdGVyGAEgASgLMhMuY3Jvbm9xLnYxLlJlZ2lzdGVySAASKQoJaGVhcnRiZWF0GAIgASgLMhQuY3Jvbm9xLnYxLkhlYXJ0YmVhdEgAEicKCGNvbXBsZXRlGAMgASgLMhMuY3Jvbm9xLnYxLkNvbXBsZXRlSAASHwoEZmFpbBgEIAEoCzIPLmNyb25vcS52MS5GYWlsSAASKAoJc2V0X3Nsb3RzGAUgASgLMhMuY3Jvbm9xLnYxLlNldFNsb3RzSAASHwoEbmFjaxgGIAEoCzIPLmNyb25vcS52MS5OYWNrSAASKQoJY2FuY2VsbGVkGAcgASgLMhQuY3Jvbm9xLnYxLkNhbmNlbGxlZEgAQgUKA21zZyKNAQoKUmVnaXN0ZXJlZBIRCgl3b3JrZXJfaWQYASABKAQSGAoLbGVhc2VfdHRsX3MYAiABKAFIAIgBARINCgVzbG90cxgDIAEoDRIYChBwcm90b2NvbF92ZXJzaW9uGAQgASgNEhkKEW1heF9tZXNzYWdlX2J5dGVzGAUgASgEQg4KDF9sZWFzZV90dGxfcyKKAwoFTGVhc2USDQoFbGVhc2UYASABKAQSDwoHdGFza19pZBgCIAEoBBIPCgdhdHRlbXB0GAMgASgNEg8KB3BheWxvYWQYBCABKAwSFAoMY29udGVudF90eXBlGAUgASgJEgwKBGtpbmQYBiABKAkSCwoDa2V5GAcgASgJEigKBHRhZ3MYCCADKAsyGi5jcm9ub3EudjEuTGVhc2UuVGFnc0VudHJ5EhYKCXRpbWVvdXRfcxgJIAEoAUgAiAEBEh0KEGRlYWRsaW5lX3VuaXhfbnMYCiABKANIAYgBARIMCgRwb29sGAsgASgJEiUKCHByaW9yaXR5GAwgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EhgKC2xlYXNlX3R0bF9zGA0gASgBSAKIAQEaKwoJVGFnc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAFCDAoKX3RpbWVvdXRfc0ITChFfZGVhZGxpbmVfdW5peF9uc0IOCgxfbGVhc2VfdHRsX3MiJgoFQWJvcnQSDQoFbGVhc2UYASABKAQSDgoGcmVhc29uGAIgASgJIi4KCFNodXRkb3duEg4KBnJlYXNvbhgBIAEoCRISCgpub3RfbGVhZGVyGAIgASgIIrIBCg1TZXJ2ZXJNZXNzYWdlEisKCnJlZ2lzdGVyZWQYASABKAsyFS5jcm9ub3EudjEuUmVnaXN0ZXJlZEgAEiEKBWxlYXNlGAIgASgLMhAuY3Jvbm9xLnYxLkxlYXNlSAASIQoFYWJvcnQYAyABKAsyEC5jcm9ub3EudjEuQWJvcnRIABInCghzaHV0ZG93bhgEIAEoCzITLmNyb25vcS52MS5TaHV0ZG93bkgAQgUKA21zZyIHCgVFbXB0eSKTBAoMUG9vbFNuYXBzaG90EgwKBG5hbWUYASABKAkSEAoIY2FwYWNpdHkYAiABKA0SDAoEYnVzeRgDIAEoDRIMCgRoZWxkGAQgASgNEg8KB2Rlc2lyZWQYBSABKA0SGAoQcGVuZGluZ19ieV9jbGFzcxgGIAMoBBIUCgxyZXNlcnZhdGlvbnMYByABKAQSEgoKZGlzcGF0Y2hlZBgIIAEoBBIRCglzdWNjZWVkZWQYCSABKAQSDgoGZmFpbGVkGAogASgEEhoKEnByaW9yaXR5X2FkaGVyZW5jZRgLIAEoARIcChRmaXhlZF9zdGFydF9oaXRfcmF0ZRgMIAEoARITCgt1dGlsaXphdGlvbhgNIAEoARIbChNzY2hlZHVsZV9lZmZpY2llbmN5GA4gASgBEhIKCndhaXRfcDUwX3MYDyABKAESEgoKd2FpdF9wOTBfcxgQIAEoARISCgp3YWl0X3A5OV9zGBEgASgBEgwKBGNvc3QYEiABKAESGQoRd29ya2Vyc19jb25uZWN0ZWQYEyABKAQSJgoGZ3JvdXBzGBQgAygLMhYuY3Jvbm9xLnYxLldvcmtlckdyb3VwEisKCHByaW9yaXR5GBUgASgLMhkuY3Jvbm9xLnYxLlByaW9yaXR5Q29uZmlnEikKB3VyZ2VuY3kYFiABKAsyGC5jcm9ub3EudjEuVXJnZW5jeUNvbmZpZyJiCg5Qcmlvcml0eUNvbmZpZxIMCgRiYXNlGAEgAygBEhIKCmFnaW5nX3JhdGUYAiADKAESDwoHYWdlX2NhcBgDIAMoARIdChVhbGxvd19vdmVydGFraW5nX2hpZ2gYBCABKAgiWQoNVXJnZW5jeUNvbmZpZxILCgNtYXgYASABKAESEAoId2luZG93X3MYAiABKAESFAoMb3ZlcmR1ZV9yYXRlGAMgASgBEhMKC292ZXJkdWVfY2FwGAQgASgBIpABCgtXb3JrZXJHcm91cBIyCgZsYWJlbHMYASADKAsyIi5jcm9ub3EudjEuV29ya2VyR3JvdXAuTGFiZWxzRW50cnkSEAoIY2FwYWNpdHkYAiABKA0SDAoEYnVzeRgDIAEoDRotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIpUCCgZUb3RhbHMSEQoJc3VibWl0dGVkGAEgASgEEhIKCmRpc3BhdGNoZWQYAiABKAQSEQoJc3VjY2VlZGVkGAMgASgEEg4KBmZhaWxlZBgEIAEoBBIVCg1kZWFkX2xldHRlcmVkGAUgASgEEhEKCWNhbmNlbGxlZBgGIAEoBBIPCgdza2lwcGVkGAcgASgEEg4KBm1pc3NlZBgIIAEoBBIMCgRzaGVkGAkgASgEEg8KB3JldHJpZXMYCiABKAQSEAoIdGltZW91dHMYCyABKAQSFgoObGVhc2VfZXhwaXJpZXMYDCABKAQSGQoRc3RhbGVfY29tcGxldGlvbnMYDSABKAQSEgoKc3VwZXJzZWRlZBgOIAEoBCLKAQoQU25hcHNob3RSZXNwb25zZRImCgVwb29scxgBIAMoCzIXLmNyb25vcS52MS5Qb29sU25hcHNob3QSEgoKbGl2ZV90YXNrcxgCIAEoBBIPCgdydW5uaW5nGAMgASgEEg8KB3BlbmRpbmcYBCABKAQSIQoGdG90YWxzGAUgASgLMhEuY3Jvbm9xLnYxLlRvdGFscxIZChF3b3JrZXJzX2Nvbm5lY3RlZBgGIAEoBBIaChJ1bmF2YWlsYWJsZV9zaGFyZHMYByADKAkijAEKEFJlY3VycmluZ1JlcXVlc3QSDAoEbmFtZRgBIAEoCRIMCgRjcm9uGAIgASgJEgoKAnR6GAMgASgJEiUKCHRlbXBsYXRlGAQgASgLMhMuY3Jvbm9xLnYxLlRhc2tTcGVjEiMKB292ZXJsYXAYBiABKA4yEi5jcm9ub3EudjEuT3ZlcmxhcEoECAUQBiImChZSZW1vdmVSZWN1cnJpbmdSZXF1ZXN0EgwKBG5hbWUYASABKAkiKgoXUmVtb3ZlUmVjdXJyaW5nUmVzcG9uc2USDwoHcmVtb3ZlZBgBIAEoCCLOAQoKV29ya2VySW5mbxIKCgJpZBgBIAEoBBIMCgRuYW1lGAIgASgJEgwKBHBvb2wYAyABKAkSMQoGbGFiZWxzGAQgAygLMiEuY3Jvbm9xLnYxLldvcmtlckluZm8uTGFiZWxzRW50cnkSDQoFc2xvdHMYBSABKA0SDAoEYnVzeRgGIAEoDRIZChFjb25uZWN0ZWRfdW5peF9ucxgHIAEoAxotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIlkKE0xpc3RXb3JrZXJzUmVzcG9uc2USJgoHd29ya2VycxgBIAMoCzIVLmNyb25vcS52MS5Xb3JrZXJJbmZvEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgCIAMoCSLQAQoNUmVjdXJyaW5nSW5mbxIMCgRuYW1lGAEgASgJEgwKBGNyb24YAiABKAkSCgoCdHoYAyABKAkSDAoEcG9vbBgEIAEoCRIMCgRraW5kGAUgASgJEiMKB292ZXJsYXAYBiABKA4yEi5jcm9ub3EudjEuT3ZlcmxhcBIZCgxuZXh0X3VuaXhfbnMYByABKANIAIgBARIZCgxsYXN0X3Rhc2tfaWQYCCABKARIAYgBAUIPCg1fbmV4dF91bml4X25zQg8KDV9sYXN0X3Rhc2tfaWQiYAoVTGlzdFJlY3VycmluZ1Jlc3BvbnNlEisKCXNjaGVkdWxlcxgBIAMoCzIYLmNyb25vcS52MS5SZWN1cnJpbmdJbmZvEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgCIAMoCSp1CghQcmlvcml0eRIYChRQUklPUklUWV9VTlNQRUNJRklFRBAAEhUKEVBSSU9SSVRZX0NSSVRJQ0FMEAESEQoNUFJJT1JJVFlfSElHSBACEhMKD1BSSU9SSVRZX05PUk1BTBADEhAKDFBSSU9SSVRZX0xPVxAEKtsCCgpUYXNrU3RhdHVzEhsKF1RBU0tfU1RBVFVTX1VOU1BFQ0lGSUVEEAASFwoTVEFTS19TVEFUVVNfQkxPQ0tFRBABEhkKFVRBU0tfU1RBVFVTX1NDSEVEVUxFRBACEhUKEVRBU0tfU1RBVFVTX1JFQURZEAMSFwoTVEFTS19TVEFUVVNfUlVOTklORxAEEhgKFFRBU0tfU1RBVFVTX1JFVFJZSU5HEAUSGQoVVEFTS19TVEFUVVNfU1VDQ0VFREVEEAYSFgoSVEFTS19TVEFUVVNfRkFJTEVEEAcSHQoZVEFTS19TVEFUVVNfREVBRF9MRVRURVJFRBAIEhkKFVRBU0tfU1RBVFVTX0NBTkNFTExFRBAJEhcKE1RBU0tfU1RBVFVTX1NLSVBQRUQQChIWChJUQVNLX1NUQVRVU19NSVNTRUQQCxIUChBUQVNLX1NUQVRVU19TSEVEEAwqdAoIRWRnZUNvbmQSGQoVRURHRV9DT05EX1VOU1BFQ0lGSUVEEAASGAoURURHRV9DT05EX09OX1NVQ0NFU1MQARIZChVFREdFX0NPTkRfT05fQ09NUExFVEUQAhIYChRFREdFX0NPTkRfT05fRkFJTFVSRRADKm8KCk1pc3NQb2xpY3kSGwoXTUlTU19QT0xJQ1lfVU5TUEVDSUZJRUQQABIYChRNSVNTX1BPTElDWV9SVU5fTEFURRABEhQKEE1JU1NfUE9MSUNZX1NLSVAQAhIUChBNSVNTX1BPTElDWV9GQUlMEAMqhwEKC0tleUNvbmZsaWN0EhwKGEtFWV9DT05GTElDVF9VTlNQRUNJRklFRBAAEiAKHEtFWV9DT05GTElDVF9SRVRVUk5fRVhJU1RJTkcQARIfChtLRVlfQ09ORkxJQ1RfUkVQTEFDRV9RVUVVRUQQAhIXChNLRVlfQ09ORkxJQ1RfUkVKRUNUEAMqoQEKDVN1Ym1pdE91dGNvbWUSHgoaU1VCTUlUX09VVENPTUVfVU5TUEVDSUZJRUQQABIaChZTVUJNSVRfT1VUQ09NRV9DUkVBVEVEEAESGwoXU1VCTUlUX09VVENPTUVfRVhJU1RJTkcQAhIbChdTVUJNSVRfT1VUQ09NRV9SRVBMQUNFRBADEhoKFlNVQk1JVF9PVVRDT01FX1BFTkRJTkcQBCpxCglFdmVudEtpbmQSGQoVRVZFTlRfS0lORF9UUkFOU0lUSU9OEAASFgoSRVZFTlRfS0lORF9VUERBVEVEEAESFwoTRVZFTlRfS0lORF9SRVBMQUNFRBACEhgKFEVWRU5UX0tJTkRfU1VDQ0VTU09SEAMqeAoHT3ZlcmxhcBIXChNPVkVSTEFQX1VOU1BFQ0lGSUVEEAASEAoMT1ZFUkxBUF9TS0lQEAESEQoNT1ZFUkxBUF9BTExPVxACEhEKDU9WRVJMQVBfUVVFVUUQAxIcChhPVkVSTEFQX1FVRVVFX09OX1NVQ0NFU1MQBDKABAoFVGFza3MSPQoGU3VibWl0EhguY3Jvbm9xLnYxLlN1Ym1pdFJlcXVlc3QaGS5jcm9ub3EudjEuU3VibWl0UmVzcG9uc2USTAoLU3VibWl0QmF0Y2gSHS5jcm9ub3EudjEuU3VibWl0QmF0Y2hSZXF1ZXN0Gh4uY3Jvbm9xLnYxLlN1Ym1pdEJhdGNoUmVzcG9uc2USPQoGQ2FuY2VsEhguY3Jvbm9xLnYxLkNhbmNlbFJlcXVlc3QaGS5jcm9ub3EudjEuQ2FuY2VsUmVzcG9uc2USPQoGVXBkYXRlEhguY3Jvbm9xLnYxLlVwZGF0ZVJlcXVlc3QaGS5jcm9ub3EudjEuVXBkYXRlUmVzcG9uc2USMQoDR2V0EhUuY3Jvbm9xLnYxLkdldFJlcXVlc3QaEy5jcm9ub3EudjEuVGFza0luZm8SRgoJTGlzdFRhc2tzEhsuY3Jvbm9xLnYxLkxpc3RUYXNrc1JlcXVlc3QaHC5jcm9ub3EudjEuTGlzdFRhc2tzUmVzcG9uc2USNQoEV2FpdBIWLmNyb25vcS52MS5XYWl0UmVxdWVzdBoVLmNyb25vcS52MS5UYXNrUmVzdWx0EjoKBVdhdGNoEhcuY3Jvbm9xLnYxLldhdGNoUmVxdWVzdBoWLmNyb25vcS52MS5TdGF0dXNFdmVudDABMkkKB1dvcmtlcnMSPgoEV29yaxIYLmNyb25vcS52MS5Xb3JrZXJNZXNzYWdlGhguY3Jvbm9xLnYxLlNlcnZlck1lc3NhZ2UoATABMuECCgVBZG1pbhI5CghTbmFwc2hvdBIQLmNyb25vcS52MS5FbXB0eRobLmNyb25vcS52MS5TbmFwc2hvdFJlc3BvbnNlEj0KDEFkZFJlY3VycmluZxIbLmNyb25vcS52MS5SZWN1cnJpbmdSZXF1ZXN0GhAuY3Jvbm9xLnYxLkVtcHR5ElgKD1JlbW92ZVJlY3VycmluZxIhLmNyb25vcS52MS5SZW1vdmVSZWN1cnJpbmdSZXF1ZXN0GiIuY3Jvbm9xLnYxLlJlbW92ZVJlY3VycmluZ1Jlc3BvbnNlEj8KC0xpc3RXb3JrZXJzEhAuY3Jvbm9xLnYxLkVtcHR5Gh4uY3Jvbm9xLnYxLkxpc3RXb3JrZXJzUmVzcG9uc2USQwoNTGlzdFJlY3VycmluZxIQLmNyb25vcS52MS5FbXB0eRogLmNyb25vcS52MS5MaXN0UmVjdXJyaW5nUmVzcG9uc2ViBnByb3RvMw");
+  fileDesc("ChZjcm9ub3EvdjEvY3Jvbm9xLnByb3RvEgljcm9ub3EudjEiMAoHVGFza1JlZhIMCgJpZBgBIAEoBEgAEg0KA2tleRgCIAEoCUgAQggKBnRhcmdldCJMCgNEZXASIgoGdGFyZ2V0GAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSIQoEY29uZBgCIAEoDjITLmNyb25vcS52MS5FZGdlQ29uZCJ5CgtSZXRyeVBvbGljeRIUCgxtYXhfYXR0ZW1wdHMYASABKA0SGQoRaW5pdGlhbF9iYWNrb2ZmX3MYAiABKAESEgoKbXVsdGlwbGllchgDIAEoARIVCg1tYXhfYmFja29mZl9zGAQgASgBEg4KBmppdHRlchgFIAEoCCKeBwoIVGFza1NwZWMSDwoHcGF5bG9hZBgBIAEoDBIUCgxjb250ZW50X3R5cGUYAiABKAkSDAoEa2luZBgDIAEoCRIMCgRwb29sGAQgASgJEiUKCHByaW9yaXR5GAUgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EgsKA2tleRgGIAEoCRIaCg1kZWFkbGluZV9pbl9zGAcgASgBSACIAQESHQoQZGVhZGxpbmVfdW5peF9ucxgIIAEoA0gBiAEBEhcKCnN0YXJ0X2luX3MYCSABKAFIAogBARIaCg1zdGFydF91bml4X25zGAogASgDSAOIAQESGAoLdG9sZXJhbmNlX3MYCyABKAFIBIgBARImCgdvbl9taXNzGAwgASgOMhUuY3Jvbm9xLnYxLk1pc3NQb2xpY3kSHAoPZHVyYXRpb25faGludF9zGA0gASgBSAWIAQESFgoJdGltZW91dF9zGA4gASgBSAaIAQESJQoFcmV0cnkYDyABKAsyFi5jcm9ub3EudjEuUmV0cnlQb2xpY3kSHAoEZGVwcxgQIAMoCzIOLmNyb25vcS52MS5EZXASNQoJcmVzb3VyY2VzGBEgAygLMiIuY3Jvbm9xLnYxLlRhc2tTcGVjLlJlc291cmNlc0VudHJ5EisKBHRhZ3MYEiADKAsyHS5jcm9ub3EudjEuVGFza1NwZWMuVGFnc0VudHJ5Ei8KBmxhYmVscxgTIAMoCzIfLmNyb25vcS52MS5UYXNrU3BlYy5MYWJlbHNFbnRyeRIOCgZ0ZW5hbnQYFCABKAkSFAoMb3JkZXJpbmdfa2V5GBUgASgJEisKCm9uX2ZhaWx1cmUYFiABKA4yFy5jcm9ub3EudjEuT3JkZXJGYWlsdXJlGjAKDlJlc291cmNlc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoDToCOAEaKwoJVGFnc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4AUIQCg5fZGVhZGxpbmVfaW5fc0ITChFfZGVhZGxpbmVfdW5peF9uc0INCgtfc3RhcnRfaW5fc0IQCg5fc3RhcnRfdW5peF9uc0IOCgxfdG9sZXJhbmNlX3NCEgoQX2R1cmF0aW9uX2hpbnRfc0IMCgpfdGltZW91dF9zIrkBCg1TdWJtaXRSZXF1ZXN0EiEKBHRhc2sYASABKAsyEy5jcm9ub3EudjEuVGFza1NwZWMSDAoEd2FpdBgCIAEoCBIbCg53YWl0X3RpbWVvdXRfcxgDIAEoAUgAiAEBEi8KD29uX2tleV9jb25mbGljdBgEIAEoDjIWLmNyb25vcS52MS5LZXlDb25mbGljdBIWCg5yZW5ld19wb3NpdGlvbhgFIAEoCEIRCg9fd2FpdF90aW1lb3V0X3MigQEKDlN1Ym1pdFJlc3BvbnNlEgoKAmlkGAEgASgEEhEKCWR1cGxpY2F0ZRgCIAEoCBIlCgZyZXN1bHQYAyABKAsyFS5jcm9ub3EudjEuVGFza1Jlc3VsdBIpCgdvdXRjb21lGAQgASgOMhguY3Jvbm9xLnYxLlN1Ym1pdE91dGNvbWUiaQoSU3VibWl0QmF0Y2hSZXF1ZXN0EiIKBXRhc2tzGAEgAygLMhMuY3Jvbm9xLnYxLlRhc2tTcGVjEi8KD29uX2tleV9jb25mbGljdBgCIAEoDjIWLmNyb25vcS52MS5LZXlDb25mbGljdCI/ChNTdWJtaXRCYXRjaFJlc3BvbnNlEigKBXRhc2tzGAEgAygLMhkuY3Jvbm9xLnYxLlN1Ym1pdFJlc3BvbnNlIjEKDUNhbmNlbFJlcXVlc3QSIAoEdGFzaxgBIAEoCzISLmNyb25vcS52MS5UYXNrUmVmIiMKDkNhbmNlbFJlc3BvbnNlEhEKCWNhbmNlbGxlZBgBIAEoCCLDAgoNVXBkYXRlUmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSJQoIcHJpb3JpdHkYAiABKA4yEy5jcm9ub3EudjEuUHJpb3JpdHkSGgoNZGVhZGxpbmVfaW5fcxgDIAEoAUgAiAEBEh0KEGRlYWRsaW5lX3VuaXhfbnMYBCABKANIAYgBARIWCg5jbGVhcl9kZWFkbGluZRgFIAEoCBIQCghzZXRfdGFncxgGIAEoCBIwCgR0YWdzGAcgAygLMiIuY3Jvbm9xLnYxLlVwZGF0ZVJlcXVlc3QuVGFnc0VudHJ5GisKCVRhZ3NFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQhAKDl9kZWFkbGluZV9pbl9zQhMKEV9kZWFkbGluZV91bml4X25zImYKDlVwZGF0ZVJlc3BvbnNlEgoKAmlkGAEgASgEEiUKBnN0YXR1cxgCIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEhAKCGRlZmVycmVkGAMgASgIEg8KB2NoYW5nZWQYBCABKAgiLgoKR2V0UmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYihwMKCFRhc2tJbmZvEgoKAmlkGAEgASgEEiUKBnN0YXR1cxgCIAEoDjIVLmNyb25vcS52MS5UYXNrU3RhdHVzEgwKBHBvb2wYAyABKAkSCwoDa2V5GAQgASgJEgwKBGtpbmQYBSABKAkSDwoHYXR0ZW1wdBgGIAEoDRIUCgxtYXhfYXR0ZW1wdHMYByABKA0SHAoPY3JlYXRlZF91bml4X25zGAggASgDSACIAQESHAoPc3RhcnRlZF91bml4X25zGAkgASgDSAGIAQESHQoQZmluaXNoZWRfdW5peF9ucxgKIAEoA0gCiAEBEg8KB21lc3NhZ2UYCyABKAkSGAoQb3V0cHV0X2F2YWlsYWJsZRgMIAEoCBIOCgZ0ZW5hbnQYDSABKAkSJQoIcHJpb3JpdHkYDiABKA4yEy5jcm9ub3EudjEuUHJpb3JpdHlCEgoQX2NyZWF0ZWRfdW5peF9uc0ISChBfc3RhcnRlZF91bml4X25zQhMKEV9maW5pc2hlZF91bml4X25zImgKEExpc3RUYXNrc1JlcXVlc3QSDQoFcG9vbHMYASADKAkSJwoIc3RhdHVzZXMYAiADKA4yFS5jcm9ub3EudjEuVGFza1N0YXR1cxINCgVhZnRlchgDIAEoBBINCgVsaW1pdBgEIAEoDSJnChFMaXN0VGFza3NSZXNwb25zZRIiCgV0YXNrcxgBIAMoCzITLmNyb25vcS52MS5UYXNrSW5mbxISCgpuZXh0X2FmdGVyGAIgASgEEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgDIAMoCSKKAQoKVGFza1Jlc3VsdBIKCgJpZBgBIAEoBBIlCgZzdGF0dXMYAiABKA4yFS5jcm9ub3EudjEuVGFza1N0YXR1cxITCgZvdXRwdXQYAyABKAxIAIgBARIPCgdtZXNzYWdlGAQgASgJEhgKEG91dHB1dF9hdmFpbGFibGUYBSABKAhCCQoHX291dHB1dCJVCgtXYWl0UmVxdWVzdBIgCgR0YXNrGAEgASgLMhIuY3Jvbm9xLnYxLlRhc2tSZWYSFgoJdGltZW91dF9zGAIgASgBSACIAQFCDAoKX3RpbWVvdXRfcyJRCgxXYXRjaFJlcXVlc3QSDQoFcG9vbHMYASADKAkSCwoDaWRzGAIgAygEEgwKBGtleXMYAyADKAkSFwoPYWxsX3RyYW5zaXRpb25zGAQgASgIItwBCgtTdGF0dXNFdmVudBIKCgJpZBgBIAEoBBIMCgRwb29sGAIgASgJEgsKA2tleRgDIAEoCRIlCgZzdGF0dXMYBCABKA4yFS5jcm9ub3EudjEuVGFza1N0YXR1cxIPCgdhdHRlbXB0GAUgASgNEhIKCmF0X3VuaXhfbnMYBiABKAMSDwoHbWVzc2FnZRgHIAEoCRIlCghwcmlvcml0eRgIIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eRIiCgRraW5kGAkgASgOMhQuY3Jvbm9xLnYxLkV2ZW50S2luZCK2AQoIUmVnaXN0ZXISDAoEcG9vbBgBIAEoCRINCgVzbG90cxgCIAEoDRITCgt3b3JrZXJfbmFtZRgDIAEoCRIYChBwcm90b2NvbF92ZXJzaW9uGAQgASgNEi8KBmxhYmVscxgFIAMoCzIfLmNyb25vcS52MS5SZWdpc3Rlci5MYWJlbHNFbnRyeRotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIhoKCUhlYXJ0YmVhdBINCgVsZWFzZRgBIAEoBCI/CghDb21wbGV0ZRINCgVsZWFzZRgBIAEoBBIOCgZvdXRwdXQYAiABKAwSFAoMY29udGVudF90eXBlGAMgASgJImcKBEZhaWwSDQoFbGVhc2UYASABKAQSDwoHbWVzc2FnZRgCIAEoCRIRCglwZXJtYW5lbnQYAyABKAgSGgoNcmV0cnlfYWZ0ZXJfcxgEIAEoAUgAiAEBQhAKDl9yZXRyeV9hZnRlcl9zIhkKCFNldFNsb3RzEg0KBXNsb3RzGAEgASgNIiUKBE5hY2sSDQoFbGVhc2UYASABKAQSDgoGcmVhc29uGAIgASgJIhoKCUNhbmNlbGxlZBINCgVsZWFzZRgBIAEoBCKqAgoNV29ya2VyTWVzc2FnZRInCghyZWdpc3RlchgBIAEoCzITLmNyb25vcS52MS5SZWdpc3RlckgAEikKCWhlYXJ0YmVhdBgCIAEoCzIULmNyb25vcS52MS5IZWFydGJlYXRIABInCghjb21wbGV0ZRgDIAEoCzITLmNyb25vcS52MS5Db21wbGV0ZUgAEh8KBGZhaWwYBCABKAsyDy5jcm9ub3EudjEuRmFpbEgAEigKCXNldF9zbG90cxgFIAEoCzITLmNyb25vcS52MS5TZXRTbG90c0gAEh8KBG5hY2sYBiABKAsyDy5jcm9ub3EudjEuTmFja0gAEikKCWNhbmNlbGxlZBgHIAEoCzIULmNyb25vcS52MS5DYW5jZWxsZWRIAEIFCgNtc2cijQEKClJlZ2lzdGVyZWQSEQoJd29ya2VyX2lkGAEgASgEEhgKC2xlYXNlX3R0bF9zGAIgASgBSACIAQESDQoFc2xvdHMYAyABKA0SGAoQcHJvdG9jb2xfdmVyc2lvbhgEIAEoDRIZChFtYXhfbWVzc2FnZV9ieXRlcxgFIAEoBEIOCgxfbGVhc2VfdHRsX3MiigMKBUxlYXNlEg0KBWxlYXNlGAEgASgEEg8KB3Rhc2tfaWQYAiABKAQSDwoHYXR0ZW1wdBgDIAEoDRIPCgdwYXlsb2FkGAQgASgMEhQKDGNvbnRlbnRfdHlwZRgFIAEoCRIMCgRraW5kGAYgASgJEgsKA2tleRgHIAEoCRIoCgR0YWdzGAggAygLMhouY3Jvbm9xLnYxLkxlYXNlLlRhZ3NFbnRyeRIWCgl0aW1lb3V0X3MYCSABKAFIAIgBARIdChBkZWFkbGluZV91bml4X25zGAogASgDSAGIAQESDAoEcG9vbBgLIAEoCRIlCghwcmlvcml0eRgMIAEoDjITLmNyb25vcS52MS5Qcmlvcml0eRIYCgtsZWFzZV90dGxfcxgNIAEoAUgCiAEBGisKCVRhZ3NFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQgwKCl90aW1lb3V0X3NCEwoRX2RlYWRsaW5lX3VuaXhfbnNCDgoMX2xlYXNlX3R0bF9zIiYKBUFib3J0Eg0KBWxlYXNlGAEgASgEEg4KBnJlYXNvbhgCIAEoCSIuCghTaHV0ZG93bhIOCgZyZWFzb24YASABKAkSEgoKbm90X2xlYWRlchgCIAEoCCKyAQoNU2VydmVyTWVzc2FnZRIrCgpyZWdpc3RlcmVkGAEgASgLMhUuY3Jvbm9xLnYxLlJlZ2lzdGVyZWRIABIhCgVsZWFzZRgCIAEoCzIQLmNyb25vcS52MS5MZWFzZUgAEiEKBWFib3J0GAMgASgLMhAuY3Jvbm9xLnYxLkFib3J0SAASJwoIc2h1dGRvd24YBCABKAsyEy5jcm9ub3EudjEuU2h1dGRvd25IAEIFCgNtc2ciBwoFRW1wdHki3QQKDFBvb2xTbmFwc2hvdBIMCgRuYW1lGAEgASgJEhAKCGNhcGFjaXR5GAIgASgNEgwKBGJ1c3kYAyABKA0SDAoEaGVsZBgEIAEoDRIPCgdkZXNpcmVkGAUgASgNEhgKEHBlbmRpbmdfYnlfY2xhc3MYBiADKAQSFAoMcmVzZXJ2YXRpb25zGAcgASgEEhIKCmRpc3BhdGNoZWQYCCABKAQSEQoJc3VjY2VlZGVkGAkgASgEEg4KBmZhaWxlZBgKIAEoBBIaChJwcmlvcml0eV9hZGhlcmVuY2UYCyABKAESHAoUZml4ZWRfc3RhcnRfaGl0X3JhdGUYDCABKAESEwoLdXRpbGl6YXRpb24YDSABKAESGwoTc2NoZWR1bGVfZWZmaWNpZW5jeRgOIAEoARISCgp3YWl0X3A1MF9zGA8gASgBEhIKCndhaXRfcDkwX3MYECABKAESEgoKd2FpdF9wOTlfcxgRIAEoARIMCgRjb3N0GBIgASgBEhkKEXdvcmtlcnNfY29ubmVjdGVkGBMgASgEEiYKBmdyb3VwcxgUIAMoCzIWLmNyb25vcS52MS5Xb3JrZXJHcm91cBIrCghwcmlvcml0eRgVIAEoCzIZLmNyb25vcS52MS5Qcmlvcml0eUNvbmZpZxIpCgd1cmdlbmN5GBYgASgLMhguY3Jvbm9xLnYxLlVyZ2VuY3lDb25maWcSFQoNb3JkZXJpbmdfa2V5cxgXIAEoBBIYChBvcmRlcmluZ193YWl0aW5nGBggASgEEhcKD29yZGVyaW5nX2hhbHRlZBgZIAEoBCJiCg5Qcmlvcml0eUNvbmZpZxIMCgRiYXNlGAEgAygBEhIKCmFnaW5nX3JhdGUYAiADKAESDwoHYWdlX2NhcBgDIAMoARIdChVhbGxvd19vdmVydGFraW5nX2hpZ2gYBCABKAgiWQoNVXJnZW5jeUNvbmZpZxILCgNtYXgYASABKAESEAoId2luZG93X3MYAiABKAESFAoMb3ZlcmR1ZV9yYXRlGAMgASgBEhMKC292ZXJkdWVfY2FwGAQgASgBIpABCgtXb3JrZXJHcm91cBIyCgZsYWJlbHMYASADKAsyIi5jcm9ub3EudjEuV29ya2VyR3JvdXAuTGFiZWxzRW50cnkSEAoIY2FwYWNpdHkYAiABKA0SDAoEYnVzeRgDIAEoDRotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIpUCCgZUb3RhbHMSEQoJc3VibWl0dGVkGAEgASgEEhIKCmRpc3BhdGNoZWQYAiABKAQSEQoJc3VjY2VlZGVkGAMgASgEEg4KBmZhaWxlZBgEIAEoBBIVCg1kZWFkX2xldHRlcmVkGAUgASgEEhEKCWNhbmNlbGxlZBgGIAEoBBIPCgdza2lwcGVkGAcgASgEEg4KBm1pc3NlZBgIIAEoBBIMCgRzaGVkGAkgASgEEg8KB3JldHJpZXMYCiABKAQSEAoIdGltZW91dHMYCyABKAQSFgoObGVhc2VfZXhwaXJpZXMYDCABKAQSGQoRc3RhbGVfY29tcGxldGlvbnMYDSABKAQSEgoKc3VwZXJzZWRlZBgOIAEoBCLKAQoQU25hcHNob3RSZXNwb25zZRImCgVwb29scxgBIAMoCzIXLmNyb25vcS52MS5Qb29sU25hcHNob3QSEgoKbGl2ZV90YXNrcxgCIAEoBBIPCgdydW5uaW5nGAMgASgEEg8KB3BlbmRpbmcYBCABKAQSIQoGdG90YWxzGAUgASgLMhEuY3Jvbm9xLnYxLlRvdGFscxIZChF3b3JrZXJzX2Nvbm5lY3RlZBgGIAEoBBIaChJ1bmF2YWlsYWJsZV9zaGFyZHMYByADKAkijAEKEFJlY3VycmluZ1JlcXVlc3QSDAoEbmFtZRgBIAEoCRIMCgRjcm9uGAIgASgJEgoKAnR6GAMgASgJEiUKCHRlbXBsYXRlGAQgASgLMhMuY3Jvbm9xLnYxLlRhc2tTcGVjEiMKB292ZXJsYXAYBiABKA4yEi5jcm9ub3EudjEuT3ZlcmxhcEoECAUQBiImChZSZW1vdmVSZWN1cnJpbmdSZXF1ZXN0EgwKBG5hbWUYASABKAkiKgoXUmVtb3ZlUmVjdXJyaW5nUmVzcG9uc2USDwoHcmVtb3ZlZBgBIAEoCCLOAQoKV29ya2VySW5mbxIKCgJpZBgBIAEoBBIMCgRuYW1lGAIgASgJEgwKBHBvb2wYAyABKAkSMQoGbGFiZWxzGAQgAygLMiEuY3Jvbm9xLnYxLldvcmtlckluZm8uTGFiZWxzRW50cnkSDQoFc2xvdHMYBSABKA0SDAoEYnVzeRgGIAEoDRIZChFjb25uZWN0ZWRfdW5peF9ucxgHIAEoAxotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIlkKE0xpc3RXb3JrZXJzUmVzcG9uc2USJgoHd29ya2VycxgBIAMoCzIVLmNyb25vcS52MS5Xb3JrZXJJbmZvEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgCIAMoCSLQAQoNUmVjdXJyaW5nSW5mbxIMCgRuYW1lGAEgASgJEgwKBGNyb24YAiABKAkSCgoCdHoYAyABKAkSDAoEcG9vbBgEIAEoCRIMCgRraW5kGAUgASgJEiMKB292ZXJsYXAYBiABKA4yEi5jcm9ub3EudjEuT3ZlcmxhcBIZCgxuZXh0X3VuaXhfbnMYByABKANIAIgBARIZCgxsYXN0X3Rhc2tfaWQYCCABKARIAYgBAUIPCg1fbmV4dF91bml4X25zQg8KDV9sYXN0X3Rhc2tfaWQiYAoVTGlzdFJlY3VycmluZ1Jlc3BvbnNlEisKCXNjaGVkdWxlcxgBIAMoCzIYLmNyb25vcS52MS5SZWN1cnJpbmdJbmZvEhoKEnVuYXZhaWxhYmxlX3NoYXJkcxgCIAMoCSIsCg9PcmRlcmluZ1JlcXVlc3QSDAoEcG9vbBgBIAEoCRILCgNrZXkYAiABKAki0AEKDE9yZGVyaW5nSW5mbxIMCgRwb29sGAEgASgJEgsKA2tleRgCIAEoCRINCgV0YXNrcxgDIAEoBBIRCgRoZWFkGAQgASgESACIAQESJgoJZWZmZWN0aXZlGAUgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5EicKBWZsb29yGAYgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5SAGIAQESDwoHcGVyc2lzdBgHIAEoCBIOCgZoYWx0ZWQYCCABKAhCBwoFX2hlYWRCCAoGX2Zsb29yIngKF1NldE9yZGVyaW5nRmxvb3JSZXF1ZXN0EgwKBHBvb2wYASABKAkSCwoDa2V5GAIgASgJEicKBWZsb29yGAMgASgOMhMuY3Jvbm9xLnYxLlByaW9yaXR5SACIAQESDwoHcGVyc2lzdBgEIAEoCEIICgZfZmxvb3IiOQoaTGlzdEhhbHRlZE9yZGVyaW5nc1JlcXVlc3QSDAoEcG9vbBgBIAEoCRINCgVsaW1pdBgCIAEoDSIrChtMaXN0SGFsdGVkT3JkZXJpbmdzUmVzcG9uc2USDAoEa2V5cxgBIAMoCSIzCg1SZXN1bWVSZXF1ZXN0EgwKBHBvb2wYASABKAkSFAoMb3JkZXJpbmdfa2V5GAIgASgJIiEKDlJlc3VtZVJlc3BvbnNlEg8KB3Jlc3VtZWQYASABKAgqdQoIUHJpb3JpdHkSGAoUUFJJT1JJVFlfVU5TUEVDSUZJRUQQABIVChFQUklPUklUWV9DUklUSUNBTBABEhEKDVBSSU9SSVRZX0hJR0gQAhITCg9QUklPUklUWV9OT1JNQUwQAxIQCgxQUklPUklUWV9MT1cQBCrbAgoKVGFza1N0YXR1cxIbChdUQVNLX1NUQVRVU19VTlNQRUNJRklFRBAAEhcKE1RBU0tfU1RBVFVTX0JMT0NLRUQQARIZChVUQVNLX1NUQVRVU19TQ0hFRFVMRUQQAhIVChFUQVNLX1NUQVRVU19SRUFEWRADEhcKE1RBU0tfU1RBVFVTX1JVTk5JTkcQBBIYChRUQVNLX1NUQVRVU19SRVRSWUlORxAFEhkKFVRBU0tfU1RBVFVTX1NVQ0NFRURFRBAGEhYKElRBU0tfU1RBVFVTX0ZBSUxFRBAHEh0KGVRBU0tfU1RBVFVTX0RFQURfTEVUVEVSRUQQCBIZChVUQVNLX1NUQVRVU19DQU5DRUxMRUQQCRIXChNUQVNLX1NUQVRVU19TS0lQUEVEEAoSFgoSVEFTS19TVEFUVVNfTUlTU0VEEAsSFAoQVEFTS19TVEFUVVNfU0hFRBAMKnQKCEVkZ2VDb25kEhkKFUVER0VfQ09ORF9VTlNQRUNJRklFRBAAEhgKFEVER0VfQ09ORF9PTl9TVUNDRVNTEAESGQoVRURHRV9DT05EX09OX0NPTVBMRVRFEAISGAoURURHRV9DT05EX09OX0ZBSUxVUkUQAypvCgpNaXNzUG9saWN5EhsKF01JU1NfUE9MSUNZX1VOU1BFQ0lGSUVEEAASGAoUTUlTU19QT0xJQ1lfUlVOX0xBVEUQARIUChBNSVNTX1BPTElDWV9TS0lQEAISFAoQTUlTU19QT0xJQ1lfRkFJTBADKmEKDE9yZGVyRmFpbHVyZRIdChlPUkRFUl9GQUlMVVJFX1VOU1BFQ0lGSUVEEAASGgoWT1JERVJfRkFJTFVSRV9DT05USU5VRRABEhYKEk9SREVSX0ZBSUxVUkVfSEFMVBACKocBCgtLZXlDb25mbGljdBIcChhLRVlfQ09ORkxJQ1RfVU5TUEVDSUZJRUQQABIgChxLRVlfQ09ORkxJQ1RfUkVUVVJOX0VYSVNUSU5HEAESHwobS0VZX0NPTkZMSUNUX1JFUExBQ0VfUVVFVUVEEAISFwoTS0VZX0NPTkZMSUNUX1JFSkVDVBADKqEBCg1TdWJtaXRPdXRjb21lEh4KGlNVQk1JVF9PVVRDT01FX1VOU1BFQ0lGSUVEEAASGgoWU1VCTUlUX09VVENPTUVfQ1JFQVRFRBABEhsKF1NVQk1JVF9PVVRDT01FX0VYSVNUSU5HEAISGwoXU1VCTUlUX09VVENPTUVfUkVQTEFDRUQQAxIaChZTVUJNSVRfT1VUQ09NRV9QRU5ESU5HEAQqcQoJRXZlbnRLaW5kEhkKFUVWRU5UX0tJTkRfVFJBTlNJVElPThAAEhYKEkVWRU5UX0tJTkRfVVBEQVRFRBABEhcKE0VWRU5UX0tJTkRfUkVQTEFDRUQQAhIYChRFVkVOVF9LSU5EX1NVQ0NFU1NPUhADKngKB092ZXJsYXASFwoTT1ZFUkxBUF9VTlNQRUNJRklFRBAAEhAKDE9WRVJMQVBfU0tJUBABEhEKDU9WRVJMQVBfQUxMT1cQAhIRCg1PVkVSTEFQX1FVRVVFEAMSHAoYT1ZFUkxBUF9RVUVVRV9PTl9TVUNDRVNTEAQygAQKBVRhc2tzEj0KBlN1Ym1pdBIYLmNyb25vcS52MS5TdWJtaXRSZXF1ZXN0GhkuY3Jvbm9xLnYxLlN1Ym1pdFJlc3BvbnNlEkwKC1N1Ym1pdEJhdGNoEh0uY3Jvbm9xLnYxLlN1Ym1pdEJhdGNoUmVxdWVzdBoeLmNyb25vcS52MS5TdWJtaXRCYXRjaFJlc3BvbnNlEj0KBkNhbmNlbBIYLmNyb25vcS52MS5DYW5jZWxSZXF1ZXN0GhkuY3Jvbm9xLnYxLkNhbmNlbFJlc3BvbnNlEj0KBlVwZGF0ZRIYLmNyb25vcS52MS5VcGRhdGVSZXF1ZXN0GhkuY3Jvbm9xLnYxLlVwZGF0ZVJlc3BvbnNlEjEKA0dldBIVLmNyb25vcS52MS5HZXRSZXF1ZXN0GhMuY3Jvbm9xLnYxLlRhc2tJbmZvEkYKCUxpc3RUYXNrcxIbLmNyb25vcS52MS5MaXN0VGFza3NSZXF1ZXN0GhwuY3Jvbm9xLnYxLkxpc3RUYXNrc1Jlc3BvbnNlEjUKBFdhaXQSFi5jcm9ub3EudjEuV2FpdFJlcXVlc3QaFS5jcm9ub3EudjEuVGFza1Jlc3VsdBI6CgVXYXRjaBIXLmNyb25vcS52MS5XYXRjaFJlcXVlc3QaFi5jcm9ub3EudjEuU3RhdHVzRXZlbnQwATJJCgdXb3JrZXJzEj4KBFdvcmsSGC5jcm9ub3EudjEuV29ya2VyTWVzc2FnZRoYLmNyb25vcS52MS5TZXJ2ZXJNZXNzYWdlKAEwATKUBQoFQWRtaW4SOQoIU25hcHNob3QSEC5jcm9ub3EudjEuRW1wdHkaGy5jcm9ub3EudjEuU25hcHNob3RSZXNwb25zZRJCCgtHZXRPcmRlcmluZxIaLmNyb25vcS52MS5PcmRlcmluZ1JlcXVlc3QaFy5jcm9ub3EudjEuT3JkZXJpbmdJbmZvEmQKE0xpc3RIYWx0ZWRPcmRlcmluZ3MSJS5jcm9ub3EudjEuTGlzdEhhbHRlZE9yZGVyaW5nc1JlcXVlc3QaJi5jcm9ub3EudjEuTGlzdEhhbHRlZE9yZGVyaW5nc1Jlc3BvbnNlEkgKEFNldE9yZGVyaW5nRmxvb3ISIi5jcm9ub3EudjEuU2V0T3JkZXJpbmdGbG9vclJlcXVlc3QaEC5jcm9ub3EudjEuRW1wdHkSPQoGUmVzdW1lEhguY3Jvbm9xLnYxLlJlc3VtZVJlcXVlc3QaGS5jcm9ub3EudjEuUmVzdW1lUmVzcG9uc2USPQoMQWRkUmVjdXJyaW5nEhsuY3Jvbm9xLnYxLlJlY3VycmluZ1JlcXVlc3QaEC5jcm9ub3EudjEuRW1wdHkSWAoPUmVtb3ZlUmVjdXJyaW5nEiEuY3Jvbm9xLnYxLlJlbW92ZVJlY3VycmluZ1JlcXVlc3QaIi5jcm9ub3EudjEuUmVtb3ZlUmVjdXJyaW5nUmVzcG9uc2USPwoLTGlzdFdvcmtlcnMSEC5jcm9ub3EudjEuRW1wdHkaHi5jcm9ub3EudjEuTGlzdFdvcmtlcnNSZXNwb25zZRJDCg1MaXN0UmVjdXJyaW5nEhAuY3Jvbm9xLnYxLkVtcHR5GiAuY3Jvbm9xLnYxLkxpc3RSZWN1cnJpbmdSZXNwb25zZWIGcHJvdG8z");
 
 /**
  * @generated from message cronoq.v1.TaskRef
@@ -233,6 +233,25 @@ export type TaskSpec = Message<"cronoq.v1.TaskSpec"> & {
    * @generated from field: string tenant = 20;
    */
   tenant: string;
+
+  /**
+   * Ordering key: tasks of one pool that share it run one at a time, in the order they were
+   * submitted, however many workers are free. Tasks with different keys do not wait for each
+   * other. The order inside a key is submission order, not priority; the task at the front
+   * runs at the highest class among the key's waiting tasks. It is not a deduplication key
+   * (`key`): two submissions with the same ordering key are two tasks. Not allowed together
+   * with a start time, or in a schedule's template.
+   *
+   * @generated from field: string ordering_key = 21;
+   */
+  orderingKey: string;
+
+  /**
+   * With `ordering_key`: what a failure of this task does to the tasks behind it.
+   *
+   * @generated from field: cronoq.v1.OrderFailure on_failure = 22;
+   */
+  onFailure: OrderFailure;
 };
 
 /**
@@ -1424,6 +1443,28 @@ export type PoolSnapshot = Message<"cronoq.v1.PoolSnapshot"> & {
    * @generated from field: cronoq.v1.UrgencyConfig urgency = 22;
    */
   urgency?: UrgencyConfig | undefined;
+
+  /**
+   * Ordering keys that have tasks.
+   *
+   * @generated from field: uint64 ordering_keys = 23;
+   */
+  orderingKeys: bigint;
+
+  /**
+   * Tasks that are ready but wait for an older task of their ordering key, or for a halted
+   * key to be resumed.
+   *
+   * @generated from field: uint64 ordering_waiting = 24;
+   */
+  orderingWaiting: bigint;
+
+  /**
+   * Ordering keys halted by a failed task.
+   *
+   * @generated from field: uint64 ordering_halted = 25;
+   */
+  orderingHalted: bigint;
 };
 
 /**
@@ -1903,6 +1944,232 @@ export const ListRecurringResponseSchema: GenMessage<ListRecurringResponse> = /*
   messageDesc(file_cronoq_v1_cronoq, 46);
 
 /**
+ * An ordering key of a pool.
+ *
+ * @generated from message cronoq.v1.OrderingRequest
+ */
+export type OrderingRequest = Message<"cronoq.v1.OrderingRequest"> & {
+  /**
+   * default "default"
+   *
+   * @generated from field: string pool = 1;
+   */
+  pool: string;
+
+  /**
+   * @generated from field: string key = 2;
+   */
+  key: string;
+};
+
+/**
+ * Describes the message cronoq.v1.OrderingRequest.
+ * Use `create(OrderingRequestSchema)` to create a new message.
+ */
+export const OrderingRequestSchema: GenMessage<OrderingRequest> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 47);
+
+/**
+ * An ordering key as the scheduler holds it. A key with no tasks and no kept floor has
+ * `tasks = 0` and nothing else set.
+ *
+ * @generated from message cronoq.v1.OrderingInfo
+ */
+export type OrderingInfo = Message<"cronoq.v1.OrderingInfo"> & {
+  /**
+   * @generated from field: string pool = 1;
+   */
+  pool: string;
+
+  /**
+   * @generated from field: string key = 2;
+   */
+  key: string;
+
+  /**
+   * Tasks of the key that have not finished.
+   *
+   * @generated from field: uint64 tasks = 3;
+   */
+  tasks: bigint;
+
+  /**
+   * The oldest of them: the only one that may run.
+   *
+   * @generated from field: optional uint64 head = 4;
+   */
+  head?: bigint | undefined;
+
+  /**
+   * The class the head runs at: the highest among the key's tasks and its floor.
+   *
+   * UNSPECIFIED without tasks or a floor
+   *
+   * @generated from field: cronoq.v1.Priority effective = 5;
+   */
+  effective: Priority;
+
+  /**
+   * Class floor, if any.
+   *
+   * @generated from field: optional cronoq.v1.Priority floor = 6;
+   */
+  floor?: Priority | undefined;
+
+  /**
+   * The floor stays when the key has no tasks left.
+   *
+   * @generated from field: bool persist = 7;
+   */
+  persist: boolean;
+
+  /**
+   * A failed task halted the key: nothing of it runs until it is resumed.
+   *
+   * @generated from field: bool halted = 8;
+   */
+  halted: boolean;
+};
+
+/**
+ * Describes the message cronoq.v1.OrderingInfo.
+ * Use `create(OrderingInfoSchema)` to create a new message.
+ */
+export const OrderingInfoSchema: GenMessage<OrderingInfo> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 48);
+
+/**
+ * @generated from message cronoq.v1.SetOrderingFloorRequest
+ */
+export type SetOrderingFloorRequest = Message<"cronoq.v1.SetOrderingFloorRequest"> & {
+  /**
+   * default "default"
+   *
+   * @generated from field: string pool = 1;
+   */
+  pool: string;
+
+  /**
+   * @generated from field: string key = 2;
+   */
+  key: string;
+
+  /**
+   * The head of the key never runs below this class, whatever the classes of the key's
+   * tasks; no task's own class changes. Unset removes the floor.
+   *
+   * @generated from field: optional cronoq.v1.Priority floor = 3;
+   */
+  floor?: Priority | undefined;
+
+  /**
+   * Keep the floor when the key has no tasks left (otherwise it goes with them). The number
+   * of keys that keep one is limited (`limits.max_ordering_settings`); beyond it the call
+   * fails with RESOURCE_EXHAUSTED.
+   *
+   * @generated from field: bool persist = 4;
+   */
+  persist: boolean;
+};
+
+/**
+ * Describes the message cronoq.v1.SetOrderingFloorRequest.
+ * Use `create(SetOrderingFloorRequestSchema)` to create a new message.
+ */
+export const SetOrderingFloorRequestSchema: GenMessage<SetOrderingFloorRequest> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 49);
+
+/**
+ * @generated from message cronoq.v1.ListHaltedOrderingsRequest
+ */
+export type ListHaltedOrderingsRequest = Message<"cronoq.v1.ListHaltedOrderingsRequest"> & {
+  /**
+   * default "default"
+   *
+   * @generated from field: string pool = 1;
+   */
+  pool: string;
+
+  /**
+   * default 100, at most 1000
+   *
+   * @generated from field: uint32 limit = 2;
+   */
+  limit: number;
+};
+
+/**
+ * Describes the message cronoq.v1.ListHaltedOrderingsRequest.
+ * Use `create(ListHaltedOrderingsRequestSchema)` to create a new message.
+ */
+export const ListHaltedOrderingsRequestSchema: GenMessage<ListHaltedOrderingsRequest> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 50);
+
+/**
+ * @generated from message cronoq.v1.ListHaltedOrderingsResponse
+ */
+export type ListHaltedOrderingsResponse = Message<"cronoq.v1.ListHaltedOrderingsResponse"> & {
+  /**
+   * Halted ordering keys of the pool, in name order.
+   *
+   * @generated from field: repeated string keys = 1;
+   */
+  keys: string[];
+};
+
+/**
+ * Describes the message cronoq.v1.ListHaltedOrderingsResponse.
+ * Use `create(ListHaltedOrderingsResponseSchema)` to create a new message.
+ */
+export const ListHaltedOrderingsResponseSchema: GenMessage<ListHaltedOrderingsResponse> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 51);
+
+/**
+ * What to resume: a halted ordering key of a pool.
+ *
+ * @generated from message cronoq.v1.ResumeRequest
+ */
+export type ResumeRequest = Message<"cronoq.v1.ResumeRequest"> & {
+  /**
+   * default "default"
+   *
+   * @generated from field: string pool = 1;
+   */
+  pool: string;
+
+  /**
+   * @generated from field: string ordering_key = 2;
+   */
+  orderingKey: string;
+};
+
+/**
+ * Describes the message cronoq.v1.ResumeRequest.
+ * Use `create(ResumeRequestSchema)` to create a new message.
+ */
+export const ResumeRequestSchema: GenMessage<ResumeRequest> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 52);
+
+/**
+ * @generated from message cronoq.v1.ResumeResponse
+ */
+export type ResumeResponse = Message<"cronoq.v1.ResumeResponse"> & {
+  /**
+   * Whether there was anything to resume. Resuming what is not halted is not an error.
+   *
+   * @generated from field: bool resumed = 1;
+   */
+  resumed: boolean;
+};
+
+/**
+ * Describes the message cronoq.v1.ResumeResponse.
+ * Use `create(ResumeResponseSchema)` to create a new message.
+ */
+export const ResumeResponseSchema: GenMessage<ResumeResponse> = /*@__PURE__*/
+  messageDesc(file_cronoq_v1_cronoq, 53);
+
+/**
  * @generated from enum cronoq.v1.Priority
  */
 export enum Priority {
@@ -2083,6 +2350,42 @@ export const MissPolicySchema: GenEnum<MissPolicy> = /*@__PURE__*/
   enumDesc(file_cronoq_v1_cronoq, 3);
 
 /**
+ * What a task that ends as failed (or dead-lettered) does to its ordering key. A task that
+ * is cancelled, skipped or shed never halts its key.
+ *
+ * @generated from enum cronoq.v1.OrderFailure
+ */
+export enum OrderFailure {
+  /**
+   * treated as CONTINUE
+   *
+   * @generated from enum value: ORDER_FAILURE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * The next task of the key runs.
+   *
+   * @generated from enum value: ORDER_FAILURE_CONTINUE = 1;
+   */
+  CONTINUE = 1,
+
+  /**
+   * The key is halted: its tasks stay queued, in place, until it is resumed (`Admin.Resume`)
+   * or they are cancelled.
+   *
+   * @generated from enum value: ORDER_FAILURE_HALT = 2;
+   */
+  HALT = 2,
+}
+
+/**
+ * Describes the enum cronoq.v1.OrderFailure.
+ */
+export const OrderFailureSchema: GenEnum<OrderFailure> = /*@__PURE__*/
+  enumDesc(file_cronoq_v1_cronoq, 4);
+
+/**
  * What a submission whose key is already in use does.
  *
  * @generated from enum cronoq.v1.KeyConflict
@@ -2128,7 +2431,7 @@ export enum KeyConflict {
  * Describes the enum cronoq.v1.KeyConflict.
  */
 export const KeyConflictSchema: GenEnum<KeyConflict> = /*@__PURE__*/
-  enumDesc(file_cronoq_v1_cronoq, 4);
+  enumDesc(file_cronoq_v1_cronoq, 5);
 
 /**
  * What an accepted submission did.
@@ -2175,7 +2478,7 @@ export enum SubmitOutcome {
  * Describes the enum cronoq.v1.SubmitOutcome.
  */
 export const SubmitOutcomeSchema: GenEnum<SubmitOutcome> = /*@__PURE__*/
-  enumDesc(file_cronoq_v1_cronoq, 5);
+  enumDesc(file_cronoq_v1_cronoq, 6);
 
 /**
  * What a status event reports.
@@ -2218,7 +2521,7 @@ export enum EventKind {
  * Describes the enum cronoq.v1.EventKind.
  */
 export const EventKindSchema: GenEnum<EventKind> = /*@__PURE__*/
-  enumDesc(file_cronoq_v1_cronoq, 6);
+  enumDesc(file_cronoq_v1_cronoq, 7);
 
 /**
  * What a recurring occurrence does while the previous one is still live.
@@ -2263,7 +2566,7 @@ export enum Overlap {
  * Describes the enum cronoq.v1.Overlap.
  */
 export const OverlapSchema: GenEnum<Overlap> = /*@__PURE__*/
-  enumDesc(file_cronoq_v1_cronoq, 7);
+  enumDesc(file_cronoq_v1_cronoq, 8);
 
 /**
  * @generated from service cronoq.v1.Tasks
@@ -2368,6 +2671,42 @@ export const Admin: GenService<{
     methodKind: "unary";
     input: typeof EmptySchema;
     output: typeof SnapshotResponseSchema;
+  },
+  /**
+   * Ordering keys. Reading needs the metrics role, changing the admin role; both need the
+   * pool to be allowed. Credentials pinned to a tenant cannot change an ordering key: a key
+   * may hold tasks of other tenants.
+   *
+   * @generated from rpc cronoq.v1.Admin.GetOrdering
+   */
+  getOrdering: {
+    methodKind: "unary";
+    input: typeof OrderingRequestSchema;
+    output: typeof OrderingInfoSchema;
+  },
+  /**
+   * @generated from rpc cronoq.v1.Admin.ListHaltedOrderings
+   */
+  listHaltedOrderings: {
+    methodKind: "unary";
+    input: typeof ListHaltedOrderingsRequestSchema;
+    output: typeof ListHaltedOrderingsResponseSchema;
+  },
+  /**
+   * @generated from rpc cronoq.v1.Admin.SetOrderingFloor
+   */
+  setOrderingFloor: {
+    methodKind: "unary";
+    input: typeof SetOrderingFloorRequestSchema;
+    output: typeof EmptySchema;
+  },
+  /**
+   * @generated from rpc cronoq.v1.Admin.Resume
+   */
+  resume: {
+    methodKind: "unary";
+    input: typeof ResumeRequestSchema;
+    output: typeof ResumeResponseSchema;
   },
   /**
    * @generated from rpc cronoq.v1.Admin.AddRecurring

@@ -319,6 +319,10 @@ pub fn snapshot_json(s: &pb::SnapshotResponse) -> Value {
                 "utilization": p.utilization, "wait_p50_s": p.wait_p50_s,
                 "wait_p90_s": p.wait_p90_s, "wait_p99_s": p.wait_p99_s,
                 "workers_connected": p.workers_connected,
+                "ordering": {
+                    "keys": p.ordering_keys, "waiting": p.ordering_waiting,
+                    "halted": p.ordering_halted,
+                },
             })
         })
         .collect();

@@ -137,6 +137,39 @@ export interface Task {
   onKeyConflict?: "return_existing" | "replace_queued" | "reject";
   /** With `"replace_queued"`: take this submission's place in line. */
   renewPosition?: boolean;
+  /**
+   * Tasks of one pool that share an ordering key run one at a time, in the order they were
+   * submitted, however many workers are free: use it for work that must not overlap or
+   * overtake for one subject (an account, a document, a device). Tasks with different keys do
+   * not wait for each other. The order inside a key is submission order, not priority; the
+   * task at the front runs at the highest class among the key's waiting tasks. It is not a
+   * deduplication key (`key`): two submissions with the same ordering key are two tasks. Not
+   * allowed together with `startIn`.
+   */
+  orderingKey?: string;
+  /**
+   * With `orderingKey`: if this task ends as failed, halt the key. The tasks behind it stay
+   * queued, in place, until {@link Client.resume} or until they are cancelled.
+   */
+  haltOnFailure?: boolean;
+}
+
+/** An ordering key as the server holds it. */
+export interface OrderingInfo {
+  pool: string;
+  key: string;
+  /** Tasks of the key that have not finished. */
+  tasks: bigint;
+  /** The oldest of them: the only one that may run. */
+  head?: bigint;
+  /** The class the head runs at: the highest among the key's tasks and its floor. */
+  effective?: Priority;
+  /** Class floor, if any. */
+  floor?: Priority;
+  /** The floor stays when the key has no tasks left. */
+  persist: boolean;
+  /** A failed task halted the key: nothing of it runs until it is resumed. */
+  halted: boolean;
 }
 
 /** The options of a single submission of `t`. */
@@ -212,6 +245,8 @@ export function spec(t: Task): pb.TaskSpec {
     resources: t.resources ?? {},
     tags: t.tags ?? {},
     labels: t.labels ?? {},
+    orderingKey: t.orderingKey ?? "",
+    onFailure: t.haltOnFailure ? pb.OrderFailure.HALT : pb.OrderFailure.UNSPECIFIED,
     retry: t.maxAttempts ? create(pb.RetryPolicySchema, { maxAttempts: t.maxAttempts, jitter: true }) : undefined,
   });
 }
@@ -569,6 +604,72 @@ export class Client {
   /** Pools, queues and totals (metrics role). */
   snapshot(opts: CallOptions = {}): Promise<pb.SnapshotResponse> {
     return this.call(() => this.admin.snapshot({}, rpc(opts)));
+  }
+
+  /**
+   * An ordering key of `pool` (the default pool if left out): its tasks, the one at the
+   * front, the class that one runs at and whether the key is halted (metrics role). A key
+   * with no tasks and no kept floor has `tasks` 0.
+   */
+  ordering(key: string, pool?: string, opts: CallOptions = {}): Promise<OrderingInfo> {
+    return this.call(async () => {
+      const r = await this.admin.getOrdering({ pool: pool ?? "", key }, rpc(opts));
+      return {
+        pool: r.pool,
+        key: r.key,
+        tasks: r.tasks,
+        head: r.head,
+        effective: priorityName(r.effective),
+        floor: r.floor === undefined ? undefined : priorityName(r.floor),
+        persist: r.persist,
+        halted: r.halted,
+      };
+    });
+  }
+
+  /** The halted ordering keys of `pool`, in name order (metrics role). */
+  haltedOrderings(filter: { pool?: string; limit?: number } = {}, opts: CallOptions = {}): Promise<string[]> {
+    return this.call(
+      async () =>
+        (await this.admin.listHaltedOrderings({ pool: filter.pool ?? "", limit: filter.limit ?? 0 }, rpc(opts))).keys,
+    );
+  }
+
+  /**
+   * Set the class the front of an ordering key never runs below, whatever the classes of the
+   * key's tasks; `floor: undefined` removes it. No task's own class changes. The floor goes
+   * when the key has no tasks left unless `persist` is set; the server limits how many keys
+   * keep one (`resource_exhausted` beyond it). Admin role, not pinned to a tenant.
+   */
+  setOrderingFloor(
+    key: string,
+    floor: Priority | undefined,
+    o: { pool?: string; persist?: boolean } = {},
+    opts: CallOptions = {},
+  ): Promise<void> {
+    return this.call(async () => {
+      await this.admin.setOrderingFloor(
+        {
+          pool: o.pool ?? "",
+          key,
+          floor: floor === undefined ? undefined : priorityValue(floor),
+          persist: o.persist ?? false,
+        },
+        rpc(opts),
+      );
+    });
+  }
+
+  /**
+   * Resume an ordering key that a failed task halted (`haltOnFailure`): its oldest task is
+   * offered again. Resolves to whether the key was halted; resuming one that is not is not an
+   * error. Admin role, not pinned to a tenant.
+   */
+  resume(target: { orderingKey: string; pool?: string }, opts: CallOptions = {}): Promise<boolean> {
+    return this.call(
+      async () =>
+        (await this.admin.resume({ pool: target.pool ?? "", orderingKey: target.orderingKey }, rpc(opts))).resumed,
+    );
   }
 }
 

@@ -405,6 +405,22 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
     if !spec.tenant.is_empty() {
         t = t.tenant(spec.tenant);
     }
+    check_str("ordering_key", &spec.ordering_key, limits.max_key_len)?;
+    let halt = match pb::OrderFailure::try_from(spec.on_failure) {
+        Ok(pb::OrderFailure::Unspecified | pb::OrderFailure::Continue) => false,
+        Ok(pb::OrderFailure::Halt) => true,
+        Err(_) => return Err(Status::invalid_argument("unknown on_failure")),
+    };
+    if !spec.ordering_key.is_empty() {
+        t = t.ordering_key(spec.ordering_key);
+        if halt {
+            t = t.halt_on_failure();
+        }
+    } else if halt {
+        return Err(Status::invalid_argument(
+            "on_failure requires an ordering_key",
+        ));
+    }
     let mut labels: Vec<_> = spec.labels.into_iter().collect();
     labels.sort();
     for (k, v) in labels {
@@ -590,6 +606,9 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             wait_p99_s: p.wait_p99.as_secs_f64(),
             cost: p.cost,
             workers_connected: workers(&p.name) as u64,
+            ordering_keys: p.ordering.keys as u64,
+            ordering_waiting: p.ordering.waiting as u64,
+            ordering_halted: p.ordering.halted as u64,
             priority: Some(pb::PriorityConfig {
                 base: p.priority.base.to_vec(),
                 aging_rate: p.priority.aging_rate.to_vec(),
@@ -661,6 +680,10 @@ pub fn error(e: Error) -> Status {
             cronoq::UpdateError::NotFound => Status::not_found("task not found"),
             cronoq::UpdateError::FixedStart => Status::failed_precondition(e.to_string()),
             cronoq::UpdateError::Invalid(_) => Status::invalid_argument(e.to_string()),
+        },
+        Error::Ordering(e) => match e {
+            cronoq::OrderingError::UnknownPool => Status::not_found(e.to_string()),
+            cronoq::OrderingError::TooManySettings => Status::resource_exhausted(e.to_string()),
         },
         Error::Shutdown => Status::unavailable("scheduler is shutting down"),
         Error::Config(m) => Status::invalid_argument(m),

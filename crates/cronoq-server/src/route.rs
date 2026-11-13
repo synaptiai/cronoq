@@ -593,6 +593,85 @@ pub async fn add_recurring(
     grpc::add_recurring(app, r).await
 }
 
+/// An ordering key, from the shard of its pool.
+pub async fn get_ordering(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    key: &str,
+) -> Result<pb::OrderingInfo, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::OrderingRequest {
+            pool: pool.to_string(),
+            key: key.to_string(),
+        };
+        return answer(sh, c.admin.get_ordering(bounded(app, req)).await);
+    }
+    grpc::get_ordering(app, pool, key).await
+}
+
+/// The halted ordering keys of a pool, from its shard.
+pub async fn list_halted_orderings(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    limit: u32,
+) -> Result<Vec<String>, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::ListHaltedOrderingsRequest {
+            pool: pool.to_string(),
+            limit,
+        };
+        let r = answer(sh, c.admin.list_halted_orderings(bounded(app, req)).await)?;
+        return Ok(r.keys);
+    }
+    grpc::list_halted_orderings(app, pool, limit).await
+}
+
+/// Set or remove the floor of an ordering key, on the shard of its pool.
+pub async fn set_ordering_floor(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    key: &str,
+    floor: Option<cronoq::Priority>,
+    persist: bool,
+) -> Result<(), Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::SetOrderingFloorRequest {
+            pool: pool.to_string(),
+            key: key.to_string(),
+            floor: floor.map(|f| convert::priority_to_pb(f) as i32),
+            persist,
+        };
+        answer(sh, c.admin.set_ordering_floor(bounded(app, req)).await)?;
+        return Ok(());
+    }
+    grpc::set_ordering_floor(app, pool, key, floor, persist).await
+}
+
+/// Resume a halted ordering key, on the shard of its pool.
+pub async fn resume_ordering(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    key: &str,
+) -> Result<bool, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::ResumeRequest {
+            pool: pool.to_string(),
+            ordering_key: key.to_string(),
+        };
+        let r = answer(sh, c.admin.resume(bounded(app, req)).await)?;
+        return Ok(r.resumed);
+    }
+    grpc::resume_ordering(app, pool, key).await
+}
+
 /// Remove a schedule from whichever shard has it.
 pub async fn remove_recurring(app: &AppState, p: &Principal, name: String) -> Result<bool, Status> {
     if grpc::remove_recurring(app, &name).await? {

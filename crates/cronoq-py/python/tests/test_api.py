@@ -596,3 +596,84 @@ async def test_fair_pools_share_by_tenant_weight():
     assert 13 <= first.count("acme") <= 16, first
     with pytest.raises(ValueError, match="tenant weights"):
         Pool("x", run, tenant_weights={"acme": 0.0})
+
+
+async def test_ordering_keys_run_one_at_a_time_in_submission_order():
+    running: dict[int, int] = {}
+    overlap = []
+    order = []
+
+    async def run(ctx, payload):
+        key, n = payload
+        running[key] = running.get(key, 0) + 1
+        overlap.append(running[key])
+        order.append((key, n))
+        await asyncio.sleep(0.005)
+        running[key] -= 1
+
+    async with Scheduler([pool(run, max=8)]) as s:
+        handles = []
+        for n in range(3):
+            for key in range(20):
+                # Priorities do not reorder a key: the low task submitted first runs first.
+                priority = "low" if n == 0 else "critical"
+                handles.append(await s.submit((key, n), ordering_key=f"k{key}", priority=priority))
+        assert (await s.snapshot()).pool("default").ordering_keys == 20
+        for h in handles:
+            await h
+        # An ordering key is not a deduplication key: these are two tasks, in a batch too.
+        batch = await s.submit_batch([Task((99, n), ordering_key="batch") for n in range(3)])
+        assert len({h.id for h in batch}) == 3
+        for h in batch:
+            await h
+    assert max(overlap) == 1
+    for key in [*range(20), 99]:
+        assert [n for k, n in order if k == key] == [0, 1, 2]
+
+
+async def test_ordering_key_halts_on_failure_and_is_resumed():
+    async def run(ctx, payload):
+        if payload == "bad":
+            raise cronoq.Permanent("boom")
+        return payload
+
+    async with Scheduler([pool(run)]) as s:
+        bad = await s.submit("bad", ordering_key="acct", halt_on_failure=True)
+        nxt = await s.submit("next", ordering_key="acct", priority="low")
+        with pytest.raises(cronoq.TaskFailed):
+            await bad
+        await asyncio.sleep(0.1)
+        info = await s.ordering("acct")
+        assert info.halted and (info.tasks, info.head) == (1, nxt.id)
+        assert await s.status(nxt.id) == "ready"
+        assert await s.halted_orderings() == ["acct"]
+        snap = (await s.snapshot()).pool("default")
+        assert (snap.ordering_halted, snap.ordering_waiting) == (1, 1)
+
+        # A floor changes the class the head runs at, not the task's own.
+        await s.set_ordering_floor("acct", Priority.CRITICAL)
+        info = await s.ordering("acct")
+        assert (info.floor, info.effective, info.persist) == ("critical", "critical", False)
+        await s.set_ordering_floor("acct", None)
+        assert (await s.ordering("acct")).effective == "low"
+
+        assert await s.resume_ordering("acct") is True
+        assert await s.resume_ordering("acct") is False
+        assert await nxt == "next"
+        assert await s.ordering("acct") is None
+
+        # A floor that is kept outlives the key's tasks.
+        await s.set_ordering_floor("vip", "high", persist=True)
+        info = await s.ordering("vip")
+        assert (info.tasks, info.floor, info.persist) == (0, "high", True)
+
+        with pytest.raises(ValueError, match="ordering_key"):
+            await s.submit("x", halt_on_failure=True)
+        with pytest.raises(ValueError, match="ordering_key"):
+            Task("x", halt_on_failure=True)
+        with pytest.raises(ValueError, match="floor"):
+            await s.set_ordering_floor("k", None, persist=True)
+        with pytest.raises(cronoq.SubmitError):
+            await s.submit("x", ordering_key="k", start_in=60)
+        with pytest.raises(cronoq.SubmitError):
+            await s.ordering("k", pool="missing")

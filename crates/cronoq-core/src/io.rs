@@ -560,6 +560,20 @@ pub enum Mutation<P> {
         /// The spec of the successor.
         spec: TaskSpec<P>,
     },
+    /// The stored state of an ordering key changed: its class floor, or whether it is halted.
+    /// A key with no floor that is not halted has no state to keep: a store drops its record.
+    Ordering {
+        /// Pool of the ordering key.
+        pool: Arc<str>,
+        /// The ordering key.
+        key: Arc<str>,
+        /// Class floor, if any.
+        floor: Option<Priority>,
+        /// The floor stays when the key has no tasks left.
+        persist: bool,
+        /// The key is halted.
+        halted: bool,
+    },
     /// A recurring schedule was added or replaced.
     RecurringUpsert {
         /// The schedule.
@@ -645,6 +659,19 @@ impl<P> Clone for Mutation<P> {
                 renew: *renew,
                 spec: spec.clone(),
             },
+            Mutation::Ordering {
+                pool,
+                key,
+                floor,
+                persist,
+                halted,
+            } => Mutation::Ordering {
+                pool: pool.clone(),
+                key: key.clone(),
+                floor: *floor,
+                persist: *persist,
+                halted: *halted,
+            },
             Mutation::RecurringUpsert { spec } => Mutation::RecurringUpsert { spec: spec.clone() },
             Mutation::RecurringRemove { name } => Mutation::RecurringRemove { name: name.clone() },
             Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
@@ -715,6 +742,61 @@ pub struct RecoveredPending<P> {
     pub spec: TaskSpec<P>,
 }
 
+/// Stored state of an ordering key (see [`Mutation::Ordering`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveredOrdering {
+    /// Pool of the ordering key.
+    pub pool: Arc<str>,
+    /// The ordering key.
+    pub key: Arc<str>,
+    /// Class floor, if any.
+    pub floor: Option<Priority>,
+    /// The floor stays when the key has no tasks left.
+    pub persist: bool,
+    /// The key is halted.
+    pub halted: bool,
+}
+
+/// An ordering key as the engine holds it ([`Core::ordering`](crate::Core::ordering)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderingInfo {
+    /// Tasks of the key that have not finished.
+    pub tasks: usize,
+    /// The oldest of them: the only one that may run.
+    pub head: Option<TaskId>,
+    /// The class the head runs at: the highest among the key's tasks and its floor.
+    pub effective: Option<Priority>,
+    /// Class floor, if any.
+    pub floor: Option<Priority>,
+    /// The floor stays when the key has no tasks left.
+    pub persist: bool,
+    /// The key is halted: nothing of it runs until it is resumed.
+    pub halted: bool,
+}
+
+/// Why a setting of an ordering key was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OrderingError {
+    /// No pool with this name.
+    UnknownPool,
+    /// The limit on ordering keys with a stored setting is reached
+    /// ([`CoreConfig::max_ordering_settings`](crate::CoreConfig::max_ordering_settings)).
+    TooManySettings,
+}
+
+impl fmt::Display for OrderingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OrderingError::UnknownPool => f.write_str("unknown pool"),
+            OrderingError::TooManySettings => {
+                f.write_str("too many ordering keys with a stored setting")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrderingError {}
+
 /// A recently finished task restored into the retention table (for late dependents).
 #[derive(Clone, Debug)]
 pub struct RecoveredTerminal {
@@ -752,6 +834,8 @@ pub struct Recovered<P> {
     pub recurring: Vec<RecoveredRecurring<P>>,
     /// Replacements stored for live tasks.
     pub pending: Vec<RecoveredPending<P>>,
+    /// Stored state of ordering keys.
+    pub ordering: Vec<RecoveredOrdering>,
     /// Lowest task id the engine may hand out next.
     pub next_id: u64,
 }
@@ -776,6 +860,7 @@ impl<P> Default for Recovered<P> {
             terminal: Vec::new(),
             recurring: Vec::new(),
             pending: Vec::new(),
+            ordering: Vec::new(),
             next_id: 0,
         }
     }

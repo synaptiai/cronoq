@@ -738,6 +738,7 @@ fn rebuild(log: &[Mutation<Job>]) -> Recovered<Job> {
     }
     Recovered {
         pending: Vec::new(),
+        ordering: Vec::new(),
         tasks: tasks.into_values().collect(),
         terminal,
         recurring: vec![],
@@ -790,6 +791,7 @@ fn recovered_running_task_respects_retry_budget() {
     };
     let rec = Recovered {
         pending: Vec::new(),
+        ordering: Vec::new(),
         tasks: vec![
             RecoveredTask {
                 id: TaskId(1),

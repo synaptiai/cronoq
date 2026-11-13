@@ -970,6 +970,9 @@ pub struct LimitsConfig {
     pub key_retention_s: f64,
     /// Most finished tasks kept for key deduplication (bounds memory).
     pub key_retention_max: usize,
+    /// Most ordering keys that keep a class floor while they have no tasks (bounds memory
+    /// and the stored state). Beyond it a new kept floor is refused; submissions never are.
+    pub max_ordering_settings: usize,
     /// Most tasks one `ListTasks` page returns.
     pub max_list: usize,
 }
@@ -997,6 +1000,7 @@ impl Default for LimitsConfig {
             keepalive_timeout_s: 20.0,
             key_retention_s: 3600.0,
             key_retention_max: 1_000_000,
+            max_ordering_settings: 100_000,
             max_list: 1000,
         }
     }

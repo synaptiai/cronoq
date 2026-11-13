@@ -3,10 +3,13 @@
 import re
 import sys
 
-# name substring -> minimum elements/s (targets: core 1M/s, e2e 250k/s; 30% headroom for CI noise)
+# name substring -> minimum elements/s (targets: core 1M/s, e2e 250k/s; 30% headroom for CI noise;
+# ordering keys: measured 1M/s, floor well below it)
 TARGETS = {
     "core/cycle/w64/backlog10000": 700_000,
     "runtime/e2e/noop/bulk": 175_000,
+    # Ordering keys with one key stuck: the other keys must not slow down around it.
+    "core/ordering/w64/keys1000/one_stuck": 400_000,
 }
 
 UNITS = {"elem/s": 1, "Kelem/s": 1e3, "Melem/s": 1e6, "Gelem/s": 1e9}

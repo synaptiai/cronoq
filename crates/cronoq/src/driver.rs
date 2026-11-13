@@ -76,6 +76,28 @@ pub(crate) enum Cmd<P, O> {
         patch: cronoq_core::TaskPatch,
         reply: Reply<Result<cronoq_core::Updated, Error>>,
     },
+    Ordering {
+        pool: PoolId,
+        key: Arc<str>,
+        reply: Reply<Option<cronoq_core::OrderingInfo>>,
+    },
+    HaltedOrderings {
+        pool: PoolId,
+        limit: usize,
+        reply: Reply<Vec<Arc<str>>>,
+    },
+    SetOrderingFloor {
+        pool: PoolId,
+        key: Arc<str>,
+        floor: Option<cronoq_core::Priority>,
+        persist: bool,
+        reply: Reply<Result<(), Error>>,
+    },
+    ResumeOrdering {
+        pool: PoolId,
+        key: Arc<str>,
+        reply: Reply<Result<bool, Error>>,
+    },
     Status {
         target: TaskRef,
         reply: Reply<Option<TaskStatus>>,
@@ -739,6 +761,42 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             }
             Cmd::Snapshot { reply } => {
                 let _ = reply.send(self.core.snapshot(now));
+            }
+            Cmd::Ordering { pool, key, reply } => {
+                let _ = reply.send(self.core.ordering(pool, &key));
+            }
+            Cmd::HaltedOrderings { pool, limit, reply } => {
+                let _ = reply.send(self.core.halted_orderings(pool, limit));
+            }
+            Cmd::SetOrderingFloor {
+                pool,
+                key,
+                floor,
+                persist,
+                reply,
+            } => match self
+                .core
+                .set_ordering_floor(now, pool, &key, floor, persist)
+            {
+                // Answered once the change is durable, like an update.
+                Ok(()) => self.defer(move |e| {
+                    let _ = reply.send(match e {
+                        None => Ok(()),
+                        Some(e) => Err(e.clone()),
+                    });
+                }),
+                Err(e) => {
+                    let _ = reply.send(Err(Error::Ordering(e)));
+                }
+            },
+            Cmd::ResumeOrdering { pool, key, reply } => {
+                let resumed = self.core.resume_ordering(now, pool, &key);
+                self.defer(move |e| {
+                    let _ = reply.send(match e {
+                        None => Ok(resumed),
+                        Some(e) => Err(e.clone()),
+                    });
+                });
             }
             Cmd::SetCapacity { pool, capacity } => {
                 if !closed {

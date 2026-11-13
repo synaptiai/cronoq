@@ -488,6 +488,26 @@ class AdminStub(object):
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.SnapshotResponse.FromString,
                 _registered_method=True)
+        self.GetOrdering = channel.unary_unary(
+                '/cronoq.v1.Admin/GetOrdering',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.OrderingRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.OrderingInfo.FromString,
+                _registered_method=True)
+        self.ListHaltedOrderings = channel.unary_unary(
+                '/cronoq.v1.Admin/ListHaltedOrderings',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsResponse.FromString,
+                _registered_method=True)
+        self.SetOrderingFloor = channel.unary_unary(
+                '/cronoq.v1.Admin/SetOrderingFloor',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.SetOrderingFloorRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
+                _registered_method=True)
+        self.Resume = channel.unary_unary(
+                '/cronoq.v1.Admin/Resume',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.ResumeRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ResumeResponse.FromString,
+                _registered_method=True)
         self.AddRecurring = channel.unary_unary(
                 '/cronoq.v1.Admin/AddRecurring',
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.RecurringRequest.SerializeToString,
@@ -514,6 +534,33 @@ class AdminServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Snapshot(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetOrdering(self, request, context):
+        """Ordering keys. Reading needs the metrics role, changing the admin role; both need the
+        pool to be allowed. Credentials pinned to a tenant cannot change an ordering key: a key
+        may hold tasks of other tenants.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListHaltedOrderings(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetOrderingFloor(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Resume(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -551,6 +598,26 @@ def add_AdminServicer_to_server(servicer, server):
                     servicer.Snapshot,
                     request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.SnapshotResponse.SerializeToString,
+            ),
+            'GetOrdering': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetOrdering,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.OrderingRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.OrderingInfo.SerializeToString,
+            ),
+            'ListHaltedOrderings': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHaltedOrderings,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsResponse.SerializeToString,
+            ),
+            'SetOrderingFloor': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetOrderingFloor,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.SetOrderingFloorRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
+            ),
+            'Resume': grpc.unary_unary_rpc_method_handler(
+                    servicer.Resume,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ResumeRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.ResumeResponse.SerializeToString,
             ),
             'AddRecurring': grpc.unary_unary_rpc_method_handler(
                     servicer.AddRecurring,
@@ -600,6 +667,114 @@ class Admin(object):
             '/cronoq.v1.Admin/Snapshot',
             cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.SnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetOrdering(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/GetOrdering',
+            cronoq_dot_v1_dot_cronoq__pb2.OrderingRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.OrderingInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHaltedOrderings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/ListHaltedOrderings',
+            cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetOrderingFloor(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/SetOrderingFloor',
+            cronoq_dot_v1_dot_cronoq__pb2.SetOrderingFloorRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Resume(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/Resume',
+            cronoq_dot_v1_dot_cronoq__pb2.ResumeRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.ResumeResponse.FromString,
             options,
             channel_credentials,
             insecure,

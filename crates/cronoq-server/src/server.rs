@@ -407,6 +407,7 @@ async fn lead(
             c.global_bounds.max_pending = Some(limits.max_pending_total);
             c.retention = limits.key_retention();
             c.retention_max = limits.key_retention_max;
+            c.max_ordering_settings = limits.max_ordering_settings;
             c.on_key_conflict = cfg.server.on_key_conflict.mode();
             c.id_shard = shards.as_ref().map(|s| s.own().number);
             c.priority = cfg.priority_config();

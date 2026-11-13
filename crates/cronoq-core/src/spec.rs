@@ -266,6 +266,19 @@ pub fn default_name() -> Arc<str> {
 
 /// Everything the engine needs to schedule one task.
 ///
+/// What the tasks behind a task in its ordering key do when it ends as failed or
+/// dead-lettered. A task that is cancelled, skipped or shed never holds them.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OrderFailure {
+    /// The next task runs.
+    #[default]
+    Continue,
+    /// The ordering key stops, and is reported as halted, until it is resumed
+    /// ([`Core::resume_ordering`](crate::Core::resume_ordering)) or the tasks waiting in it
+    /// are cancelled.
+    Halt,
+}
+
 /// Built with [`TaskSpec::new`] and the chained setters; all fields are public for direct use.
 #[derive(Debug)]
 pub struct TaskSpec<P> {
@@ -302,6 +315,14 @@ pub struct TaskSpec<P> {
     /// Tenant the task belongs to, for weighted fair sharing of pools with
     /// [`PoolConfig::fairness`](crate::PoolConfig::fairness).
     pub tenant: Option<Arc<str>>,
+    /// Ordering key: tasks of one pool with the same ordering key run one at a time, in
+    /// submission order. Only the oldest of them is offered to workers; the others wait
+    /// without holding a worker and without holding up the rest of the pool. Independent of
+    /// [`TaskSpec::key`]. Not available to tasks with a fixed start.
+    pub ordering_key: Option<Arc<str>>,
+    /// With an ordering key: what the tasks behind this one do when it ends as failed or
+    /// dead-lettered.
+    pub on_failure: OrderFailure,
     /// Fingerprint of what the submission asks for, chosen by the caller (for example a hash
     /// of the payload). It is stored with the task and compared when a later submission of
     /// the same key asks for conflicts to be reported
@@ -328,6 +349,8 @@ impl<P> Clone for TaskSpec<P> {
             tags: self.tags.clone(),
             labels: self.labels.clone(),
             tenant: self.tenant.clone(),
+            ordering_key: self.ordering_key.clone(),
+            on_failure: self.on_failure,
             fingerprint: self.fingerprint,
         }
     }
@@ -352,6 +375,8 @@ impl<P> TaskSpec<P> {
             tags: self.tags,
             labels: self.labels,
             tenant: self.tenant,
+            ordering_key: self.ordering_key,
+            on_failure: self.on_failure,
             fingerprint: self.fingerprint,
         }
     }
@@ -378,6 +403,8 @@ impl<P> TaskSpec<P> {
             tags: Vec::new(),
             labels: Vec::new(),
             tenant: None,
+            ordering_key: None,
+            on_failure: OrderFailure::Continue,
             fingerprint: None,
         }
     }
@@ -448,6 +475,17 @@ impl<P> TaskSpec<P> {
     /// The tenant the task belongs to (for fair sharing).
     pub fn tenant(mut self, tenant: impl Into<Arc<str>>) -> Self {
         self.tenant = Some(tenant.into());
+        self
+    }
+    /// Set the ordering key (see [`TaskSpec::ordering_key`]).
+    pub fn ordering_key(mut self, key: impl Into<Arc<str>>) -> Self {
+        self.ordering_key = Some(key.into());
+        self
+    }
+    /// If this task fails or is dead-lettered, hold the tasks behind it in its ordering key
+    /// until the key is resumed ([`OrderFailure::Halt`]).
+    pub fn halt_on_failure(mut self) -> Self {
+        self.on_failure = OrderFailure::Halt;
         self
     }
     /// Set the fingerprint (see [`TaskSpec::fingerprint`]).

@@ -33,6 +33,8 @@ macro_rules! suite {
             release_lets_a_standby_lead,
             key_reuse_in_same_batch,
             replacements_are_stored_and_dropped,
+            ordering_keys_are_stored_and_recovered,
+            ordering_keys_survive_a_restart,
             deps_on_parents_outside_retention_survive_failover,
             long_missed_starts_are_not_run_after_restart,
             message_does_not_depend_on_batching,
@@ -259,10 +261,17 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
         Mutation::RecurringRemove {
             name: "gone".into(),
         },
+        Mutation::Ordering {
+            pool: "gpu".into(),
+            key: "account-1".into(),
+            floor: Some(Priority::High),
+            persist: true,
+            halted: true,
+        },
     ];
     // Exhaustive on purpose (no `_`): a new mutation kind fails to compile here until this
     // batch commits one and the checks below cover its effect after recovery.
-    let mut kinds = [false; 8];
+    let mut kinds = [false; 9];
     for m in &batch {
         let kind = match m {
             Mutation::Submitted { .. } => 0,
@@ -273,10 +282,11 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             Mutation::Updated { .. } => 5,
             Mutation::Replaced { .. } => 6,
             Mutation::PendingReplacement { .. } => 7,
+            Mutation::Ordering { .. } => 8,
         };
         kinds[kind] = true;
     }
-    assert_eq!(kinds, [true; 8], "the batch must hold every mutation kind");
+    assert_eq!(kinds, [true; 9], "the batch must hold every mutation kind");
     let out = Bytes::from_static(b"result");
     store
         .commit(epoch, base, &batch, &[(TaskId(12), &out)])
@@ -285,6 +295,16 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
 
     let rec = store.recover(base).await.unwrap();
     assert_eq!(rec.next_id, 13);
+    assert_eq!(
+        rec.ordering,
+        vec![RecoveredOrdering {
+            pool: "gpu".into(),
+            key: "account-1".into(),
+            floor: Some(Priority::High),
+            persist: true,
+            halted: true,
+        }]
+    );
     assert_eq!(rec.tasks.len(), 2);
     let t = &rec.tasks[0];
     assert_eq!(
@@ -432,6 +452,100 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(t.spec.deps, full_spec().deps);
     // The other task keeps what its own batch gave it.
     assert_eq!(rec.tasks[1].spec.priority, Priority::Critical);
+}
+
+/// Ordering keys: the key and the failure policy are stored with each task and with a stored
+/// replacement; the state of a key (floor, halted) has a row while it is not the default.
+pub async fn ordering_keys_are_stored_and_recovered<H: Harness>(h: &H) {
+    let store = h.open().await;
+    let epoch = store.acquire_leadership().await.unwrap();
+    let base = base_at(now());
+    let spec = |payload: &'static [u8]| TaskSpec::new(Bytes::from_static(payload));
+    let ordering = |key: &str, floor, persist, halted| Mutation::Ordering {
+        pool: "default".into(),
+        key: key.into(),
+        floor,
+        persist,
+        halted,
+    };
+    let first = vec![
+        submitted_at(30, 2, S, spec(b"a").ordering_key("acct").halt_on_failure()),
+        submitted_at(31, 1, S, spec(b"b").ordering_key("acct").key("b")),
+        submitted_at(32, 3, S, spec(b"c")),
+        status(31, TaskStatus::Running, 1, 2 * S, None),
+        ordering("acct", Some(Priority::High), true, false),
+        ordering("acct", Some(Priority::High), true, true),
+        ordering("gone", None, false, true),
+        ordering("floor", Some(Priority::Critical), false, false),
+    ];
+    store.commit(epoch, base, &first, &[]).await.unwrap();
+    let second = vec![
+        // Resumed with no floor: back to the default, no row.
+        ordering("gone", None, false, false),
+        // A replacement in place may change the policy, never the key.
+        Mutation::Replaced {
+            id: TaskId(30),
+            seq: 2,
+            arrival: Time(S),
+            spec: spec(b"a2").ordering_key("acct"),
+        },
+        Mutation::PendingReplacement {
+            id: TaskId(31),
+            seq: 9,
+            arrival: Time(3 * S),
+            renew: true,
+            spec: spec(b"b2").ordering_key("acct").key("b").halt_on_failure(),
+        },
+    ];
+    store.commit(epoch, base, &second, &[]).await.unwrap();
+
+    let rec = store.recover(base).await.unwrap();
+    let task = |id: u64| {
+        let t = rec.tasks.iter().find(|t| t.id == TaskId(id)).unwrap();
+        (t.seq, t.spec.ordering_key.as_deref(), t.spec.on_failure)
+    };
+    assert_eq!(task(30), (2, Some("acct"), OrderFailure::Continue));
+    assert_eq!(task(31), (1, Some("acct"), OrderFailure::Continue));
+    assert_eq!(task(32), (3, None, OrderFailure::Continue));
+    assert_eq!(&rec.tasks[0].spec.payload[..], b"a2");
+    let p = &rec.pending[0];
+    assert_eq!(
+        (p.id, p.spec.ordering_key.as_deref(), p.spec.on_failure),
+        (TaskId(31), Some("acct"), OrderFailure::Halt)
+    );
+    let keys: Vec<_> = rec
+        .ordering
+        .iter()
+        .map(|o| (&*o.pool, &*o.key, o.floor, o.persist, o.halted))
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            ("default", "acct", Some(Priority::High), true, true),
+            ("default", "floor", Some(Priority::Critical), false, false),
+        ]
+    );
+
+    // A halt without a floor is a row too; the last state of a key in a batch wins.
+    let third = vec![
+        ordering("acct", None, false, true),
+        ordering("floor", None, false, false),
+        ordering("floor", Some(Priority::Low), true, false),
+    ];
+    store.commit(epoch, base, &third, &[]).await.unwrap();
+    let rec = store.recover(base).await.unwrap();
+    let keys: Vec<_> = rec
+        .ordering
+        .iter()
+        .map(|o| (&*o.key, o.floor, o.persist, o.halted))
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            ("acct", None, false, true),
+            ("floor", Some(Priority::Low), true, false)
+        ]
+    );
 }
 
 /// `replace_queued`: a task that has not started is overwritten in place, a submission stored
@@ -1067,6 +1181,90 @@ pub async fn scheduler_resumes_after_restart_without_rerunning_finished_work<H: 
     let epoch2 = s2.enqueue(Task::new(Bytes::from("e"))).await.unwrap().id.0 >> 48;
     assert!(epoch2 >= 2, "new ids carry the new epoch");
     s2.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+/// A scheduler that is restarted rebuilds its ordering keys from the store: the order of the
+/// tasks that wait, a halt, and a kept floor.
+pub async fn ordering_keys_survive_a_restart<H: Harness>(h: &H) {
+    type Order = Arc<Mutex<Vec<String>>>;
+    async fn build<S: Store<Bytes, Bytes>>(store: S, order: Order) -> Scheduler<Bytes, Bytes> {
+        Scheduler::<Bytes, Bytes>::builder()
+            .pool(
+                Pool::fixed("default", 4).executor_fn(move |_ctx, p: Arc<Bytes>| {
+                    let order = order.clone();
+                    async move {
+                        let name = String::from_utf8_lossy(&p).into_owned();
+                        order.lock().unwrap().push(name.clone());
+                        tokio::time::sleep(Duration::from_millis(40)).await;
+                        if name == "bad" {
+                            return Err(TaskError::permanent("boom"));
+                        }
+                        Ok(Bytes::new())
+                    }
+                }),
+            )
+            .store(store)
+            .build()
+            .await
+            .unwrap()
+    }
+    let task = |name: &'static str| Task::new(Bytes::from(name)).key(name).ordering_key("acct");
+
+    let order = Order::default();
+    let store1 = h.open().await;
+    let s1 = build(store1.clone(), order.clone()).await;
+    s1.enqueue(task("bad").halt_on_failure()).await.unwrap();
+    for name in ["b", "c", "d"] {
+        s1.enqueue(task(name)).await.unwrap();
+    }
+    s1.set_ordering_floor("default", "vip", Some(Priority::High), true)
+        .await
+        .unwrap();
+    until_status(&s1, "bad", TaskStatus::Failed).await;
+    let info = s1.ordering("default", "acct").await.unwrap().unwrap();
+    assert!(info.halted);
+    assert_eq!(info.tasks, 3);
+    s1.shutdown(Duration::from_secs(1)).await.unwrap();
+    drop(s1);
+    store1.release_leadership().await;
+
+    let store2 = h.open().await;
+    let s2 = build(store2.clone(), order.clone()).await;
+    // Still halted, with the same tasks waiting in the same order; nothing ran.
+    let info = s2.ordering("default", "acct").await.unwrap().unwrap();
+    assert!(info.halted);
+    assert_eq!(info.tasks, 3);
+    let b = s2.handle("b").await.unwrap().expect("recovered task").id();
+    assert_eq!(info.head, Some(b));
+    assert_eq!(
+        s2.halted_orderings("default", 10).await.unwrap(),
+        vec![Arc::<str>::from("acct")]
+    );
+    let vip = s2.ordering("default", "vip").await.unwrap().unwrap();
+    assert_eq!(
+        (vip.floor, vip.persist, vip.tasks),
+        (Some(Priority::High), true, 0)
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(*order.lock().unwrap(), ["bad"]);
+
+    assert!(s2.resume_ordering("default", "acct").await.unwrap());
+    assert!(!s2.resume_ordering("default", "acct").await.unwrap());
+    let last = s2.handle("d").await.unwrap().expect("recovered task");
+    tokio::time::timeout(Duration::from_secs(10), last)
+        .await
+        .expect("d finishes")
+        .unwrap();
+    assert_eq!(*order.lock().unwrap(), ["bad", "b", "c", "d"]);
+    s2.shutdown(Duration::from_secs(1)).await.unwrap();
+    drop(s2);
+    store2.release_leadership().await;
+
+    // The resume is durable too.
+    let store3 = h.open().await;
+    let rec = store3.recover(BASE).await.unwrap();
+    let keys: Vec<_> = rec.ordering.iter().map(|o| (&*o.key, o.halted)).collect();
+    assert_eq!(keys, vec![("vip", false)]);
 }
 
 async fn pool_step(

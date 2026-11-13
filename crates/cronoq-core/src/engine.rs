@@ -22,7 +22,7 @@ use crate::io::*;
 use crate::lane::Lane;
 use crate::reservations::Reservations;
 use crate::rng::Rng;
-use crate::snapshot::{GroupSnapshot, PoolSnapshot, Snapshot};
+use crate::snapshot::{GroupSnapshot, OrderingSnapshot, PoolSnapshot, Snapshot};
 use crate::spec::*;
 use crate::stats::{DurStats, P90Stats, Window};
 use crate::time::{Time, secs};
@@ -48,6 +48,9 @@ enum Loc {
     LabelWait,
     /// Queued in its class's fair queue (pools with tenant fairness).
     Fair,
+    /// Ready, but behind an older task of its ordering key (or the key is halted): in no
+    /// queue, so it neither runs nor holds up the pool.
+    Ordered,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +102,13 @@ struct Entry<P> {
     tenant: u32,
     /// Start tag in the class's fair queue (pools with fairness).
     vtag: u64,
+    /// The class the task is queued and scored at. Its own class, except for the head of an
+    /// ordering key, which runs at the highest class among the key's tasks and its floor.
+    eff: u8,
+    /// Its ordering key in `Pool::strands` (index + 1; 0 = none).
+    strand: u32,
+    /// With an ordering key: halt the key if this task fails or is dead-lettered.
+    halt: bool,
     /// Fingerprint of the dependencies the task was submitted with (see [`deps_sig`]).
     deps_sig: u64,
     /// The caller's fingerprint of the submission the task carries ([`TaskSpec::fingerprint`]).
@@ -107,6 +117,45 @@ struct Entry<P> {
     /// has started and the payload of a started task never changes. It holds a place in the
     /// pending bounds of its class.
     next: Option<Box<Next<P>>>,
+}
+
+/// The live tasks of one ordering key in one pool, oldest first. (Named apart from `Lane`,
+/// the per-class ready queue.)
+///
+/// Only the head run is offered to workers: the oldest `RUN` tasks. `RUN` is one, so the
+/// tasks of a key run one at a time; the code that offers and withdraws tasks works on the
+/// run, so that leasing several consecutive tasks together can be added without a redesign.
+struct Strand {
+    key: Arc<str>,
+    /// Members by submission sequence number.
+    members: BTreeMap<u64, Key>,
+    /// Members by their own class.
+    by_class: [u32; Priority::COUNT],
+    /// The head never runs below this class.
+    floor: Option<u8>,
+    /// The floor stays when the key has no tasks left.
+    persist: bool,
+    /// A task with `OrderFailure::Halt` failed: nothing runs until the key is resumed.
+    halted: bool,
+}
+
+impl Strand {
+    /// Tasks offered to workers at one time.
+    const RUN: usize = 1;
+
+    /// The class the head runs at: the highest of the members' classes and the floor.
+    fn top(&self) -> Option<u8> {
+        let member = (0..Priority::COUNT).find(|c| self.by_class[*c] > 0);
+        match (member.map(|c| c as u8), self.floor) {
+            (Some(m), Some(f)) => Some(m.min(f)),
+            (m, f) => m.or(f),
+        }
+    }
+
+    /// Whether the key has state a store must keep.
+    fn stored(&self) -> bool {
+        self.floor.is_some() || self.halted
+    }
 }
 
 struct Next<P> {
@@ -187,9 +236,18 @@ struct Pool {
     groups: Vec<Group>,
     /// Tasks waiting for a free slot in a group with the labels they require, by constraint.
     label_waiters: BTreeMap<u32, VecDeque<Key>>,
+    /// Ordering keys with live tasks or stored state (slab; `Entry::strand` is index + 1).
+    strands: Vec<Option<Strand>>,
+    strand_free: Vec<u32>,
+    strand_index: StrMap<u32>,
+    /// Ordering keys whose floor persists while they have no tasks.
+    strand_settings: usize,
     /// Weighted fair queues, when the pool shares capacity between tenants.
     fair: Option<Box<FairState>>,
     lanes: [Lane<Key>; Priority::COUNT],
+    /// Queued tasks that run above their own class (heads of ordering keys), by own class
+    /// and sequence: load shedding goes by a task's own class.
+    lifted: [BTreeMap<u64, Key>; Priority::COUNT],
     edf: [BTreeMap<(Time, u64), Key>; Priority::COUNT],
     due: BTreeMap<(Time, u64), Key>,
     pending_holds: BTreeMap<(Time, u64), Key>,
@@ -468,8 +526,13 @@ impl<P> Core<P> {
                     busy: 0,
                 }],
                 label_waiters: BTreeMap::new(),
+                strands: Vec::new(),
+                strand_free: Vec::new(),
+                strand_index: StrMap::default(),
+                strand_settings: 0,
                 fair: pc.fairness.as_ref().map(|f| Box::new(FairState::new(f))),
                 lanes: Default::default(),
+                lifted: Default::default(),
                 edf: Default::default(),
                 due: BTreeMap::new(),
                 pending_holds: BTreeMap::new(),
@@ -829,6 +892,8 @@ impl<P> Core<P> {
                 Some("the resources differ")
             } else if constraint != Some(e.constraint) {
                 Some("the worker labels differ")
+            } else if spec.ordering_key.as_ref() != self.strand_of(k).map(|st| &st.key) {
+                Some("the ordering key differs")
             } else if deps_sig(&spec.deps) != e.deps_sig {
                 Some("the dependencies differ")
             } else if spec.deadline == Some(Time::MAX) {
@@ -844,6 +909,27 @@ impl<P> Core<P> {
             let e = self.entry(k);
             e.attempt > 0 || e.lease.is_some()
         };
+        // A renewed place is the back of the ordering key: behind tasks that may be waiting
+        // for this one.
+        if renew && !started {
+            let e = self.entry(k);
+            let last = self
+                .strand_of(k)
+                .and_then(|st| st.members.values().next_back())
+                .filter(|last| **last != k)
+                .map(|last| self.entry(*last).id);
+            if let Some(last) = last {
+                let waiting = e.key.as_ref().and_then(|key| self.awaits.get(key));
+                let start = e
+                    .dependents
+                    .iter()
+                    .map(|d| d.0)
+                    .chain(waiting.into_iter().flatten().map(|w| w.0));
+                if self.reaches_any(start, &FxHashSet::from_iter([last])) {
+                    return Err((SubmitError::Cycle, spec));
+                }
+            }
+        }
         let class = spec.priority.index();
         if started {
             // A stored submission never sheds other work to make room (it could shed the very
@@ -927,6 +1013,7 @@ impl<P> Core<P> {
         {
             let e = self.entry_mut(k);
             e.payload = spec.payload;
+            e.halt = spec.on_failure == OrderFailure::Halt;
             e.fingerprint = spec.fingerprint;
             e.kind = kind;
             e.hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
@@ -1081,6 +1168,18 @@ impl<P> Core<P> {
                 }
             }
         }
+        // Tasks of one ordering key are committed in the order of the batch.
+        let mut last_of_key: FxHashMap<(u16, &Arc<str>), usize> = FxHashMap::default();
+        for (i, s) in specs.iter().enumerate() {
+            if pools[i] != u16::MAX
+                && let Some(key) = &s.ordering_key
+                && let Some(j) = last_of_key.insert((pools[i], key), i)
+            {
+                indeg[i] += 1;
+                children[j].push(i);
+            }
+        }
+        drop(last_of_key);
         let mut order: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
         let mut h = 0;
         while h < order.len() {
@@ -1205,11 +1304,28 @@ impl<P> Core<P> {
                 }
             }
         }
+        // Ordering keys: each task waits for the one before it, the batch's first for the last
+        // task the key has now.
+        let mut first_of_key: FxHashMap<(u16, &Arc<str>), usize> = FxHashMap::default();
+        let mut last_of_key: FxHashMap<(u16, &Arc<str>), usize> = FxHashMap::default();
+        let mut next_of_key: Vec<Option<usize>> = vec![None; n];
+        for (i, s) in specs.iter().enumerate() {
+            if pools[i] == u16::MAX {
+                continue;
+            }
+            if let Some(key) = &s.ordering_key {
+                first_of_key.entry((pools[i], key)).or_insert(i);
+                if let Some(j) = last_of_key.insert((pools[i], key), i) {
+                    next_of_key[j] = Some(i);
+                }
+            }
+        }
         let succ = |node: N| -> Vec<N> {
             let mut out = Vec::new();
             match node {
                 N::B(j) => {
                     out.extend(batch_children[j].iter().map(|&i| N::B(i)));
+                    out.extend(next_of_key[j].map(N::B));
                     if let Some(k) = &specs[j].key
                         && let Some(w) = self.awaits.get(k)
                     {
@@ -1227,6 +1343,13 @@ impl<P> Core<P> {
                             && let Some(w) = self.awaits.get(k)
                         {
                             out.extend(w.iter().map(|(id, _)| N::L(*id)));
+                        }
+                        match (self.behind(e), self.strand_of(self.index[&id])) {
+                            (Some(next), _) => out.push(N::L(next)),
+                            (None, Some(st)) => {
+                                out.extend(first_of_key.get(&(e.pool, &st.key)).map(|&i| N::B(i)))
+                            }
+                            (None, None) => {}
                         }
                     }
                     if let Some(c) = live_children.get(&id) {
@@ -1323,6 +1446,11 @@ impl<P> Core<P> {
         {
             return Err(SubmitError::Invalid("retry.max_attempts must be >= 1"));
         }
+        if spec.ordering_key.is_some() && spec.fixed_start.is_some() {
+            return Err(SubmitError::Invalid(
+                "a task with an ordering key cannot have a fixed start",
+            ));
+        }
         Ok(pool)
     }
 
@@ -1361,6 +1489,14 @@ impl<P> Core<P> {
                 }
             }
         }
+        // The task also waits for the tasks of its ordering key that came before it.
+        if let Some(last) = spec
+            .ordering_key
+            .as_ref()
+            .and_then(|key| self.last_of(pool, key))
+        {
+            live_parents.insert(last);
+        }
         // A cycle needs this task's key to be awaited by a descendant of one of its parents.
         if let Some(k) = &spec.key
             && let Some(waiting) = self.awaits.get(k)
@@ -1393,9 +1529,25 @@ impl<P> Core<P> {
                 {
                     stack.extend(w.iter().map(|d| d.0));
                 }
+                // The next task of its ordering key waits for it as well.
+                stack.extend(self.behind(e));
             }
         }
         false
+    }
+
+    /// The task right behind `e` in its ordering key.
+    fn behind(&self, e: &Entry<P>) -> Option<TaskId> {
+        let st = self.pools[e.pool as usize].strands[e.strand.checked_sub(1)? as usize].as_ref()?;
+        let (_, k) = st.members.range(e.seq + 1..).next()?;
+        Some(self.entry(*k).id)
+    }
+
+    /// The last task of ordering key `key` in `pool`: the one a new task of the key waits for.
+    fn last_of(&self, pool: u16, key: &Arc<str>) -> Option<TaskId> {
+        let p = &self.pools[pool as usize];
+        let st = p.strands[*p.strand_index.get(key)? as usize].as_ref()?;
+        st.members.values().next_back().map(|k| self.entry(*k).id)
     }
 
     fn check_bounds(
@@ -1453,12 +1605,20 @@ impl<P> Core<P> {
     fn shed_victim(&self, pool: u16, class: usize, newest: bool) -> Option<Key> {
         let p = &self.pools[pool as usize];
         let seq = |k: &Key| self.entry(*k).seq;
+        // A queue holds the tasks that run at its class. The head of an ordering key may run
+        // above its own: it is shed with its own class, not with the one it is lifted to.
+        let own = |k: &Key| self.entry(*k).class as usize == class;
         let lane = if newest {
-            p.lanes[class].last()
+            p.lanes[class].iter().rev().find(own)
         } else {
-            p.lanes[class].first()
+            p.lanes[class].iter().find(own)
         };
-        let edf = p.edf[class].values();
+        let lifted = if newest {
+            p.lifted[class].values().next_back()
+        } else {
+            p.lifted[class].values().next()
+        };
+        let edf = p.edf[class].values().filter(|k| own(k));
         let edf = if newest {
             edf.max_by_key(|k| seq(k))
         } else {
@@ -1488,7 +1648,7 @@ impl<P> Core<P> {
             waiting.min_by_key(|k| seq(k))
         };
         let fair = p.fair.as_ref().and_then(|f| {
-            let q = f.queues[class].values();
+            let q = f.queues[class].values().filter(|k| own(k));
             if newest {
                 q.max_by_key(|k| seq(k))
             } else {
@@ -1497,6 +1657,7 @@ impl<P> Core<P> {
         });
         let candidates = [
             lane,
+            lifted.copied(),
             edf.copied(),
             parked.copied(),
             waiting.copied(),
@@ -1723,10 +1884,11 @@ impl<P> Core<P> {
 
     /// Put a ready task that was parked back into its lane or deadline queue.
     fn requeue_ready(&mut self, k: Key) {
-        let (pool, class, seq, has_deadline, lst) = {
+        let (pool, class, own, seq, has_deadline, lst) = {
             let e = self.entry(k);
             (
                 e.pool,
+                e.eff as usize,
                 e.class as usize,
                 e.seq,
                 e.deadline != Time::MAX,
@@ -1735,6 +1897,9 @@ impl<P> Core<P> {
         };
         let vtag = self.entry(k).vtag;
         let p = &mut self.pools[pool as usize];
+        if own != class {
+            p.lifted[own].insert(seq, k);
+        }
         if has_deadline {
             p.edf[class].insert((lst, seq), k);
             self.entry_mut(k).loc = Loc::Edf;
@@ -1780,6 +1945,30 @@ impl<P> Core<P> {
     /// Insert a validated task. Infallible.
     #[allow(clippy::too_many_arguments)]
     fn insert(
+        &mut self,
+        now: Time,
+        id: TaskId,
+        seq: u64,
+        arrival: Time,
+        spec: TaskSpec<P>,
+        pool: u16,
+        attempt: u32,
+        skip_if_live: Option<TaskId>,
+    ) {
+        let ordering = spec.ordering_key.clone();
+        self.insert_inner(now, id, seq, arrival, spec, pool, attempt, skip_if_live);
+        // The new task may be the head of its ordering key, or lift the head by its class.
+        // In recovery, keys are settled once every task is in.
+        if let Some(key) = ordering
+            && self.recovering_keys.is_none()
+            && let Some(&sidx) = self.pools[pool as usize].strand_index.get(&key)
+        {
+            self.settle(pool, sidx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_inner(
         &mut self,
         now: Time,
         id: TaskId,
@@ -1917,12 +2106,24 @@ impl<P> Core<P> {
             constraint,
             tenant,
             vtag: 0,
+            eff: spec.priority as u8,
+            strand: 0,
+            halt: spec.on_failure == OrderFailure::Halt,
             deps_sig: deps_sig(&spec.deps),
             fingerprint: spec.fingerprint,
             next: None,
         };
         let key = self.slab_insert(entry);
         self.index.insert(id, key);
+        if let Some(ok) = &spec.ordering_key {
+            let sidx = self.strand(pool, ok);
+            let st = self.pools[pool as usize].strands[sidx as usize]
+                .as_mut()
+                .expect("live strand");
+            st.members.insert(seq, key);
+            st.by_class[spec.priority.index()] += 1;
+            self.entry_mut(key).strand = sidx + 1;
+        }
         if let Some(k) = &spec.key {
             self.keys.insert(k.clone(), id);
         }
@@ -2402,9 +2603,12 @@ impl<P> Core<P> {
         tags: Option<Tags>,
         renew: Option<(u64, Time)>,
     ) {
-        let (pool, old_class, old_deadline, loc, kind, hint_ns) = {
+        let (pool, old_class, old_eff, old_deadline, loc, kind, hint_ns, strand, seq, tenant) = {
             let e = self.entry(k);
-            (e.pool, e.class, e.deadline, e.loc, e.kind, e.hint_ns)
+            (
+                e.pool, e.class, e.eff, e.deadline, e.loc, e.kind, e.hint_ns, e.strand, e.seq,
+                e.tenant,
+            )
         };
         // A task in a ready queue leaves it under its old class and deadline, and goes back
         // under the new ones.
@@ -2412,6 +2616,7 @@ impl<P> Core<P> {
         if queued {
             self.unqueue(k);
         }
+        // Counters follow the task's own class.
         if class != old_class {
             let (was_pending, retrying) = {
                 let e = self.entry(k);
@@ -2430,30 +2635,23 @@ impl<P> Core<P> {
                 p.retrying[to] += 1;
             }
         }
+        // So does its ordering key: by class, and by place when the place is renewed.
+        let sidx = strand.checked_sub(1);
+        if let Some(sidx) = sidx {
+            let st = self.pools[pool as usize].strands[sidx as usize]
+                .as_mut()
+                .expect("live strand");
+            st.by_class[old_class as usize] -= 1;
+            st.by_class[class as usize] += 1;
+            if let Some((new_seq, _)) = renew {
+                st.members.remove(&seq);
+                st.members.insert(new_seq, k);
+            }
+        }
         let lst = if deadline == Time::MAX {
             Time::MAX
         } else {
             deadline - self.estimate_raw(pool, Some(kind), hint_ns)
-        };
-        // In a pool with fair sharing, a task that is eligible to run and has no deadline is
-        // ordered by a tag of its class: it needs a new one when its class changed or when it
-        // had a deadline until now (and so never had a tag).
-        let eligible = queued || matches!(loc, Loc::Parked(_) | Loc::LabelWait);
-        let fair = self.pools[pool as usize].fair.is_some();
-        let retag = fair
-            && eligible
-            && deadline == Time::MAX
-            && (class != old_class || old_deadline != Time::MAX || renew.is_some());
-        let vtag = if retag {
-            let tenant = self.entry(k).tenant;
-            if (class != old_class || renew.is_some()) && old_deadline == Time::MAX {
-                // The task was charged to its tenant in the old class when it got its tag
-                // there. Give that back, so a change of class costs the tenant nothing extra.
-                self.fair_refund(pool, old_class as usize, tenant);
-            }
-            Some(self.fair_tag(pool, class as usize, tenant))
-        } else {
-            None
         };
         {
             let e = self.entry_mut(k);
@@ -2463,16 +2661,44 @@ impl<P> Core<P> {
             if let Some(t) = tags {
                 e.tags = (!t.is_empty()).then_some(t);
             }
-            if let Some(v) = vtag {
-                e.vtag = v;
-            }
             if let Some((seq, arrival)) = renew {
                 e.seq = seq;
                 e.arrival = arrival;
             }
         }
-        if queued {
+        // The class it runs at now. A task that gave up its place at the head of its
+        // ordering key waits behind the new head.
+        let eff = self.effective(k);
+        let eligible = queued || matches!(loc, Loc::Parked(_) | Loc::LabelWait);
+        let demote = sidx.is_some() && eligible && !self.in_run(k);
+        // In a pool with fair sharing, a task that is eligible to run and has no deadline is
+        // ordered by a tag of the class it runs at, charged to its tenant. It needs a new
+        // one when that class changed, when it had a deadline until now (and so never had a
+        // tag), or when its place is renewed. The old charge is given back, so a change
+        // costs the tenant nothing extra.
+        let fair = self.pools[pool as usize].fair.is_some();
+        let tagged_before = fair && eligible && old_deadline == Time::MAX;
+        let tagged_after = fair && eligible && !demote && deadline == Time::MAX;
+        let retag = tagged_after && (eff != old_eff || !tagged_before || renew.is_some());
+        if tagged_before && (retag || demote) {
+            self.fair_refund(pool, old_eff as usize, tenant);
+        }
+        let vtag = retag.then(|| self.fair_tag(pool, eff as usize, tenant));
+        {
+            let e = self.entry_mut(k);
+            e.eff = eff;
+            if let Some(v) = vtag {
+                e.vtag = v;
+            }
+            if demote {
+                e.loc = Loc::Ordered;
+            }
+        }
+        if queued && !demote {
             self.requeue_ready(k);
+        }
+        if let Some(sidx) = sidx {
+            self.settle(pool, sidx);
         }
     }
 
@@ -2648,6 +2874,10 @@ impl<P> Core<P> {
         };
         self.check_config(&spec.template)
             .map_err(|e| format!("invalid template: {e}"))?;
+        if spec.template.ordering_key.is_some() {
+            // Occurrences start at fixed times; `OverlapPolicy::Queue` chains them instead.
+            return Err("invalid template: a schedule cannot have an ordering key".into());
+        }
         if self.cfg.persist {
             self.actions
                 .push_back(Action::Persist(Box::new(Mutation::RecurringUpsert {
@@ -2888,6 +3118,19 @@ impl<P> Core<P> {
         // Keys that will exist once recovery completes; dependencies on any other unknown key
         // belong to parents that finished outside the retention window.
         self.recovering_keys = Some(tasks.iter().filter_map(|t| t.spec.key.clone()).collect());
+        // Stored state of ordering keys, before their tasks join them.
+        for o in rec.ordering {
+            let Some(&pool) = self.pool_index.get(&o.pool) else {
+                continue;
+            };
+            let sidx = self.strand(pool, &o.key);
+            let p = &mut self.pools[pool as usize];
+            let st = p.strands[sidx as usize].as_mut().expect("live strand");
+            st.floor = o.floor.map(|f| f as u8);
+            st.persist = o.persist && o.floor.is_some();
+            st.halted = o.halted;
+            p.strand_settings += st.persist as usize;
+        }
         // Where each task with a stored submission stood, in case it ends during recovery.
         let waited_for: FxHashSet<TaskId> = rec.pending.iter().map(|p| p.id).collect();
         let mut placed: FxHashMap<TaskId, (u16, u64, Time)> = FxHashMap::default();
@@ -2945,6 +3188,12 @@ impl<P> Core<P> {
             );
         }
         self.recovering_keys = None;
+        // Every task is in: each ordering key offers its oldest task.
+        for pool in 0..self.pools.len() {
+            for sidx in 0..self.pools[pool].strands.len() {
+                self.settle(pool as u16, sidx as u32);
+            }
+        }
         for p in rec.pending {
             self.next_seq = self.next_seq.max(p.seq + 1);
             let next = Next {
@@ -3225,15 +3474,9 @@ impl<P> Core<P> {
     /// Unmet dependencies are zero: queue the task (or wait for its fixed start).
     fn make_eligible(&mut self, k: Key) {
         let now = self.now;
-        let (pool, class, seq, fixed_at, has_deadline) = {
+        let (pool, seq, fixed_at) = {
             let e = self.entry(k);
-            (
-                e.pool,
-                e.class as usize,
-                e.seq,
-                e.fixed.as_ref().map(|f| f.at),
-                e.deadline != Time::MAX,
-            )
+            (e.pool, e.seq, e.fixed.as_ref().map(|f| f.at))
         };
         match fixed_at {
             Some(at) if now < at => {
@@ -3246,40 +3489,362 @@ impl<P> Core<P> {
                 self.mark_dirty(pool);
             }
             None => {
-                if has_deadline {
-                    let lst = {
-                        let e = self.entry(k);
-                        e.deadline - self.estimate_raw(e.pool, Some(e.kind), e.hint_ns)
-                    };
-                    let e = self.entry_mut(k);
-                    e.lst = lst;
-                    e.loc = Loc::Edf;
-                    self.pools[pool as usize].edf[class].insert((lst, seq), k);
-                } else if self.pools[pool as usize].fair.is_some() {
-                    let tenant = self.entry(k).tenant;
-                    let tag = self.fair_tag(pool, class, tenant);
-                    let e = self.entry_mut(k);
-                    e.vtag = tag;
-                    e.loc = Loc::Fair;
-                    let f = self.pools[pool as usize].fair.as_mut().unwrap();
-                    f.queues[class].insert((tag, seq), k);
-                } else {
-                    self.entry_mut(k).loc = Loc::Lane;
-                    self.pools[pool as usize].lanes[class].insert(seq, k);
+                if self.entry(k).strand != 0 && !self.offerable(k) {
+                    // Behind an older task of its ordering key: ready, but in no queue.
+                    self.entry_mut(k).loc = Loc::Ordered;
+                    self.set_status(k, TaskStatus::Ready);
+                    return;
                 }
-                self.pools[pool as usize].arrivals += 1;
+                self.offer(k);
                 self.set_status(k, TaskStatus::Ready);
-                self.mark_dirty(pool);
             }
         }
     }
 
+    /// Put a ready task into the queue of the class it runs at.
+    fn offer(&mut self, k: Key) {
+        let class = self.effective(k);
+        let (pool, seq, has_deadline) = {
+            let e = self.entry_mut(k);
+            e.eff = class;
+            (e.pool, e.seq, e.deadline != Time::MAX)
+        };
+        let class = class as usize;
+        let own = self.entry(k).class as usize;
+        if own != class {
+            self.pools[pool as usize].lifted[own].insert(seq, k);
+        }
+        if has_deadline {
+            let lst = {
+                let e = self.entry(k);
+                e.deadline - self.estimate_raw(e.pool, Some(e.kind), e.hint_ns)
+            };
+            let e = self.entry_mut(k);
+            e.lst = lst;
+            e.loc = Loc::Edf;
+            self.pools[pool as usize].edf[class].insert((lst, seq), k);
+        } else if self.pools[pool as usize].fair.is_some() {
+            let tenant = self.entry(k).tenant;
+            let tag = self.fair_tag(pool, class, tenant);
+            let e = self.entry_mut(k);
+            e.vtag = tag;
+            e.loc = Loc::Fair;
+            let f = self.pools[pool as usize].fair.as_mut().unwrap();
+            f.queues[class].insert((tag, seq), k);
+        } else {
+            self.entry_mut(k).loc = Loc::Lane;
+            self.pools[pool as usize].lanes[class].insert(seq, k);
+        }
+        self.pools[pool as usize].arrivals += 1;
+        self.mark_dirty(pool);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Ordering keys
+    // -----------------------------------------------------------------------------------------
+
+    /// The strand of ordering key `key` in `pool`, created if it does not exist.
+    fn strand(&mut self, pool: u16, key: &Arc<str>) -> u32 {
+        let p = &mut self.pools[pool as usize];
+        if let Some(&i) = p.strand_index.get(key) {
+            return i;
+        }
+        let st = Strand {
+            key: key.clone(),
+            members: BTreeMap::new(),
+            by_class: [0; Priority::COUNT],
+            floor: None,
+            persist: false,
+            halted: false,
+        };
+        let i = match p.strand_free.pop() {
+            Some(i) => {
+                p.strands[i as usize] = Some(st);
+                i
+            }
+            None => {
+                p.strands.push(Some(st));
+                (p.strands.len() - 1) as u32
+            }
+        };
+        p.strand_index.insert(key.clone(), i);
+        i
+    }
+
+    fn strand_of(&self, k: Key) -> Option<&Strand> {
+        let e = self.entry(k);
+        let i = e.strand.checked_sub(1)?;
+        self.pools[e.pool as usize].strands[i as usize].as_ref()
+    }
+
+    /// Whether `k` is in the head run of its ordering key: one of its oldest tasks.
+    fn in_run(&self, k: Key) -> bool {
+        self.strand_of(k)
+            .is_some_and(|st| st.members.values().take(Strand::RUN).any(|m| *m == k))
+    }
+
+    /// Whether a ready task with an ordering key may be offered to workers now.
+    fn offerable(&self, k: Key) -> bool {
+        self.recovering_keys.is_none()
+            && self.in_run(k)
+            && self.strand_of(k).is_some_and(|st| !st.halted)
+    }
+
+    /// The class `k` runs at: its own, or for the head of an ordering key the highest among
+    /// the key's tasks and its floor.
+    fn effective(&self, k: Key) -> u8 {
+        let own = self.entry(k).class;
+        match self.strand_of(k) {
+            Some(st) if self.in_run(k) => st.top().map_or(own, |t| t.min(own)),
+            _ => own,
+        }
+    }
+
+    /// Move a task to the queue of class `eff` (it stays put if it is in none).
+    fn requeue_as(&mut self, k: Key, eff: u8) {
+        let (pool, old, loc, deadline, tenant) = {
+            let e = self.entry(k);
+            (e.pool, e.eff, e.loc, e.deadline, e.tenant)
+        };
+        if eff == old {
+            return;
+        }
+        let queued = matches!(loc, Loc::Lane | Loc::Edf | Loc::Fair);
+        if queued {
+            self.unqueue(k);
+        }
+        // In a pool with fair sharing the task is charged to its tenant in the class it is
+        // queued in: move the charge with it.
+        let tagged = queued || matches!(loc, Loc::Parked(_) | Loc::LabelWait);
+        if tagged && deadline == Time::MAX && self.pools[pool as usize].fair.is_some() {
+            self.fair_refund(pool, old as usize, tenant);
+            let tag = self.fair_tag(pool, eff as usize, tenant);
+            self.entry_mut(k).vtag = tag;
+        }
+        self.entry_mut(k).eff = eff;
+        if queued {
+            self.requeue_ready(k);
+        }
+    }
+
+    /// Bring an ordering key in line with its members: offer its head run if it is ready
+    /// and the key is not halted, let the head run at the key's highest class, and forget a
+    /// key that has neither tasks nor a setting to keep.
+    fn settle(&mut self, pool: u16, sidx: u32) {
+        let Some(st) = self.pools[pool as usize].strands[sidx as usize].as_mut() else {
+            return;
+        };
+        if st.members.is_empty() {
+            // A halt ends with the key's tasks; a floor stays only if it was set to.
+            let was_stored = st.stored();
+            st.halted = false;
+            if st.persist && st.floor.is_some() {
+                if was_stored {
+                    self.persist_ordering(pool, sidx);
+                }
+                return;
+            }
+            let key = st.key.clone();
+            let p = &mut self.pools[pool as usize];
+            p.strands[sidx as usize] = None;
+            p.strand_free.push(sidx);
+            p.strand_index.remove(&key);
+            if was_stored && self.cfg.persist {
+                let pool = self.pools[pool as usize].cfg.name.clone();
+                self.actions
+                    .push_back(Action::Persist(Box::new(Mutation::Ordering {
+                        pool,
+                        key,
+                        floor: None,
+                        persist: false,
+                        halted: false,
+                    })));
+            }
+            return;
+        }
+        let halted = st.halted;
+        let run: Vec<Key> = st.members.values().take(Strand::RUN).copied().collect();
+        // A task that came in ahead (a successor takes the place of the task it follows)
+        // pushes the task that was offered out of the head run: it waits again.
+        let pushed: Vec<Key> = st
+            .members
+            .values()
+            .skip(Strand::RUN)
+            .take(Strand::RUN)
+            .copied()
+            .collect();
+        for k in pushed {
+            let (loc, eff, deadline, tenant) = {
+                let e = self.entry(k);
+                (e.loc, e.eff, e.deadline, e.tenant)
+            };
+            if !matches!(
+                loc,
+                Loc::Lane | Loc::Edf | Loc::Fair | Loc::Parked(_) | Loc::LabelWait
+            ) {
+                continue;
+            }
+            self.unqueue(k);
+            if deadline == Time::MAX && self.pools[pool as usize].fair.is_some() {
+                self.fair_refund(pool, eff as usize, tenant);
+            }
+            let e = self.entry_mut(k);
+            e.eff = e.class;
+            e.loc = Loc::Ordered;
+        }
+        for k in run {
+            let want = self.effective(k);
+            match self.entry(k).loc {
+                Loc::Ordered => {
+                    if !halted && self.recovering_keys.is_none() {
+                        self.offer(k);
+                    }
+                }
+                _ => self.requeue_as(k, want),
+            }
+        }
+        self.mark_dirty(pool);
+    }
+
+    /// Emit the stored state of an ordering key.
+    fn persist_ordering(&mut self, pool: u16, sidx: u32) {
+        if !self.cfg.persist {
+            return;
+        }
+        let p = &self.pools[pool as usize];
+        let Some(st) = p.strands[sidx as usize].as_ref() else {
+            return;
+        };
+        let m = Mutation::Ordering {
+            pool: p.cfg.name.clone(),
+            key: st.key.clone(),
+            floor: st.floor.and_then(|f| Priority::from_index(f as usize)),
+            persist: st.persist,
+            halted: st.halted,
+        };
+        self.actions.push_back(Action::Persist(Box::new(m)));
+    }
+
+    /// Set or remove the class floor of an ordering key: its head never runs below that
+    /// class, whatever the classes of its tasks (no task's own class changes). The floor is
+    /// cleared when the key has no tasks left, unless `persist` is set; at most
+    /// [`CoreConfig::max_ordering_settings`] keys may keep one that way.
+    pub fn set_ordering_floor(
+        &mut self,
+        now: Time,
+        pool: PoolId,
+        key: &str,
+        floor: Option<Priority>,
+        persist: bool,
+    ) -> Result<(), OrderingError> {
+        self.advance(now);
+        let r = self.apply_floor(pool, key, floor, persist);
+        self.pump();
+        r
+    }
+
+    fn apply_floor(
+        &mut self,
+        pool: PoolId,
+        key: &str,
+        floor: Option<Priority>,
+        persist: bool,
+    ) -> Result<(), OrderingError> {
+        if pool.0 as usize >= self.pools.len() {
+            return Err(OrderingError::UnknownPool);
+        }
+        let pool = pool.0;
+        let key: Arc<str> = key.into();
+        let existing = self.pools[pool as usize].strand_index.get(&key).copied();
+        let kept = |st: &Strand| st.persist && st.floor.is_some();
+        let was_kept = existing
+            .and_then(|i| self.pools[pool as usize].strands[i as usize].as_ref())
+            .is_some_and(kept);
+        let will_keep = persist && floor.is_some();
+        if will_keep && !was_kept {
+            let total: usize = self.pools.iter().map(|p| p.strand_settings).sum();
+            if total >= self.cfg.max_ordering_settings {
+                return Err(OrderingError::TooManySettings);
+            }
+        }
+        if floor.is_none() && existing.is_none() {
+            return Ok(());
+        }
+        let sidx = self.strand(pool, &key);
+        let p = &mut self.pools[pool as usize];
+        let st = p.strands[sidx as usize].as_mut().expect("live strand");
+        let changed = st.floor != floor.map(|f| f as u8) || st.persist != will_keep;
+        st.floor = floor.map(|f| f as u8);
+        st.persist = will_keep;
+        p.strand_settings = p.strand_settings + will_keep as usize - was_kept as usize;
+        if changed {
+            self.persist_ordering(pool, sidx);
+        }
+        self.settle(pool, sidx);
+        Ok(())
+    }
+
+    /// Resume a halted ordering key: its oldest task is offered again. Returns whether the
+    /// key was halted.
+    pub fn resume_ordering(&mut self, now: Time, pool: PoolId, key: &str) -> bool {
+        self.advance(now);
+        let resumed = (|| {
+            let p = self.pools.get_mut(pool.0 as usize)?;
+            let sidx = *p.strand_index.get(key)?;
+            let st = p.strands[sidx as usize].as_mut()?;
+            if !st.halted {
+                return None;
+            }
+            st.halted = false;
+            Some(sidx)
+        })();
+        if let Some(sidx) = resumed {
+            self.persist_ordering(pool.0, sidx);
+            self.settle(pool.0, sidx);
+        }
+        self.pump();
+        resumed.is_some()
+    }
+
+    /// The halted ordering keys of a pool, at most `limit` of them.
+    pub fn halted_orderings(&self, pool: PoolId, limit: usize) -> Vec<Arc<str>> {
+        let Some(p) = self.pools.get(pool.0 as usize) else {
+            return Vec::new();
+        };
+        let mut keys: Vec<Arc<str>> = p
+            .strands
+            .iter()
+            .flatten()
+            .filter(|st| st.halted)
+            .map(|st| st.key.clone())
+            .collect();
+        keys.sort();
+        keys.truncate(limit);
+        keys
+    }
+
+    /// An ordering key, if it has tasks or stored state.
+    pub fn ordering(&self, pool: PoolId, key: &str) -> Option<OrderingInfo> {
+        let p = self.pools.get(pool.0 as usize)?;
+        let st = p.strands[*p.strand_index.get(key)? as usize].as_ref()?;
+        let class = |c: u8| Priority::from_index(c as usize);
+        Some(OrderingInfo {
+            tasks: st.members.len(),
+            head: st.members.values().next().map(|k| self.entry(*k).id),
+            effective: st.top().and_then(class),
+            floor: st.floor.and_then(class),
+            persist: st.persist,
+            halted: st.halted,
+        })
+    }
+
     fn unqueue(&mut self, k: Key) {
-        let (loc, pool, class, seq, lst, at, vtag) = {
+        let (loc, pool, class, own, seq, lst, at, vtag) = {
             let e = self.entry(k);
             (
                 e.loc,
                 e.pool as usize,
+                e.eff as usize,
                 e.class as usize,
                 e.seq,
                 e.lst,
@@ -3288,9 +3853,12 @@ impl<P> Core<P> {
             )
         };
         let p = &mut self.pools[pool];
+        if own != class && matches!(loc, Loc::Lane | Loc::Edf | Loc::Fair) {
+            p.lifted[own].remove(&seq);
+        }
         match loc {
             // Waiter queues are cleaned lazily.
-            Loc::None | Loc::Parked(_) | Loc::LabelWait => {}
+            Loc::None | Loc::Parked(_) | Loc::LabelWait | Loc::Ordered => {}
             Loc::Lane => {
                 p.lanes[class].remove(seq);
             }
@@ -3345,6 +3913,22 @@ impl<P> Core<P> {
                 _ => {}
             }
             let mut e = self.slab_remove(k);
+            // It leaves its ordering key, and halts it if it failed and was submitted to.
+            let strand = e.strand.checked_sub(1).map(|sidx| {
+                let st = self.pools[e.pool as usize].strands[sidx as usize]
+                    .as_mut()
+                    .expect("live strand");
+                if st.members.get(&e.seq) == Some(&k) {
+                    st.members.remove(&e.seq);
+                }
+                st.by_class[e.class as usize] -= 1;
+                let failed = matches!(status, TaskStatus::Failed | TaskStatus::DeadLettered);
+                if failed && e.halt && !st.halted {
+                    st.halted = true;
+                    self.persist_ordering(e.pool, sidx);
+                }
+                (e.pool, sidx)
+            });
             // A stored replacement gives its place in the bounds back, and runs next if the
             // task ran to an end of its own.
             let successor = e.next.take().and_then(|next| {
@@ -3408,6 +3992,10 @@ impl<P> Core<P> {
             }
             if let Some((old, pool, seq, arrival, next)) = successor {
                 self.spawn_successor(old, pool, seq, arrival, *next);
+            }
+            // After the successor, which takes the place the task held in its ordering key.
+            if let Some((pool, sidx)) = strand {
+                self.settle(pool, sidx);
             }
         }
     }
@@ -3684,7 +4272,8 @@ impl<P> Core<P> {
     fn score(&self, e: &Entry<P>, now: Time) -> f64 {
         let p = &self.pools[e.pool as usize];
         let pc = &p.priority;
-        let c = e.class as usize;
+        // The class it runs at; its waiting time is its own.
+        let c = e.eff as usize;
         let wait = now.diff_secs(e.arrival).max(0.0);
         let mut s = pc.base[c] + (pc.aging_rate[c] * wait).min(pc.age_cap[c]);
         if e.deadline != Time::MAX {
@@ -3719,10 +4308,10 @@ impl<P> Core<P> {
                 let s = self.score(e, now);
                 let better = match best {
                     None => true,
-                    Some((bs, bc, bseq, _)) => s > bs || (s == bs && (e.class, e.seq) < (bc, bseq)),
+                    Some((bs, bc, bseq, _)) => s > bs || (s == bs && (e.eff, e.seq) < (bc, bseq)),
                 };
                 if better {
-                    best = Some((s, e.class, e.seq, k));
+                    best = Some((s, e.eff, e.seq, k));
                 }
             }
         }
@@ -3822,7 +4411,8 @@ impl<P> Core<P> {
         self.remove_pending(k);
         let higher_waiting = {
             let p = &self.pools[pool as usize];
-            let c = self.entry(k).class as usize;
+            // Measured against the class the task runs at.
+            let c = self.entry(k).eff as usize;
             (0..c).any(|h| {
                 !p.lanes[h].is_empty()
                     || !p.edf[h].is_empty()
@@ -3831,7 +4421,7 @@ impl<P> Core<P> {
         };
         let (vtag, class) = {
             let e = self.entry(k);
-            (e.vtag, e.class as usize)
+            (e.vtag, e.eff as usize)
         };
         if let Some(f) = &mut self.pools[pool as usize].fair {
             f.vtime[class] = f.vtime[class].max(vtag);
@@ -3983,13 +4573,33 @@ impl<P> Core<P> {
         self.advance(now);
         // Timers fired by `advance` may have made work ready.
         self.pump();
+        let ordering: Vec<OrderingSnapshot> = self
+            .pools
+            .iter()
+            .map(|p| {
+                let mut ordering = OrderingSnapshot::default();
+                for st in p.strands.iter().flatten() {
+                    ordering.keys += !st.members.is_empty() as usize;
+                    ordering.halted += st.halted as usize;
+                    ordering.settings += (st.persist && st.floor.is_some()) as usize;
+                    ordering.waiting += st
+                        .members
+                        .values()
+                        .filter(|k| self.slot_entry(**k).is_some_and(|e| e.loc == Loc::Ordered))
+                        .count();
+                }
+                ordering
+            })
+            .collect();
         let mut pools = Vec::with_capacity(self.pools.len());
-        for p in &mut self.pools {
+        for (pi, p) in self.pools.iter_mut().enumerate() {
             p.account(now);
             let w = p.window.total(now);
             let mut pending = [0usize; Priority::COUNT];
             pending.copy_from_slice(&p.pending_class);
+            let ordering = ordering[pi];
             pools.push(PoolSnapshot {
+                ordering,
                 name: p.cfg.name.clone(),
                 capacity: p.capacity,
                 busy: p.busy,
@@ -4121,6 +4731,7 @@ impl<P> Core<P> {
     /// Panics if internal invariants are violated. Intended for tests.
     #[doc(hidden)]
     pub fn check_invariants(&self) {
+        let mut lifted_total = 0usize;
         let mut busy = vec![0u32; self.pools.len()];
         let mut group_busy: Vec<Vec<u32>> =
             self.pools.iter().map(|p| vec![0; p.groups.len()]).collect();
@@ -4181,11 +4792,11 @@ impl<P> Core<P> {
             let p = &self.pools[e.pool as usize];
             match e.loc {
                 Loc::Lane => {
-                    assert_eq!(p.lanes[e.class as usize].get(e.seq), Some(*k));
+                    assert_eq!(p.lanes[e.eff as usize].get(e.seq), Some(*k));
                     queued[e.pool as usize] += 1;
                 }
                 Loc::Edf => {
-                    assert_eq!(p.edf[e.class as usize].get(&(e.lst, e.seq)), Some(k));
+                    assert_eq!(p.edf[e.eff as usize].get(&(e.lst, e.seq)), Some(k));
                     queued[e.pool as usize] += 1;
                 }
                 Loc::Due => {
@@ -4194,7 +4805,7 @@ impl<P> Core<P> {
                 }
                 Loc::Fair => {
                     let f = p.fair.as_ref().expect("fair queue in a fair pool");
-                    assert_eq!(f.queues[e.class as usize].get(&(e.vtag, e.seq)), Some(k));
+                    assert_eq!(f.queues[e.eff as usize].get(&(e.vtag, e.seq)), Some(k));
                     queued[e.pool as usize] += 1;
                 }
                 Loc::LabelWait => assert!(
@@ -4203,11 +4814,48 @@ impl<P> Core<P> {
                         .is_some_and(|q| q.contains(k)),
                     "task {id} waiting for labels is missing from its waiter queue"
                 ),
+                Loc::Ordered => assert!(
+                    e.strand != 0 && !self.offerable(*k),
+                    "task {id} waits for its ordering key but could be offered"
+                ),
                 Loc::Parked(_) | Loc::None => {}
+            }
+            let lifted = matches!(e.loc, Loc::Lane | Loc::Edf | Loc::Fair) && e.eff != e.class;
+            assert_eq!(
+                self.pools[e.pool as usize].lifted[e.class as usize].get(&e.seq) == Some(k),
+                lifted,
+                "task {id} lifted mismatch"
+            );
+            lifted_total += lifted as usize;
+            if e.strand == 0 {
+                assert_eq!(e.eff, e.class, "task {id} runs at another class");
+            } else {
+                let st = self.strand_of(*k).expect("task in a live ordering key");
+                assert_eq!(st.members.get(&e.seq), Some(k), "task {id} not in its key");
+                // Only the head run is ever offered, runs or has run.
+                let offered = !matches!(e.loc, Loc::None | Loc::Ordered) || e.lease.is_some();
+                assert!(
+                    !offered || self.in_run(*k),
+                    "task {id} is offered behind an older task of its ordering key"
+                );
+                if matches!(e.loc, Loc::Lane | Loc::Edf | Loc::Fair) {
+                    assert_eq!(
+                        e.eff,
+                        self.effective(*k),
+                        "task {id} is queued at a stale class"
+                    );
+                    assert!(!st.halted, "task {id} is queued in a halted ordering key");
+                }
             }
             if matches!(
                 e.loc,
-                Loc::Lane | Loc::Edf | Loc::Due | Loc::Parked(_) | Loc::LabelWait | Loc::Fair
+                Loc::Lane
+                    | Loc::Edf
+                    | Loc::Due
+                    | Loc::Parked(_)
+                    | Loc::LabelWait
+                    | Loc::Fair
+                    | Loc::Ordered
             ) {
                 assert_eq!(e.status, TaskStatus::Ready);
             }
@@ -4288,6 +4936,50 @@ impl<P> Core<P> {
                     "task {id} unmet mismatch"
                 );
             }
+        }
+        assert_eq!(
+            self.pools
+                .iter()
+                .flat_map(|p| p.lifted.iter())
+                .map(|m| m.len())
+                .sum::<usize>(),
+            lifted_total,
+            "lifted tasks"
+        );
+        for p in &self.pools {
+            let mut kept = 0;
+            for (i, st) in p.strands.iter().enumerate() {
+                let Some(st) = st else { continue };
+                assert_eq!(p.strand_index.get(&st.key), Some(&(i as u32)));
+                let mut by_class = [0u32; Priority::COUNT];
+                for (seq, k) in &st.members {
+                    let e = self.slot_entry(*k).expect("ordering key holds a live task");
+                    assert_eq!((e.seq, e.strand), (*seq, i as u32 + 1));
+                    by_class[e.class as usize] += 1;
+                }
+                assert_eq!(
+                    st.by_class, by_class,
+                    "ordering key '{}' class counts",
+                    st.key
+                );
+                assert!(
+                    !st.members.is_empty() || (st.persist && st.floor.is_some()),
+                    "ordering key '{}' kept without tasks or a setting",
+                    st.key
+                );
+                kept += (st.persist && st.floor.is_some()) as usize;
+            }
+            assert_eq!(
+                p.strand_settings, kept,
+                "pool {} ordering settings",
+                p.cfg.name
+            );
+            assert_eq!(
+                p.strand_index.len(),
+                p.strands.iter().flatten().count(),
+                "pool {} ordering key index",
+                p.cfg.name
+            );
         }
         for (i, p) in self.pools.iter().enumerate() {
             assert_eq!(p.busy, busy[i], "pool {} busy mismatch", p.cfg.name);

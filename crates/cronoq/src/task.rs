@@ -201,6 +201,32 @@ impl<P> Task<P> {
         self.opts.on_key_conflict = mode;
         self
     }
+    /// An ordering key: tasks of one pool that share it run one at a time, in the order
+    /// they were submitted, however many workers are free. Use it for work that must not
+    /// overlap or overtake for one subject: one account, one document, one device. Tasks
+    /// with different keys do not wait for each other.
+    ///
+    /// The order inside a key is submission order, not priority: a critical task submitted
+    /// after a low one runs after it. So that it does not also wait behind unrelated work,
+    /// the task at the front runs at the highest class among the key's waiting tasks.
+    /// A task that waits for a retry, a dependency or a resource holds the tasks behind it.
+    ///
+    /// The ordering key is not a deduplication key ([`Task::key`]): two submissions with
+    /// the same ordering key are two tasks. A task may have both. Tasks with a fixed start
+    /// and schedules cannot have one.
+    pub fn ordering_key(mut self, key: impl Into<Arc<str>>) -> Self {
+        self.spec.ordering_key = Some(key.into());
+        self
+    }
+    /// With [`Task::ordering_key`]: if this task ends as failed, halt its key. The tasks
+    /// behind it stay queued, in place, until the key is resumed
+    /// ([`Scheduler::resume_ordering`](crate::Scheduler::resume_ordering)) or they are
+    /// cancelled. By default a failed task does not stop the tasks behind it. A task that
+    /// is cancelled, skipped or shed never halts its key.
+    pub fn halt_on_failure(mut self) -> Self {
+        self.spec.on_failure = cronoq_core::OrderFailure::Halt;
+        self
+    }
     /// A fingerprint of what this submission asks for, chosen by the caller: for example a
     /// hash of the payload. It is stored with the task. A later submission of the same key
     /// with [`KeyConflict::Reject`](cronoq_core::KeyConflict::Reject) is answered as a

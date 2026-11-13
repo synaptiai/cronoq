@@ -777,6 +777,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "cronoq",
  "cronoq-proto",
  "cronoq-server",
  "futures-util",

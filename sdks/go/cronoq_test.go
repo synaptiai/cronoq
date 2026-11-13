@@ -370,6 +370,106 @@ func TestKeyConflict(t *testing.T) {
 	}
 }
 
+func TestOrderingKeys(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	ctx := ctxFor(t)
+	admin, err := cronoq.Dial(s.target(), cronoq.Options{Token: adminToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+
+	// Queued before a worker connects: a low task, then a critical one, then one that fails
+	// and halts the key, then one more.
+	submit := func(task cronoq.Task) uint64 {
+		t.Helper()
+		task.OrderingKey = "account-1"
+		r, err := c.Submit(ctx, task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.ID
+	}
+	first := submit(cronoq.Task{Payload: []byte("one"), Priority: cronoq.Low})
+	submit(cronoq.Task{Payload: []byte("two"), Priority: cronoq.Critical})
+	bad := submit(cronoq.Task{Payload: []byte("bad"), HaltOnFailure: true, MaxAttempts: 1})
+	last := submit(cronoq.Task{Payload: []byte("last")})
+
+	info, err := admin.Ordering(ctx, "", "account-1")
+	if err != nil || info.Tasks != 4 || info.Head != first || info.Effective != cronoq.Critical || info.Halted || info.Floor != "" {
+		t.Fatalf("ordering = %+v, %v", info, err)
+	}
+	var e *cronoq.Error
+	if _, err := c.Submit(ctx, cronoq.Task{HaltOnFailure: true}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("halt without a key: %v", err)
+	}
+	if _, err := c.Submit(ctx, cronoq.Task{OrderingKey: "k", StartIn: time.Minute}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("ordering key with a start time: %v", err)
+	}
+
+	var mu sync.Mutex
+	var seen []string
+	var active, overlap int32
+	worker(t, s.target(), cronoq.WorkerOptions{Slots: 4}, func(_ context.Context, l *cronoq.Lease) ([]byte, error) {
+		if n := atomic.AddInt32(&active, 1); n > atomic.LoadInt32(&overlap) {
+			atomic.StoreInt32(&overlap, n)
+		}
+		mu.Lock()
+		seen = append(seen, string(l.Payload))
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt32(&active, -1)
+		if string(l.Payload) == "bad" {
+			return nil, cronoq.Permanent(errors.New("boom"))
+		}
+		return l.Payload, nil
+	})
+	if r, err := c.Wait(ctx, cronoq.ID(bad), 10*time.Second); err != nil || r.Status != cronoq.Failed {
+		t.Fatalf("bad = %+v, %v", r, err)
+	}
+	waitFor(t, func() bool {
+		keys, err := admin.HaltedOrderings(ctx, "", 0)
+		return err == nil && len(keys) == 1 && keys[0] == "account-1"
+	})
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	got := strings.Join(seen, ",")
+	mu.Unlock()
+	// One at a time, in submission order; the failure halted the key before "last".
+	if got != "one,two,bad" || atomic.LoadInt32(&overlap) != 1 {
+		t.Fatalf("ran %q with %d at once", got, overlap)
+	}
+
+	// Changing a key needs the admin role.
+	if _, err := c.Resume(ctx, "", "account-1"); !errors.As(err, &e) || e.Code != codes.PermissionDenied {
+		t.Fatalf("client resume: %v", err)
+	}
+	if err := admin.SetOrderingFloor(ctx, "", "account-1", cronoq.High, true); err != nil {
+		t.Fatal(err)
+	}
+	info, err = admin.Ordering(ctx, "", "account-1")
+	if err != nil || !info.Halted || info.Floor != cronoq.High || !info.Persist || info.Effective != cronoq.High || info.Head != last {
+		t.Fatalf("halted with a floor = %+v, %v", info, err)
+	}
+	if err := admin.SetOrderingFloor(ctx, "", "account-1", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if resumed, err := admin.Resume(ctx, "", "account-1"); err != nil || !resumed {
+		t.Fatalf("resume = %v, %v", resumed, err)
+	}
+	if resumed, err := admin.Resume(ctx, "", "account-1"); err != nil || resumed {
+		t.Fatalf("second resume = %v, %v", resumed, err)
+	}
+	if r, err := c.Wait(ctx, cronoq.ID(last), 10*time.Second); err != nil || string(r.Output) != "last" {
+		t.Fatalf("last = %+v, %v", r, err)
+	}
+	info, err = admin.Ordering(ctx, "", "account-1")
+	if err != nil || info.Tasks != 0 || info.Head != 0 || info.Effective != "" || info.Halted {
+		t.Fatalf("emptied = %+v, %v", info, err)
+	}
+}
+
 func TestHandlerOutcomes(t *testing.T) {
 	s := startServer(t)
 	c := client(t, s)

@@ -251,7 +251,7 @@ async fn schema_version_is_recorded() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(v, 8);
+    assert_eq!(v, 13);
     sqlx::query("UPDATE cronoq_schema_version SET version = 99")
         .execute(store.pool())
         .await
@@ -260,6 +260,58 @@ async fn schema_version_is_recorded() {
         store.migrate().await.is_err(),
         "newer schema must be refused"
     );
+}
+
+// --- A database from before ordering keys is upgraded in place and keeps its tasks.
+#[tokio::test]
+async fn an_older_database_gets_ordering_keys() {
+    let pg = pg_or_skip!();
+    let store = PgStore::connect_with(&pg.url, fast_cfg()).await.unwrap();
+    store.migrate().await.unwrap();
+    let epoch = store.acquire_leadership().await.unwrap();
+    let old = submitted(1, 0, TaskSpec::new(Bytes::from_static(b"old")));
+    store.commit(epoch, BASE, &[old], &[]).await.unwrap();
+    // Put the schema back to version 8.
+    for sql in [
+        "ALTER TABLE cronoq_tasks DROP COLUMN ordering_key",
+        "ALTER TABLE cronoq_tasks DROP COLUMN halt_on_failure",
+        "ALTER TABLE cronoq_pending DROP COLUMN ordering_key",
+        "ALTER TABLE cronoq_pending DROP COLUMN halt_on_failure",
+        "DROP TABLE cronoq_ordering",
+        "UPDATE cronoq_schema_version SET version = 8",
+    ] {
+        sqlx::query(sql).execute(store.pool()).await.unwrap();
+    }
+    store.migrate().await.unwrap();
+    let v: i32 = sqlx::query_scalar("SELECT version FROM cronoq_schema_version")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(v, 13);
+    let batch = [
+        submitted(
+            2,
+            1,
+            TaskSpec::new(Bytes::from_static(b"new"))
+                .ordering_key("k")
+                .halt_on_failure(),
+        ),
+        Mutation::Ordering {
+            pool: "default".into(),
+            key: "k".into(),
+            floor: None,
+            persist: false,
+            halted: true,
+        },
+    ];
+    store.commit(epoch, BASE, &batch, &[]).await.unwrap();
+    let rec = store.recover(BASE).await.unwrap();
+    assert_eq!(rec.tasks.len(), 2);
+    assert_eq!(rec.tasks[0].spec.ordering_key, None);
+    assert_eq!(rec.tasks[0].spec.on_failure, OrderFailure::Continue);
+    assert_eq!(rec.tasks[1].spec.ordering_key.as_deref(), Some("k"));
+    assert_eq!(rec.tasks[1].spec.on_failure, OrderFailure::Halt);
+    assert!(rec.ordering.len() == 1 && rec.ordering[0].halted);
 }
 
 // --- After an epoch wrap, ids continued from MAX(id)+1; pruning the newest rows made the

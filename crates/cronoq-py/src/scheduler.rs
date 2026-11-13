@@ -399,7 +399,8 @@ impl Scheduler {
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None,
-        on_key_conflict=None, renew_position=false, fingerprint=None
+        on_key_conflict=None, renew_position=false, fingerprint=None,
+        ordering_key=None, halt_on_failure=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn submit<'py>(
@@ -428,6 +429,8 @@ impl Scheduler {
         on_key_conflict: Option<&str>,
         renew_position: bool,
         fingerprint: Option<&Bound<'py, PyAny>>,
+        ordering_key: Option<&str>,
+        halt_on_failure: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -449,7 +452,8 @@ impl Scheduler {
             tags,
             labels,
             tenant,
-        )?;
+        )?
+        .ordered(ordering_key, halt_on_failure)?;
         let s = self.sched(py)?;
         let mut task = replacing(
             self.task(py, &opts, payload)?,
@@ -471,7 +475,8 @@ impl Scheduler {
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None,
-        on_key_conflict=None, renew_position=false, fingerprint=None
+        on_key_conflict=None, renew_position=false, fingerprint=None,
+        ordering_key=None, halt_on_failure=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn enqueue<'py>(
@@ -500,6 +505,8 @@ impl Scheduler {
         on_key_conflict: Option<&str>,
         renew_position: bool,
         fingerprint: Option<&Bound<'py, PyAny>>,
+        ordering_key: Option<&str>,
+        halt_on_failure: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -521,7 +528,8 @@ impl Scheduler {
             tags,
             labels,
             tenant,
-        )?;
+        )?
+        .ordered(ordering_key, halt_on_failure)?;
         let s = self.sched(py)?;
         let mut task = replacing(
             self.task(py, &opts, payload)?,
@@ -661,6 +669,90 @@ impl Scheduler {
         let s = self.sched(py)?;
         spawn_py(py, async move {
             Ok(Snapshot::from(s.snapshot().await.map_err(to_pyerr)?))
+        })
+    }
+
+    /// An ordering key as the scheduler holds it (`OrderingInfo`), or None for a key with no
+    /// tasks and no kept floor. `pool` defaults to `default_pool`.
+    #[pyo3(signature = (key, *, pool=None))]
+    fn ordering<'py>(
+        &self,
+        py: Python<'py>,
+        key: String,
+        pool: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        spawn_py(py, async move {
+            let info = s.ordering(&pool, &key).await.map_err(to_pyerr)?;
+            Ok(info.map(|i| OrderingInfo {
+                tasks: i.tasks,
+                head: i.head.map(|id| id.0),
+                effective: i.effective.map(|c| c.name().to_string()),
+                floor: i.floor.map(|c| c.name().to_string()),
+                persist: i.persist,
+                halted: i.halted,
+            }))
+        })
+    }
+
+    /// The halted ordering keys of a pool, in name order, at most `limit`.
+    #[pyo3(signature = (*, pool=None, limit=100))]
+    fn halted_orderings<'py>(
+        &self,
+        py: Python<'py>,
+        pool: Option<String>,
+        limit: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        spawn_py(py, async move {
+            let keys = s.halted_orderings(&pool, limit).await.map_err(to_pyerr)?;
+            Ok(keys.iter().map(|k| k.to_string()).collect::<Vec<_>>())
+        })
+    }
+
+    /// Set the class floor of an ordering key (`floor=None` removes it): the task at its
+    /// front never runs below that class, whatever the classes of the key's tasks. No task's
+    /// own class changes. The floor goes when the key has no tasks left unless
+    /// `persist=True`; the number of keys that keep one is limited
+    /// (100,000), and `SchedulerError` reports the limit.
+    #[pyo3(signature = (key, floor, *, pool=None, persist=false))]
+    fn set_ordering_floor<'py>(
+        &self,
+        py: Python<'py>,
+        key: String,
+        floor: Option<&Bound<'py, PyAny>>,
+        pool: Option<String>,
+        persist: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        let floor = floor.map(extract_priority).transpose()?;
+        if persist && floor.is_none() {
+            return Err(PyValueError::new_err("persist=True needs a floor"));
+        }
+        spawn_py(py, async move {
+            s.set_ordering_floor(&pool, &key, floor, persist)
+                .await
+                .map_err(to_pyerr)?;
+            Ok(NONE)
+        })
+    }
+
+    /// Resume an ordering key that a failed task halted (`halt_on_failure=True`): its oldest
+    /// task is offered again. Resolves to whether the key was halted.
+    #[pyo3(signature = (key, *, pool=None))]
+    fn resume_ordering<'py>(
+        &self,
+        py: Python<'py>,
+        key: String,
+        pool: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        spawn_py(py, async move {
+            s.resume_ordering(&pool, &key).await.map_err(to_pyerr)
         })
     }
 
@@ -1016,6 +1108,42 @@ impl TaskHandle {
 // ---------------------------------------------------------------------------------------------
 // Events
 
+/// An ordering key as the scheduler holds it (`Scheduler.ordering`).
+#[pyclass(frozen, get_all, module = "cronoq._cronoq")]
+#[derive(Clone, Debug)]
+pub struct OrderingInfo {
+    /// Tasks of the key that have not finished.
+    tasks: usize,
+    /// Id of the oldest of them: the only one that may run.
+    head: Option<u64>,
+    /// The class the head runs at: the highest among the key's tasks and its floor.
+    effective: Option<String>,
+    /// Class floor, if any.
+    floor: Option<String>,
+    /// The floor stays when the key has no tasks left.
+    persist: bool,
+    /// A failed task halted the key: nothing of it runs until it is resumed.
+    halted: bool,
+}
+
+#[pymethods]
+impl OrderingInfo {
+    fn __repr__(&self) -> String {
+        format!(
+            "OrderingInfo(tasks={}, head={}, effective={}, floor={}, halted={})",
+            self.tasks,
+            self.head.map_or("None".to_string(), |h| h.to_string()),
+            self.effective
+                .as_ref()
+                .map_or("None".to_string(), |c| format!("{c:?}")),
+            self.floor
+                .as_ref()
+                .map_or("None".to_string(), |c| format!("{c:?}")),
+            if self.halted { "True" } else { "False" },
+        )
+    }
+}
+
 /// Result of `Scheduler.update`.
 #[pyclass(frozen, get_all, module = "cronoq._cronoq")]
 #[derive(Clone, Debug)]
@@ -1318,6 +1446,13 @@ pub struct PoolSnapshot {
     run_p99: f64,
     worker_seconds: f64,
     cost: f64,
+    /// Ordering keys that have tasks.
+    ordering_keys: usize,
+    /// Tasks that are ready but wait for an older task of their ordering key, or for a
+    /// halted key to be resumed.
+    ordering_waiting: usize,
+    /// Ordering keys halted by a failed task.
+    ordering_halted: usize,
     /// Class scores and aging in effect for this pool.
     priority: PriorityConfig,
     /// Deadline urgency curve in effect for this pool.
@@ -1423,6 +1558,9 @@ impl From<cronoq::Snapshot> for Snapshot {
                             run_p99: p.run_p99.as_secs_f64(),
                             worker_seconds: p.worker_seconds,
                             cost: p.cost,
+                            ordering_keys: p.ordering.keys,
+                            ordering_waiting: p.ordering.waiting,
+                            ordering_halted: p.ordering.halted,
                             priority: PriorityConfig::from_core(&p.priority),
                             urgency: UrgencyConfig::from_core(&p.urgency),
                         },

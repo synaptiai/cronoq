@@ -32,4 +32,5 @@ tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
 [dev-dependencies]
 anyhow = "1"
 bytes = "1"
+cronoq = { path = "../cronoq" }
 cronoq-server = { path = "../cronoq-server" }

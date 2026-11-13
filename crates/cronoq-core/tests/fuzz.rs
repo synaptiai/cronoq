@@ -57,6 +57,13 @@ fn run(seed: u64) {
                 if r.n(4) == 0 {
                     s = s.deadline(sim.now + secs(r.n(20) as f64));
                 }
+                // An ordering key (refused together with a fixed start, below).
+                if r.n(3) == 0 {
+                    s = s.ordering_key(format!("o{}", r.n(4)));
+                    if r.n(3) == 0 {
+                        s = s.halt_on_failure();
+                    }
+                }
                 if r.n(5) == 0 {
                     s = s.resource(if r.n(2) == 0 { "s" } else { "tb" }, 1 + r.n(2) as u32);
                 }
@@ -103,6 +110,19 @@ fn run(seed: u64) {
             7 => {
                 let _ = sim.core.snapshot(sim.now);
                 sim.drain();
+                // Ordering keys: a floor, or halted keys resumed.
+                if r.n(2) == 0 {
+                    let floor = Priority::from_index(r.n(5) as usize);
+                    let key = format!("o{}", r.n(4));
+                    let pool = PoolId(r.n(2) as u16);
+                    let keep = r.n(3) == 0;
+                    sim.core
+                        .set_ordering_floor(sim.now, pool, &key, floor, keep)
+                        .unwrap();
+                    sim.drain();
+                } else {
+                    sim.resume_halted();
+                }
             }
             8 => {
                 if !ids.is_empty() {
@@ -125,7 +145,12 @@ fn run(seed: u64) {
     }
     sim.core.set_capacity(sim.now, PoolId(0), 3);
     sim.drain();
-    sim.run_until(sim.now + secs(500.0));
+    loop {
+        sim.run_until(sim.now + secs(500.0));
+        if sim.resume_halted() == 0 {
+            break;
+        }
+    }
     let stuck: Vec<_> = ids
         .iter()
         .filter_map(|id| sim.status(*id).map(|st| (*id, st)))

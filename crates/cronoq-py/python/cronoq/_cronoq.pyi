@@ -20,6 +20,7 @@ __all__ = [
     "Dep",
     "EventStream",
     "Pool",
+    "OrderingInfo",
     "PoolSnapshot",
     "Priority",
     "PriorityConfig",
@@ -200,6 +201,8 @@ class Task:
         tenant: str | None = None,
         fingerprint: int | bytes | None = None,
         on_key_conflict: Literal["return_existing", "reject"] | None = None,
+        ordering_key: str | None = None,
+        halt_on_failure: bool = False,
     ) -> Self: ...
 
 @final
@@ -255,6 +258,9 @@ class PoolSnapshot:
     run_p99: float
     worker_seconds: float
     cost: float
+    ordering_keys: int
+    ordering_waiting: int
+    ordering_halted: int
     priority: PriorityConfig
     urgency: UrgencyConfig
 
@@ -285,6 +291,15 @@ class Updated:
     status: str
     deferred: bool
     changed: bool
+
+@final
+class OrderingInfo:
+    tasks: int
+    head: int | None
+    effective: str | None
+    floor: str | None
+    persist: bool
+    halted: bool
 
 @final
 class EventStream:
@@ -361,6 +376,8 @@ class Scheduler:
         on_key_conflict: Literal["return_existing", "replace_queued", "reject"] | None = None,
         renew_position: bool = False,
         fingerprint: int | bytes | None = None,
+        ordering_key: str | None = None,
+        halt_on_failure: bool = False,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
@@ -388,6 +405,8 @@ class Scheduler:
         on_key_conflict: Literal["return_existing", "replace_queued", "reject"] | None = None,
         renew_position: bool = False,
         fingerprint: int | bytes | None = None,
+        ordering_key: str | None = None,
+        halt_on_failure: bool = False,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
@@ -404,6 +423,19 @@ class Scheduler:
     def status(self, target: _TaskRefLike) -> Awaitable[str | None]: ...
     def handle(self, target: _TaskRefLike) -> Awaitable[TaskHandle | None]: ...
     def snapshot(self) -> Awaitable[Snapshot]: ...
+    def ordering(self, key: str, *, pool: str | None = None) -> Awaitable[OrderingInfo | None]: ...
+    def halted_orderings(
+        self, *, pool: str | None = None, limit: int = 100
+    ) -> Awaitable[list[str]]: ...
+    def set_ordering_floor(
+        self,
+        key: str,
+        floor: _PriorityLike | None,
+        *,
+        pool: str | None = None,
+        persist: bool = False,
+    ) -> Awaitable[None]: ...
+    def resume_ordering(self, key: str, *, pool: str | None = None) -> Awaitable[bool]: ...
     def set_capacity(self, pool: str, capacity: int) -> Awaitable[None]: ...
     def set_group_capacity(
         self, pool: str, labels: Mapping[str, str], capacity: int

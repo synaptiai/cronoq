@@ -1037,3 +1037,68 @@ def test_redirects_never_weaken_the_connection() -> None:
     with pytest.raises(ClientError):
         _redirect(Refusal(fp, "http://127.0.0.1:1@gpu.internal:7070"), False, True, False)
     assert _redirect(Refusal(fp, "http://gpu.internal:7070"), False, True, True)
+
+
+async def test_ordering_keys(server: Server, client: Client) -> None:
+    seen: list[str] = []
+    active = 0
+    overlap = 0
+
+    async def handler(lease: Lease) -> Any:
+        nonlocal active, overlap
+        active += 1
+        overlap = max(overlap, active)
+        seen.append(lease.text())
+        await asyncio.sleep(0.02)
+        active -= 1
+        if lease.text() == "bad":
+            raise cronoq.Permanent("boom")
+        return lease.text()
+
+    # Queued before any worker: a low task, then a critical one, in one key.
+    first = await client.submit("one", ordering_key="acct", priority="low")
+    await client.submit("two", ordering_key="acct", priority="critical")
+    bad = await client.submit("bad", ordering_key="acct", halt_on_failure=True, retry={"max_attempts": 1})
+    last = await client.submit("last", ordering_key="acct")
+    with pytest.raises(ValueError):
+        task("x", halt_on_failure=True)
+    with pytest.raises(ClientError) as e:
+        await client.submit("x", ordering_key="k", start_in=60)
+    assert e.value.code == "invalid_argument"
+
+    async with Client(server.target, token=METRICS) as metrics, Client(server.target, token=ADMIN) as admin:
+        info = await metrics.ordering("acct")
+        assert (info.pool, info.key, info.tasks, info.head) == ("default", "acct", 4, first.id)
+        # The head runs at the highest class waiting in its key.
+        assert (info.effective, info.floor, info.halted) == ("critical", None, False)
+        snap = (await metrics.snapshot()).pool("default")
+        assert (snap.ordering_keys, snap.ordering_waiting) == (1, 3)
+
+        async with Running() as r:
+            await r.add(server, handler, slots=4)
+            assert (await client.wait(bad.id, timeout=10)).status == "failed"
+            await asyncio.sleep(0.2)
+            # One at a time, in submission order; the failure halted the key.
+            assert (seen, overlap) == (["one", "two", "bad"], 1)
+            assert await metrics.halted_orderings() == ["acct"]
+            assert (await metrics.ordering("acct")).halted
+            assert (await metrics.snapshot()).pool("default").ordering_halted == 1
+
+            # Changing a key needs the admin role.
+            for call in (metrics.resume(ordering_key="acct"), client.set_ordering_floor("acct", "high")):
+                with pytest.raises(ClientError) as denied:
+                    await call
+                assert denied.value.code == "permission_denied"
+            await admin.set_ordering_floor("acct", "high", persist=True)
+            info = await admin.ordering("acct")
+            assert (info.floor, info.persist, info.effective) == ("high", True, "high")
+            await admin.set_ordering_floor("acct", None)
+            assert (await admin.ordering("acct")).floor is None
+            with pytest.raises(ValueError):
+                await admin.set_ordering_floor("acct", None, persist=True)
+
+            assert await admin.resume(ordering_key="acct") is True
+            assert await admin.resume(ordering_key="acct") is False
+            assert (await client.wait(last.id, timeout=10)).text() == "last"
+        gone = await metrics.ordering("acct")
+        assert (gone.tasks, gone.head, gone.effective) == (0, None, None)

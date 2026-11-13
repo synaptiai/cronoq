@@ -430,3 +430,119 @@ async fn connection_settings_are_checked() {
     assert!(stderr(&o).contains("unauthenticated"), "{}", stderr(&o));
     s.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ordering_keys_are_submitted_shown_halted_and_resumed() {
+    let s = Server::start().await;
+    // A task that fails and halts its key, and one behind it. No worker yet.
+    let bad = json(
+        &s.cli(
+            CLIENT,
+            &[
+                "-o",
+                "json",
+                "submit",
+                "fail",
+                "--ordering-key",
+                "acct",
+                "--halt-on-failure",
+            ],
+        )
+        .await,
+    );
+    let next = json(
+        &s.cli(
+            CLIENT,
+            &["-o", "json", "submit", "next", "--ordering-key", "acct"],
+        )
+        .await,
+    );
+    // What cannot be combined is refused before the server is asked.
+    let o = s.cli(CLIENT, &["submit", "x", "--halt-on-failure"]).await;
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    let o = s
+        .cli(
+            CLIENT,
+            &["submit", "x", "--ordering-key", "k", "--start-in", "60"],
+        )
+        .await;
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+
+    let v = json(
+        &s.cli(METRICS, &["-o", "json", "ordering", "get", "acct"])
+            .await,
+    );
+    assert_eq!(
+        (&v["tasks"], &v["head"]),
+        (&serde_json::json!(2), &bad["id"])
+    );
+    assert_eq!(v["halted"], false);
+    let v = json(&s.cli(METRICS, &["-o", "json", "snapshot"]).await);
+    assert_eq!(v["pools"][0]["ordering"]["waiting"], 1);
+
+    // A floor: shown, kept, removed.
+    let o = s
+        .cli(ADMIN, &["ordering", "floor", "acct", "high", "--persist"])
+        .await;
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    assert!(
+        text.contains("floor      high (kept)") && text.contains("runs at    high"),
+        "{text}"
+    );
+    let o = s.cli(METRICS, &["ordering", "floor", "acct", "high"]).await;
+    assert!(stderr(&o).contains("permission_denied"), "{}", stderr(&o));
+    let v = json(
+        &s.cli(
+            ADMIN,
+            &["-o", "json", "ordering", "floor", "acct", "--clear"],
+        )
+        .await,
+    );
+    assert_eq!(v["floor"], serde_json::Value::Null);
+
+    // The worker fails the first task: the key is halted and the next task is not run.
+    let (stop_worker, stopped) = oneshot::channel::<()>();
+    let worker = tokio::spawn(run_worker(
+        WorkerOptions::new(s.url(), "default").token(WORKER),
+        |lease| async move {
+            if &lease.payload[..] == b"fail" {
+                return Err(cronoq::TaskError::permanent("boom"));
+            }
+            Ok(Bytes::from(lease.payload.to_ascii_uppercase()))
+        },
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    let id = bad["id"].as_str().unwrap().to_string();
+    let o = s.cli(CLIENT, &["wait", &id, "--timeout", "10"]).await;
+    assert!(!o.status.success());
+    let mut halted = String::new();
+    for _ in 0..200 {
+        halted = stdout(&s.cli(METRICS, &["ordering", "halted"]).await);
+        if halted.trim() == "acct" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(halted.trim(), "acct");
+    let text = stdout(&s.cli(METRICS, &["ordering", "get", "acct"]).await);
+    assert!(text.contains("halted     yes"), "{text}");
+    let next_id = next["id"].as_str().unwrap().to_string();
+    let v = json(&s.cli(CLIENT, &["-o", "json", "get", &next_id]).await);
+    assert_eq!(v["status"], "ready");
+
+    let o = s.cli(CLIENT, &["resume", "--ordering-key", "acct"]).await;
+    assert!(stderr(&o).contains("permission_denied"), "{}", stderr(&o));
+    let o = s.cli(ADMIN, &["resume", "--ordering-key", "acct"]).await;
+    assert_eq!(stdout(&o).trim(), "resumed", "{}", stderr(&o));
+    let o = s.cli(ADMIN, &["resume", "--ordering-key", "acct"]).await;
+    assert_eq!(stdout(&o).trim(), "was not halted");
+    let o = s.cli(CLIENT, &["wait", &next_id, "--timeout", "10"]).await;
+    assert_eq!(stdout(&o), "NEXT", "{}", stderr(&o));
+
+    let _ = stop_worker.send(());
+    let _ = worker.await;
+    s.stop().await;
+}
