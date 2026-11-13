@@ -275,6 +275,121 @@ func (MissPolicy) EnumDescriptor() ([]byte, []int) {
 	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{3}
 }
 
+// What a submission whose key is already in use does.
+type KeyConflict int32
+
+const (
+	KeyConflict_KEY_CONFLICT_UNSPECIFIED KeyConflict = 0 // treated as RETURN_EXISTING
+	// Return the existing task and drop this submission.
+	KeyConflict_KEY_CONFLICT_RETURN_EXISTING KeyConflict = 1
+	// The newest submission wins. A task that has not started is replaced in place (same id
+	// and place in line). A task that has started keeps its payload, and this submission runs
+	// as a new task with the same key once that one succeeds, fails or is dead-lettered; a
+	// newer submission replaces the stored one. With no live task, a task is created.
+	KeyConflict_KEY_CONFLICT_REPLACE_QUEUED KeyConflict = 2
+)
+
+// Enum value maps for KeyConflict.
+var (
+	KeyConflict_name = map[int32]string{
+		0: "KEY_CONFLICT_UNSPECIFIED",
+		1: "KEY_CONFLICT_RETURN_EXISTING",
+		2: "KEY_CONFLICT_REPLACE_QUEUED",
+	}
+	KeyConflict_value = map[string]int32{
+		"KEY_CONFLICT_UNSPECIFIED":     0,
+		"KEY_CONFLICT_RETURN_EXISTING": 1,
+		"KEY_CONFLICT_REPLACE_QUEUED":  2,
+	}
+)
+
+func (x KeyConflict) Enum() *KeyConflict {
+	p := new(KeyConflict)
+	*p = x
+	return p
+}
+
+func (x KeyConflict) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (KeyConflict) Descriptor() protoreflect.EnumDescriptor {
+	return file_cronoq_v1_cronoq_proto_enumTypes[4].Descriptor()
+}
+
+func (KeyConflict) Type() protoreflect.EnumType {
+	return &file_cronoq_v1_cronoq_proto_enumTypes[4]
+}
+
+func (x KeyConflict) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use KeyConflict.Descriptor instead.
+func (KeyConflict) EnumDescriptor() ([]byte, []int) {
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{4}
+}
+
+// What an accepted submission did.
+type SubmitOutcome int32
+
+const (
+	SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED SubmitOutcome = 0 // a server older than this field: see `duplicate`
+	SubmitOutcome_SUBMIT_OUTCOME_CREATED     SubmitOutcome = 1
+	// The key was in use: `id` is the existing task, unchanged.
+	SubmitOutcome_SUBMIT_OUTCOME_EXISTING SubmitOutcome = 2
+	// The existing task had not started: it now carries this submission. `id` is that task.
+	SubmitOutcome_SUBMIT_OUTCOME_REPLACED SubmitOutcome = 3
+	// The existing task has started: this submission is stored and runs after it as a new
+	// task with the same key. `id` is the existing task; with `wait`, so is `result`.
+	SubmitOutcome_SUBMIT_OUTCOME_PENDING SubmitOutcome = 4
+)
+
+// Enum value maps for SubmitOutcome.
+var (
+	SubmitOutcome_name = map[int32]string{
+		0: "SUBMIT_OUTCOME_UNSPECIFIED",
+		1: "SUBMIT_OUTCOME_CREATED",
+		2: "SUBMIT_OUTCOME_EXISTING",
+		3: "SUBMIT_OUTCOME_REPLACED",
+		4: "SUBMIT_OUTCOME_PENDING",
+	}
+	SubmitOutcome_value = map[string]int32{
+		"SUBMIT_OUTCOME_UNSPECIFIED": 0,
+		"SUBMIT_OUTCOME_CREATED":     1,
+		"SUBMIT_OUTCOME_EXISTING":    2,
+		"SUBMIT_OUTCOME_REPLACED":    3,
+		"SUBMIT_OUTCOME_PENDING":     4,
+	}
+)
+
+func (x SubmitOutcome) Enum() *SubmitOutcome {
+	p := new(SubmitOutcome)
+	*p = x
+	return p
+}
+
+func (x SubmitOutcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SubmitOutcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_cronoq_v1_cronoq_proto_enumTypes[5].Descriptor()
+}
+
+func (SubmitOutcome) Type() protoreflect.EnumType {
+	return &file_cronoq_v1_cronoq_proto_enumTypes[5]
+}
+
+func (x SubmitOutcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SubmitOutcome.Descriptor instead.
+func (SubmitOutcome) EnumDescriptor() ([]byte, []int) {
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{5}
+}
+
 // What a status event reports.
 type EventKind int32
 
@@ -283,6 +398,12 @@ const (
 	EventKind_EVENT_KIND_TRANSITION EventKind = 0
 	// The task was changed by Update; `status` is its unchanged status.
 	EventKind_EVENT_KIND_UPDATED EventKind = 1
+	// A submission with the task's key replaced it, or was stored to run after it
+	// (KEY_CONFLICT_REPLACE_QUEUED); `status` is its unchanged status.
+	EventKind_EVENT_KIND_REPLACED EventKind = 2
+	// The task was created from a stored submission when the task that held its key ended;
+	// `message` names that task.
+	EventKind_EVENT_KIND_SUCCESSOR EventKind = 3
 )
 
 // Enum value maps for EventKind.
@@ -290,10 +411,14 @@ var (
 	EventKind_name = map[int32]string{
 		0: "EVENT_KIND_TRANSITION",
 		1: "EVENT_KIND_UPDATED",
+		2: "EVENT_KIND_REPLACED",
+		3: "EVENT_KIND_SUCCESSOR",
 	}
 	EventKind_value = map[string]int32{
 		"EVENT_KIND_TRANSITION": 0,
 		"EVENT_KIND_UPDATED":    1,
+		"EVENT_KIND_REPLACED":   2,
+		"EVENT_KIND_SUCCESSOR":  3,
 	}
 )
 
@@ -308,11 +433,11 @@ func (x EventKind) String() string {
 }
 
 func (EventKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_cronoq_v1_cronoq_proto_enumTypes[4].Descriptor()
+	return file_cronoq_v1_cronoq_proto_enumTypes[6].Descriptor()
 }
 
 func (EventKind) Type() protoreflect.EnumType {
-	return &file_cronoq_v1_cronoq_proto_enumTypes[4]
+	return &file_cronoq_v1_cronoq_proto_enumTypes[6]
 }
 
 func (x EventKind) Number() protoreflect.EnumNumber {
@@ -321,7 +446,7 @@ func (x EventKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use EventKind.Descriptor instead.
 func (EventKind) EnumDescriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{4}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{6}
 }
 
 // What a recurring occurrence does while the previous one is still live.
@@ -367,11 +492,11 @@ func (x Overlap) String() string {
 }
 
 func (Overlap) Descriptor() protoreflect.EnumDescriptor {
-	return file_cronoq_v1_cronoq_proto_enumTypes[5].Descriptor()
+	return file_cronoq_v1_cronoq_proto_enumTypes[7].Descriptor()
 }
 
 func (Overlap) Type() protoreflect.EnumType {
-	return &file_cronoq_v1_cronoq_proto_enumTypes[5]
+	return &file_cronoq_v1_cronoq_proto_enumTypes[7]
 }
 
 func (x Overlap) Number() protoreflect.EnumNumber {
@@ -380,7 +505,7 @@ func (x Overlap) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Overlap.Descriptor instead.
 func (Overlap) EnumDescriptor() ([]byte, []int) {
-	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{5}
+	return file_cronoq_v1_cronoq_proto_rawDescGZIP(), []int{7}
 }
 
 type TaskRef struct {
@@ -797,7 +922,12 @@ type SubmitRequest struct {
 	// Block until the task finishes and return its result.
 	Wait bool `protobuf:"varint,2,opt,name=wait,proto3" json:"wait,omitempty"`
 	// Upper bound for `wait` (capped by the server's `limits.max_wait_s`).
-	WaitTimeoutS  *float64 `protobuf:"fixed64,3,opt,name=wait_timeout_s,json=waitTimeoutS,proto3,oneof" json:"wait_timeout_s,omitempty"`
+	WaitTimeoutS *float64 `protobuf:"fixed64,3,opt,name=wait_timeout_s,json=waitTimeoutS,proto3,oneof" json:"wait_timeout_s,omitempty"`
+	// What to do when the task's key is already in use.
+	OnKeyConflict KeyConflict `protobuf:"varint,4,opt,name=on_key_conflict,json=onKeyConflict,proto3,enum=cronoq.v1.KeyConflict" json:"on_key_conflict,omitempty"`
+	// With KEY_CONFLICT_REPLACE_QUEUED: the task takes this submission's place in line, and
+	// its waiting time starts now, instead of keeping the place of the task it replaces.
+	RenewPosition bool `protobuf:"varint,5,opt,name=renew_position,json=renewPosition,proto3" json:"renew_position,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -853,11 +983,26 @@ func (x *SubmitRequest) GetWaitTimeoutS() float64 {
 	return 0
 }
 
+func (x *SubmitRequest) GetOnKeyConflict() KeyConflict {
+	if x != nil {
+		return x.OnKeyConflict
+	}
+	return KeyConflict_KEY_CONFLICT_UNSPECIFIED
+}
+
+func (x *SubmitRequest) GetRenewPosition() bool {
+	if x != nil {
+		return x.RenewPosition
+	}
+	return false
+}
+
 type SubmitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Duplicate     bool                   `protobuf:"varint,2,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
-	Result        *TaskResult            `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"` // set when wait = true
+	Duplicate     bool                   `protobuf:"varint,2,opt,name=duplicate,proto3" json:"duplicate,omitempty"` // the key was in use: `id` is the existing task
+	Result        *TaskResult            `protobuf:"bytes,3,opt,name=result,proto3" json:"result,omitempty"`        // set when wait = true
+	Outcome       SubmitOutcome          `protobuf:"varint,4,opt,name=outcome,proto3,enum=cronoq.v1.SubmitOutcome" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -911,6 +1056,13 @@ func (x *SubmitResponse) GetResult() *TaskResult {
 		return x.Result
 	}
 	return nil
+}
+
+func (x *SubmitResponse) GetOutcome() SubmitOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED
 }
 
 type SubmitBatchRequest struct {
@@ -3350,8 +3502,10 @@ type Totals struct {
 	// Completions and failures reported for leases that were no longer valid (late, duplicate,
 	// or from an earlier leader); they were ignored.
 	StaleCompletions uint64 `protobuf:"varint,13,opt,name=stale_completions,json=staleCompletions,proto3" json:"stale_completions,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Submissions dropped without running because a newer one with their key replaced them.
+	Superseded    uint64 `protobuf:"varint,14,opt,name=superseded,proto3" json:"superseded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Totals) Reset() {
@@ -3471,6 +3625,13 @@ func (x *Totals) GetLeaseExpiries() uint64 {
 func (x *Totals) GetStaleCompletions() uint64 {
 	if x != nil {
 		return x.StaleCompletions
+	}
+	return 0
+}
+
+func (x *Totals) GetSuperseded() uint64 {
+	if x != nil {
+		return x.Superseded
 	}
 	return 0
 }
@@ -4095,16 +4256,19 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\f_tolerance_sB\x12\n" +
 	"\x10_duration_hint_sB\f\n" +
 	"\n" +
-	"_timeout_s\"\x8a\x01\n" +
+	"_timeout_s\"\xf1\x01\n" +
 	"\rSubmitRequest\x12'\n" +
 	"\x04task\x18\x01 \x01(\v2\x13.cronoq.v1.TaskSpecR\x04task\x12\x12\n" +
 	"\x04wait\x18\x02 \x01(\bR\x04wait\x12)\n" +
-	"\x0ewait_timeout_s\x18\x03 \x01(\x01H\x00R\fwaitTimeoutS\x88\x01\x01B\x11\n" +
-	"\x0f_wait_timeout_s\"m\n" +
+	"\x0ewait_timeout_s\x18\x03 \x01(\x01H\x00R\fwaitTimeoutS\x88\x01\x01\x12>\n" +
+	"\x0fon_key_conflict\x18\x04 \x01(\x0e2\x16.cronoq.v1.KeyConflictR\ronKeyConflict\x12%\n" +
+	"\x0erenew_position\x18\x05 \x01(\bR\rrenewPositionB\x11\n" +
+	"\x0f_wait_timeout_s\"\xa1\x01\n" +
 	"\x0eSubmitResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1c\n" +
 	"\tduplicate\x18\x02 \x01(\bR\tduplicate\x12-\n" +
-	"\x06result\x18\x03 \x01(\v2\x15.cronoq.v1.TaskResultR\x06result\"?\n" +
+	"\x06result\x18\x03 \x01(\v2\x15.cronoq.v1.TaskResultR\x06result\x122\n" +
+	"\aoutcome\x18\x04 \x01(\x0e2\x18.cronoq.v1.SubmitOutcomeR\aoutcome\"?\n" +
 	"\x12SubmitBatchRequest\x12)\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x13.cronoq.v1.TaskSpecR\x05tasks\"F\n" +
 	"\x13SubmitBatchResponse\x12/\n" +
@@ -4323,7 +4487,7 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\x04busy\x18\x03 \x01(\rR\x04busy\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8f\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x03\n" +
 	"\x06Totals\x12\x1c\n" +
 	"\tsubmitted\x18\x01 \x01(\x04R\tsubmitted\x12\x1e\n" +
 	"\n" +
@@ -4340,7 +4504,10 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	" \x01(\x04R\aretries\x12\x1a\n" +
 	"\btimeouts\x18\v \x01(\x04R\btimeouts\x12%\n" +
 	"\x0elease_expiries\x18\f \x01(\x04R\rleaseExpiries\x12+\n" +
-	"\x11stale_completions\x18\r \x01(\x04R\x10staleCompletions\"\x9b\x02\n" +
+	"\x11stale_completions\x18\r \x01(\x04R\x10staleCompletions\x12\x1e\n" +
+	"\n" +
+	"superseded\x18\x0e \x01(\x04R\n" +
+	"superseded\"\x9b\x02\n" +
 	"\x10SnapshotResponse\x12-\n" +
 	"\x05pools\x18\x01 \x03(\v2\x17.cronoq.v1.PoolSnapshotR\x05pools\x12\x1d\n" +
 	"\n" +
@@ -4423,10 +4590,22 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\x17MISS_POLICY_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MISS_POLICY_RUN_LATE\x10\x01\x12\x14\n" +
 	"\x10MISS_POLICY_SKIP\x10\x02\x12\x14\n" +
-	"\x10MISS_POLICY_FAIL\x10\x03*>\n" +
+	"\x10MISS_POLICY_FAIL\x10\x03*n\n" +
+	"\vKeyConflict\x12\x1c\n" +
+	"\x18KEY_CONFLICT_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cKEY_CONFLICT_RETURN_EXISTING\x10\x01\x12\x1f\n" +
+	"\x1bKEY_CONFLICT_REPLACE_QUEUED\x10\x02*\xa1\x01\n" +
+	"\rSubmitOutcome\x12\x1e\n" +
+	"\x1aSUBMIT_OUTCOME_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16SUBMIT_OUTCOME_CREATED\x10\x01\x12\x1b\n" +
+	"\x17SUBMIT_OUTCOME_EXISTING\x10\x02\x12\x1b\n" +
+	"\x17SUBMIT_OUTCOME_REPLACED\x10\x03\x12\x1a\n" +
+	"\x16SUBMIT_OUTCOME_PENDING\x10\x04*q\n" +
 	"\tEventKind\x12\x19\n" +
 	"\x15EVENT_KIND_TRANSITION\x10\x00\x12\x16\n" +
-	"\x12EVENT_KIND_UPDATED\x10\x01*x\n" +
+	"\x12EVENT_KIND_UPDATED\x10\x01\x12\x17\n" +
+	"\x13EVENT_KIND_REPLACED\x10\x02\x12\x18\n" +
+	"\x14EVENT_KIND_SUCCESSOR\x10\x03*x\n" +
 	"\aOverlap\x12\x17\n" +
 	"\x13OVERLAP_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fOVERLAP_SKIP\x10\x01\x12\x11\n" +
@@ -4465,159 +4644,163 @@ func file_cronoq_v1_cronoq_proto_rawDescGZIP() []byte {
 	return file_cronoq_v1_cronoq_proto_rawDescData
 }
 
-var file_cronoq_v1_cronoq_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_cronoq_v1_cronoq_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
 var file_cronoq_v1_cronoq_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
 var file_cronoq_v1_cronoq_proto_goTypes = []any{
 	(Priority)(0),                   // 0: cronoq.v1.Priority
 	(TaskStatus)(0),                 // 1: cronoq.v1.TaskStatus
 	(EdgeCond)(0),                   // 2: cronoq.v1.EdgeCond
 	(MissPolicy)(0),                 // 3: cronoq.v1.MissPolicy
-	(EventKind)(0),                  // 4: cronoq.v1.EventKind
-	(Overlap)(0),                    // 5: cronoq.v1.Overlap
-	(*TaskRef)(nil),                 // 6: cronoq.v1.TaskRef
-	(*Dep)(nil),                     // 7: cronoq.v1.Dep
-	(*RetryPolicy)(nil),             // 8: cronoq.v1.RetryPolicy
-	(*TaskSpec)(nil),                // 9: cronoq.v1.TaskSpec
-	(*SubmitRequest)(nil),           // 10: cronoq.v1.SubmitRequest
-	(*SubmitResponse)(nil),          // 11: cronoq.v1.SubmitResponse
-	(*SubmitBatchRequest)(nil),      // 12: cronoq.v1.SubmitBatchRequest
-	(*SubmitBatchResponse)(nil),     // 13: cronoq.v1.SubmitBatchResponse
-	(*CancelRequest)(nil),           // 14: cronoq.v1.CancelRequest
-	(*CancelResponse)(nil),          // 15: cronoq.v1.CancelResponse
-	(*UpdateRequest)(nil),           // 16: cronoq.v1.UpdateRequest
-	(*UpdateResponse)(nil),          // 17: cronoq.v1.UpdateResponse
-	(*GetRequest)(nil),              // 18: cronoq.v1.GetRequest
-	(*TaskInfo)(nil),                // 19: cronoq.v1.TaskInfo
-	(*ListTasksRequest)(nil),        // 20: cronoq.v1.ListTasksRequest
-	(*ListTasksResponse)(nil),       // 21: cronoq.v1.ListTasksResponse
-	(*TaskResult)(nil),              // 22: cronoq.v1.TaskResult
-	(*WaitRequest)(nil),             // 23: cronoq.v1.WaitRequest
-	(*WatchRequest)(nil),            // 24: cronoq.v1.WatchRequest
-	(*StatusEvent)(nil),             // 25: cronoq.v1.StatusEvent
-	(*Register)(nil),                // 26: cronoq.v1.Register
-	(*Heartbeat)(nil),               // 27: cronoq.v1.Heartbeat
-	(*Complete)(nil),                // 28: cronoq.v1.Complete
-	(*Fail)(nil),                    // 29: cronoq.v1.Fail
-	(*SetSlots)(nil),                // 30: cronoq.v1.SetSlots
-	(*Nack)(nil),                    // 31: cronoq.v1.Nack
-	(*Cancelled)(nil),               // 32: cronoq.v1.Cancelled
-	(*WorkerMessage)(nil),           // 33: cronoq.v1.WorkerMessage
-	(*Registered)(nil),              // 34: cronoq.v1.Registered
-	(*Lease)(nil),                   // 35: cronoq.v1.Lease
-	(*Abort)(nil),                   // 36: cronoq.v1.Abort
-	(*Shutdown)(nil),                // 37: cronoq.v1.Shutdown
-	(*ServerMessage)(nil),           // 38: cronoq.v1.ServerMessage
-	(*Empty)(nil),                   // 39: cronoq.v1.Empty
-	(*PoolSnapshot)(nil),            // 40: cronoq.v1.PoolSnapshot
-	(*PriorityConfig)(nil),          // 41: cronoq.v1.PriorityConfig
-	(*UrgencyConfig)(nil),           // 42: cronoq.v1.UrgencyConfig
-	(*WorkerGroup)(nil),             // 43: cronoq.v1.WorkerGroup
-	(*Totals)(nil),                  // 44: cronoq.v1.Totals
-	(*SnapshotResponse)(nil),        // 45: cronoq.v1.SnapshotResponse
-	(*RecurringRequest)(nil),        // 46: cronoq.v1.RecurringRequest
-	(*RemoveRecurringRequest)(nil),  // 47: cronoq.v1.RemoveRecurringRequest
-	(*RemoveRecurringResponse)(nil), // 48: cronoq.v1.RemoveRecurringResponse
-	(*WorkerInfo)(nil),              // 49: cronoq.v1.WorkerInfo
-	(*ListWorkersResponse)(nil),     // 50: cronoq.v1.ListWorkersResponse
-	(*RecurringInfo)(nil),           // 51: cronoq.v1.RecurringInfo
-	(*ListRecurringResponse)(nil),   // 52: cronoq.v1.ListRecurringResponse
-	nil,                             // 53: cronoq.v1.TaskSpec.ResourcesEntry
-	nil,                             // 54: cronoq.v1.TaskSpec.TagsEntry
-	nil,                             // 55: cronoq.v1.TaskSpec.LabelsEntry
-	nil,                             // 56: cronoq.v1.UpdateRequest.TagsEntry
-	nil,                             // 57: cronoq.v1.Register.LabelsEntry
-	nil,                             // 58: cronoq.v1.Lease.TagsEntry
-	nil,                             // 59: cronoq.v1.WorkerGroup.LabelsEntry
-	nil,                             // 60: cronoq.v1.WorkerInfo.LabelsEntry
+	(KeyConflict)(0),                // 4: cronoq.v1.KeyConflict
+	(SubmitOutcome)(0),              // 5: cronoq.v1.SubmitOutcome
+	(EventKind)(0),                  // 6: cronoq.v1.EventKind
+	(Overlap)(0),                    // 7: cronoq.v1.Overlap
+	(*TaskRef)(nil),                 // 8: cronoq.v1.TaskRef
+	(*Dep)(nil),                     // 9: cronoq.v1.Dep
+	(*RetryPolicy)(nil),             // 10: cronoq.v1.RetryPolicy
+	(*TaskSpec)(nil),                // 11: cronoq.v1.TaskSpec
+	(*SubmitRequest)(nil),           // 12: cronoq.v1.SubmitRequest
+	(*SubmitResponse)(nil),          // 13: cronoq.v1.SubmitResponse
+	(*SubmitBatchRequest)(nil),      // 14: cronoq.v1.SubmitBatchRequest
+	(*SubmitBatchResponse)(nil),     // 15: cronoq.v1.SubmitBatchResponse
+	(*CancelRequest)(nil),           // 16: cronoq.v1.CancelRequest
+	(*CancelResponse)(nil),          // 17: cronoq.v1.CancelResponse
+	(*UpdateRequest)(nil),           // 18: cronoq.v1.UpdateRequest
+	(*UpdateResponse)(nil),          // 19: cronoq.v1.UpdateResponse
+	(*GetRequest)(nil),              // 20: cronoq.v1.GetRequest
+	(*TaskInfo)(nil),                // 21: cronoq.v1.TaskInfo
+	(*ListTasksRequest)(nil),        // 22: cronoq.v1.ListTasksRequest
+	(*ListTasksResponse)(nil),       // 23: cronoq.v1.ListTasksResponse
+	(*TaskResult)(nil),              // 24: cronoq.v1.TaskResult
+	(*WaitRequest)(nil),             // 25: cronoq.v1.WaitRequest
+	(*WatchRequest)(nil),            // 26: cronoq.v1.WatchRequest
+	(*StatusEvent)(nil),             // 27: cronoq.v1.StatusEvent
+	(*Register)(nil),                // 28: cronoq.v1.Register
+	(*Heartbeat)(nil),               // 29: cronoq.v1.Heartbeat
+	(*Complete)(nil),                // 30: cronoq.v1.Complete
+	(*Fail)(nil),                    // 31: cronoq.v1.Fail
+	(*SetSlots)(nil),                // 32: cronoq.v1.SetSlots
+	(*Nack)(nil),                    // 33: cronoq.v1.Nack
+	(*Cancelled)(nil),               // 34: cronoq.v1.Cancelled
+	(*WorkerMessage)(nil),           // 35: cronoq.v1.WorkerMessage
+	(*Registered)(nil),              // 36: cronoq.v1.Registered
+	(*Lease)(nil),                   // 37: cronoq.v1.Lease
+	(*Abort)(nil),                   // 38: cronoq.v1.Abort
+	(*Shutdown)(nil),                // 39: cronoq.v1.Shutdown
+	(*ServerMessage)(nil),           // 40: cronoq.v1.ServerMessage
+	(*Empty)(nil),                   // 41: cronoq.v1.Empty
+	(*PoolSnapshot)(nil),            // 42: cronoq.v1.PoolSnapshot
+	(*PriorityConfig)(nil),          // 43: cronoq.v1.PriorityConfig
+	(*UrgencyConfig)(nil),           // 44: cronoq.v1.UrgencyConfig
+	(*WorkerGroup)(nil),             // 45: cronoq.v1.WorkerGroup
+	(*Totals)(nil),                  // 46: cronoq.v1.Totals
+	(*SnapshotResponse)(nil),        // 47: cronoq.v1.SnapshotResponse
+	(*RecurringRequest)(nil),        // 48: cronoq.v1.RecurringRequest
+	(*RemoveRecurringRequest)(nil),  // 49: cronoq.v1.RemoveRecurringRequest
+	(*RemoveRecurringResponse)(nil), // 50: cronoq.v1.RemoveRecurringResponse
+	(*WorkerInfo)(nil),              // 51: cronoq.v1.WorkerInfo
+	(*ListWorkersResponse)(nil),     // 52: cronoq.v1.ListWorkersResponse
+	(*RecurringInfo)(nil),           // 53: cronoq.v1.RecurringInfo
+	(*ListRecurringResponse)(nil),   // 54: cronoq.v1.ListRecurringResponse
+	nil,                             // 55: cronoq.v1.TaskSpec.ResourcesEntry
+	nil,                             // 56: cronoq.v1.TaskSpec.TagsEntry
+	nil,                             // 57: cronoq.v1.TaskSpec.LabelsEntry
+	nil,                             // 58: cronoq.v1.UpdateRequest.TagsEntry
+	nil,                             // 59: cronoq.v1.Register.LabelsEntry
+	nil,                             // 60: cronoq.v1.Lease.TagsEntry
+	nil,                             // 61: cronoq.v1.WorkerGroup.LabelsEntry
+	nil,                             // 62: cronoq.v1.WorkerInfo.LabelsEntry
 }
 var file_cronoq_v1_cronoq_proto_depIdxs = []int32{
-	6,  // 0: cronoq.v1.Dep.target:type_name -> cronoq.v1.TaskRef
+	8,  // 0: cronoq.v1.Dep.target:type_name -> cronoq.v1.TaskRef
 	2,  // 1: cronoq.v1.Dep.cond:type_name -> cronoq.v1.EdgeCond
 	0,  // 2: cronoq.v1.TaskSpec.priority:type_name -> cronoq.v1.Priority
 	3,  // 3: cronoq.v1.TaskSpec.on_miss:type_name -> cronoq.v1.MissPolicy
-	8,  // 4: cronoq.v1.TaskSpec.retry:type_name -> cronoq.v1.RetryPolicy
-	7,  // 5: cronoq.v1.TaskSpec.deps:type_name -> cronoq.v1.Dep
-	53, // 6: cronoq.v1.TaskSpec.resources:type_name -> cronoq.v1.TaskSpec.ResourcesEntry
-	54, // 7: cronoq.v1.TaskSpec.tags:type_name -> cronoq.v1.TaskSpec.TagsEntry
-	55, // 8: cronoq.v1.TaskSpec.labels:type_name -> cronoq.v1.TaskSpec.LabelsEntry
-	9,  // 9: cronoq.v1.SubmitRequest.task:type_name -> cronoq.v1.TaskSpec
-	22, // 10: cronoq.v1.SubmitResponse.result:type_name -> cronoq.v1.TaskResult
-	9,  // 11: cronoq.v1.SubmitBatchRequest.tasks:type_name -> cronoq.v1.TaskSpec
-	11, // 12: cronoq.v1.SubmitBatchResponse.tasks:type_name -> cronoq.v1.SubmitResponse
-	6,  // 13: cronoq.v1.CancelRequest.task:type_name -> cronoq.v1.TaskRef
-	6,  // 14: cronoq.v1.UpdateRequest.task:type_name -> cronoq.v1.TaskRef
-	0,  // 15: cronoq.v1.UpdateRequest.priority:type_name -> cronoq.v1.Priority
-	56, // 16: cronoq.v1.UpdateRequest.tags:type_name -> cronoq.v1.UpdateRequest.TagsEntry
-	1,  // 17: cronoq.v1.UpdateResponse.status:type_name -> cronoq.v1.TaskStatus
-	6,  // 18: cronoq.v1.GetRequest.task:type_name -> cronoq.v1.TaskRef
-	1,  // 19: cronoq.v1.TaskInfo.status:type_name -> cronoq.v1.TaskStatus
-	0,  // 20: cronoq.v1.TaskInfo.priority:type_name -> cronoq.v1.Priority
-	1,  // 21: cronoq.v1.ListTasksRequest.statuses:type_name -> cronoq.v1.TaskStatus
-	19, // 22: cronoq.v1.ListTasksResponse.tasks:type_name -> cronoq.v1.TaskInfo
-	1,  // 23: cronoq.v1.TaskResult.status:type_name -> cronoq.v1.TaskStatus
-	6,  // 24: cronoq.v1.WaitRequest.task:type_name -> cronoq.v1.TaskRef
-	1,  // 25: cronoq.v1.StatusEvent.status:type_name -> cronoq.v1.TaskStatus
-	0,  // 26: cronoq.v1.StatusEvent.priority:type_name -> cronoq.v1.Priority
-	4,  // 27: cronoq.v1.StatusEvent.kind:type_name -> cronoq.v1.EventKind
-	57, // 28: cronoq.v1.Register.labels:type_name -> cronoq.v1.Register.LabelsEntry
-	26, // 29: cronoq.v1.WorkerMessage.register:type_name -> cronoq.v1.Register
-	27, // 30: cronoq.v1.WorkerMessage.heartbeat:type_name -> cronoq.v1.Heartbeat
-	28, // 31: cronoq.v1.WorkerMessage.complete:type_name -> cronoq.v1.Complete
-	29, // 32: cronoq.v1.WorkerMessage.fail:type_name -> cronoq.v1.Fail
-	30, // 33: cronoq.v1.WorkerMessage.set_slots:type_name -> cronoq.v1.SetSlots
-	31, // 34: cronoq.v1.WorkerMessage.nack:type_name -> cronoq.v1.Nack
-	32, // 35: cronoq.v1.WorkerMessage.cancelled:type_name -> cronoq.v1.Cancelled
-	58, // 36: cronoq.v1.Lease.tags:type_name -> cronoq.v1.Lease.TagsEntry
-	0,  // 37: cronoq.v1.Lease.priority:type_name -> cronoq.v1.Priority
-	34, // 38: cronoq.v1.ServerMessage.registered:type_name -> cronoq.v1.Registered
-	35, // 39: cronoq.v1.ServerMessage.lease:type_name -> cronoq.v1.Lease
-	36, // 40: cronoq.v1.ServerMessage.abort:type_name -> cronoq.v1.Abort
-	37, // 41: cronoq.v1.ServerMessage.shutdown:type_name -> cronoq.v1.Shutdown
-	43, // 42: cronoq.v1.PoolSnapshot.groups:type_name -> cronoq.v1.WorkerGroup
-	41, // 43: cronoq.v1.PoolSnapshot.priority:type_name -> cronoq.v1.PriorityConfig
-	42, // 44: cronoq.v1.PoolSnapshot.urgency:type_name -> cronoq.v1.UrgencyConfig
-	59, // 45: cronoq.v1.WorkerGroup.labels:type_name -> cronoq.v1.WorkerGroup.LabelsEntry
-	40, // 46: cronoq.v1.SnapshotResponse.pools:type_name -> cronoq.v1.PoolSnapshot
-	44, // 47: cronoq.v1.SnapshotResponse.totals:type_name -> cronoq.v1.Totals
-	9,  // 48: cronoq.v1.RecurringRequest.template:type_name -> cronoq.v1.TaskSpec
-	5,  // 49: cronoq.v1.RecurringRequest.overlap:type_name -> cronoq.v1.Overlap
-	60, // 50: cronoq.v1.WorkerInfo.labels:type_name -> cronoq.v1.WorkerInfo.LabelsEntry
-	49, // 51: cronoq.v1.ListWorkersResponse.workers:type_name -> cronoq.v1.WorkerInfo
-	5,  // 52: cronoq.v1.RecurringInfo.overlap:type_name -> cronoq.v1.Overlap
-	51, // 53: cronoq.v1.ListRecurringResponse.schedules:type_name -> cronoq.v1.RecurringInfo
-	10, // 54: cronoq.v1.Tasks.Submit:input_type -> cronoq.v1.SubmitRequest
-	12, // 55: cronoq.v1.Tasks.SubmitBatch:input_type -> cronoq.v1.SubmitBatchRequest
-	14, // 56: cronoq.v1.Tasks.Cancel:input_type -> cronoq.v1.CancelRequest
-	16, // 57: cronoq.v1.Tasks.Update:input_type -> cronoq.v1.UpdateRequest
-	18, // 58: cronoq.v1.Tasks.Get:input_type -> cronoq.v1.GetRequest
-	20, // 59: cronoq.v1.Tasks.ListTasks:input_type -> cronoq.v1.ListTasksRequest
-	23, // 60: cronoq.v1.Tasks.Wait:input_type -> cronoq.v1.WaitRequest
-	24, // 61: cronoq.v1.Tasks.Watch:input_type -> cronoq.v1.WatchRequest
-	33, // 62: cronoq.v1.Workers.Work:input_type -> cronoq.v1.WorkerMessage
-	39, // 63: cronoq.v1.Admin.Snapshot:input_type -> cronoq.v1.Empty
-	46, // 64: cronoq.v1.Admin.AddRecurring:input_type -> cronoq.v1.RecurringRequest
-	47, // 65: cronoq.v1.Admin.RemoveRecurring:input_type -> cronoq.v1.RemoveRecurringRequest
-	39, // 66: cronoq.v1.Admin.ListWorkers:input_type -> cronoq.v1.Empty
-	39, // 67: cronoq.v1.Admin.ListRecurring:input_type -> cronoq.v1.Empty
-	11, // 68: cronoq.v1.Tasks.Submit:output_type -> cronoq.v1.SubmitResponse
-	13, // 69: cronoq.v1.Tasks.SubmitBatch:output_type -> cronoq.v1.SubmitBatchResponse
-	15, // 70: cronoq.v1.Tasks.Cancel:output_type -> cronoq.v1.CancelResponse
-	17, // 71: cronoq.v1.Tasks.Update:output_type -> cronoq.v1.UpdateResponse
-	19, // 72: cronoq.v1.Tasks.Get:output_type -> cronoq.v1.TaskInfo
-	21, // 73: cronoq.v1.Tasks.ListTasks:output_type -> cronoq.v1.ListTasksResponse
-	22, // 74: cronoq.v1.Tasks.Wait:output_type -> cronoq.v1.TaskResult
-	25, // 75: cronoq.v1.Tasks.Watch:output_type -> cronoq.v1.StatusEvent
-	38, // 76: cronoq.v1.Workers.Work:output_type -> cronoq.v1.ServerMessage
-	45, // 77: cronoq.v1.Admin.Snapshot:output_type -> cronoq.v1.SnapshotResponse
-	39, // 78: cronoq.v1.Admin.AddRecurring:output_type -> cronoq.v1.Empty
-	48, // 79: cronoq.v1.Admin.RemoveRecurring:output_type -> cronoq.v1.RemoveRecurringResponse
-	50, // 80: cronoq.v1.Admin.ListWorkers:output_type -> cronoq.v1.ListWorkersResponse
-	52, // 81: cronoq.v1.Admin.ListRecurring:output_type -> cronoq.v1.ListRecurringResponse
-	68, // [68:82] is the sub-list for method output_type
-	54, // [54:68] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	10, // 4: cronoq.v1.TaskSpec.retry:type_name -> cronoq.v1.RetryPolicy
+	9,  // 5: cronoq.v1.TaskSpec.deps:type_name -> cronoq.v1.Dep
+	55, // 6: cronoq.v1.TaskSpec.resources:type_name -> cronoq.v1.TaskSpec.ResourcesEntry
+	56, // 7: cronoq.v1.TaskSpec.tags:type_name -> cronoq.v1.TaskSpec.TagsEntry
+	57, // 8: cronoq.v1.TaskSpec.labels:type_name -> cronoq.v1.TaskSpec.LabelsEntry
+	11, // 9: cronoq.v1.SubmitRequest.task:type_name -> cronoq.v1.TaskSpec
+	4,  // 10: cronoq.v1.SubmitRequest.on_key_conflict:type_name -> cronoq.v1.KeyConflict
+	24, // 11: cronoq.v1.SubmitResponse.result:type_name -> cronoq.v1.TaskResult
+	5,  // 12: cronoq.v1.SubmitResponse.outcome:type_name -> cronoq.v1.SubmitOutcome
+	11, // 13: cronoq.v1.SubmitBatchRequest.tasks:type_name -> cronoq.v1.TaskSpec
+	13, // 14: cronoq.v1.SubmitBatchResponse.tasks:type_name -> cronoq.v1.SubmitResponse
+	8,  // 15: cronoq.v1.CancelRequest.task:type_name -> cronoq.v1.TaskRef
+	8,  // 16: cronoq.v1.UpdateRequest.task:type_name -> cronoq.v1.TaskRef
+	0,  // 17: cronoq.v1.UpdateRequest.priority:type_name -> cronoq.v1.Priority
+	58, // 18: cronoq.v1.UpdateRequest.tags:type_name -> cronoq.v1.UpdateRequest.TagsEntry
+	1,  // 19: cronoq.v1.UpdateResponse.status:type_name -> cronoq.v1.TaskStatus
+	8,  // 20: cronoq.v1.GetRequest.task:type_name -> cronoq.v1.TaskRef
+	1,  // 21: cronoq.v1.TaskInfo.status:type_name -> cronoq.v1.TaskStatus
+	0,  // 22: cronoq.v1.TaskInfo.priority:type_name -> cronoq.v1.Priority
+	1,  // 23: cronoq.v1.ListTasksRequest.statuses:type_name -> cronoq.v1.TaskStatus
+	21, // 24: cronoq.v1.ListTasksResponse.tasks:type_name -> cronoq.v1.TaskInfo
+	1,  // 25: cronoq.v1.TaskResult.status:type_name -> cronoq.v1.TaskStatus
+	8,  // 26: cronoq.v1.WaitRequest.task:type_name -> cronoq.v1.TaskRef
+	1,  // 27: cronoq.v1.StatusEvent.status:type_name -> cronoq.v1.TaskStatus
+	0,  // 28: cronoq.v1.StatusEvent.priority:type_name -> cronoq.v1.Priority
+	6,  // 29: cronoq.v1.StatusEvent.kind:type_name -> cronoq.v1.EventKind
+	59, // 30: cronoq.v1.Register.labels:type_name -> cronoq.v1.Register.LabelsEntry
+	28, // 31: cronoq.v1.WorkerMessage.register:type_name -> cronoq.v1.Register
+	29, // 32: cronoq.v1.WorkerMessage.heartbeat:type_name -> cronoq.v1.Heartbeat
+	30, // 33: cronoq.v1.WorkerMessage.complete:type_name -> cronoq.v1.Complete
+	31, // 34: cronoq.v1.WorkerMessage.fail:type_name -> cronoq.v1.Fail
+	32, // 35: cronoq.v1.WorkerMessage.set_slots:type_name -> cronoq.v1.SetSlots
+	33, // 36: cronoq.v1.WorkerMessage.nack:type_name -> cronoq.v1.Nack
+	34, // 37: cronoq.v1.WorkerMessage.cancelled:type_name -> cronoq.v1.Cancelled
+	60, // 38: cronoq.v1.Lease.tags:type_name -> cronoq.v1.Lease.TagsEntry
+	0,  // 39: cronoq.v1.Lease.priority:type_name -> cronoq.v1.Priority
+	36, // 40: cronoq.v1.ServerMessage.registered:type_name -> cronoq.v1.Registered
+	37, // 41: cronoq.v1.ServerMessage.lease:type_name -> cronoq.v1.Lease
+	38, // 42: cronoq.v1.ServerMessage.abort:type_name -> cronoq.v1.Abort
+	39, // 43: cronoq.v1.ServerMessage.shutdown:type_name -> cronoq.v1.Shutdown
+	45, // 44: cronoq.v1.PoolSnapshot.groups:type_name -> cronoq.v1.WorkerGroup
+	43, // 45: cronoq.v1.PoolSnapshot.priority:type_name -> cronoq.v1.PriorityConfig
+	44, // 46: cronoq.v1.PoolSnapshot.urgency:type_name -> cronoq.v1.UrgencyConfig
+	61, // 47: cronoq.v1.WorkerGroup.labels:type_name -> cronoq.v1.WorkerGroup.LabelsEntry
+	42, // 48: cronoq.v1.SnapshotResponse.pools:type_name -> cronoq.v1.PoolSnapshot
+	46, // 49: cronoq.v1.SnapshotResponse.totals:type_name -> cronoq.v1.Totals
+	11, // 50: cronoq.v1.RecurringRequest.template:type_name -> cronoq.v1.TaskSpec
+	7,  // 51: cronoq.v1.RecurringRequest.overlap:type_name -> cronoq.v1.Overlap
+	62, // 52: cronoq.v1.WorkerInfo.labels:type_name -> cronoq.v1.WorkerInfo.LabelsEntry
+	51, // 53: cronoq.v1.ListWorkersResponse.workers:type_name -> cronoq.v1.WorkerInfo
+	7,  // 54: cronoq.v1.RecurringInfo.overlap:type_name -> cronoq.v1.Overlap
+	53, // 55: cronoq.v1.ListRecurringResponse.schedules:type_name -> cronoq.v1.RecurringInfo
+	12, // 56: cronoq.v1.Tasks.Submit:input_type -> cronoq.v1.SubmitRequest
+	14, // 57: cronoq.v1.Tasks.SubmitBatch:input_type -> cronoq.v1.SubmitBatchRequest
+	16, // 58: cronoq.v1.Tasks.Cancel:input_type -> cronoq.v1.CancelRequest
+	18, // 59: cronoq.v1.Tasks.Update:input_type -> cronoq.v1.UpdateRequest
+	20, // 60: cronoq.v1.Tasks.Get:input_type -> cronoq.v1.GetRequest
+	22, // 61: cronoq.v1.Tasks.ListTasks:input_type -> cronoq.v1.ListTasksRequest
+	25, // 62: cronoq.v1.Tasks.Wait:input_type -> cronoq.v1.WaitRequest
+	26, // 63: cronoq.v1.Tasks.Watch:input_type -> cronoq.v1.WatchRequest
+	35, // 64: cronoq.v1.Workers.Work:input_type -> cronoq.v1.WorkerMessage
+	41, // 65: cronoq.v1.Admin.Snapshot:input_type -> cronoq.v1.Empty
+	48, // 66: cronoq.v1.Admin.AddRecurring:input_type -> cronoq.v1.RecurringRequest
+	49, // 67: cronoq.v1.Admin.RemoveRecurring:input_type -> cronoq.v1.RemoveRecurringRequest
+	41, // 68: cronoq.v1.Admin.ListWorkers:input_type -> cronoq.v1.Empty
+	41, // 69: cronoq.v1.Admin.ListRecurring:input_type -> cronoq.v1.Empty
+	13, // 70: cronoq.v1.Tasks.Submit:output_type -> cronoq.v1.SubmitResponse
+	15, // 71: cronoq.v1.Tasks.SubmitBatch:output_type -> cronoq.v1.SubmitBatchResponse
+	17, // 72: cronoq.v1.Tasks.Cancel:output_type -> cronoq.v1.CancelResponse
+	19, // 73: cronoq.v1.Tasks.Update:output_type -> cronoq.v1.UpdateResponse
+	21, // 74: cronoq.v1.Tasks.Get:output_type -> cronoq.v1.TaskInfo
+	23, // 75: cronoq.v1.Tasks.ListTasks:output_type -> cronoq.v1.ListTasksResponse
+	24, // 76: cronoq.v1.Tasks.Wait:output_type -> cronoq.v1.TaskResult
+	27, // 77: cronoq.v1.Tasks.Watch:output_type -> cronoq.v1.StatusEvent
+	40, // 78: cronoq.v1.Workers.Work:output_type -> cronoq.v1.ServerMessage
+	47, // 79: cronoq.v1.Admin.Snapshot:output_type -> cronoq.v1.SnapshotResponse
+	41, // 80: cronoq.v1.Admin.AddRecurring:output_type -> cronoq.v1.Empty
+	50, // 81: cronoq.v1.Admin.RemoveRecurring:output_type -> cronoq.v1.RemoveRecurringResponse
+	52, // 82: cronoq.v1.Admin.ListWorkers:output_type -> cronoq.v1.ListWorkersResponse
+	54, // 83: cronoq.v1.Admin.ListRecurring:output_type -> cronoq.v1.ListRecurringResponse
+	70, // [70:84] is the sub-list for method output_type
+	56, // [56:70] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_cronoq_v1_cronoq_proto_init() }
@@ -4659,7 +4842,7 @@ func file_cronoq_v1_cronoq_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cronoq_v1_cronoq_proto_rawDesc), len(file_cronoq_v1_cronoq_proto_rawDesc)),
-			NumEnums:      6,
+			NumEnums:      8,
 			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   3,

@@ -383,7 +383,8 @@ impl Scheduler {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None, tenant=None
+        tags=None, labels=None, tenant=None,
+        on_key_conflict=None, renew_position=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn submit<'py>(
@@ -409,6 +410,8 @@ impl Scheduler {
         tags: Option<&Bound<'py, PyDict>>,
         labels: Option<&Bound<'py, PyDict>>,
         tenant: Option<&str>,
+        on_key_conflict: Option<&str>,
+        renew_position: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -432,7 +435,7 @@ impl Scheduler {
             tenant,
         )?;
         let s = self.sched(py)?;
-        let task = self.task(py, &opts, payload)?;
+        let task = replacing(self.task(py, &opts, payload)?, on_key_conflict, renew_position)?;
         spawn_py(py, async move {
             let h = s.submit(task).await.map_err(to_pyerr)?;
             Ok(TaskHandle::new(h, s))
@@ -444,7 +447,8 @@ impl Scheduler {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None, tenant=None
+        tags=None, labels=None, tenant=None,
+        on_key_conflict=None, renew_position=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn enqueue<'py>(
@@ -470,6 +474,8 @@ impl Scheduler {
         tags: Option<&Bound<'py, PyDict>>,
         labels: Option<&Bound<'py, PyDict>>,
         tenant: Option<&str>,
+        on_key_conflict: Option<&str>,
+        renew_position: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -493,7 +499,7 @@ impl Scheduler {
             tenant,
         )?;
         let s = self.sched(py)?;
-        let task = self.task(py, &opts, payload)?;
+        let task = replacing(self.task(py, &opts, payload)?, on_key_conflict, renew_position)?;
         spawn_py(py, async move {
             let sub = s.enqueue(task).await.map_err(to_pyerr)?;
             Ok(sub.id.0)
@@ -861,6 +867,35 @@ impl Scheduler {
     }
 }
 
+/// Apply the `on_key_conflict` and `renew_position` options of a single submission.
+fn replacing(
+    task: cronoq::Task<PyObj>,
+    on_key_conflict: Option<&str>,
+    renew_position: bool,
+) -> PyResult<cronoq::Task<PyObj>> {
+    let task = match on_key_conflict {
+        None | Some("return_existing") => {
+            if renew_position {
+                return Err(PyValueError::new_err(
+                    "renew_position needs on_key_conflict='replace_queued'",
+                ));
+            }
+            return Ok(task);
+        }
+        Some("replace_queued") => task.replace_queued(),
+        Some(_) => {
+            return Err(PyValueError::new_err(
+                "on_key_conflict must be 'return_existing' or 'replace_queued'",
+            ));
+        }
+    };
+    Ok(if renew_position {
+        task.renew_position()
+    } else {
+        task
+    })
+}
+
 type Outcome = Result<Arc<PyObj>, TaskFailure>;
 
 /// Awaitable handle to a submitted task. `await handle` returns the executor's result or
@@ -869,6 +904,7 @@ type Outcome = Result<Arc<PyObj>, TaskFailure>;
 pub struct TaskHandle {
     id: u64,
     duplicate: bool,
+    outcome: &'static str,
     result: watch::Receiver<Option<Outcome>>,
     sched: Sched,
 }
@@ -877,6 +913,12 @@ impl TaskHandle {
     fn new(h: cronoq::TaskHandle<PyObj>, sched: Sched) -> Self {
         let (tx, rx) = watch::channel(None);
         let (id, duplicate) = (h.id().0, h.is_duplicate());
+        let outcome = match h.outcome() {
+            cronoq::SubmitOutcome::Created => "created",
+            cronoq::SubmitOutcome::Existing => "existing",
+            cronoq::SubmitOutcome::Replaced => "replaced",
+            cronoq::SubmitOutcome::Pending => "pending",
+        };
         // Resolve in the background so `done()` reflects completion without being awaited.
         runtime().spawn(async move {
             let r = h.await;
@@ -885,6 +927,7 @@ impl TaskHandle {
         TaskHandle {
             id,
             duplicate,
+            outcome,
             result: rx,
             sched,
         }
@@ -901,6 +944,14 @@ impl TaskHandle {
     #[getter]
     fn duplicate(&self) -> bool {
         self.duplicate
+    }
+    /// What the submission did: `"created"`, `"existing"` (the key was in use and the task
+    /// is returned unchanged), `"replaced"` (the task had not started and now carries this
+    /// submission) or `"pending"` (the task has started: this submission runs after it as a
+    /// new task with the same key, and this handle tracks the running task).
+    #[getter]
+    fn outcome(&self) -> &'static str {
+        self.outcome
     }
     /// Coroutine resolving to the result (same as awaiting the handle).
     fn result<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -1131,6 +1182,8 @@ fn convert(e: &CoreEvent, pools: &[Arc<str>], clock: &cronoq::Clock) -> StatusEv
         kind: match e.kind {
             cronoq::EventKind::Transition => "transition",
             cronoq::EventKind::Updated => "updated",
+            cronoq::EventKind::Replaced => "replaced",
+            cronoq::EventKind::Successor => "successor",
         }
         .to_string(),
     }
@@ -1310,6 +1363,7 @@ impl From<cronoq::Snapshot> for Snapshot {
             ("recurring_conflicts", t.recurring_conflicts),
             ("recurring_invalid", t.recurring_invalid),
             ("stale_completions", t.stale_completions),
+            ("superseded", t.superseded),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))

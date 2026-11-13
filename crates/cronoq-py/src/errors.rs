@@ -33,6 +33,7 @@ fn submit_code(e: &SubmitError) -> &'static str {
         SubmitError::Full => "full",
         SubmitError::Overloaded => "overloaded",
         SubmitError::DuplicateKeyInBatch(_) => "duplicate_key_in_batch",
+        SubmitError::ReplaceMismatch(_) => "replace_mismatch",
         SubmitError::Invalid(_) => "invalid",
     }
 }

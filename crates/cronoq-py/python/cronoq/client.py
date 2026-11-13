@@ -199,9 +199,32 @@ class Result:
 
 @dataclass(frozen=True)
 class Submitted:
+    """Result of a submission.
+
+    ``outcome`` says what it did: ``"created"``; ``"existing"`` (the key was in use and the
+    task is returned unchanged); ``"replaced"`` (the task had not started and now carries
+    this submission); or ``"pending"`` (the task has started, so this submission runs after
+    it as a new task with the same key: ``id``, and ``result`` with ``wait=True``, are the
+    running task's).
+    """
+
     id: int
     duplicate: bool
     result: Result | None = None
+    outcome: str = "created"
+
+
+_OUTCOMES = {
+    pb.SUBMIT_OUTCOME_CREATED: "created",
+    pb.SUBMIT_OUTCOME_EXISTING: "existing",
+    pb.SUBMIT_OUTCOME_REPLACED: "replaced",
+    pb.SUBMIT_OUTCOME_PENDING: "pending",
+}
+
+
+def _outcome(r: Any) -> str:
+    # A server older than the field only says whether the key existed.
+    return _OUTCOMES.get(r.outcome, "existing" if r.duplicate else "created")
 
 
 @dataclass(frozen=True)
@@ -217,6 +240,13 @@ class Updated:
     status: str
     deferred: bool
     changed: bool
+
+
+_EVENT_KINDS = {
+    pb.EVENT_KIND_UPDATED: "updated",
+    pb.EVENT_KIND_REPLACED: "replaced",
+    pb.EVENT_KIND_SUCCESSOR: "successor",
+}
 
 
 def _opt_secs(msg: Any, field_name: str) -> float | None:
@@ -330,8 +360,11 @@ _TERMINAL = frozenset({"succeeded", "failed", "dead_lettered", "cancelled", "ski
 class Event:
     """A task status transition, or a change made by :meth:`Client.update`.
 
-    ``priority`` is the task's class at the time of the event. ``updated`` is true for an
-    event that reports an update: ``status`` is then the task's unchanged status.
+    ``priority`` is the task's class at the time of the event. ``kind`` is ``"transition"``
+    for a status change; ``"updated"`` (also ``updated``), ``"replaced"`` (a submission with
+    the task's key replaced it or was stored to run after it) and ``"successor"`` (the task
+    was created from such a stored submission; ``message`` names the task it follows) report
+    something else, and ``status`` is then the task's status at that moment.
     """
 
     id: int
@@ -343,6 +376,7 @@ class Event:
     message: str
     priority: str | None = None
     updated: bool = False
+    kind: str = "transition"
 
 
 @dataclass(frozen=True)
@@ -425,6 +459,7 @@ class Totals:
     timeouts: int = 0
     lease_expiries: int = 0
     stale_completions: int = 0
+    superseded: int = 0
 
 
 @dataclass(frozen=True)
@@ -737,10 +772,22 @@ class Client:
         wait: bool = False,
         wait_timeout: float | None = None,
         call_timeout: float | None = None,
+        on_key_conflict: str | None = None,
+        renew_position: bool = False,
         **opts: Any,
     ) -> Submitted:
         """Submit one task (see :func:`task` for options; ``timeout`` there is the task's
         execution timeout).
+
+        ``on_key_conflict`` says what happens when the task's ``key`` is in use:
+        ``"return_existing"`` (the default) returns that task and drops this submission;
+        ``"replace_queued"`` lets the newest submission win. A task that has not started is
+        then replaced in place (same id and place in line, or this submission's place with
+        ``renew_position=True``); a task that has started keeps its payload, and this
+        submission runs after it as a new task with the same key. ``Submitted.outcome`` tells
+        which happened. The replacement must name the same pool, resources, worker labels,
+        tenant and dependencies as the task; otherwise the call fails with
+        ``failed_precondition``.
 
         With ``wait=True`` the call returns when the task finished, with ``Submitted.result``
         set. ``wait_timeout`` bounds the wait on the server (which also caps it at its
@@ -749,6 +796,13 @@ class Client:
         later). :class:`ClientError` ``unavailable`` means the server shut down or lost
         leadership before the task finished."""
         req = pb.SubmitRequest(task=task(payload, **opts), wait=wait)
+        if on_key_conflict == "replace_queued":
+            req.on_key_conflict = pb.KEY_CONFLICT_REPLACE_QUEUED
+            req.renew_position = bool(renew_position)
+        elif on_key_conflict not in (None, "return_existing"):
+            raise ValueError("on_key_conflict must be 'return_existing' or 'replace_queued'")
+        elif renew_position:
+            raise ValueError("renew_position needs on_key_conflict='replace_queued'")
         if wait_timeout is not None:
             if not wait:
                 raise ValueError("wait_timeout requires wait=True")
@@ -756,12 +810,13 @@ class Client:
             if call_timeout is None:
                 call_timeout = float(wait_timeout) + _WAIT_DEADLINE_MARGIN
         r = await self._call(self._tasks.Submit, req, call_timeout)
-        return Submitted(r.id, r.duplicate, Result._from_pb(r.result) if r.HasField("result") else None)
+        result = Result._from_pb(r.result) if r.HasField("result") else None
+        return Submitted(r.id, r.duplicate, result, _outcome(r))
 
     async def submit_batch(self, tasks: Sequence[pb.TaskSpec]) -> list[Submitted]:
         """Submit specs built with :func:`task` atomically; they may reference each other's keys."""
         r = await self._call(self._tasks.SubmitBatch, pb.SubmitBatchRequest(tasks=list(tasks)))
-        return [Submitted(t.id, t.duplicate) for t in r.tasks]
+        return [Submitted(t.id, t.duplicate, None, _outcome(t)) for t in r.tasks]
 
     async def cancel(self, ref: TaskRef) -> bool:
         """Cancel a task by id or key; ``False`` if it already finished."""
@@ -911,6 +966,7 @@ class Client:
                     message=e.message,
                     priority=_priority_name(e.priority),
                     updated=e.kind == pb.EVENT_KIND_UPDATED,
+                    kind=_EVENT_KINDS.get(e.kind, "transition"),
                 )
         except grpc.aio.AioRpcError as e:
             if e.code() != grpc.StatusCode.CANCELLED:
@@ -985,6 +1041,7 @@ class Client:
                 timeouts=t.timeouts,
                 lease_expiries=t.lease_expiries,
                 stale_completions=t.stale_completions,
+                superseded=t.superseded,
             ),
             workers_connected=r.workers_connected,
             unavailable_shards=tuple(r.unavailable_shards),

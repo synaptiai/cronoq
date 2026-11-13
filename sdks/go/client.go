@@ -166,10 +166,45 @@ type Submitted struct {
 	Duplicate bool
 	// Result is set by SubmitAndWait.
 	Result *Result
+	// Outcome says what the submission did.
+	Outcome Outcome
 }
+
+// Outcome is what an accepted submission did.
+type Outcome string
+
+const (
+	// OutcomeCreated: a new task was created.
+	OutcomeCreated Outcome = "created"
+	// OutcomeExisting: the key was in use, and that task is returned unchanged.
+	OutcomeExisting Outcome = "existing"
+	// OutcomeReplaced: the task holding the key had not started and now carries this submission
+	// ([Task.Replace]).
+	OutcomeReplaced Outcome = "replaced"
+	// OutcomePending: the task holding the key has started, so this submission is stored and runs
+	// after it as a new task with the same key. Submitted.ID, and Result after
+	// SubmitAndWait, are the running task's.
+	OutcomePending Outcome = "pending"
+)
 
 func submitted(r *pb.SubmitResponse) Submitted {
 	s := Submitted{ID: r.GetId(), Duplicate: r.GetDuplicate()}
+	switch r.GetOutcome() {
+	case pb.SubmitOutcome_SUBMIT_OUTCOME_CREATED:
+		s.Outcome = OutcomeCreated
+	case pb.SubmitOutcome_SUBMIT_OUTCOME_EXISTING:
+		s.Outcome = OutcomeExisting
+	case pb.SubmitOutcome_SUBMIT_OUTCOME_REPLACED:
+		s.Outcome = OutcomeReplaced
+	case pb.SubmitOutcome_SUBMIT_OUTCOME_PENDING:
+		s.Outcome = OutcomePending
+	default:
+		// A server older than the field only says whether the key existed.
+		s.Outcome = OutcomeCreated
+		if s.Duplicate {
+			s.Outcome = OutcomeExisting
+		}
+	}
 	if r.Result != nil {
 		s.Result = result(r.Result)
 	}
@@ -178,19 +213,23 @@ func submitted(r *pb.SubmitResponse) Submitted {
 
 // Submit submits one task.
 func (c *Client) Submit(ctx context.Context, t Task) (Submitted, error) {
-	return c.SubmitSpec(ctx, t.Spec(), false, 0)
+	return c.submit(ctx, t.request(), false, 0)
 }
 
 // SubmitAndWait submits one task and waits up to timeout (0: the server's limit) for it to
 // finish. When it is still running at the timeout, the error is a [*Error] with
 // [Error.Timeout] true; the task stays submitted.
 func (c *Client) SubmitAndWait(ctx context.Context, t Task, timeout time.Duration) (Submitted, error) {
-	return c.SubmitSpec(ctx, t.Spec(), true, timeout)
+	return c.submit(ctx, t.request(), true, timeout)
 }
 
 // SubmitSpec submits a task described by a raw spec.
 func (c *Client) SubmitSpec(ctx context.Context, spec *pb.TaskSpec, wait bool, timeout time.Duration) (Submitted, error) {
-	req := &pb.SubmitRequest{Task: spec, Wait: wait}
+	return c.submit(ctx, &pb.SubmitRequest{Task: spec}, wait, timeout)
+}
+
+func (c *Client) submit(ctx context.Context, req *pb.SubmitRequest, wait bool, timeout time.Duration) (Submitted, error) {
+	req.Wait = wait
 	if wait && timeout > 0 {
 		req.WaitTimeoutS = seconds(timeout)
 	}
@@ -363,6 +402,38 @@ type Event struct {
 	// Updated reports that the event is not a status change: the task was changed by
 	// [Client.Update] and Status is its unchanged status. Only delivered with AllTransitions.
 	Updated bool
+	// Kind says what the event reports. Kinds other than EventTransition are only delivered with
+	// AllTransitions, and Status is then the task's status at that moment.
+	Kind EventKind
+}
+
+// EventKind is what an [Event] reports.
+type EventKind string
+
+const (
+	// EventTransition: the task changed status.
+	EventTransition EventKind = "transition"
+	// EventUpdated: the task was changed by [Client.Update].
+	EventUpdated EventKind = "updated"
+	// EventReplaced: a submission with the task's key replaced it, or was stored to run
+	// after it ([Task.Replace]).
+	EventReplaced EventKind = "replaced"
+	// EventSuccessor: the task was created from a stored submission when the task that held
+	// its key ended; Message names that task.
+	EventSuccessor EventKind = "successor"
+)
+
+func eventKind(k pb.EventKind) EventKind {
+	switch k {
+	case pb.EventKind_EVENT_KIND_UPDATED:
+		return EventUpdated
+	case pb.EventKind_EVENT_KIND_REPLACED:
+		return EventReplaced
+	case pb.EventKind_EVENT_KIND_SUCCESSOR:
+		return EventSuccessor
+	default:
+		return EventTransition
+	}
 }
 
 // Watch streams status events until ctx ends or the stream fails. The stream ends with an
@@ -390,6 +461,7 @@ func (c *Client) Watch(ctx context.Context, o WatchOptions) iter.Seq2[Event, err
 				Attempt: e.GetAttempt(), At: time.Unix(0, e.GetAtUnixNs()), Message: e.GetMessage(),
 				Priority: priority(e.GetPriority()),
 				Updated:  e.GetKind() == pb.EventKind_EVENT_KIND_UPDATED,
+				Kind:     eventKind(e.GetKind()),
 			}
 			if !yield(ev, nil) {
 				return

@@ -39,6 +39,23 @@ type Task struct {
 	// MaxAttempts, when set, replaces the pool's retry policy with this many attempts and the
 	// server's default backoff.
 	MaxAttempts uint32
+	// Replace lets the newest submission of Key win. A task with the key that has not
+	// started is replaced in place (same id and place in line). One that has started keeps
+	// its payload, and this task runs after it as a new task with the same key. See
+	// [Submitted.Outcome]. Not used by SubmitBatch or [Task.Spec].
+	Replace bool
+	// RenewPosition, with Replace, takes this submission's place in line instead of keeping
+	// the place of the task it replaces.
+	RenewPosition bool
+}
+
+// request builds the submission of the task, with its options.
+func (t Task) request() *pb.SubmitRequest {
+	req := &pb.SubmitRequest{Task: t.Spec(), RenewPosition: t.RenewPosition}
+	if t.Replace {
+		req.OnKeyConflict = pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED
+	}
+	return req
 }
 
 // Spec converts the task to its raw protobuf spec.

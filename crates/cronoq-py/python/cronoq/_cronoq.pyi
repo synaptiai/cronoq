@@ -219,6 +219,7 @@ class TaskContext:
 class TaskHandle:
     id: int
     duplicate: bool
+    outcome: Literal["created", "existing", "replaced", "pending"]
     def __await__(self) -> Generator[Any, None, Any]: ...
     def result(self) -> Awaitable[Any]: ...
     def done(self) -> bool: ...
@@ -274,7 +275,7 @@ class StatusEvent:
     at: float
     message: str | None
     priority: str
-    kind: Literal["transition", "updated"]
+    kind: Literal["transition", "updated", "replaced", "successor"]
 
 @final
 class Updated:
@@ -354,6 +355,8 @@ class Scheduler:
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
         tenant: str | None = None,
+        on_key_conflict: Literal["return_existing", "replace_queued"] | None = None,
+        renew_position: bool = False,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
@@ -378,6 +381,8 @@ class Scheduler:
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
         tenant: str | None = None,
+        on_key_conflict: Literal["return_existing", "replace_queued"] | None = None,
+        renew_position: bool = False,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...

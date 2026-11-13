@@ -122,6 +122,44 @@ export interface Task {
   labels?: Record<string, string>;
   /** Replaces the pool's retry policy with this many attempts and the server's default backoff. */
   maxAttempts?: number;
+  /**
+   * What to do when `key` is in use. `"return_existing"` (the default) returns that task and
+   * drops this one. `"replace_queued"` lets the newest submission win: a task that has not
+   * started is replaced in place (same id and place in line); one that has started keeps its
+   * payload, and this task runs after it as a new task with the same key. See
+   * {@link Submitted.outcome}. Not used by `submitBatch` or {@link spec}.
+   */
+  onKeyConflict?: "return_existing" | "replace_queued";
+  /** With `"replace_queued"`: take this submission's place in line. */
+  renewPosition?: boolean;
+}
+
+/** The options of a single submission of `t`. */
+function submitOptions(t: Task): { onKeyConflict: pb.KeyConflict; renewPosition: boolean } {
+  return {
+    onKeyConflict:
+      t.onKeyConflict === "replace_queued" ? pb.KeyConflict.REPLACE_QUEUED : pb.KeyConflict.RETURN_EXISTING,
+    renewPosition: t.renewPosition ?? false,
+  };
+}
+
+/** What an accepted submission did. */
+export type Outcome = "created" | "existing" | "replaced" | "pending";
+
+/** What an {@link Event} reports. */
+export type EventKind = "transition" | "updated" | "replaced" | "successor";
+
+function eventKind(k: pb.EventKind): EventKind {
+  switch (k) {
+    case pb.EventKind.UPDATED:
+      return "updated";
+    case pb.EventKind.REPLACED:
+      return "replaced";
+    case pb.EventKind.SUCCESSOR:
+      return "successor";
+    default:
+      return "transition";
+  }
 }
 
 /** The raw spec of a task, for fields {@link Task} does not cover. */
@@ -173,10 +211,38 @@ export interface Submitted {
   duplicate: boolean;
   /** Set by {@link Client.submitAndWait}. */
   result?: Result;
+  /**
+   * What the submission did: `"created"`; `"existing"` (the key was in use and the task is
+   * returned unchanged); `"replaced"` (the task had not started and now carries this
+   * submission); or `"pending"` (the task has started, so this submission runs after it as a
+   * new task with the same key: `id` and `result` are the running task's).
+   */
+  outcome: Outcome;
+}
+
+function outcome(r: pb.SubmitResponse): Outcome {
+  switch (r.outcome) {
+    case pb.SubmitOutcome.CREATED:
+      return "created";
+    case pb.SubmitOutcome.EXISTING:
+      return "existing";
+    case pb.SubmitOutcome.REPLACED:
+      return "replaced";
+    case pb.SubmitOutcome.PENDING:
+      return "pending";
+    default:
+      // A server older than the field only says whether the key existed.
+      return r.duplicate ? "existing" : "created";
+  }
 }
 
 function submitted(r: pb.SubmitResponse): Submitted {
-  return { id: r.id, duplicate: r.duplicate, result: r.result ? result(r.result) : undefined };
+  return {
+    id: r.id,
+    duplicate: r.duplicate,
+    result: r.result ? result(r.result) : undefined,
+    outcome: outcome(r),
+  };
 }
 
 /** A task's details; fields other than `id` and `status` are best effort. */
@@ -235,6 +301,13 @@ export interface Event {
    * `status` is its unchanged status. Only delivered with `allTransitions`.
    */
   updated: boolean;
+  /**
+   * What the event reports. Kinds other than `"transition"` are only delivered with
+   * `allTransitions`, and `status` is then the task's status at that moment. `"replaced"`: a
+   * submission with the task's key replaced it or was stored to run after it. `"successor"`:
+   * the task was created from such a stored submission; `message` names the task it follows.
+   */
+  kind: EventKind;
 }
 
 /** What to change on a task that has not finished; fields left out keep their value. */
@@ -311,7 +384,9 @@ export class Client {
 
   /** Submit one task. */
   submit(task: Task, opts: CallOptions = {}): Promise<Submitted> {
-    return this.call(async () => submitted(await this.tasks.submit({ task: spec(task) }, rpc(opts))));
+    return this.call(async () =>
+      submitted(await this.tasks.submit({ task: spec(task), ...submitOptions(task) }, rpc(opts))),
+    );
   }
 
   /**
@@ -321,7 +396,12 @@ export class Client {
   submitAndWait(task: Task, waitTimeout?: number, opts: CallOptions = {}): Promise<Submitted> {
     const o = { ...opts, timeout: opts.timeout ?? (waitTimeout === undefined ? undefined : waitTimeout + 5) };
     return this.call(async () =>
-      submitted(await this.tasks.submit({ task: spec(task), wait: true, waitTimeoutS: waitTimeout }, rpc(o))),
+      submitted(
+        await this.tasks.submit(
+          { task: spec(task), wait: true, waitTimeoutS: waitTimeout, ...submitOptions(task) },
+          rpc(o),
+        ),
+      ),
     );
   }
 
@@ -418,6 +498,7 @@ export class Client {
           message: e.message,
           priority: priorityName(e.priority),
           updated: e.kind === pb.EventKind.UPDATED,
+          kind: eventKind(e.kind),
         };
       }
     } catch (e) {

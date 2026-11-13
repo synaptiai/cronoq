@@ -44,10 +44,26 @@ class MissPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     MISS_POLICY_SKIP: _ClassVar[MissPolicy]
     MISS_POLICY_FAIL: _ClassVar[MissPolicy]
 
+class KeyConflict(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    KEY_CONFLICT_UNSPECIFIED: _ClassVar[KeyConflict]
+    KEY_CONFLICT_RETURN_EXISTING: _ClassVar[KeyConflict]
+    KEY_CONFLICT_REPLACE_QUEUED: _ClassVar[KeyConflict]
+
+class SubmitOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SUBMIT_OUTCOME_UNSPECIFIED: _ClassVar[SubmitOutcome]
+    SUBMIT_OUTCOME_CREATED: _ClassVar[SubmitOutcome]
+    SUBMIT_OUTCOME_EXISTING: _ClassVar[SubmitOutcome]
+    SUBMIT_OUTCOME_REPLACED: _ClassVar[SubmitOutcome]
+    SUBMIT_OUTCOME_PENDING: _ClassVar[SubmitOutcome]
+
 class EventKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     EVENT_KIND_TRANSITION: _ClassVar[EventKind]
     EVENT_KIND_UPDATED: _ClassVar[EventKind]
+    EVENT_KIND_REPLACED: _ClassVar[EventKind]
+    EVENT_KIND_SUCCESSOR: _ClassVar[EventKind]
 
 class Overlap(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -82,8 +98,18 @@ MISS_POLICY_UNSPECIFIED: MissPolicy
 MISS_POLICY_RUN_LATE: MissPolicy
 MISS_POLICY_SKIP: MissPolicy
 MISS_POLICY_FAIL: MissPolicy
+KEY_CONFLICT_UNSPECIFIED: KeyConflict
+KEY_CONFLICT_RETURN_EXISTING: KeyConflict
+KEY_CONFLICT_REPLACE_QUEUED: KeyConflict
+SUBMIT_OUTCOME_UNSPECIFIED: SubmitOutcome
+SUBMIT_OUTCOME_CREATED: SubmitOutcome
+SUBMIT_OUTCOME_EXISTING: SubmitOutcome
+SUBMIT_OUTCOME_REPLACED: SubmitOutcome
+SUBMIT_OUTCOME_PENDING: SubmitOutcome
 EVENT_KIND_TRANSITION: EventKind
 EVENT_KIND_UPDATED: EventKind
+EVENT_KIND_REPLACED: EventKind
+EVENT_KIND_SUCCESSOR: EventKind
 OVERLAP_UNSPECIFIED: Overlap
 OVERLAP_SKIP: Overlap
 OVERLAP_ALLOW: Overlap
@@ -186,24 +212,30 @@ class TaskSpec(_message.Message):
     def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., tenant: _Optional[str] = ...) -> None: ...
 
 class SubmitRequest(_message.Message):
-    __slots__ = ("task", "wait", "wait_timeout_s")
+    __slots__ = ("task", "wait", "wait_timeout_s", "on_key_conflict", "renew_position")
     TASK_FIELD_NUMBER: _ClassVar[int]
     WAIT_FIELD_NUMBER: _ClassVar[int]
     WAIT_TIMEOUT_S_FIELD_NUMBER: _ClassVar[int]
+    ON_KEY_CONFLICT_FIELD_NUMBER: _ClassVar[int]
+    RENEW_POSITION_FIELD_NUMBER: _ClassVar[int]
     task: TaskSpec
     wait: bool
     wait_timeout_s: float
-    def __init__(self, task: _Optional[_Union[TaskSpec, _Mapping]] = ..., wait: bool = ..., wait_timeout_s: _Optional[float] = ...) -> None: ...
+    on_key_conflict: KeyConflict
+    renew_position: bool
+    def __init__(self, task: _Optional[_Union[TaskSpec, _Mapping]] = ..., wait: bool = ..., wait_timeout_s: _Optional[float] = ..., on_key_conflict: _Optional[_Union[KeyConflict, str]] = ..., renew_position: bool = ...) -> None: ...
 
 class SubmitResponse(_message.Message):
-    __slots__ = ("id", "duplicate", "result")
+    __slots__ = ("id", "duplicate", "result", "outcome")
     ID_FIELD_NUMBER: _ClassVar[int]
     DUPLICATE_FIELD_NUMBER: _ClassVar[int]
     RESULT_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
     id: int
     duplicate: bool
     result: TaskResult
-    def __init__(self, id: _Optional[int] = ..., duplicate: bool = ..., result: _Optional[_Union[TaskResult, _Mapping]] = ...) -> None: ...
+    outcome: SubmitOutcome
+    def __init__(self, id: _Optional[int] = ..., duplicate: bool = ..., result: _Optional[_Union[TaskResult, _Mapping]] = ..., outcome: _Optional[_Union[SubmitOutcome, str]] = ...) -> None: ...
 
 class SubmitBatchRequest(_message.Message):
     __slots__ = ("tasks",)
@@ -642,7 +674,7 @@ class WorkerGroup(_message.Message):
     def __init__(self, labels: _Optional[_Mapping[str, str]] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ...) -> None: ...
 
 class Totals(_message.Message):
-    __slots__ = ("submitted", "dispatched", "succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed", "retries", "timeouts", "lease_expiries", "stale_completions")
+    __slots__ = ("submitted", "dispatched", "succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed", "retries", "timeouts", "lease_expiries", "stale_completions", "superseded")
     SUBMITTED_FIELD_NUMBER: _ClassVar[int]
     DISPATCHED_FIELD_NUMBER: _ClassVar[int]
     SUCCEEDED_FIELD_NUMBER: _ClassVar[int]
@@ -656,6 +688,7 @@ class Totals(_message.Message):
     TIMEOUTS_FIELD_NUMBER: _ClassVar[int]
     LEASE_EXPIRIES_FIELD_NUMBER: _ClassVar[int]
     STALE_COMPLETIONS_FIELD_NUMBER: _ClassVar[int]
+    SUPERSEDED_FIELD_NUMBER: _ClassVar[int]
     submitted: int
     dispatched: int
     succeeded: int
@@ -669,7 +702,8 @@ class Totals(_message.Message):
     timeouts: int
     lease_expiries: int
     stale_completions: int
-    def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ..., stale_completions: _Optional[int] = ...) -> None: ...
+    superseded: int
+    def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ..., stale_completions: _Optional[int] = ..., superseded: _Optional[int] = ...) -> None: ...
 
 class SnapshotResponse(_message.Message):
     __slots__ = ("pools", "live_tasks", "running", "pending", "totals", "workers_connected", "unavailable_shards")

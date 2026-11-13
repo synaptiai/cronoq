@@ -166,6 +166,62 @@ async def test_update_moves_a_queued_task_and_spares_a_running_one():
             await s.update("b", priority="low")
 
 
+async def test_replace_by_key_latest_wins():
+    seen: list[str] = []
+    gate = asyncio.Event()
+
+    async def run(ctx, payload):
+        if payload == "blocker":
+            await gate.wait()
+        seen.append(payload)
+        return payload
+
+    async with Scheduler([Pool("default", run, max=1, autoscale=False)], emit_transitions=True) as s:
+        events = s.events()
+        blocker = await s.submit("blocker", key="b")
+        while await s.status("b") != "running":
+            await asyncio.sleep(0.01)
+        first = await s.submit("v1", key="title")
+        assert first.outcome == "created"
+        # Not started: replaced in place, same task.
+        for v in ("v2", "v3"):
+            h = await s.submit(v, key="title", on_key_conflict="replace_queued")
+            assert (h.id, h.duplicate, h.outcome) == (first.id, True, "replaced")
+        assert (await s.submit("ignored", key="title")).outcome == "existing"
+        # Started: the payload stays, and the newest submission runs after it.
+        stored = await s.submit("b2", key="b", on_key_conflict="replace_queued", renew_position=True)
+        assert (stored.id, stored.outcome) == (blocker.id, "pending")
+        assert await s.enqueue("b3", key="b", on_key_conflict="replace_queued") == blocker.id
+
+        with pytest.raises(ValueError):
+            await s.submit("x", key="title", renew_position=True)
+        with pytest.raises(ValueError):
+            await s.submit("x", key="title", on_key_conflict="newest")
+        with pytest.raises(cronoq.SubmitError) as mismatch:
+            await s.submit("x", key="title", labels={"gpu": "a"}, on_key_conflict="replace_queued")
+        assert mismatch.value.code == "replace_mismatch"
+        with pytest.raises(cronoq.SubmitError):
+            await s.submit("x", on_key_conflict="replace_queued", key="title", start_in=60)
+
+        gate.set()
+        assert await blocker == "blocker"
+        assert await first == "v3"
+        successor = await s.handle("b")
+        assert successor is not None and successor.id != blocker.id
+        assert await successor == "b3"
+        assert seen == ["blocker", "b3", "v3"]
+
+        kinds = []
+        async for e in events:
+            if e.kind != "transition":
+                kinds.append((e.kind, e.id))
+            if e.id == first.id and e.status == "succeeded":
+                break
+        assert kinds.count(("replaced", first.id)) == 2
+        assert kinds.count(("replaced", blocker.id)) == 2
+        assert ("successor", successor.id) in kinds
+
+
 async def test_cancellation_of_running_and_queued_tasks():
     started = asyncio.Event()
 

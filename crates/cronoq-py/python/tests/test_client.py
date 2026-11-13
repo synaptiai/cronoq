@@ -331,6 +331,52 @@ async def test_update_queued_task(client: Client) -> None:
     assert await client.cancel("upd") and await client.cancel(fixed.id)
 
 
+async def test_replace_by_key(server: Server, client: Client) -> None:
+    # No workers yet: the first task stays queued and is replaced in place.
+    first = await client.submit("v1", key="title", priority="low")
+    assert first.outcome == "created"
+    newer = await client.submit("v2", key="title", priority="low", on_key_conflict="replace_queued")
+    assert (newer.id, newer.duplicate, newer.outcome) == (first.id, True, "replaced")
+    same = await client.submit("v3", key="title")
+    assert (same.id, same.outcome) == (first.id, "existing")
+    with pytest.raises(ValueError):
+        await client.submit("x", key="title", renew_position=True)
+    with pytest.raises(ValueError):
+        await client.submit("x", key="title", on_key_conflict="newest")
+    with pytest.raises(ClientError) as mismatch:
+        await client.submit("x", key="title", labels={"gpu": "a"}, on_key_conflict="replace_queued")
+    assert mismatch.value.code == "failed_precondition"
+
+    seen: list[tuple[int, str]] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(lease: Lease) -> Any:
+        seen.append((lease.task_id, lease.text()))
+        started.set()
+        await release.wait()
+        return lease.text()
+
+    async with Running() as r:
+        await r.add(server, handler)
+        await asyncio.wait_for(started.wait(), 5)
+        # The task has started: its payload stays, and the newest submission follows it.
+        for v in ("v4", "v5"):
+            stored = await client.submit(v, key="title", priority="low", on_key_conflict="replace_queued")
+            assert (stored.id, stored.outcome) == (first.id, "pending")
+        release.set()
+        assert (await client.wait(first.id, timeout=5)).text() == "v2"
+        successor = None
+        for _ in range(100):
+            successor = await client.get("title")
+            if successor.id != first.id:
+                break
+            await asyncio.sleep(0.05)
+        assert successor is not None and successor.id != first.id
+        assert (await client.wait(successor.id, timeout=5)).text() == "v5"
+    assert [text for _, text in seen] == ["v2", "v5"]
+
+
 async def test_cancel_queued_task(client: Client) -> None:
     # No workers are connected, so the task stays queued.
     sub = await client.submit("never", key="cancel-me")
