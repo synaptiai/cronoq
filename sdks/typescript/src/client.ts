@@ -426,18 +426,20 @@ export class Client {
 
   /** Submit raw specs atomically; they may depend on each other's keys. */
   submitBatch(tasks: Array<Task | pb.TaskSpec>, opts: CallOptions = {}): Promise<Submitted[]> {
-    const specs = tasks.map((t, i) => {
-      if ("$typeName" in t) return t as pb.TaskSpec;
-      const task = t as Task;
-      if (task.onKeyConflict !== undefined || task.renewPosition) {
-        throw new CronoqError(
-          "invalid_argument",
-          `tasks[${i}]: onKeyConflict and renewPosition are not supported in a batch`,
-        );
-      }
-      return spec(task);
+    return this.call(async () => {
+      const specs = tasks.map((t, i) => {
+        if ("$typeName" in t) return t as pb.TaskSpec;
+        const task = t as Task;
+        if (task.onKeyConflict !== undefined || task.renewPosition) {
+          throw new CronoqError(
+            "invalid_argument",
+            `tasks[${i}]: onKeyConflict and renewPosition are not supported in a batch`,
+          );
+        }
+        return spec(task);
+      });
+      return (await this.tasks.submitBatch({ tasks: specs }, rpc(opts))).tasks.map(submitted);
     });
-    return this.call(async () => (await this.tasks.submitBatch({ tasks: specs }, rpc(opts))).tasks.map(submitted));
   }
 
   /** A task's details. */
