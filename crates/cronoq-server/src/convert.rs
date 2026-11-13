@@ -9,8 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cronoq::{
-    Clock, Dep, EdgeCond, Error, MissPolicy, OverlapPolicy, Priority, RetryPolicy, Snapshot,
-    StatusEvent, SubmitError, Task, TaskId, TaskRef, TaskStatus, When,
+    Clock, Dep, EdgeCond, Error, KeyConflict, MissPolicy, OverlapPolicy, Priority, RetryPolicy,
+    Snapshot, StatusEvent, SubmitError, SubmitOptions, SubmitOutcome, Task, TaskId, TaskRef,
+    TaskStatus, When,
 };
 use cronoq_proto::v1 as pb;
 use tonic::Status;
@@ -435,6 +436,8 @@ pub fn event(e: &StatusEvent, pools: &[Arc<str>], clock: &Clock) -> pb::StatusEv
         kind: match e.kind {
             cronoq::EventKind::Transition => pb::EventKind::Transition,
             cronoq::EventKind::Updated => pb::EventKind::Updated,
+            cronoq::EventKind::Replaced => pb::EventKind::Replaced,
+            cronoq::EventKind::Successor => pb::EventKind::Successor,
         } as i32,
     }
 }
@@ -554,6 +557,7 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             timeouts: t.timeouts,
             lease_expiries: t.lease_expiries,
             stale_completions: t.stale_completions,
+            superseded: t.superseded,
         }),
         unavailable_shards: Vec::new(),
     }
@@ -578,12 +582,44 @@ pub fn error(e: Error) -> Status {
     }
 }
 
+/// The options of a submission from their wire form.
+pub fn submit_options(on_key_conflict: i32, renew_position: bool) -> Result<SubmitOptions, Status> {
+    let on_key_conflict = match pb::KeyConflict::try_from(on_key_conflict) {
+        Ok(pb::KeyConflict::Unspecified | pb::KeyConflict::ReturnExisting) => {
+            KeyConflict::ReturnExisting
+        }
+        Ok(pb::KeyConflict::ReplaceQueued) => KeyConflict::ReplaceQueued,
+        Err(_) => return Err(Status::invalid_argument("unknown on_key_conflict")),
+    };
+    if renew_position && on_key_conflict != KeyConflict::ReplaceQueued {
+        return Err(Status::invalid_argument(
+            "renew_position needs on_key_conflict = replace_queued",
+        ));
+    }
+    Ok(SubmitOptions {
+        on_key_conflict,
+        renew_position,
+    })
+}
+
+/// What a submission did, in wire form.
+pub fn outcome(o: SubmitOutcome) -> pb::SubmitOutcome {
+    match o {
+        SubmitOutcome::Created => pb::SubmitOutcome::Created,
+        SubmitOutcome::Existing => pb::SubmitOutcome::Existing,
+        SubmitOutcome::Replaced => pb::SubmitOutcome::Replaced,
+        SubmitOutcome::Pending => pb::SubmitOutcome::Pending,
+    }
+}
+
 /// Map a submission error to a gRPC status.
 pub fn submit_error(e: SubmitError) -> Status {
     let msg = e.to_string();
     match e {
         SubmitError::Full | SubmitError::Overloaded => Status::resource_exhausted(msg),
-        SubmitError::ReservationConflict => Status::failed_precondition(msg),
+        SubmitError::ReservationConflict | SubmitError::ReplaceMismatch(_) => {
+            Status::failed_precondition(msg)
+        }
         SubmitError::UnknownPool(_)
         | SubmitError::UnknownResource(_)
         | SubmitError::UnknownDependency(_) => Status::not_found(msg),

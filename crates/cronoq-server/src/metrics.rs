@@ -239,6 +239,11 @@ pub fn render(s: &pb::SnapshotResponse) -> String {
             t.lease_expiries,
         ),
         (
+            "cronoq_tasks_superseded_total",
+            "Submissions dropped without running because a newer one with their key replaced them",
+            t.superseded,
+        ),
+        (
             "cronoq_stale_completions_total",
             "Completions for leases that were no longer valid, ignored",
             t.stale_completions,

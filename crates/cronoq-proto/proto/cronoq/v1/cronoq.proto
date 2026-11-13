@@ -106,12 +106,43 @@ message SubmitRequest {
   bool wait = 2;
   // Upper bound for `wait` (capped by the server's `limits.max_wait_s`).
   optional double wait_timeout_s = 3;
+  // What to do when the task's key is already in use.
+  KeyConflict on_key_conflict = 4;
+  // With KEY_CONFLICT_REPLACE_QUEUED: the task takes this submission's place in line, and
+  // its waiting time starts now, instead of keeping the place of the task it replaces.
+  bool renew_position = 5;
+}
+
+// What a submission whose key is already in use does.
+enum KeyConflict {
+  KEY_CONFLICT_UNSPECIFIED = 0; // treated as RETURN_EXISTING
+  // Return the existing task and drop this submission.
+  KEY_CONFLICT_RETURN_EXISTING = 1;
+  // The newest submission wins. A task that has not started is replaced in place (same id
+  // and place in line). A task that has started keeps its payload, and this submission runs
+  // as a new task with the same key once that one succeeds, fails or is dead-lettered; a
+  // newer submission replaces the stored one. With no live task, a task is created.
+  KEY_CONFLICT_REPLACE_QUEUED = 2;
+}
+
+// What an accepted submission did.
+enum SubmitOutcome {
+  SUBMIT_OUTCOME_UNSPECIFIED = 0; // a server older than this field: see `duplicate`
+  SUBMIT_OUTCOME_CREATED = 1;
+  // The key was in use: `id` is the existing task, unchanged.
+  SUBMIT_OUTCOME_EXISTING = 2;
+  // The existing task had not started: it now carries this submission. `id` is that task.
+  SUBMIT_OUTCOME_REPLACED = 3;
+  // The existing task has started: this submission is stored and runs after it as a new
+  // task with the same key. `id` is the existing task; with `wait`, so is `result`.
+  SUBMIT_OUTCOME_PENDING = 4;
 }
 
 message SubmitResponse {
   uint64 id = 1;
-  bool duplicate = 2;
+  bool duplicate = 2; // the key was in use: `id` is the existing task
   TaskResult result = 3; // set when wait = true
+  SubmitOutcome outcome = 4;
 }
 
 message SubmitBatchRequest {
@@ -225,6 +256,12 @@ enum EventKind {
   EVENT_KIND_TRANSITION = 0;
   // The task was changed by Update; `status` is its unchanged status.
   EVENT_KIND_UPDATED = 1;
+  // A submission with the task's key replaced it, or was stored to run after it
+  // (KEY_CONFLICT_REPLACE_QUEUED); `status` is its unchanged status.
+  EVENT_KIND_REPLACED = 2;
+  // The task was created from a stored submission when the task that held its key ended;
+  // `message` names that task.
+  EVENT_KIND_SUCCESSOR = 3;
 }
 
 message StatusEvent {
@@ -440,6 +477,8 @@ message Totals {
   // Completions and failures reported for leases that were no longer valid (late, duplicate,
   // or from an earlier leader); they were ignored.
   uint64 stale_completions = 13;
+  // Submissions dropped without running because a newer one with their key replaced them.
+  uint64 superseded = 14;
 }
 
 message SnapshotResponse {

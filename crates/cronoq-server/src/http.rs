@@ -409,6 +409,12 @@ pub struct TaskJson {
     labels: HashMap<String, String>,
     /// Tenant, for pools that share capacity fairly between tenants.
     tenant: Option<String>,
+    /// What to do when the key is already in use: `return_existing` (default) or
+    /// `replace_queued` (single submissions only).
+    on_key_conflict: Option<String>,
+    /// With `replace_queued`: take this submission's place in line.
+    #[serde(default)]
+    renew_position: bool,
     /// Wait for the result (single submissions only).
     #[serde(default)]
     wait: bool,
@@ -465,6 +471,33 @@ fn key_ref(k: String) -> pb::TaskRef {
 }
 
 impl TaskJson {
+    /// The options of a single submission.
+    fn submit_options(&self) -> Result<cronoq::SubmitOptions, ApiError> {
+        let on_key_conflict = match self.on_key_conflict.as_deref() {
+            None | Some("return_existing") => pb::KeyConflict::ReturnExisting,
+            Some("replace_queued") => pb::KeyConflict::ReplaceQueued,
+            Some(p) => {
+                return Err(bad(format!(
+                    "unknown on_key_conflict '{p}' (return_existing, replace_queued)"
+                )));
+            }
+        };
+        Ok(crate::convert::submit_options(
+            on_key_conflict as i32,
+            self.renew_position,
+        )?)
+    }
+
+    /// Refuse the options of a single submission where tasks are admitted as written.
+    fn no_submit_options(&self, what: &str) -> Result<(), ApiError> {
+        if self.on_key_conflict.is_some() || self.renew_position {
+            return Err(bad(format!(
+                "on_key_conflict and renew_position are not supported {what}"
+            )));
+        }
+        Ok(())
+    }
+
     fn into_proto(self) -> Result<(pb::TaskSpec, bool, Option<f64>), ApiError> {
         let (payload, default_ct) = match (self.payload, self.payload_b64) {
             (Some(_), Some(_)) => return Err(bad("use either payload or payload_b64")),
@@ -659,6 +692,15 @@ fn priority_name(p: i32) -> Option<&'static str> {
     }
 }
 
+fn outcome_name(o: i32) -> &'static str {
+    match pb::SubmitOutcome::try_from(o).unwrap_or(pb::SubmitOutcome::Unspecified) {
+        pb::SubmitOutcome::Unspecified | pb::SubmitOutcome::Created => "created",
+        pb::SubmitOutcome::Existing => "existing",
+        pb::SubmitOutcome::Replaced => "replaced",
+        pb::SubmitOutcome::Pending => "pending",
+    }
+}
+
 fn overlap_name(o: i32) -> &'static str {
     match pb::Overlap::try_from(o).unwrap_or(pb::Overlap::Unspecified) {
         pb::Overlap::Unspecified | pb::Overlap::Skip => "skip",
@@ -691,14 +733,17 @@ async fn submit(
     ApiJson(body): ApiJson<TaskJson>,
 ) -> Result<Json<Value>, ApiError> {
     let app = app(&st)?;
+    let opts = body.submit_options()?;
     let (spec, wait, wait_timeout) = body.into_proto()?;
     let wait = if wait {
         Some(grpc::wait_bound(wait_timeout, &app.limits)?)
     } else {
         None
     };
-    let r = crate::route::submit(app, &p, spec, wait, &st.stop).await?;
-    let mut v = json!({ "id": r.id.to_string(), "duplicate": r.duplicate });
+    let r = crate::route::submit(app, &p, spec, opts, wait, &st.stop).await?;
+    let mut v = json!({
+        "id": r.id.to_string(), "duplicate": r.duplicate, "outcome": outcome_name(r.outcome),
+    });
     if let Some(res) = &r.result {
         v["result"] = result_json(res);
     }
@@ -726,6 +771,8 @@ async fn submit_batch(
         .into_iter()
         .enumerate()
         .map(|(i, t)| {
+            t.no_submit_options("in batches")
+                .map_err(|e| bad(format!("tasks[{i}]: {}", e.1)))?;
             let (spec, wait, _) = t.into_proto()?;
             if wait {
                 return Err(bad(format!(
@@ -1044,7 +1091,7 @@ async fn snapshot(
             "failed": t.failed, "dead_lettered": t.dead_lettered, "cancelled": t.cancelled,
             "skipped": t.skipped, "missed": t.missed, "shed": t.shed, "retries": t.retries,
             "timeouts": t.timeouts, "lease_expiries": t.lease_expiries,
-            "stale_completions": t.stale_completions,
+            "stale_completions": t.stale_completions, "superseded": t.superseded,
         },
     })))
 }

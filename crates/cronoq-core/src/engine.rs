@@ -95,7 +95,7 @@ struct Entry<P> {
     fixed: Option<Box<FixedInfo>>,
     /// Required worker labels, interned in `Core::constraints` (0 = none).
     constraint: u32,
-    /// Tenant, interned in `Core::tenants` (0 = none; only set in pools with fairness).
+    /// Tenant, interned in `Core::tenants` (0 = none).
     tenant: u32,
     /// Start tag in the class's fair queue (pools with fairness).
     vtag: u64,
@@ -662,9 +662,8 @@ impl<P> Core<P> {
     ///   dependencies: the task it follows already passed them. A task that ends any other
     ///   way (cancelled, shed) leaves no successor.
     ///
-    /// A replacing submission must name the same pool, resources, worker labels and
-    /// dependencies as the task (and, in a pool with fairness, the same tenant), and neither
-    /// may have a fixed start: otherwise it is refused with [`SubmitError::ReplaceMismatch`].
+    /// A replacing submission must name the same pool, resources, worker labels, tenant and
+    /// dependencies as the task, and neither may have a fixed start: otherwise it is refused with [`SubmitError::ReplaceMismatch`].
     #[allow(clippy::result_large_err)]
     pub fn try_submit_with(
         &mut self,
@@ -755,10 +754,9 @@ impl<P> Core<P> {
             Err(e) => return Err(NotReplaced::Rejected(e, spec)),
         };
         let constraint = self.intern_constraint(&spec.labels);
-        let fair = self.pools[pool as usize].fair.is_some();
-        let tenant = match (&spec.tenant, fair) {
-            (Some(t), true) => self.intern_tenant(t),
-            _ => 0,
+        let tenant = match &spec.tenant {
+            Some(t) => self.intern_tenant(t),
+            None => 0,
         };
         let mismatch = {
             let e = self.entry(k);
@@ -1707,9 +1705,9 @@ impl<P> Core<P> {
         }
         let kind = self.intern_kind(&spec.kind);
         let constraint = self.intern_constraint(&spec.labels);
-        let tenant = match (&spec.tenant, self.pools[pool as usize].fair.is_some()) {
-            (Some(t), true) => self.intern_tenant(t),
-            _ => 0,
+        let tenant = match &spec.tenant {
+            Some(t) => self.intern_tenant(t),
+            None => 0,
         };
         let hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
         let resources = if spec.resources.is_empty() {

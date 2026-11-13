@@ -42,6 +42,9 @@ pub struct TaskMeta {
 
 #[derive(Default)]
 struct Inner {
+    /// Details of submissions stored to run after a task that has started, by key, until the
+    /// successor shows up or the task ends without one.
+    stored: std::collections::HashMap<Arc<str>, TaskMeta>,
     map: FxHashMap<u64, TaskMeta>,
     // Keys come from callers: std's seeded SipHash, not FxHash, so they cannot be made to collide.
     by_key: std::collections::HashMap<Arc<str>, u64>,
@@ -116,6 +119,42 @@ impl TaskInfoCache {
         Self::evict(&mut st, self.cap);
     }
 
+    /// Record that task `id` was replaced before it started: it keeps what happened to it so
+    /// far and takes the description of the new submission (and its time, if `renewed`).
+    pub fn on_replace(&self, id: u64, meta: TaskMeta, renewed: bool) {
+        if self.cap == 0 {
+            return;
+        }
+        let created = if renewed {
+            meta.created_ns
+        } else {
+            self.get(id).and_then(|m| m.created_ns).or(meta.created_ns)
+        };
+        self.on_submit(
+            id,
+            TaskMeta {
+                created_ns: created,
+                ..meta
+            },
+        );
+    }
+
+    /// Record a submission stored to run after the task that holds its key: its details
+    /// become the successor's when that task appears.
+    pub fn on_pending(&self, meta: TaskMeta) {
+        if self.cap == 0 {
+            return;
+        }
+        let mut st = self.inner.lock().unwrap();
+        // Bounded like the rest of the cache; a key that is not kept only costs its
+        // successor some details.
+        if let Some(k) = meta.key.clone()
+            && (st.stored.len() < self.cap || st.stored.contains_key(&k))
+        {
+            st.stored.insert(k, meta);
+        }
+    }
+
     /// Record a status event of a task in `pool`, observed at `at_ns` (Unix ns).
     pub fn on_event(&self, ev: &StatusEvent, pool: &Arc<str>, at_ns: i64) {
         if self.cap == 0 {
@@ -124,14 +163,46 @@ impl TaskInfoCache {
         let id = ev.id.0;
         let mut st = self.inner.lock().unwrap();
         if let Some(k) = &ev.key {
-            st.by_key.entry(k.clone()).or_insert(id);
+            if ev.kind == cronoq::EventKind::Successor {
+                // The key names its newest task.
+                st.by_key.insert(k.clone(), id);
+            } else {
+                st.by_key.entry(k.clone()).or_insert(id);
+            }
+            // A task this cache has not seen, with a key a submission was stored for, is the
+            // successor: it takes the stored details. A task that ends without a successor
+            // (cancelled, shed) takes the stored submission with it.
+            let known = st.map.contains_key(&id);
+            if !known && !ev.status.is_terminal() {
+                if let Some(meta) = st.stored.remove(k) {
+                    st.by_key.insert(k.clone(), id);
+                    st.order.push_back(id);
+                    st.map.insert(
+                        id,
+                        TaskMeta {
+                            created_ns: Some(at_ns),
+                            ..meta
+                        },
+                    );
+                }
+            } else if ev.status.is_terminal()
+                && !matches!(
+                    ev.status,
+                    TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::DeadLettered
+                )
+            {
+                st.stored.remove(k);
+            }
         }
         let e = Self::entry(&mut st, id, pool);
         if e.key.is_none() {
             e.key = ev.key.clone();
         }
         e.priority = Some(ev.priority);
-        if ev.kind == cronoq::EventKind::Updated {
+        if matches!(
+            ev.kind,
+            cronoq::EventKind::Updated | cronoq::EventKind::Replaced
+        ) {
             // Not a transition: the status, attempt and timestamps stand.
             if e.status.is_none() {
                 e.status = Some(ev.status);

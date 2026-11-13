@@ -246,6 +246,16 @@ pub fn submit(spec: pb::TaskSpec, wait: bool) -> pb::SubmitRequest {
         task: Some(spec),
         wait,
         wait_timeout_s: None,
+        ..Default::default()
+    }
+}
+
+/// A submission that replaces the task holding its key ("latest wins").
+pub fn replace(spec: pb::TaskSpec, renew_position: bool) -> pb::SubmitRequest {
+    pb::SubmitRequest {
+        on_key_conflict: pb::KeyConflict::ReplaceQueued as i32,
+        renew_position,
+        ..submit(spec, false)
     }
 }
 

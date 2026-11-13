@@ -207,5 +207,8 @@ async fn an_older_database_is_upgraded_in_place() {
         .execute(store.pool())
         .await
         .unwrap();
-    assert!(store.migrate().await.is_err(), "newer schema must be refused");
+    assert!(
+        store.migrate().await.is_err(),
+        "newer schema must be refused"
+    );
 }
