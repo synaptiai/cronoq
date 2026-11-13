@@ -193,6 +193,24 @@ impl<P> Task<P> {
         self.opts.on_key_conflict = cronoq_core::KeyConflict::ReplaceQueued;
         self
     }
+    /// What this submission does when its key is already in use, instead of the scheduler's
+    /// default ([`Builder::on_key_conflict`](crate::Builder::on_key_conflict)).
+    /// [`KeyConflict::Reject`](cronoq_core::KeyConflict::Reject) reports a conflict when the
+    /// task holding the key was submitted with a different [`Task::fingerprint`].
+    pub fn on_key_conflict(mut self, mode: cronoq_core::KeyConflict) -> Self {
+        self.opts.on_key_conflict = mode;
+        self
+    }
+    /// A fingerprint of what this submission asks for, chosen by the caller: for example a
+    /// hash of the payload. It is stored with the task. A later submission of the same key
+    /// with [`KeyConflict::Reject`](cronoq_core::KeyConflict::Reject) is answered as a
+    /// duplicate when its fingerprint is the same, and refused with
+    /// [`SubmitError::KeyConflict`](cronoq_core::SubmitError::KeyConflict) when it differs,
+    /// instead of being dropped silently. A task or submission without one matches anything.
+    pub fn fingerprint(mut self, fingerprint: u128) -> Self {
+        self.spec.fingerprint = Some(fingerprint);
+        self
+    }
     /// With [`Task::replace_queued`]: take this submission's place in line, and start its
     /// waiting time now, instead of keeping the place of the task it replaces.
     pub fn renew_position(mut self) -> Self {
@@ -204,7 +222,7 @@ impl<P> Task<P> {
     /// dependencies. (A relative deadline and a key work per occurrence.)
     fn one_shot_fields(&self) -> Option<&'static str> {
         if self.opts != cronoq_core::SubmitOptions::default() {
-            Some("replace_queued (occurrences are separate tasks)")
+            Some("on_key_conflict (occurrences are separate tasks with their own keys)")
         } else if matches!(self.deadline, Some(When::At(_))) || self.spec.deadline.is_some() {
             Some("an absolute deadline (use deadline_in, relative to each occurrence)")
         } else if self.start.is_some() || self.spec.fixed_start.is_some() {

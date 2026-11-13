@@ -101,6 +101,8 @@ struct Entry<P> {
     vtag: u64,
     /// Fingerprint of the dependencies the task was submitted with (see [`deps_sig`]).
     deps_sig: u64,
+    /// The caller's fingerprint of the submission the task carries ([`TaskSpec::fingerprint`]).
+    fingerprint: Option<u128>,
     /// A newer submission with this task's key, kept until the task ends because an attempt
     /// has started and the payload of a started task never changes. It holds a place in the
     /// pending bounds of its class.
@@ -382,6 +384,8 @@ pub struct Core<P> {
     keys: StrMap<TaskId>,
     awaits: StrMap<Vec<(TaskId, EdgeCond)>>,
     retained: FxHashMap<TaskId, (TaskStatus, Time)>,
+    /// Fingerprints of retained tasks that were submitted with one.
+    retained_fp: FxHashMap<TaskId, u128>,
     retained_keys: StrMap<TaskId>,
     retention_q: VecDeque<(Time, TaskId, Option<Arc<str>>)>,
     leases: FxHashMap<LeaseId, Lease>,
@@ -531,6 +535,7 @@ impl<P> Core<P> {
             keys: StrMap::default(),
             awaits: StrMap::default(),
             retained: FxHashMap::default(),
+            retained_fp: FxHashMap::default(),
             retained_keys: StrMap::default(),
             retention_q: VecDeque::new(),
             leases: FxHashMap::default(),
@@ -668,11 +673,20 @@ impl<P> Core<P> {
         opts: SubmitOptions,
     ) -> Result<Submitted, (SubmitError, TaskSpec<P>)> {
         self.advance(now);
-        match opts.on_key_conflict {
-            KeyConflict::ReturnExisting => {
+        let mode = match opts.on_key_conflict {
+            KeyConflict::Configured => self.cfg.on_key_conflict,
+            mode => mode,
+        };
+        match mode {
+            KeyConflict::ReturnExisting | KeyConflict::Configured | KeyConflict::Reject => {
                 if let Some(id) = self.existing_key(spec.key.as_deref()) {
                     // Advancing the clock may have made work ready.
                     self.pump();
+                    if mode == KeyConflict::Reject
+                        && let Some(e) = self.key_conflict(id, spec.fingerprint)
+                    {
+                        return Err((e, spec));
+                    }
                     return Ok(Submitted {
                         id,
                         duplicate: true,
@@ -723,6 +737,21 @@ impl<P> Core<P> {
             duplicate: false,
             outcome: SubmitOutcome::Created,
         })
+    }
+
+    /// The conflict between task `id`, which holds a key, and a new submission of that key
+    /// with `fingerprint`, if they were submitted with different fingerprints. One without a
+    /// fingerprint matches anything.
+    fn key_conflict(&self, id: TaskId, fingerprint: Option<u128>) -> Option<SubmitError> {
+        let new = fingerprint?;
+        let (held, status) = match self.entry_by_id(id) {
+            Some(e) => (e.fingerprint, e.status),
+            None => (
+                self.retained_fp.get(&id).copied(),
+                self.retained.get(&id).map(|r| r.0)?,
+            ),
+        };
+        (held? != new).then_some(SubmitError::KeyConflict { id, status })
     }
 
     /// Like [`Core::try_submit_with`], without handing the spec back on rejection.
@@ -890,6 +919,7 @@ impl<P> Core<P> {
         {
             let e = self.entry_mut(k);
             e.payload = spec.payload;
+            e.fingerprint = spec.fingerprint;
             e.kind = kind;
             e.hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
             e.timeout_ns = spec.timeout.map(nanos).unwrap_or(0);
@@ -965,7 +995,45 @@ impl<P> Core<P> {
         now: Time,
         specs: Vec<TaskSpec<P>>,
     ) -> Result<Vec<Submitted>, (usize, SubmitError)> {
+        self.submit_batch_with(now, specs, &[])
+    }
+
+    /// Like [`Core::submit_batch`], saying for each task what happens when its key is already
+    /// in use: `on_key_conflict` holds one mode per task, or is empty for the configured
+    /// default. With [`KeyConflict::Reject`], the first task that conflicts is reported by its
+    /// index and nothing is admitted. `ReplaceQueued` is for single submissions.
+    pub fn submit_batch_with(
+        &mut self,
+        now: Time,
+        specs: Vec<TaskSpec<P>>,
+        on_key_conflict: &[KeyConflict],
+    ) -> Result<Vec<Submitted>, (usize, SubmitError)> {
         self.advance(now);
+        if !on_key_conflict.is_empty() && on_key_conflict.len() != specs.len() {
+            return Err((0, SubmitError::Invalid("one on_key_conflict per task")));
+        }
+        for (i, s) in specs.iter().enumerate() {
+            let mode = match on_key_conflict.get(i).copied().unwrap_or_default() {
+                KeyConflict::Configured => self.cfg.on_key_conflict,
+                mode => mode,
+            };
+            match mode {
+                KeyConflict::ReplaceQueued => {
+                    return Err((
+                        i,
+                        SubmitError::Invalid("replace_queued is not supported in a batch"),
+                    ));
+                }
+                KeyConflict::Reject => {
+                    if let Some(id) = self.existing_key(s.key.as_deref())
+                        && let Some(e) = self.key_conflict(id, s.fingerprint)
+                    {
+                        return Err((i, e));
+                    }
+                }
+                KeyConflict::ReturnExisting | KeyConflict::Configured => {}
+            }
+        }
         // Keys defined in the batch.
         let mut batch_keys: StrMap<usize> = StrMap::default();
         for (i, s) in specs.iter().enumerate() {
@@ -1842,6 +1910,7 @@ impl<P> Core<P> {
             tenant,
             vtag: 0,
             deps_sig: deps_sig(&spec.deps),
+            fingerprint: spec.fingerprint,
             next: None,
         };
         let key = self.slab_insert(entry);
@@ -2804,7 +2873,7 @@ impl<P> Core<P> {
         self.advance(now);
         self.next_id = self.next_id.max(rec.next_id);
         for t in rec.terminal {
-            self.retain(t.id, t.key, t.status, t.at);
+            self.retain(t.id, t.key, t.status, t.at, t.fingerprint);
         }
         let mut tasks = rec.tasks;
         tasks.sort_by_key(|t| t.id);
@@ -2834,7 +2903,13 @@ impl<P> Core<P> {
             if let Some(reason) = missing {
                 // Close it out durably so its key is released and it is not recovered again.
                 self.totals.failed += 1;
-                self.retain(t.id, t.spec.key.clone(), TaskStatus::Failed, now);
+                self.retain(
+                    t.id,
+                    t.spec.key.clone(),
+                    TaskStatus::Failed,
+                    now,
+                    t.spec.fingerprint,
+                );
                 self.push_status(
                     t.id,
                     0,
@@ -3294,7 +3369,7 @@ impl<P> Core<P> {
             {
                 self.keys.remove(key);
             }
-            self.retain(e.id, e.key.clone(), status, self.now);
+            self.retain(e.id, e.key.clone(), status, self.now, e.fingerprint);
             self.push_status(
                 e.id,
                 e.pool,
@@ -3355,8 +3430,19 @@ impl<P> Core<P> {
         );
     }
 
-    fn retain(&mut self, id: TaskId, key: Option<Arc<str>>, status: TaskStatus, at: Time) {
+    fn retain(
+        &mut self,
+        id: TaskId,
+        key: Option<Arc<str>>,
+        status: TaskStatus,
+        at: Time,
+        fingerprint: Option<u128>,
+    ) {
         self.retained.insert(id, (status, at));
+        // Only a key is compared again, so only a keyed task's fingerprint is kept.
+        if let (Some(fp), Some(_)) = (fingerprint, &key) {
+            self.retained_fp.insert(id, fp);
+        }
         if let Some(k) = &key {
             self.retained_keys.insert(k.clone(), id);
         }
@@ -3372,6 +3458,7 @@ impl<P> Core<P> {
             }
             let (_, id, key) = self.retention_q.pop_front().unwrap();
             self.retained.remove(&id);
+            self.retained_fp.remove(&id);
             if let Some(k) = key
                 && self.retained_keys.get(&k) == Some(&id)
             {

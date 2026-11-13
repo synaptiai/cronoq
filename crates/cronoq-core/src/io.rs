@@ -153,6 +153,15 @@ pub enum SubmitError {
     /// A submission asked to replace the task holding its key, but differs from it in
     /// something a replacement cannot change (named here).
     ReplaceMismatch(&'static str),
+    /// The key belongs to a task that was submitted with a different fingerprint, and the
+    /// submission asked for that to be reported ([`KeyConflict::Reject`]). The task is
+    /// unchanged.
+    KeyConflict {
+        /// The task that holds the key.
+        id: TaskId,
+        /// Its status.
+        status: TaskStatus,
+    },
     /// The spec is malformed.
     Invalid(&'static str),
 }
@@ -174,6 +183,10 @@ impl fmt::Display for SubmitError {
             SubmitError::ReplaceMismatch(what) => {
                 write!(f, "cannot replace the task with this key: {what}")
             }
+            SubmitError::KeyConflict { id, status } => write!(
+                f,
+                "the key belongs to task {id} ({status}), which was submitted with different content"
+            ),
             SubmitError::Invalid(m) => write!(f, "invalid task: {m}"),
         }
     }
@@ -184,9 +197,17 @@ impl std::error::Error for SubmitError {}
 /// What a submission whose key is already in use does.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum KeyConflict {
-    /// Return the existing task and drop the new submission.
+    /// What the configuration says ([`CoreConfig::on_key_conflict`](crate::CoreConfig::on_key_conflict)).
     #[default]
+    Configured,
+    /// Return the existing task and drop the new submission.
     ReturnExisting,
+    /// Return the existing task if the new submission asks for the same thing, and refuse
+    /// it if it asks for something else: the submissions are compared by
+    /// [`TaskSpec::fingerprint`](crate::TaskSpec::fingerprint), and a different one is
+    /// [`SubmitError::KeyConflict`]. A task or a submission without a fingerprint matches
+    /// anything.
+    Reject,
     /// The newest submission wins: replace the existing task if no attempt of it has started,
     /// and otherwise run the new submission after it (see [`Core::submit_with`](crate::Core::submit_with)).
     ReplaceQueued,
@@ -705,6 +726,8 @@ pub struct RecoveredTerminal {
     pub status: TaskStatus,
     /// When it finished.
     pub at: Time,
+    /// The fingerprint it was submitted with, if any.
+    pub fingerprint: Option<u128>,
 }
 
 /// A recurring schedule restored from durable storage.

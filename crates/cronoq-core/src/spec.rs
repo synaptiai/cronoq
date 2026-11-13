@@ -302,6 +302,12 @@ pub struct TaskSpec<P> {
     /// Tenant the task belongs to, for weighted fair sharing of pools with
     /// [`PoolConfig::fairness`](crate::PoolConfig::fairness).
     pub tenant: Option<Arc<str>>,
+    /// Fingerprint of what the submission asks for, chosen by the caller (for example a hash
+    /// of the payload). It is stored with the task and compared when a later submission of
+    /// the same key asks for conflicts to be reported
+    /// ([`KeyConflict::Reject`](crate::KeyConflict::Reject)). The engine never computes it and
+    /// never changes it.
+    pub fingerprint: Option<u128>,
 }
 
 impl<P> Clone for TaskSpec<P> {
@@ -322,6 +328,7 @@ impl<P> Clone for TaskSpec<P> {
             tags: self.tags.clone(),
             labels: self.labels.clone(),
             tenant: self.tenant.clone(),
+            fingerprint: self.fingerprint,
         }
     }
 }
@@ -345,6 +352,7 @@ impl<P> TaskSpec<P> {
             tags: self.tags,
             labels: self.labels,
             tenant: self.tenant,
+            fingerprint: self.fingerprint,
         }
     }
 
@@ -370,6 +378,7 @@ impl<P> TaskSpec<P> {
             tags: Vec::new(),
             labels: Vec::new(),
             tenant: None,
+            fingerprint: None,
         }
     }
     /// Set the kind.
@@ -439,6 +448,11 @@ impl<P> TaskSpec<P> {
     /// The tenant the task belongs to (for fair sharing).
     pub fn tenant(mut self, tenant: impl Into<Arc<str>>) -> Self {
         self.tenant = Some(tenant.into());
+        self
+    }
+    /// Set the fingerprint (see [`TaskSpec::fingerprint`]).
+    pub fn fingerprint(mut self, fingerprint: u128) -> Self {
+        self.fingerprint = Some(fingerprint);
         self
     }
     /// Require a worker label (`name = value`) to run.
