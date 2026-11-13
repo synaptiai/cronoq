@@ -11,14 +11,14 @@ APIs, and says what a caller should do about it.
 | `UnknownResource(name)` | `unknown_resource` | `NOT_FOUND` | 404 | No resource with that name. | Fix the resource name. |
 | `ResourceExceedsCapacity(name)` | `resource_exceeds_capacity` | `INVALID_ARGUMENT` | 400 | Requested units exceed the resource's permits or burst, so it could never run. | Request fewer units. |
 | `ReservationConflict` | `reservation_conflict` | `FAILED_PRECONDITION` | 409 | Fixed-start reservations would exceed the pool's reservable capacity at that time. | Pick another start time, raise `reservable_fraction` or `max`. |
-| `Cycle` | `cycle` | `INVALID_ARGUMENT` | 400 | The dependencies form a cycle. | Fix the graph. |
+| `Cycle` | `cycle` | `INVALID_ARGUMENT` | 400 | The dependencies form a cycle. A dependency, direct or through other tasks, on a task that is behind the task in its own [ordering key](../concepts/ordering-keys.md) is refused the same way: it could never be met. | Fix the graph. |
 | `UnknownDependency(ref)` | `unknown_dependency` | `NOT_FOUND` | 404 | Dependency on an unknown id, or an unknown key when the pool rejects unknown dependencies. | Submit the parent first, or set `await_unknown_dependencies_s`. |
 | `Full` | `full` | `RESOURCE_EXHAUSTED` | 429 | Queue bounds reached with the `wait` overflow policy. In-process callers wait for space instead of seeing this. | Retry with backoff. |
 | `Overloaded` | `overloaded` | `RESOURCE_EXHAUSTED` | 429 | Bounds reached with `reject`, or shedding found nothing lower to evict. | Retry with backoff, or shed load upstream. |
 | `DuplicateKeyInBatch(key)` | `duplicate_key_in_batch` | `INVALID_ARGUMENT` | 400 | A batch defines the same new key twice. | Deduplicate the batch. |
-| `ReplaceMismatch(what)` | `replace_mismatch` | `FAILED_PRECONDITION` | 409 | A `replace_queued` submission differs from the task holding its key in something a replacement cannot change (pool, resources, worker labels, tenant, dependencies), or one of them has a fixed start. | Submit the same work description; cancel and resubmit to change these. |
+| `ReplaceMismatch(what)` | `replace_mismatch` | `FAILED_PRECONDITION` | 409 | A `replace_queued` submission differs from the task holding its key in something a replacement cannot change (pool, resources, worker labels, ordering key, tenant, dependencies), or one of them has a fixed start. | Submit the same work description; cancel and resubmit to change these. |
 | `KeyConflict { id, status }` | `key_conflict` (`.task_id`, `.task_status`) | `FAILED_PRECONDITION` with `cronoq-conflict-task` and `cronoq-conflict-status` metadata | 422 | The submission asked for conflicts to be reported (`on_key_conflict = reject`) and its key belongs to a task that was submitted with other content. | Do not retry: the key is held. Log both and set the item aside ([Detecting conflicting submissions](../concepts/key-conflicts.md)). |
-| `Invalid(reason)` | `invalid` | `INVALID_ARGUMENT` | 400 | Malformed spec: zero resource units, `max_attempts = 0`, NUL in a string, ... | Fix the request. |
+| `Invalid(reason)` | `invalid` | `INVALID_ARGUMENT` | 400 | Malformed spec: zero resource units, `max_attempts = 0`, NUL in a string, an ordering key together with a fixed start, ... | Fix the request. |
 
 A batch that is refused because of one of its tasks reports that task's position: Rust
 `Error::Batch { index, error }`, Python `SubmitError.index`, gRPC metadata `cronoq-batch-index`,
@@ -68,6 +68,7 @@ failures too.
 | `Submit(SubmitError)` | `SubmitError` | See above. |
 | `Batch { index, error }` | `SubmitError` with `.index` | A batch was refused because of the task at `index`; nothing of it was admitted. |
 | `Update(UpdateError)` | `UpdateError` (`.code`) | An [update](../concepts/updating.md) was refused: `NotFound` / `not_found` (no task with this id or key that has not finished), `FixedStart` / `fixed_start` (tasks with a fixed start cannot be updated), `Invalid` / `invalid` (for example a tag name starting with `cronoq.`). The server answers `NOT_FOUND`, `FAILED_PRECONDITION` and `INVALID_ARGUMENT`. |
+| `Ordering(OrderingError)` | `SchedulerError` | A setting of an [ordering key](../concepts/ordering-keys.md) was refused: `TooManySettings` (the limit on keys that keep a class floor while they have no tasks is reached; remove a kept floor or raise `max_ordering_settings`), `UnknownPool` (from the engine; `Scheduler` reports an unknown pool as `Submit(UnknownPool)`). The server answers `RESOURCE_EXHAUSTED` / 429 and `NOT_FOUND` / 404. Submissions are never refused for this limit. |
 | `Shutdown` | `SchedulerError` | The scheduler has stopped or is stopping. |
 | `Config(String)` | `ValueError` (at construction) or `SchedulerError` | Invalid configuration: no pools, missing executor, duplicate pool, `min > max`, bad cron or time zone, recurring template with one-shot fields. |
 | `Store(StoreError)` | `SchedulerError` | Persistence failed fatally (see below). |
@@ -100,13 +101,13 @@ return database messages to clients.
 |---|---|---|---|
 | `INVALID_ARGUMENT` | 400 | no | Malformed request or spec. |
 | `UNAUTHENTICATED` | 401 | no | Missing or unknown credentials. |
-| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
+| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, credentials pinned to a tenant try to change an ordering key (floor, resume), or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
 | `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; an update of a task with a fixed start; a replacement that does not match its task; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | – | 413, 415 | no | Body too large, wrong content type. |
 | `FAILED_PRECONDITION` + `cronoq-conflict-task` | 422 | no | Key conflict: the key belongs to a task submitted with other content. |
-| `RESOURCE_EXHAUSTED` | 429 | yes, with backoff | Queue bounds reached. |
+| `RESOURCE_EXHAUSTED` | 429 | yes, with backoff | Queue bounds reached. For a kept ordering-key floor beyond `limits.max_ordering_settings`, retrying does not help until a kept floor is removed. |
 | `INTERNAL` | 500 | maybe | Unexpected server error. |
 | `UNAVAILABLE` | 503 | yes, with backoff | Not the leader, shutting down, store unavailable. |
 | `DEADLINE_EXCEEDED` | 504 | wait again | A wait timed out while the task is still running; over HTTP, also a request that exceeded its time limit. |

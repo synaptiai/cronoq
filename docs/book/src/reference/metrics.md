@@ -33,6 +33,9 @@ Label values are escaped per the exposition format (`\\`, `\"`, `\n`).
 | `cronoq_pool_workers_connected` | gauge | Connected worker streams. |
 | `cronoq_pool_pending` | gauge | Tasks waiting to run, by priority (extra label `class`: `critical`, `high`, `normal`, `low`). |
 | `cronoq_pool_reservations` | gauge | Fixed-start reservations not yet started. |
+| `cronoq_pool_ordering_keys` | gauge | [Ordering keys](../concepts/ordering-keys.md) that have tasks. |
+| `cronoq_pool_ordering_waiting` | gauge | Ready tasks waiting for an older task of their ordering key, or for a halted key. |
+| `cronoq_pool_ordering_halted` | gauge | Ordering keys halted by a failed task. Nothing of a halted key runs until it is resumed. |
 | `cronoq_pool_priority_adherence` | gauge | Windowed fraction of dispatches with no strictly higher class waiting (0–1). |
 | `cronoq_pool_fixed_start_hit_rate` | gauge | Windowed fraction of fixed starts that began within tolerance (0–1). |
 | `cronoq_pool_utilization` | gauge | Windowed busy slot-seconds ÷ capacity slot-seconds (0–1). |
@@ -78,6 +81,9 @@ groups:
         for: 15m
       - alert: CronoqDeadLetters
         expr: increase(cronoq_tasks_total{status="dead_lettered"}[10m]) > 0
+      - alert: CronoqOrderingKeysHalted
+        expr: cronoq_pool_ordering_halted > 0
+        for: 5m
       - alert: CronoqNoWorkers
         expr: sum by (pool) (cronoq_pool_pending) > 0 and on (pool) cronoq_pool_workers_connected == 0
         for: 5m

@@ -68,8 +68,8 @@ This page describes **worker protocol version 3**.
 | `tags` | map<string, string> | Labels passed to the worker. |
 | `labels` | map<string, string> | Worker labels the task requires ([Worker labels](../concepts/labels.md)). |
 | `tenant` | string | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
-| `ordering_key` (21) | string | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). Not a deduplication key. At most `max_key_len`. With `start_in_s` or `start_unix_ns`, or in a schedule template, it is `INVALID_ARGUMENT`. |
-| `on_failure` (22) | `OrderFailure` | With `ordering_key`: what a failure of this task does to its key. `ORDER_FAILURE_UNSPECIFIED` and `ORDER_FAILURE_CONTINUE`: the next task runs. `ORDER_FAILURE_HALT`: the key is halted until `Admin.Resume`. `ORDER_FAILURE_HALT` without an `ordering_key` is `INVALID_ARGUMENT`. |
+| `ordering_key` | string | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). Not a deduplication key. At most `max_key_len`. With `start_in_s` or `start_unix_ns`, or in a schedule template, it is `INVALID_ARGUMENT`. |
+| `on_failure` | `OrderFailure` | With `ordering_key`: what a failure of this task does to its key. `ORDER_FAILURE_UNSPECIFIED` and `ORDER_FAILURE_CONTINUE`: the next task runs. `ORDER_FAILURE_HALT`: the key is halted until `Admin.Resume`. `ORDER_FAILURE_HALT` without an `ordering_key` is `INVALID_ARGUMENT`. |
 
 The fields match the [HTTP task object](http.md#task-object), which documents them in detail.
 `TaskRef` is a `oneof` of `id` (uint64) and `key` (string).

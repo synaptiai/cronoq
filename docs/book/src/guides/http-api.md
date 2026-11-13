@@ -4,8 +4,8 @@ The HTTP gateway exposes the client side of the gRPC API as JSON, so any languag
 client can submit and inspect work. It listens on `server.http_addr` (default
 `127.0.0.1:7071`). When authentication is enabled, every `/v1` route needs
 `authorization: Bearer <token>`: the `/v1/tasks` routes need the `client` role, and
-`/v1/snapshot`, `/v1/workers` and `/v1/recurring` need the `metrics` role (`admin` works for all
-of them). Request bodies need `content-type: application/json`.
+`/v1/snapshot`, `/v1/workers`, `/v1/recurring` and reading an ordering key need the `metrics`
+role, and changing an ordering key needs the `admin` role (`admin` works for all of them). Request bodies need `content-type: application/json`.
 
 ```sh
 export CRONOQ=http://localhost:7071
@@ -42,6 +42,11 @@ curl -s $CRONOQ/v1/tasks -H "$AUTH" -H "$JSON" -d '{
 - Add `"on_key_conflict": "replace_queued"` when only the newest value of a key is worth
   running: a waiting task with that key takes the new payload, and a running one is followed by
   it. The response's `outcome` says which ([Replacing a task by key](../concepts/replacing.md)).
+- Add `"ordering_key": "account:8842"` for work that must not overlap or overtake for one
+  subject: tasks of one pool that share an ordering key run one at a time, in the order they
+  were submitted. It does not deduplicate, and it cannot be combined with a start time. With
+  `"on_failure": "halt"`, a failure of the task halts its key until it is resumed
+  ([Ordering keys](../concepts/ordering-keys.md)).
 - Add `"wait": true` (and optionally `"wait_timeout_s"`) to block until the task finishes and
   include its result.
 - Unknown fields are rejected, so typos fail loudly instead of being ignored.
@@ -89,6 +94,31 @@ takes effect.
 Percent-encode keys that contain `/` (`report%2F2024`). A result request that times out
 returns 504 while the task keeps running: ask again.
 
+## Ordering keys
+
+```sh
+export ADMIN="authorization: Bearer $CRONOQ_ADMIN_TOKEN"
+
+curl -s $CRONOQ/v1/pools/default/ordering/account:8842 -H "$ADMIN"
+# {"effective":"normal","floor":null,"halted":false,"head":"17","key":"account:8842","persist":false,"pool":"default","tasks":3}
+
+curl -s "$CRONOQ/v1/pools/default/ordering?halted=true" -H "$ADMIN"
+# {"keys":["import:42"],"pool":"default"}
+
+curl -s -X POST $CRONOQ/v1/pools/default/ordering/import:42/resume -H "$ADMIN"
+# {"resumed":true}
+
+# The front task of the key never runs below the high class, until the key has no tasks left.
+curl -s -X PUT $CRONOQ/v1/pools/default/ordering/account:8842/floor -H "$ADMIN" -H "$JSON" \
+    -d '{"floor": "high"}'
+curl -s -X DELETE $CRONOQ/v1/pools/default/ordering/account:8842/floor -H "$ADMIN"
+```
+
+The two `GET` routes need the `metrics` role; resuming a key and changing its floor need the
+`admin` role, with credentials that are not pinned to a tenant. `"persist": true` keeps a
+floor while the key has no tasks. Resuming a key that is not halted returns
+`{"resumed":false}`. See [Ordering keys](../concepts/ordering-keys.md).
+
 ## Scheduled work
 
 ```sh
@@ -118,7 +148,7 @@ Errors are JSON `{"error": "...", "code": "..."}`:
 
 | Status | When | Retry? |
 |---|---|---|
-| 400 | Invalid JSON, unknown field or enum value, invalid duration, cycle | no |
+| 400 | Invalid JSON, unknown field or enum value, invalid duration, cycle, an ordering key with a start time | no |
 | 401 | Missing or invalid token | no |
 | 403 | Token lacks the role, or the pool is outside its scope | no |
 | 404 | Unknown task, pool, resource or dependency | no |
