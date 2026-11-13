@@ -181,8 +181,12 @@ pub enum MissPolicy { RunLate /*default*/, Skip, Fail }
     stored). When the task ends as `Succeeded`, `Failed` or `DeadLettered`, a successor with
     the same key and a new id is inserted in the same engine call, after the ended task's
     status mutation: at the ended task's `seq` and arrival, or with `renew_position` on the
-    last stored submission at that submission's. The successor has no dependencies. Any other
-    terminal status drops the stored submission.
+    last stored submission at that submission's. The successor carries the tag
+    `cronoq.follows = <ended id>`; a task with that tag keeps its dependencies in its spec (so
+    its fingerprint still matches the producer's submissions) but is never wired to them. Any
+    other terminal status drops the stored submission. A stored submission is admitted with
+    `check_bounds(.., allow_shed = false)`: it never sheds. In recovery, a task that ends while
+    it is recovered (its lost attempt was its last) gets its successor once all tasks are in.
   - A replacement must name the task's pool, resources, worker labels, tenant and
     dependencies (compared as given), and neither side may have a fixed start; otherwise
     `SubmitError::ReplaceMismatch`. Batches do not take the option.

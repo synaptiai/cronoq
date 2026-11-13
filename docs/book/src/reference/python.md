@@ -85,7 +85,9 @@ a key wins ([Replacing a task by key](../concepts/replacing.md)). A task that ha
 replaced in place; one that has started keeps its payload, and the submission runs after it as
 a new task with the same key. `TaskHandle.outcome` says which; for `"pending"` the handle tracks
 the running task, and `await sched.handle(key)` gives the successor once that task has ended.
-Neither option is accepted by `Task(...)`, `submit_batch` or `add_recurring`.
+`enqueue` returns only an id (the existing task's when one was replaced or is running), so use
+`submit` when the outcome matters. Both options need a `key`. Neither is accepted by
+`Task(...)`, `submit_batch` or `add_recurring`.
 
 Strings must not contain NUL characters.
 
@@ -221,7 +223,7 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 
 | Method | Returns | Description |
 |---|---|---|
-| `await submit(payload=None, *, wait=False, wait_timeout=None, call_timeout=None, on_key_conflict=None, renew_position=False, **options)` | `Submitted(id, duplicate, result, outcome)` | Options as for [`task`](#taskpayloadnone-options). With `wait=True`, `result` is set when the task finished. `on_key_conflict="replace_queued"` lets the newest submission of a key win ([Replacing a task by key](../concepts/replacing.md)); `outcome` is `"created"`, `"existing"`, `"replaced"` or `"pending"`. |
+| `await submit(payload=None, *, wait=False, wait_timeout=None, call_timeout=None, on_key_conflict=None, renew_position=False, **options)` | `Submitted(id, duplicate, result, outcome)` | Options as for [`task`](#taskpayloadnone-options). With `wait=True`, `result` is set when the task finished. `on_key_conflict="replace_queued"` lets the newest submission of a key win ([Replacing a task by key](../concepts/replacing.md)); `outcome` is `"created"`, `"existing"`, `"replaced"` or `"pending"`. Raises `ClientError` `unimplemented` against a server that does not know the option. |
 | `await submit_batch(specs)` | `list[Submitted]` | Atomic batch of specs built with `task(...)`. |
 | `await cancel(ref)` | `bool` | By id or key. |
 | `await update(ref, *, priority=None, deadline_in=None, deadline_at=None, clear_deadline=False, tags=None)` | `Updated(id, status, deferred, changed)` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. Raises `ClientError` `not_found` for an unknown or finished task and `failed_precondition` for one with a fixed start. |

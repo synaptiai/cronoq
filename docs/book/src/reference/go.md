@@ -83,8 +83,9 @@ pool's retry policy with this many attempts and the server's default backoff).
 ([Replacing a task by key](../concepts/replacing.md)): a task that has not started is replaced
 in place (`OutcomeReplaced`); one that has started keeps its payload, and this task runs after
 it as a new task with the same key (`OutcomePending`, where `Submitted.ID` and `Result` are the
-running task's). `Task.RenewPosition` takes this submission's place in line. Both are ignored by
-`SubmitBatch` and `Task.Spec`. `Event.Kind` is `EventTransition`, `EventUpdated`,
+running task's). `Task.RenewPosition` takes this submission's place in line. `SubmitBatch`
+refuses both (`InvalidArgument`), and `Task.Spec` does not carry them. Against a server that
+does not know the option, `Submit` returns an `*Error` with code `Unimplemented`. `Event.Kind` is `EventTransition`, `EventUpdated`,
 `EventReplaced` or `EventSuccessor`; the last three are delivered with `AllTransitions`.
 
 `Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,

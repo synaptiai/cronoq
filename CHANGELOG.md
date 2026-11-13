@@ -14,7 +14,8 @@ contain breaking changes; they are called out under **Changed**.
   started is replaced in place: same id, dependents and place in line, new payload, kind,
   priority, deadline, tags, timeout and retry policy. A task that has started keeps its payload
   for every attempt; the submission is stored, and when the task succeeds, fails or is
-  dead-lettered it runs as a new task with the same key (a cancel drops it). `renew_position`
+  dead-lettered it runs as a new task with the same key (a cancel drops it), tagged
+  `cronoq.follows` with the id of the task it follows. `renew_position`
   takes the new submission's place in line instead. The response says what happened
   (`outcome`: created, existing, replaced or pending). A replacement must match the task's
   pool, resources, worker labels, tenant and dependencies, and neither may have a fixed start.

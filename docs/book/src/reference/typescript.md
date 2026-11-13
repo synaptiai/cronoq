@@ -103,7 +103,8 @@ backoff).
 in place; one that has started keeps its payload, and this task runs after it as a new task with
 the same key. `Task.renewPosition` takes this submission's place in line. `Submitted.outcome` is
 `"created"`, `"existing"`, `"replaced"` or `"pending"` (then `id` and `result` are the running
-task's). Both options are ignored by `submitBatch` and `spec`. `Event.kind` is `"transition"`,
+task's). `submitBatch` refuses both options (`invalid_argument`), and `spec` does not carry
+them. Against a server that does not know the option, `submit` throws `unimplemented`. `Event.kind` is `"transition"`,
 `"updated"`, `"replaced"` or `"successor"`; the last three are delivered with `allTransitions`.
 
 `update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:

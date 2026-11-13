@@ -59,9 +59,15 @@ successor is created in the same step: with a durable store, the end of the task
 task are committed together, so a crash leaves either both or neither.
 
 - It has the same key and a new id. Lookups, waits and cancels by key name it from then on.
-- It has no dependencies. The task it follows already passed them.
+- It does not wait for the dependencies again: the task it follows already passed them. It
+  keeps them in its description, so the next replacement of the key names the same ones.
+- It carries the tag `cronoq.follows` with the id of the task it follows, which executors and
+  workers can read.
 - If the task is **cancelled**, or shed under overload, the stored submission is dropped with
   it and there is no successor: a cancel means "stop working on this key".
+- A task that depends on the key while a submission is stored waits for the task running at
+  that moment, not for the successor. Depend on the key again later, or on an id, to wait for
+  a particular one.
 - Only the newest stored submission runs. Each one that is dropped is counted in
   `superseded`.
 
@@ -79,7 +85,8 @@ or watch for the successor [event](#events).
 Keeping the place suits state sync: the key has been waiting since its first update. Renewing
 suits work where each update is a fresh request that should queue like one. In a pool that
 [shares capacity between tenants](fairness.md), place among tenants follows tenant share, as
-for any task.
+for any task: a renewed task goes behind its own tenant's waiting work, and a successor joins
+its tenant's work when it is created.
 
 ## What a replacement may differ in
 
@@ -97,16 +104,22 @@ mismatch* (`FAILED_PRECONDITION` / 409) and nothing changes.
 
 Neither the task nor the replacement may have a [fixed start](fixed-starts.md): a fixed start
 holds a capacity reservation made at admission. `replace_queued` needs a key, and is refused in
-batch submissions and recurring schedules, which admit tasks as written.
+batch submissions and recurring schedules, which admit tasks as written. The clients refuse it
+there too, and report a server too old to know the option (`unimplemented`) instead of letting
+the submission be dropped silently.
 
 ## Queue bounds
 
 A replacement in place needs no room: the task already has its place. A stored submission
 holds one place in the [queue bounds](backpressure.md) of its pool and class from the moment it
 is stored until its successor takes that place, so the successor is never refused later. If
-the queue is full when the submission arrives, it is refused then, like any submission
-(`RESOURCE_EXHAUSTED` / 429), and whatever was stored before stays. A newer stored submission
-reuses the place of the one it replaces.
+the queue is full when the submission arrives, it is refused then (`RESOURCE_EXHAUSTED` /
+429), and whatever was stored before stays. A newer stored submission reuses the place of the
+one it replaces; if it is of another class, that class's bound applies to it.
+
+A stored submission never evicts other work to make room, whatever the pool's overflow policy:
+it could evict the very task it waits for. With the `wait` policy an in-process caller waits
+for room like any submitter, while a replacement in place goes straight through.
 
 ## Events
 
@@ -129,7 +142,8 @@ submission still follows its task. Both stores gain a table for stored submissio
 schema migration that runs when the server or library opens the database.
 
 After a failover a task whose attempt was running is retried with the payload it had, like any
-interrupted task; the stored submission still waits behind it.
+interrupted task; the stored submission still waits behind it. If that lost attempt was the
+task's last, the task ends as dead-lettered during recovery and the successor is created then.
 
 ## Who may replace
 
