@@ -248,6 +248,10 @@ func (c *Client) submit(ctx context.Context, req *pb.SubmitRequest, wait bool, t
 	if err != nil {
 		return Submitted{}, wrapWith(err, trailer)
 	}
+	if req.GetTask().GetOrderingKey() != "" && r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+		// A server older than ordering keys ignored the key and admitted the task.
+		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.OrderingKey; the task was submitted without it", BatchIndex: -1}
+	}
 	if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED &&
 		r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
 		// A server older than the option ignored it: with the key in use, this submission
@@ -285,6 +289,9 @@ func (c *Client) SubmitBatch(ctx context.Context, tasks []Task) ([]Submitted, er
 	out := make([]Submitted, len(r.Tasks))
 	for i, s := range r.Tasks {
 		out[i] = submitted(s)
+		if i < len(req.Tasks) && req.Tasks[i].GetOrderingKey() != "" && s.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+			return out, &Error{Code: codes.Unimplemented, Message: "the server does not support Task.OrderingKey; the batch was submitted without it", BatchIndex: -1}
+		}
 		if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REJECT && s.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
 			// A server older than the option ignored it and admitted the batch.
 			return out, &Error{Code: codes.Unimplemented, Message: "the server does not support RejectConflict for batches; the batch was submitted without it", BatchIndex: -1}
@@ -567,6 +574,9 @@ func (c *Client) SetOrderingFloor(ctx context.Context, pool, key string, floor P
 	req := &pb.SetOrderingFloorRequest{Pool: pool, Key: key, Persist: persist}
 	if floor != "" {
 		p := floor.pb()
+		if p == pb.Priority_PRIORITY_UNSPECIFIED {
+			return &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("unknown priority %q", string(floor)), BatchIndex: -1}
+		}
 		req.Floor = &p
 	}
 	_, err := c.admin.SetOrderingFloor(ctx, req)

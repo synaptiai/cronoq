@@ -719,3 +719,49 @@ fn a_renewed_place_cannot_be_behind_a_task_that_waits_for_it() {
     s.run_to_completion(30.0);
     assert_eq!(s.order(), vec![busy, first, second]);
 }
+
+#[test]
+fn a_retry_with_another_ordering_key_is_a_key_conflict() {
+    let mut s = pool(1);
+    let reject = SubmitOptions {
+        on_key_conflict: KeyConflict::Reject,
+        ..Default::default()
+    };
+    let busy = s.submit(job(5.0));
+    let id = s.submit(keyed(1.0, "a").key("once").fingerprint(7));
+    let mut try_with = |spec: TaskSpec<Job>| {
+        let r = s.core.submit_with(s.now, spec, reject);
+        s.drain();
+        r
+    };
+    // The same submission is a duplicate; another ordering key, or none, is a conflict,
+    // with or without a fingerprint.
+    assert_eq!(
+        try_with(keyed(1.0, "a").key("once").fingerprint(7))
+            .unwrap()
+            .id,
+        id
+    );
+    for other in [
+        keyed(1.0, "b").key("once").fingerprint(7),
+        keyed(1.0, "b").key("once"),
+        job(1.0).key("once").fingerprint(7),
+    ] {
+        assert_eq!(
+            try_with(other),
+            Err(SubmitError::KeyConflict {
+                id,
+                status: TaskStatus::Ready
+            })
+        );
+    }
+    assert_eq!(info(&s, "b"), None);
+    // Without `reject` it is still answered with the existing task.
+    assert_eq!(s.try_submit(keyed(1.0, "b").key("once")).unwrap().id, id);
+    // An empty ordering key is not a key.
+    assert!(matches!(
+        s.try_submit(job(1.0).ordering_key("")),
+        Err(SubmitError::Invalid(_))
+    ));
+    let _ = busy;
+}

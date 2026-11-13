@@ -196,6 +196,10 @@ function submitOptions(t: Task): { onKeyConflict: pb.KeyConflict; renewPosition:
 
 /** The result of a single submission of `t`. */
 function accepted(t: Task, r: pb.SubmitResponse): Submitted {
+  if (t.orderingKey && r.outcome === pb.SubmitOutcome.UNSPECIFIED) {
+    // A server older than ordering keys ignored the key and admitted the task.
+    throw new CronoqError("unimplemented", "the server does not support orderingKey; the task was submitted without it");
+  }
   if (t.onKeyConflict === "replace_queued" && r.outcome === pb.SubmitOutcome.UNSPECIFIED) {
     // A server older than the option ignored it: with the key in use, this submission was
     // dropped, not stored.
@@ -494,6 +498,10 @@ export class Client {
         throw new CronoqError("invalid_argument", "a batch with onKeyConflict takes Tasks, not raw specs");
       }
       const r = await this.tasks.submitBatch({ tasks: specs, onKeyConflict }, rpc(opts));
+      if (specs.some((t) => t.orderingKey) && r.tasks.some((t) => t.outcome === pb.SubmitOutcome.UNSPECIFIED)) {
+        // A server older than ordering keys ignored them and admitted the batch.
+        throw new CronoqError("unimplemented", "the server does not support orderingKey; the batch was submitted without it");
+      }
       if (onKeyConflict === pb.KeyConflict.REJECT && r.tasks.some((t) => t.outcome === pb.SubmitOutcome.UNSPECIFIED)) {
         // A server older than the option ignored it and admitted the batch.
         throw new CronoqError(

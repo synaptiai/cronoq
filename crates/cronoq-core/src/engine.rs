@@ -746,7 +746,8 @@ impl<P> Core<P> {
                     // Advancing the clock may have made work ready.
                     self.pump();
                     if mode == KeyConflict::Reject
-                        && let Some(e) = self.key_conflict(id, spec.fingerprint)
+                        && let Some(e) =
+                            self.key_conflict(id, spec.fingerprint, spec.ordering_key.as_ref())
                     {
                         return Err((e, spec));
                     }
@@ -806,7 +807,25 @@ impl<P> Core<P> {
     /// with `fingerprint`, if they were submitted with different fingerprints. One without a
     /// fingerprint matches anything. For a task with a submission stored to run after it, the
     /// stored one is compared.
-    fn key_conflict(&self, id: TaskId, fingerprint: Option<u128>) -> Option<SubmitError> {
+    ///
+    /// A live task with another ordering key is a conflict whatever the fingerprints: the
+    /// caller would believe its submission is in a key it is not in. (The ordering key of a
+    /// finished task is not kept, so only the fingerprint is compared then.)
+    fn key_conflict(
+        &self,
+        id: TaskId,
+        fingerprint: Option<u128>,
+        ordering_key: Option<&Arc<str>>,
+    ) -> Option<SubmitError> {
+        if let Some(e) = self.entry_by_id(id) {
+            let held = self.strand_of(self.index[&id]).map(|st| &st.key);
+            if held != ordering_key {
+                return Some(SubmitError::KeyConflict {
+                    id,
+                    status: e.status,
+                });
+            }
+        }
         let new = fingerprint?;
         let (held, status) = match self.entry_by_id(id) {
             // The newest submission accepted for the key is the one a retry repeats: the
@@ -1121,7 +1140,8 @@ impl<P> Core<P> {
                 }
                 KeyConflict::Reject => {
                     if let Some(id) = self.existing_key(s.key.as_deref())
-                        && let Some(e) = self.key_conflict(id, s.fingerprint)
+                        && let Some(e) =
+                            self.key_conflict(id, s.fingerprint, s.ordering_key.as_ref())
                     {
                         return Err((i, e));
                     }
@@ -1445,6 +1465,9 @@ impl<P> Core<P> {
             && r.max_attempts == 0
         {
             return Err(SubmitError::Invalid("retry.max_attempts must be >= 1"));
+        }
+        if spec.ordering_key.as_deref() == Some("") {
+            return Err(SubmitError::Invalid("an ordering key cannot be empty"));
         }
         if spec.ordering_key.is_some() && spec.fixed_start.is_some() {
             return Err(SubmitError::Invalid(

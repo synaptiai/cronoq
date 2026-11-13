@@ -319,6 +319,11 @@ async fn a_floor_lifts_a_key_and_the_number_of_kept_floors_is_limited() {
             floor: Some(99),
             ..floor("vip", None, false)
         },
+        // "Unspecified" is not a class: it must not become a floor of normal.
+        pb::SetOrderingFloorRequest {
+            floor: Some(pb::Priority::Unspecified as i32),
+            ..floor("vip", None, false)
+        },
     ] {
         let e = admin.set_ordering_floor(bad).await.unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e}");
@@ -363,6 +368,28 @@ async fn what_cannot_have_an_ordering_key_is_refused() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e}");
+    // With `reject`, a key held by a task of another ordering key is a conflict: the caller
+    // would believe its submission is in a key it is not in.
+    let mut first = ordered(b"same", "a");
+    first.key = "once".into();
+    let id = c
+        .submit(submit(first.clone(), false))
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+    let reject = |spec: pb::TaskSpec| pb::SubmitRequest {
+        on_key_conflict: pb::KeyConflict::Reject as i32,
+        ..submit(spec, false)
+    };
+    let again = c.submit(reject(first.clone())).await.unwrap().into_inner();
+    assert_eq!(again.id, id);
+    let mut moved = first.clone();
+    moved.ordering_key = "b".into();
+    let e = c.submit(reject(moved)).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{e}");
+    let named = e.metadata().get("cronoq-conflict-task").unwrap();
+    assert_eq!(named.to_str().unwrap(), id.to_string());
     // A dependency on a task behind it in the key can never be met.
     let mut waits = ordered(b"x", "k");
     waits.key = "first".into();

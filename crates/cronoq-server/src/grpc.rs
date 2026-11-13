@@ -1457,6 +1457,11 @@ impl pb::admin_server::Admin for AdminService {
         let app = self.shared.app_or_unavailable()?;
         let r = req.into_inner();
         let pool = ordering_change(&p, &app.limits, &r.pool, &r.key)?;
+        if r.floor == Some(pb::Priority::Unspecified as i32) {
+            return Err(Status::invalid_argument(
+                "floor must name a class; leave it unset to remove the floor",
+            ));
+        }
         let floor = r.floor.map(convert::priority).transpose()?;
         if r.persist && floor.is_none() {
             return Err(Status::invalid_argument("persist needs a floor"));

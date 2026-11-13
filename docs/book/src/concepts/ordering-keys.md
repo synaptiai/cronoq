@@ -126,6 +126,7 @@ submission is never refused because of it.
 | Feature | With an ordering key |
 |---|---|
 | [Deduplication key](dependencies.md#keys) | Independent. The ordering key never deduplicates: two submissions with the same ordering key are two tasks. A task may have both. |
+| [Conflict detection](key-conflicts.md) | With `on_key_conflict = reject`, a key held by an unfinished task of another ordering key (or of none) is a conflict, whatever the fingerprints: the caller would otherwise believe its submission is in a key it is not in. The ordering key is not part of the fingerprint. |
 | [Replace by key](replacing.md) | The replacement keeps the task's place in its ordering key (or goes to the back with `renew_position`). It must name the same ordering key. A successor takes the place of the task it follows. |
 | [Updating](updating.md) | Changing a waiting task's priority can raise or lower the class its key's front task runs at. |
 | [Bounds and shedding](backpressure.md) | Every task of a key counts toward the bounds, with its own class. Only a task at the front of its key can be shed: one that waits behind another is never picked. |
@@ -133,6 +134,13 @@ submission is never refused because of it.
 | [Fixed starts](fixed-starts.md), [schedules](recurring.md) | Not allowed together with an ordering key: a start time and a place in line cannot both be promised. The submission is refused. |
 | [Pools](autoscaling.md) | A key belongs to its pool: the same key in two pools is two keys. |
 | [Sharding](sharding.md) | A pool lives on one shard, and so do its keys. |
+
+## Older servers
+
+A server from before ordering keys ignores the key and runs the task unordered. The clients
+and the command-line tool detect this from the response and fail with `unimplemented`; the
+task has then been admitted without a key. Upgrade every server before relying on ordering
+keys.
 
 ## Durability
 

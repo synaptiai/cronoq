@@ -903,6 +903,11 @@ class Client:
             if call_timeout is None:
                 call_timeout = float(wait_timeout) + _WAIT_DEADLINE_MARGIN
         r = await self._call(self._tasks.Submit, req, call_timeout)
+        if req.task.ordering_key and r.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED:
+            # A server older than ordering keys ignored the key and admitted the task.
+            raise ClientError(
+                "unimplemented", "the server does not support ordering_key; the task was submitted without it"
+            )
         if on_key_conflict == "replace_queued" and r.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED:
             # A server older than the option ignored it: with the key in use, this submission
             # was dropped, not stored.
@@ -923,6 +928,11 @@ class Client:
             raise ValueError("on_key_conflict='replace_queued' is not supported in a batch")
         req = pb.SubmitBatchRequest(tasks=list(tasks), on_key_conflict=cast(Any, _key_conflict(on_key_conflict)))
         r = await self._call(self._tasks.SubmitBatch, req)
+        if any(t.ordering_key for t in req.tasks) and any(t.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED for t in r.tasks):
+            # A server older than ordering keys ignored them and admitted the batch.
+            raise ClientError(
+                "unimplemented", "the server does not support ordering_key; the batch was submitted without it"
+            )
         if on_key_conflict == "reject" and any(t.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED for t in r.tasks):
             # A server older than the option ignored it and admitted the batch.
             raise ClientError(

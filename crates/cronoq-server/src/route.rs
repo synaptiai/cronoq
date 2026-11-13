@@ -72,9 +72,23 @@ pub async fn submit(
                 as i32,
             renew_position: opts.renew_position,
         };
-        return answer(sh, c.tasks.submit(bounded(app, req)).await);
+        let ordered = !req.task.as_ref().is_some_and(|t| t.ordering_key.is_empty());
+        let r = answer(sh, c.tasks.submit(bounded(app, req)).await)?;
+        if ordered && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+            return Err(unordered(sh));
+        }
+        return Ok(r);
     }
     grpc::submit_one(app, p, spec, opts, wait, stop).await
+}
+
+/// A shard older than ordering keys ignored the key and admitted the task. It also sends no
+/// outcome, which is how to tell.
+fn unordered(sh: &Shard) -> Status {
+    Status::unimplemented(format!(
+        "shard '{}' does not support ordering keys; the submission was admitted without one",
+        sh.name
+    ))
 }
 
 /// What `mode` means on this server: its configured default if the caller named none.
@@ -108,6 +122,7 @@ pub async fn submit_batch(
                 }
                 let mut c = clients(app, p, sh, "this batch")?;
                 let mode = configured(app, mode);
+                let ordered = specs.iter().any(|s| !s.ordering_key.is_empty());
                 let req = pb::SubmitBatchRequest {
                     tasks: specs,
                     on_key_conflict: convert::key_conflict_to_pb(mode) as i32,
@@ -116,6 +131,9 @@ pub async fn submit_batch(
                 // A shard older than the option ignores it on a batch and admits the tasks.
                 // It also sends no outcome, which is how to tell.
                 let unspecified = pb::SubmitOutcome::Unspecified as i32;
+                if ordered && r.tasks.iter().any(|t| t.outcome == unspecified) {
+                    return Err(unordered(sh));
+                }
                 if mode == cronoq::KeyConflict::Reject
                     && r.tasks.iter().any(|t| t.outcome == unspecified)
                 {

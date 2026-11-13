@@ -530,6 +530,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     renew_position: a.renew_position,
                 })
                 .await)?;
+            if a.ordering_key.is_some() && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+                bail!(
+                    "the server does not support --ordering-key; the task was submitted without it"
+                );
+            }
             if a.replace && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
                 // A server older than the option ignored it: with the key in use, this
                 // submission was dropped, not stored.
