@@ -31,6 +31,7 @@ Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
 | `event_capacity` | Buffer of each `events()` stream. |
 | `store` | Keep state in a SQLite file so it survives restarts; see [`SqliteStore`](#cronoqsqlitestore). |
 | `codec` | How payloads and results are turned into bytes for the store: any object matching the `cronoq.Codec` protocol (`encode(obj) -> bytes` and `decode(bytes) -> obj`). Default: `JsonCodec`. Needs `store`. |
+| `priority`, `urgency` | A `PriorityConfig` and an `UrgencyConfig` for every pool that does not set its own ([Priorities and aging](../concepts/priorities.md#configuration), [Deadlines](../concepts/deadlines.md#configuration)). Default: the built-in values. |
 
 A scheduler is bound to the event loop that starts it. If that loop closes without a shutdown,
 the scheduler stops and further calls raise `SchedulerError`; calls before `start()` raise
@@ -146,6 +147,7 @@ Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=N
 | `unknown_dependency`, `await_timeout` | `"reject"` unknown dependency keys, or `"await"` them for up to `await_timeout` seconds. |
 | `default_duration` | Duration assumed for tasks without `duration_hint`. |
 | `reservable_fraction` | Share of `max` that fixed-start reservations may use, in `[0, 1]`; `0` is treated as the default `0.5`. |
+| `priority`, `urgency` | A `PriorityConfig` and an `UrgencyConfig` for this pool only. Default: the scheduler's. |
 
 A sync executor cannot be interrupted: on timeout or cancellation the attempt is aborted, but
 the function keeps running until it returns. Check `ctx.is_cancelled()` in long-running sync

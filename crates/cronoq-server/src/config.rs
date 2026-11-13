@@ -98,11 +98,15 @@ pub struct UrgencySection {
 }
 
 impl UrgencySection {
-    /// These settings on top of `under`. Assumes `window_s` passed [`Config::validate`].
+    /// These settings on top of `under`. A `window_s` that [`Config::validate`] would refuse
+    /// keeps the value of `under`.
     pub fn over(&self, under: &cronoq::UrgencyConfig) -> cronoq::UrgencyConfig {
         cronoq::UrgencyConfig {
             max: self.max.unwrap_or(under.max),
-            window: self.window_s.map_or(under.window, Duration::from_secs_f64),
+            window: self
+                .window_s
+                .and_then(|s| Duration::try_from_secs_f64(s).ok())
+                .unwrap_or(under.window),
             overdue_rate: self.overdue_rate.unwrap_or(under.overdue_rate),
             overdue_cap: self.overdue_cap.unwrap_or(under.overdue_cap),
         }
@@ -1848,6 +1852,17 @@ mod tests {
                 "pool window",
                 "[[pools]]\nname = 'a'\nurgency = { window_s = -3 }",
                 "pool 'a': urgency.window_s",
+            ),
+            (
+                "pool urgency value",
+                "[[pools]]\nname = 'a'\nurgency = { overdue_cap = -1 }",
+                "pool 'a': urgency max, overdue_rate and overdue_cap",
+            ),
+            (
+                // A pool that overrides the bad key does not excuse the top level.
+                "top level stays checked",
+                "[priority]\nage_cap = [0, 0, 0, 5000]\n[[pools]]\nname = 'a'\npriority = { age_cap = [0, 0, 0, 0] }",
+                "priority age_cap lets low work overtake fresh high",
             ),
         ];
         for (name, toml, want) in cases {

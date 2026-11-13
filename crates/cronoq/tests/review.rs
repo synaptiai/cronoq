@@ -816,6 +816,24 @@ async fn build_refuses_invalid_priority_and_urgency_settings() {
         "{e}"
     );
 
+    // Settings written through `configure` are checked as well.
+    let e = err(Scheduler::builder()
+        .pool(echo_pool(1))
+        .configure(|c| c.priority.base = [1.0, 2.0, 3.0, 4.0])
+        .build()
+        .await);
+    assert!(e.contains("strictly ordered"), "{e}");
+    let e = err(Scheduler::builder()
+        .pool(echo_pool(1).configure(|c| {
+            c.urgency = Some(UrgencyConfig {
+                max: -1.0,
+                ..Default::default()
+            })
+        }))
+        .build()
+        .await);
+    assert!(e.starts_with("pool 'default':"), "{e}");
+
     // With the flag the same settings are accepted, and the snapshot reports them per pool.
     let allowed = PriorityConfig {
         allow_overtaking_high: true,

@@ -294,7 +294,7 @@ Results of finished tasks remain available while the leader's output cache
 | `pools[].wait_p50_s`, `wait_p90_s`, `wait_p99_s` | Time from submission to first start, over the metrics window. |
 | `pools[].cost` | Cost since start (`cost_per_worker_second` × worker-seconds). |
 | `pools[].groups` | Worker groups (workers with the same labels), unlabeled first: labels, slots and busy slots. |
-| `pools[].priority`, `urgency` | The [priority and urgency settings](configuration.md#priority-and-urgency) in effect for the pool. Arrays are in the order critical, high, normal, low. |
+| `pools[].priority`, `urgency` | The [priority and urgency settings](configuration.md#priority-and-urgency) in effect for the pool. Arrays are in the order critical, high, normal, low. `null` for a pool reported by a shard that runs an older version. |
 | `totals` | Lifetime counters of this leader since it started. |
 
 Field meanings: [Metrics and quality signals](../concepts/metrics.md).

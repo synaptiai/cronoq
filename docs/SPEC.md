@@ -215,7 +215,7 @@ The settings (`PriorityConfig`) and the urgency curve below (`UrgencyConfig`) ar
 (`PoolConfig::priority`, `PoolConfig::urgency`); scores are only compared within a pool.
 `PriorityConfig::validate` requires finite, non-negative values, strictly decreasing bases, and,
 unless `allow_overtaking_high` is set, `base[l] + age_cap[l] <= base[h]` for `h` in
-{Critical, High} and every lower class `l`: waiting alone never passes fresh High or Critical
+{Critical, High} and every lower class `l` that ages (`aging_rate[l] > 0`): waiting alone never passes fresh High or Critical
 work. The runtime builder, the server configuration and the Python types apply it; `Core::new`
 does not (it accepts any finite values).
 

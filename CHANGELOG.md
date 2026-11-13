@@ -18,7 +18,7 @@ contain breaking changes; they are called out under **Changed**.
   change these, for all pools at once.
 - Snapshots report the priority and urgency settings in effect for each pool: `priority` and
   `urgency` in `GET /v1/snapshot`, in `PoolSnapshot` over gRPC, and on the Rust and Python
-  snapshot types.
+  snapshot types (`cronoq.client.PrioritySettings` and `UrgencySettings` in the Python client).
 
 ### Changed
 

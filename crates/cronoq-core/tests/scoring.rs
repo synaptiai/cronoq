@@ -119,6 +119,15 @@ fn overtaking_high_or_critical_needs_the_flag() {
         p.allow_overtaking_high = true;
         p.validate().unwrap();
     }
+
+    // A class that does not age cannot overtake anything, whatever its cap.
+    PriorityConfig {
+        aging_rate: [2.0, 2.0, 2.0, 0.0],
+        age_cap: [800.0, 800.0, 800.0, 50_000.0],
+        ..Default::default()
+    }
+    .validate()
+    .unwrap();
 }
 
 #[test]

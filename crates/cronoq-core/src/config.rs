@@ -38,7 +38,7 @@ impl PriorityConfig {
     /// (`Critical` > `High` > `Normal` > `Low`), and, unless
     /// [`allow_overtaking_high`](PriorityConfig::allow_overtaking_high) is set, no lower class
     /// able to pass freshly submitted `High` or `Critical` work by waiting
-    /// (`base[lower] + age_cap[lower] <= base[higher]`). `Low` passing fresh `Normal` work is
+    /// (`base[lower] + age_cap[lower] <= base[higher]`, for classes that age at all). `Low` passing fresh `Normal` work is
     /// always allowed: that is what aging is for, and what the defaults do after 45 s.
     pub fn validate(&self) -> Result<(), String> {
         let ok = |v: &[f64]| v.iter().all(|x| x.is_finite() && *x >= 0.0);
@@ -62,8 +62,9 @@ impl PriorityConfig {
         for higher in [Priority::Critical, Priority::High] {
             let h = higher.index();
             for lower in h + 1..Priority::COUNT {
-                let reach = self.base[lower] + self.age_cap[lower];
-                if reach > self.base[h] {
+                // A class that does not age never gains anything, whatever its cap.
+                let ages = self.aging_rate[lower] > 0.0;
+                if ages && self.base[lower] + self.age_cap[lower] > self.base[h] {
                     return Err(format!(
                         "priority age_cap lets {} work overtake fresh {} work by waiting \
                          (base {} + age_cap {} > base {}); lower the cap or set \

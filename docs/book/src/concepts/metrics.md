@@ -27,6 +27,7 @@ cronoq reports two kinds of telemetry:
 | `wait_mean`, `wait_p50/p90/p99` | Queue wait of first attempts (submission to dispatch). |
 | `run_p50`, `run_p99` | Run time of successful attempts. |
 | `worker_seconds`, `cost` | Since start. |
+| `priority`, `urgency` | The [priority](priorities.md#configuration) and [urgency](deadlines.md#configuration) settings in effect for the pool. |
 
 Snapshots also include totals since start (`submitted`, `succeeded`, `failed`, `dead_lettered`,
 `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`,

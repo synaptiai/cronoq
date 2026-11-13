@@ -270,14 +270,14 @@ urgency = { overdue_cap = 0 }
 | `base` | 4 floats ≥ 0 | `[10000, 1000, 100, 10]` | Starting score for critical, high, normal and low. Must be strictly decreasing. |
 | `aging_rate` | 4 floats ≥ 0 | `[2, 2, 2, 2]` | Score points gained per second of waiting, per class. |
 | `age_cap` | 4 floats ≥ 0 | `[800, 800, 800, 800]` | Most score points waiting can add, per class. |
-| `allow_overtaking_high` | bool | `false` | Accept values with which waiting alone lets a lower class pass fresh `high` or `critical` work (`base[lower] + age_cap[lower] > base[higher]`). Without it such values are rejected. |
+| `allow_overtaking_high` | bool | `false` | Accept values with which waiting alone lets a lower class pass fresh `high` or `critical` work (`base[lower] + age_cap[lower] > base[higher]`, for a class whose `aging_rate` is above zero). Without it such values are rejected. |
 
 `urgency`:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `max` | float ≥ 0 | `5000` | Score points added when a task's latest start time arrives. |
-| `window_s` | float ≥ 0 | `5` | Shortest time before the latest start over which urgency rises. |
+| `window_s` | float ≥ 0, at most one year | `5` | Shortest time before the latest start over which urgency rises. |
 | `overdue_rate` | float ≥ 0 | `100` | Extra score points per second past the latest start time. |
 | `overdue_cap` | float ≥ 0 | `3000` | Most extra score points for being overdue. |
 

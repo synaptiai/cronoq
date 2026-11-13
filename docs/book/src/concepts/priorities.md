@@ -90,7 +90,8 @@ values for the rest.
 [priority]
 aging_rate = [2, 2, 2, 9]
 
-# In this pool, background work may also pass fresh high work once it has waited about 8 minutes.
+# In this pool, background work may also pass fresh high work, after about 2 minutes of waiting
+# (10 + 9w > 1000; the pool keeps the rate of 9 set above).
 [[pools]]
 name = "reports"
 priority = { age_cap = [800, 800, 800, 1000], allow_overtaking_high = true }
@@ -104,7 +105,8 @@ built, and when a Python `PriorityConfig` is created:
 - every value is finite and not negative;
 - the base scores are strictly ordered: critical above high above normal above low;
 - no class can pass freshly submitted `high` or `critical` work by waiting alone, that is
-  `base[lower] + age_cap[lower] <= base[higher]`. This is the guarantee described under
+  `base[lower] + age_cap[lower] <= base[higher]` for every class whose `aging_rate` is above
+  zero. This is the guarantee described under
   [Aging](#aging), and a cap that breaks it is usually a mistake. Set
   `allow_overtaking_high` to accept it.
 

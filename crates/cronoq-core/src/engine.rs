@@ -405,7 +405,8 @@ pub struct Core<P> {
 impl<P> Core<P> {
     /// Create an engine. Structural errors (no pools, duplicate names, `min_workers >
     /// max_workers`) panic; use [`CoreConfig::validate`] first to report them gracefully.
-    /// Out-of-range numeric settings are clamped to safe values.
+    /// Out-of-range numeric settings are clamped to safe values, except the priority and
+    /// urgency settings, which are used as given: check them with [`CoreConfig::validate`].
     pub fn new(cfg: CoreConfig) -> Self {
         let cfg = cfg.sanitized();
         assert!(!cfg.pools.is_empty(), "at least one pool is required");
