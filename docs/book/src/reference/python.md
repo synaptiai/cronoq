@@ -48,6 +48,10 @@ the scheduler stops and further calls raise `SchedulerError`; calls before `star
 | `await status(target)` | `str \| None` | Status name, or `None` if unknown. |
 | `await handle(target)` | `TaskHandle \| None` | Attach to an existing task. |
 | `await snapshot()` | `Snapshot` | Metrics and quality signals. |
+| `await ordering(key, *, pool=None)` | `OrderingInfo \| None` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool); `None` for a key with no tasks and no kept floor. |
+| `await halted_orderings(*, pool=None, limit=100)` | `list[str]` | The halted ordering keys of a pool, in name order. |
+| `await set_ordering_floor(key, floor, *, pool=None, persist=False)` | | Set the class floor of an ordering key; `floor=None` removes it. With `persist=True` the floor stays when the key has no tasks left; beyond 100,000 kept floors the call raises `SchedulerError`. `persist=True` without a floor raises `ValueError`. |
+| `await resume_ordering(key, *, pool=None)` | `bool` | Resume a halted ordering key. `False` if the key was not halted, which is not an error. |
 | `await set_capacity(pool, n)` | | Report capacity for externally managed pools. |
 | `await set_group_capacity(pool, labels, n)` | | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"`, `"allow"`, `"queue"` or `"queue_on_success"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `key` (a prefix: each occurrence gets `"<key>@<start in UTC>"`), `deadline_in` (relative to each occurrence's start), `duration_hint`, `timeout`, `retry`, `resources`, `tags`, `labels`, `tenant`. |
@@ -78,6 +82,8 @@ Accepted by `submit`, `enqueue` and `Task(...)`.
 | `tags` | `dict` | Labels (values converted to `str`). |
 | `labels` | `dict[str, str]` | Worker labels the task requires; it runs only in a group of workers that has them. |
 | `tenant` | `str` | Tenant, for pools with `tenant_weights` or `fair_share` ([Fair sharing](../concepts/fairness.md)). |
+| `ordering_key` | `str` | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). Not with `start_in` / `start_at`, and not in `add_recurring`. |
+| `halt_on_failure` | `bool` | With `ordering_key`: if this task ends as failed, halt its key until `resume_ordering`. Default `False`. |
 
 `submit`, `enqueue` and `Task(...)` accept `fingerprint` (an `int` below 2**128, or 16 bytes
 such as a digest) and `on_key_conflict="reject"`: a submission whose key belongs to a task with
@@ -192,8 +198,9 @@ executors.
 | `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `group` (labels of the worker group the attempt was assigned to), `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
 | `TaskHandle` | Awaitable; `id`, `duplicate`, `outcome` (`"created"`, `"existing"`, `"replaced"` or `"pending"`), `await result()`, `done()`, `cancel()`. |
 | `Updated` | Result of `update`: `id`, `status` (unchanged by the update), `deferred` (an attempt is running; the values apply to what follows it), `changed` (`False` when the task already had every value). |
+| `OrderingInfo` | Result of `ordering`: `tasks` (not finished), `head` (id of the task at the front, or `None`), `effective` (name of the class the front task runs at, or `None`), `floor` (class name or `None`), `persist`, `halted`. |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
-| `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
+| `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, `ordering_keys`, `ordering_waiting` and `ordering_halted` ([Ordering keys](../concepts/ordering-keys.md#metrics)), and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
 | `StatusEvent`, `EventStream` | See [status events](#status-events). |
 
 `cronoq.__version__` is the package version as a string.
@@ -239,6 +246,10 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | `await wait(ref, timeout=None)` | `Result` | Raises `TimeoutError` if still running after `timeout` (or the server's `max_wait_s`). |
 | `watch(pools=None, *, ids=None, keys=None, all_transitions=False)` | async iterator of `Event` | Terminal events by default; every transition with `all_transitions=True`. |
 | `await snapshot()` | `Snapshot` | Requires a metrics or admin token. |
+| `await ordering(key, *, pool=None)` | `OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool). A key with no tasks and no kept floor has `tasks == 0`. Requires a metrics or admin token. |
+| `await halted_orderings(*, pool=None, limit=100)` | `list[str]` | The halted ordering keys of a pool, in name order. Requires a metrics or admin token. |
+| `await set_ordering_floor(key, floor, *, pool=None, persist=False)` | | Set the class floor of an ordering key; `floor=None` removes it. With `persist=True` the floor stays when the key has no tasks left; the server limits how many keys keep one (`ClientError` `resource_exhausted`). Requires an admin token that is not pinned to a tenant. |
+| `await resume(*, ordering_key, pool=None)` | `bool` | Resume a halted ordering key. `False` if the key was not halted, which is not an error. Requires an admin token that is not pinned to a tenant. |
 | `await add_recurring(name, cron, payload=None, *, tz=None, overlap="skip", **options)` | | Requires an admin token. `payload` may also be a prebuilt `task(...)` spec. `overlap`, `key` and `deadline_in` work as for the native scheduler. |
 | `await remove_recurring(name)` | `bool` | Requires an admin token. |
 | `await list_workers()` | `list[WorkerInfo]` | Connected remote workers. Requires a metrics or admin token. |
@@ -255,9 +266,10 @@ Result types (frozen dataclasses):
 | `WorkerInfo` | `id`, `name`, `pool`, `labels`, `slots`, `busy`, `connected_at` (Unix seconds) |
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Updated` | `id`, `status` (unchanged by the update), `deferred`, `changed` |
+| `OrderingInfo` | `pool`, `key`, `tasks`, `head` (task id or `None`), `effective` and `floor` (class names or `None`), `persist`, `halted` |
 | `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message`, `priority` (name, or `None` from an older server), `updated` (true for an event that reports an update, delivered with `all_transitions=True`), `kind` (`"transition"`, `"updated"`, `"replaced"` or `"successor"`) |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
-| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
+| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `ordering_keys`, `ordering_waiting`, `ordering_halted`, `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
 | `WorkerGroup` | `labels`, `capacity`, `busy`: the connected workers of a pool that registered the same labels |
 | `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions`, `superseded` (counters since the leader started) |
 
@@ -275,7 +287,9 @@ Builds a `TaskSpec` for `submit_batch` and `add_recurring`. Options: `pool`, `ki
 `priority`, `key`, `deadline_in` / `deadline_at`, `start_in` / `start_at`, `tolerance`,
 `on_miss`, `duration_hint`, `timeout`, `retry` (a `RetryPolicy` or a dict), `after`, `deps`
 (`(ref, "on_success")` tuples or dicts), `resources`, `tags`, `labels` (worker labels the
-task requires), `tenant`, `content_type`.
+task requires), `tenant`, `content_type`, `ordering_key` and `halt_on_failure`
+([Ordering keys](../concepts/ordering-keys.md); `halt_on_failure=True` without an
+`ordering_key` raises `ValueError`).
 
 Payloads are encoded by type:
 

@@ -55,6 +55,10 @@ opened on the first call.
 | `ListTasks(ctx, ListOptions)` | `*TaskPage` | One page of tasks by pool and status, in id order. Pass `NextAfter` as `After` for the next page. |
 | `Watch(ctx, WatchOptions)` | `iter.Seq2[Event, error]` | Status events until `ctx` ends or the stream fails (for example when the server loses leadership: watch again). |
 | `Snapshot(ctx)` | `*cronoqpb.SnapshotResponse` | Pools, queues and totals (metrics role). |
+| `Ordering(ctx, pool, key)` | `*OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (empty: the default pool). A key with no tasks and no kept floor has `Tasks` 0 (metrics role). |
+| `HaltedOrderings(ctx, pool, limit)` | `[]string` | The halted ordering keys of `pool`, in name order. A `limit` of 0 takes the server's default (metrics role). |
+| `SetOrderingFloor(ctx, pool, key, floor, persist)` | `error` | Set the class floor of an ordering key; an empty `floor` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`ResourceExhausted`). Admin role, not pinned to a tenant. |
+| `Resume(ctx, pool, orderingKey)` | `bool` | Resume a halted ordering key. False if the key was not halted, which is not an error. Admin role, not pinned to a tenant. |
 
 `Ref` names a task: `cronoq.ID(id)` or `cronoq.Key(key)`.
 
@@ -96,6 +100,14 @@ every task or on none; a refused batch names the task in `Error.BatchIndex` (-1 
 `Task.ReturnExisting` asks for the existing task whatever it holds, also when the server's
 default is to report conflicts. With none of `Replace`, `RejectConflict` and `ReturnExisting`,
 the server's default applies.
+
+`Task.OrderingKey` makes tasks of one pool that share it run one at a time, in submission
+order ([Ordering keys](../concepts/ordering-keys.md)). It is not a deduplication key: two
+submissions with the same ordering key are two tasks. It is refused together with `StartIn`
+(`InvalidArgument`). `Task.HaltOnFailure`, with `OrderingKey`, halts the key if the task ends
+as failed, until `Client.Resume`. `OrderingInfo` has `Pool`, `Key`, `Tasks` (not finished),
+`Head` (id of the task at the front; 0 if there is none), `Effective` (the class that task
+runs at; empty without tasks or a floor), `Floor` (empty if none), `Persist` and `Halted`.
 
 `Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,
 `ClearDeadline` (at most one of the three), and `Tags`, which replaces the task's tags when it

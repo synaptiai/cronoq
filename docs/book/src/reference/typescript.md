@@ -72,6 +72,10 @@ browsers their own token, limited to the pools and role they need.
 | `listTasks({ pools, statuses, after, limit })` | `TaskPage` | One page of tasks, in id order. Pass `nextAfter` as `after` for the next page. |
 | `watch({ pools, ids, keys, allTransitions }, { signal })` | `AsyncGenerator<Event>` | Status events until `signal` aborts or the stream fails (for example when the server loses leadership: watch again). |
 | `snapshot()` | `pb.SnapshotResponse` | Pools, queues and totals (metrics role). |
+| `ordering(key, pool?)` | `OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool). A key with no tasks and no kept floor has `tasks` `0n` (metrics role). |
+| `haltedOrderings({ pool, limit })` | `string[]` | The halted ordering keys of a pool, in name order (metrics role). |
+| `setOrderingFloor(key, floor, { pool, persist })` | `void` | Set the class floor of an ordering key; `floor: undefined` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`resource_exhausted`). Admin role, not pinned to a tenant. |
+| `resume({ orderingKey, pool })` | `boolean` | Resume a halted ordering key. `false` if the key was not halted, which is not an error. Admin role, not pinned to a tenant. |
 
 | `listTasks` filter | Default | Description |
 |---|---|---|
@@ -114,6 +118,14 @@ content as a `CronoqError` whose `keyConflict` is true, with the existing task i
 same `onKeyConflict` for every task (raw specs cannot be mixed with tasks that name one); a
 refused batch names the task in `batchIndex`. `"return_existing"` asks for the existing task
 whatever it holds; left out, the server's default applies.
+
+`Task.orderingKey` makes tasks of one pool that share it run one at a time, in submission
+order ([Ordering keys](../concepts/ordering-keys.md)). It is not a deduplication key: two
+submissions with the same ordering key are two tasks. It is refused together with `startIn`
+(`invalid_argument`). `Task.haltOnFailure`, with `orderingKey`, halts the key if the task ends
+as failed, until `client.resume`. `OrderingInfo` has `pool`, `key`, `tasks` (not finished),
+`head` (id of the task at the front, if any), `effective` (the class that task runs at),
+`floor` (if set), `persist` and `halted`.
 
 `update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:
 `deadlineIn` is seconds from now, `deadlineAt` a `Date`, at most one of the three deadline

@@ -315,6 +315,45 @@ When the chosen task has no matching group with a free slot, it waits in a label
 without blocking the rest of the pool, and is moved back to its queue, oldest first, when a
 matching group gains free slots. The label check comes before the resource check.
 
+### 5.5 Ordering keys
+`TaskSpec::ordering_key` groups the tasks of one pool into a key (internally a *strand*): a
+map from `seq` to task, per pool. Rules:
+
+- **One at a time, by `seq`.** Only the head run of a strand (its first `RUN = 1` members) is
+  ever in a ready queue, parked on a resource, waiting for labels or leased. Every other
+  member that has no unmet dependency is `Ready` with `Loc::Ordered`: in no queue, not counted
+  in the autoscaler's backlog, never a shedding candidate. A member leaves its strand when it
+  reaches a terminal status; the strand is then *settled*: the new head is offered if it is
+  ready. A head that retries, waits for dependencies or is parked keeps the strand.
+- **Effective class.** A head run member is queued, scored, charged to its tenant and measured
+  for priority adherence at `eff = min(own class, highest class among the strand's members,
+  floor)` (lower index is higher). Its own class stays what bounds, shedding, `retrying`
+  counters and summaries use; its age is its own (`arrival`). `eff` is recomputed whenever
+  membership, a member's class or the floor changes, and the head is moved between queues.
+  Queued tasks whose `eff` differs from their class are indexed by own class so that shedding
+  finds them by the class they are.
+- **Failure policy** per task (`OrderFailure::Continue` default, `Halt`). A `Halt` task that
+  ends `Failed` or `DeadLettered` sets the strand's `halted`: nothing of it is offered until
+  `resume_ordering`, or until it has no members (an empty strand is not halted). Other
+  terminal statuses never halt.
+- **Floor** per strand (`set_ordering_floor(pool, key, floor, persist)`): removed when the
+  strand empties unless `persist`. At most `CoreConfig::max_ordering_settings` strands keep one
+  (`OrderingError::TooManySettings`); submissions are never refused by this limit. A strand
+  with no members and no kept floor does not exist.
+- **Cycles.** The place in a strand is an implicit dependency on the member before it. A
+  submission (single or batch) whose key would be awaited by a task that, through
+  dependencies and strand order, comes before it is refused with `SubmitError::Cycle`; so is a
+  replacement with `renew_position` that would move a task behind one that waits for it. A
+  batch is committed in an order that keeps batch order within each ordering key.
+- **Refused combinations.** An ordering key with a fixed start, or in a recurring template, is
+  invalid. A replacement must name the task's ordering key (`ReplaceMismatch`); it may change
+  the failure policy. A successor takes its predecessor's `seq`, and so its place.
+- **Durability.** `Mutation::Submitted/Replaced/PendingReplacement` carry the key and policy in
+  the spec; `Mutation::Ordering { pool, key, floor, persist, halted }` is the whole state of a
+  strand, emitted on every change (all default = the store drops the row). Recovery applies
+  `Recovered::ordering`, inserts every task as `Ordered`, then settles each strand once, so the
+  order is the stored `seq` order.
+
 ---
 
 ## 6. Fixed-start and recurring tasks

@@ -117,6 +117,7 @@ Do not call `build_blocking` from inside a tokio runtime; use the async API ther
 |---|---|
 | `cargo run -p cronoq --example llm_agents` | Rate limits, priorities, deadlines, 429 retries |
 | `cargo run -p cronoq --example dag_pipeline` | Fan-out/fan-in with failure and cleanup handlers |
+| `cargo run -p cronoq --example ordering_keys` | One task per ordering key at a time, in order; a key halted by a failure and resumed |
 | `cargo run --release -p cronoq --example firehose -- 1000000` | Microtask throughput |
 | `cargo run -p cronoq --example prototype_demo` | Mixed workload with a fixed-start task and quality metrics |
 

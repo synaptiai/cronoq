@@ -87,6 +87,7 @@ role = "admin"     # everything, plus recurring schedules
 # max_list = 1000                  # most tasks in one ListTasks / GET /v1/tasks page
 # key_retention_s = 3600           # how long a finished task's key keeps deduplicating
 # key_retention_max = 1000000      # most finished keys kept for that
+# max_ordering_settings = 100000   # most ordering keys that keep a class floor while empty
 
 # Recent outputs and task details kept in memory for Wait/Get after completion.
 # [outputs]

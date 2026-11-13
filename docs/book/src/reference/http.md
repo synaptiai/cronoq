@@ -1,7 +1,7 @@
 # HTTP API
 
 The HTTP gateway exposes the `Tasks` service of the [gRPC API](grpc.md) as JSON, except the
-`Watch` stream, plus the read-only `Admin` calls, metrics and health probes. It listens on `server.http_addr` (default `127.0.0.1:7071`) and serves HTTP/1.1
+`Watch` stream, plus the read-only `Admin` calls, the [ordering key](../concepts/ordering-keys.md) calls, metrics and health probes. It listens on `server.http_addr` (default `127.0.0.1:7071`) and serves HTTP/1.1
 and HTTP/2 (h2c without TLS, ALPN with TLS). With `[server.tls]` configured it serves HTTPS and
 accepts client certificates on the same terms as the gRPC listener.
 
@@ -53,12 +53,18 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
 | `GET /v1/snapshot` | metrics | Per-pool state, quality signals and totals. |
 | `GET /v1/workers` | metrics | Connected remote workers. |
 | `GET /v1/recurring` | metrics | Recurring schedules. |
+| `GET /v1/pools/{pool}/ordering/{key}` | metrics | An ordering key of a pool. |
+| `GET /v1/pools/{pool}/ordering?halted=true` | metrics | The halted ordering keys of a pool. |
+| `PUT /v1/pools/{pool}/ordering/{key}/floor` | admin | Set the class floor of an ordering key. |
+| `DELETE /v1/pools/{pool}/ordering/{key}/floor` | admin | Remove the class floor of an ordering key. |
+| `POST /v1/pools/{pool}/ordering/{key}/resume` | admin | Resume a halted ordering key. |
 | `GET /metrics` | metrics | Prometheus text exposition ([metrics reference](metrics.md)). |
 | `GET /healthz` | none | `200 ok` while the process runs (liveness). |
 | `GET /readyz` | none | `200 ready` on the leader, `503 standby` otherwise (readiness). |
 
 `{id}` must be a decimal task id; anything else returns 400 and points to the `by-key` route.
-Keys are percent-decoded path segments: encode `/` as `%2F` (`/v1/tasks/by-key/report%2F42`).
+Keys, ordering keys included, are percent-decoded path segments: encode `/` as `%2F`
+(`/v1/tasks/by-key/report%2F42`).
 
 When `server.metrics_addr` is set, a second listener serves `/metrics`, `/healthz` and
 `/readyz` **without authentication**, for a Prometheus scraper or kubelet on a private network.
@@ -91,6 +97,8 @@ The body of `POST /v1/tasks` and each element of a batch's `tasks`. Every field 
 | `tags` | object | `{}` | String labels passed to the worker. At most `max_tags`; each key and each value at most `max_tag_len`. Keys starting with `cronoq.` are reserved. |
 | `tenant` | string | – | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
 | `labels` | object | `{}` | Worker labels the task requires: it runs only on workers that registered with all of them ([Worker labels](../concepts/labels.md)). Same limits as `tags`. |
+| `ordering_key` | string | – | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). It does not deduplicate: two submissions with the same ordering key are two tasks. At most `max_key_len`. Rejected with 400 together with `start_in_s` or `start_unix_ns`. |
+| `on_failure` | `"continue"`, `"halt"` | `"continue"` | With `ordering_key`: `halt` halts the key if this task ends as failed, until the key is resumed. `halt` without an `ordering_key` is rejected with 400. |
 | `wait` | bool | `false` | `POST /v1/tasks` only: respond when the task has finished. Rejected in batches. |
 | `wait_timeout_s` | number | `limits.max_wait_s` | Upper bound for `wait`, capped at `limits.max_wait_s`. |
 
@@ -130,7 +138,7 @@ The response says what happened in `outcome`:
 | `replaced` | `true` | The task had not started and now carries this submission; `id` is that task. |
 | `pending` | `true` | The task has started and keeps its payload. This submission is stored and runs after it as a new task with the same key. `id`, and `result` with `wait`, are the running task's. |
 
-A replacement that differs from the task in pool, resources, labels, tenant or dependencies, or
+A replacement that differs from the task in pool, resources, labels, ordering key, tenant or dependencies, or
 that involves a fixed start, is refused with 409. Both fields are refused on the tasks of
 `POST /v1/tasks:batch` (400); the batch has its own `on_key_conflict`.
 
@@ -252,6 +260,64 @@ Recurring schedules of the pools the caller may use, by name. `tz` is absent for
 `next_unix_ns` when the schedule has no further occurrence, and `last_task_id` before the first
 occurrence.
 
+## Ordering keys
+
+These routes read and change one [ordering key](../concepts/ordering-keys.md) of one pool.
+An unknown pool returns 404, a pool the caller may not use 403.
+
+### `GET /v1/pools/{pool}/ordering/{key}`
+
+```json
+{"pool": "default", "key": "account:8842", "tasks": 3, "head": "17",
+ "effective": "high", "floor": null, "persist": false, "halted": false}
+```
+
+| Field | Description |
+|---|---|
+| `tasks` | Tasks of the key that have not finished. |
+| `head` | Id (string) of the task at the front, the only one that may run; `null` if the key has no tasks. |
+| `effective` | The class the front task runs at: the highest among the key's tasks and its floor. `null` without tasks or a floor. |
+| `floor` | The class floor, or `null`. |
+| `persist` | The floor stays when the key has no tasks left. |
+| `halted` | A failed task halted the key: nothing of it runs until it is resumed. |
+
+A key with no tasks and no kept floor is not an error: it has `tasks` 0.
+
+### `GET /v1/pools/{pool}/ordering?halted=true`
+
+```json
+{"pool": "default", "keys": ["import:42", "import:57"]}
+```
+
+The halted keys of the pool, in name order, at most `limit` (query parameter, default 100,
+at most 1000). Ordering keys are not listed otherwise: without `halted=true` the route
+returns 400.
+
+### `PUT` and `DELETE /v1/pools/{pool}/ordering/{key}/floor`
+
+```json
+{"floor": "high", "persist": false}
+```
+
+`PUT` sets the class the front task of the key never runs below (`floor`, required:
+`critical`, `high`, `normal` or `low`). With `persist` (default `false`), the floor stays when
+the key has no tasks left; the number of keys that keep one is limited by
+`limits.max_ordering_settings`, and beyond it the route returns 429. `DELETE` removes the
+floor and takes no body. Both return the key, as `GET` does.
+
+### `POST /v1/pools/{pool}/ordering/{key}/resume`
+
+```json
+{"resumed": true}
+```
+
+Resumes a halted key. `resumed` is `false` when the key was not halted, which is not an error.
+The route takes no body.
+
+The floor and resume routes return 403 for credentials pinned to a tenant, because a key may
+hold tasks of other tenants. With a durable store, the change is stored before the response
+is sent.
+
 ## `PATCH /v1/tasks/{id}` and `PATCH /v1/tasks/by-key/{key}`
 
 [Change](../concepts/updating.md) a task that has not finished. Keys left out keep their value.
@@ -331,6 +397,7 @@ Results of finished tasks remain available while the leader's output cache
             "utilization": 0.83, "schedule_efficiency": 0.80,
             "wait_p50_s": 0.2, "wait_p90_s": 1.4, "wait_p99_s": 2.9, "cost": 0.0,
             "workers_connected": 2,
+            "ordering": {"keys": 40, "waiting": 7, "halted": 0},
             "groups": [{"labels": {}, "capacity": 3, "busy": 3},
                        {"labels": {"gpu": "a100"}, "capacity": 1, "busy": 1}],
             "priority": {"base": [10000.0, 1000.0, 100.0, 10.0],
@@ -359,6 +426,7 @@ Results of finished tasks remain available while the leader's output cache
 | `pools[].wait_p50_s`, `wait_p90_s`, `wait_p99_s` | Time from submission to first start, over the metrics window. |
 | `pools[].cost` | Cost since start (`cost_per_worker_second` × worker-seconds). |
 | `pools[].groups` | Worker groups (workers with the same labels), unlabeled first: labels, slots and busy slots. |
+| `pools[].ordering` | [Ordering keys](../concepts/ordering-keys.md#metrics) of the pool: `keys` that have tasks, ready tasks `waiting` for an older task of their key or for a halted key, and `halted` keys. |
 | `pools[].priority`, `urgency` | The [priority and urgency settings](configuration.md#priority-and-urgency) in effect for the pool. Arrays are in the order critical, high, normal, low. `null` for a pool reported by a shard that runs an older version. |
 | `totals` | Lifetime counters of this leader since it started. |
 
@@ -389,16 +457,16 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 
 | Status | gRPC equivalent | Cause |
 |---|---|---|
-| 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle, invalid id. |
+| 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle (including a dependency on a task behind the task in its own ordering key), an `ordering_key` with a start time, `on_failure` without an `ordering_key`, invalid id. |
 | 401 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
+| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, credentials pinned to a tenant change an ordering key, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
 | 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a `replace_queued` submission that does not match the task it would replace; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
 | 413 | – | Body larger than `limits.max_http_body_bytes`. |
 | 422 | `FAILED_PRECONDITION` with `cronoq-conflict-task` metadata | A submission with `on_key_conflict = reject` whose key belongs to a task submitted with other content. The body carries `task_id` and `task_status`, and `index` for a batch. |
 | 415 | – | Missing or wrong `content-type`. |
-| 429 | `RESOURCE_EXHAUSTED` | Pool (`max_pending`) or server (`max_pending_total`) queue full. Retry with backoff. |
+| 429 | `RESOURCE_EXHAUSTED` | Pool (`max_pending`) or server (`max_pending_total`) queue full. Retry with backoff. Also a kept floor beyond `limits.max_ordering_settings`, which retrying does not fix. |
 | 500 | `INTERNAL` | Unexpected server error. |
 | 503 | `UNAVAILABLE` | Not the leader, shutting down, or the store is unavailable. Retry, preferably against the leader. |
 | 504 | `DEADLINE_EXCEEDED` | A wait ended before the task finished, or the request exceeded its time limit. |
