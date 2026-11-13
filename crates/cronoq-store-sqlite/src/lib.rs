@@ -585,7 +585,11 @@ impl SqliteStore {
                         }
                     }
                 }
-                _ => {}
+                // Listed, not `_`: a new mutation kind must fail to compile here until it is
+                // handled (schedules are applied in the second pass).
+                Mutation::RecurringUpsert { .. }
+                | Mutation::RecurringRemove { .. }
+                | Mutation::RecurringNext { .. } => {}
             }
         }
 
@@ -689,7 +693,8 @@ impl SqliteStore {
                     .await
                     .map_err(db)?;
                 }
-                _ => {}
+                // Listed, not `_`: tasks were applied in the first pass.
+                Mutation::Submitted { .. } | Mutation::Status { .. } => {}
             }
         }
         tx.commit().await.map_err(db)

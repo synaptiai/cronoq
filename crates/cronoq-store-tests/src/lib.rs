@@ -229,6 +229,20 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             name: "gone".into(),
         },
     ];
+    // Exhaustive on purpose (no `_`): a new mutation kind fails to compile here until this
+    // batch commits one and the checks below cover its effect after recovery.
+    let mut kinds = [false; 5];
+    for m in &batch {
+        let kind = match m {
+            Mutation::Submitted { .. } => 0,
+            Mutation::Status { .. } => 1,
+            Mutation::RecurringUpsert { .. } => 2,
+            Mutation::RecurringRemove { .. } => 3,
+            Mutation::RecurringNext { .. } => 4,
+        };
+        kinds[kind] = true;
+    }
+    assert_eq!(kinds, [true; 5], "the batch must hold every mutation kind");
     let out = Bytes::from_static(b"result");
     store
         .commit(epoch, base, &batch, &[(TaskId(12), &out)])
