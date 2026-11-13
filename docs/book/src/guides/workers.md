@@ -110,9 +110,9 @@ The worker:
 Pass `labels={"gpu": "a100"}` to register the worker with labels: tasks submitted with
 `labels=` run only on workers that have them ([Worker labels](../concepts/labels.md)).
 
-Raise `Reject` to give a lease back unrun: the server offers it to another worker of the pool
-with the same labels without counting an attempt, or, if no such worker can take it, fails the
-attempt as retryable.
+Raise `Reject` to give a lease back unrun: the server hands it to another worker of the pool
+with the same labels as the same attempt, or, if no such worker can take it, fails the attempt
+as retryable, which counts against the task's retry budget.
 Raise `CancelTask` to end the task as `cancelled`. For mTLS, pass
 `credentials=grpc.ssl_channel_credentials(root, key, cert)`.
 
@@ -203,7 +203,9 @@ tooling.
      `fail{lease, message, permanent, retry_after_s}`, `nack{lease, reason}` (give it back) or
      `cancelled{lease}`.
 5. On `abort{lease, reason}`, stop that attempt; its slot is already free.
-6. Send `set_slots{slots}` to change concurrency; `0` drains the worker.
+6. Send `set_slots{slots}` to change concurrency; `0` drains the worker. Do this before
+   shutting down, instead of answering new leases with `nack`: a refused lease that no other
+   worker can take fails the attempt.
 7. On `shutdown{reason, not_leader}`, or when the stream ends, reconnect with backoff.
 
 In-flight leases of a dropped stream are failed as retryable and retried elsewhere. The full

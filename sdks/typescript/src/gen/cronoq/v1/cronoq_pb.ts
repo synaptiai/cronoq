@@ -843,8 +843,9 @@ export const SetSlotsSchema: GenMessage<SetSlots> = /*@__PURE__*/
   messageDesc(file_cronoq_v1_cronoq, 22);
 
 /**
- * The worker cannot take this lease (e.g. it is draining); the server offers it to another
- * worker without counting an attempt when possible.
+ * The worker cannot take this lease (e.g. it has no free slot); the server hands it to another
+ * worker as the same attempt. If no other worker can take it, the attempt fails as retryable
+ * and counts against the task's retry budget.
  *
  * @generated from message cronoq.v1.Nack
  */
