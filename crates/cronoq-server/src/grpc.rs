@@ -399,6 +399,35 @@ async fn check_duplicate(app: &AppState, principal: &Principal, id: TaskId) -> R
     }
 }
 
+/// The status for a submission the scheduler refused. A key conflict names the task that holds
+/// the key: for a caller limited to certain pools that must not be a task of another pool
+/// (the key may have been taken there after the check made before submitting), so such a
+/// conflict is answered like any key that is in use elsewhere.
+async fn submit_refused(app: &AppState, principal: &Principal, e: cronoq::Error) -> Status {
+    let conflict = match &e {
+        cronoq::Error::Submit(cronoq::SubmitError::KeyConflict { id, .. })
+        | cronoq::Error::Batch {
+            error: cronoq::SubmitError::KeyConflict { id, .. },
+            ..
+        } => Some(*id),
+        _ => None,
+    };
+    if let Some(id) = conflict
+        && let Err(hidden) = check_duplicate(app, principal, id).await
+    {
+        return hidden;
+    }
+    convert::error(e)
+}
+
+/// `status`, naming the task of a batch it is about.
+fn at_index(index: usize, mut status: Status) -> Status {
+    if let Ok(v) = index.to_string().parse() {
+        status.metadata_mut().insert(convert::BATCH_INDEX, v);
+    }
+    status
+}
+
 /// Validate and submit one task, optionally waiting (bounded by `wait_timeout`) for its result.
 pub async fn submit_one(
     app: &AppState,
@@ -429,9 +458,15 @@ pub async fn submit_one(
     if opts.renew_position {
         task = task.renew_position();
     }
+    if !replace {
+        task = task.on_key_conflict(opts.on_key_conflict);
+    }
     match wait {
         Some(timeout) => {
-            let h = app.sched.submit(task).await.map_err(convert::error)?;
+            let h = match app.sched.submit(task).await {
+                Ok(h) => h,
+                Err(e) => return Err(submit_refused(app, principal, e).await),
+            };
             let sub = cronoq::Submitted {
                 id: h.id(),
                 duplicate: h.is_duplicate(),
@@ -447,7 +482,10 @@ pub async fn submit_one(
             })
         }
         None => {
-            let s = app.sched.enqueue(task).await.map_err(convert::error)?;
+            let s = match app.sched.enqueue(task).await {
+                Ok(s) => s,
+                Err(e) => return Err(submit_refused(app, principal, e).await),
+            };
             record_outcome(app, principal, s, &meta, opts.renew_position).await?;
             Ok(pb::SubmitResponse {
                 id: s.id.0,
@@ -464,18 +502,24 @@ pub async fn submit_batch(
     app: &AppState,
     principal: &Principal,
     mut specs: Vec<pb::TaskSpec>,
+    mode: cronoq::KeyConflict,
 ) -> Result<pb::SubmitBatchResponse, Status> {
+    if mode == cronoq::KeyConflict::ReplaceQueued {
+        return Err(Status::invalid_argument(
+            "on_key_conflict = replace_queued is not supported in a batch",
+        ));
+    }
     let max = app.limits.max_tasks_per_batch;
     if specs.len() > max {
         return Err(Status::invalid_argument(format!(
             "at most {max} tasks per batch"
         )));
     }
-    for s in &mut specs {
-        pin_tenant(principal, s)?;
-        check_pool(principal, convert::spec_pool(s))?;
+    for (i, s) in specs.iter_mut().enumerate() {
+        pin_tenant(principal, s).map_err(|e| at_index(i, e))?;
+        check_pool(principal, convert::spec_pool(s)).map_err(|e| at_index(i, e))?;
         // A batch is atomic in one shard's store, so every task must be this shard's.
-        check_spec_shard(app, s)?;
+        check_spec_shard(app, s).map_err(|e| at_index(i, e))?;
     }
     // Only keys the batch introduces count as batch-local: a key that already names a task
     // (possibly of another pool) is checked like any other duplicate or dependency, before
@@ -489,24 +533,25 @@ pub async fn submit_batch(
             }
         }
     }
-    for spec in &specs {
-        check_pool(principal, convert::spec_pool(spec))?;
-        check_cross_pool(app, principal, spec, &batch_keys).await?;
+    for (i, spec) in specs.iter().enumerate() {
+        check_cross_pool(app, principal, spec, &batch_keys)
+            .await
+            .map_err(|e| at_index(i, e))?;
     }
     let mut metas = Vec::with_capacity(specs.len());
     let mut tasks = Vec::with_capacity(specs.len());
-    for spec in specs {
+    for (i, spec) in specs.into_iter().enumerate() {
         metas.push(pb::TaskSpec {
             payload: Vec::new(),
             ..spec.clone()
         });
-        tasks.push(convert::task(spec, &app.limits)?);
+        let task = convert::task(spec, &app.limits).map_err(|e| at_index(i, e))?;
+        tasks.push(task.on_key_conflict(mode));
     }
-    let hs = app
-        .sched
-        .submit_batch(tasks)
-        .await
-        .map_err(convert::error)?;
+    let hs = match app.sched.submit_batch(tasks).await {
+        Ok(hs) => hs,
+        Err(e) => return Err(submit_refused(app, principal, e).await),
+    };
     for (h, m) in hs.iter().zip(&metas) {
         if h.is_duplicate() {
             check_duplicate(app, principal, h.id()).await?;
@@ -977,8 +1022,10 @@ impl pb::tasks_server::Tasks for TasksService {
     ) -> Result<Response<pb::SubmitBatchResponse>, Status> {
         let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
         let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let mode = convert::key_conflict(r.on_key_conflict)?;
         Ok(Response::new(
-            crate::route::submit_batch(app, &p, req.into_inner().tasks).await?,
+            crate::route::submit_batch(app, &p, r.tasks, mode).await?,
         ))
     }
 

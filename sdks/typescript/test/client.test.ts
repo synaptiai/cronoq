@@ -143,7 +143,7 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     // A batch admits tasks as written, and a misspelt option is an error: neither is dropped.
     await assert.rejects(
       c.submitBatch([{ payload: "x", key: "title", onKeyConflict: "replace_queued" }]),
-      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument" && !e.keyConflict,
     );
     await assert.rejects(
       c.submit({ payload: "x", key: "title", onKeyConflict: "newest" as never }),
@@ -185,6 +185,42 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     ac.abort();
     await watching;
     await stop();
+  });
+
+  test("a key reused with other content is reported", async () => {
+    const c = connect(s.target, { token: CLIENT });
+    const first = await c.submit({ payload: "edit-1", key: "op-7" });
+    // A retry of the same submission is answered with the task; other content is a conflict.
+    const again = await c.submit({ payload: "edit-1", key: "op-7", onKeyConflict: "reject" });
+    assert.deepEqual({ id: again.id, outcome: again.outcome }, { id: first.id, outcome: "existing" });
+    await assert.rejects(c.submit({ payload: "edit-2", key: "op-7", onKeyConflict: "reject" }), (e: unknown) => {
+      assert.ok(e instanceof CronoqError);
+      assert.equal(e.code, "failed_precondition");
+      assert.deepEqual(
+        { conflict: e.keyConflict, task: e.conflictTask, status: e.conflictStatus, index: e.batchIndex },
+        { conflict: true, task: first.id, status: "ready", index: undefined },
+      );
+      return true;
+    });
+    // Without the option the submission is still answered with the existing task.
+    assert.equal((await c.submit({ payload: "edit-2", key: "op-7" })).id, first.id);
+
+    const batch = [
+      { payload: "new", key: "op-8", onKeyConflict: "reject" as const },
+      { payload: "edit-2", key: "op-7", onKeyConflict: "reject" as const },
+    ];
+    await assert.rejects(c.submitBatch(batch), (e: unknown) => {
+      assert.ok(e instanceof CronoqError && e.keyConflict);
+      assert.deepEqual({ index: e.batchIndex, task: e.conflictTask }, { index: 1, task: first.id });
+      return true;
+    });
+    // Nothing of the batch was admitted.
+    await assert.rejects(c.get("op-8"), (e: unknown) => e instanceof CronoqError && e.code === "not_found");
+    await assert.rejects(
+      c.submitBatch([batch[0]!, { payload: "edit-2", key: "op-7" }]),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+    await c.cancel("op-7");
   });
 
   test("handler outcomes and fencing tokens", async () => {

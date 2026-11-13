@@ -88,6 +88,15 @@ refuses both (`InvalidArgument`), and `Task.Spec` does not carry them. Against a
 does not know the option, `Submit` returns an `*Error` with code `Unimplemented`. `Event.Kind` is `EventTransition`, `EventUpdated`,
 `EventReplaced` or `EventSuccessor`; the last three are delivered with `AllTransitions`.
 
+`Task.RejectConflict` reports a `Key` that belongs to a task submitted with other content as
+an `*Error` whose `KeyConflict()` is true, with the existing task in `ConflictTask` and
+`ConflictStatus`, instead of returning that task
+([Detecting conflicting submissions](../concepts/key-conflicts.md)). In `SubmitBatch`, set it on
+every task or on none; a refused batch names the task in `Error.BatchIndex` (-1 otherwise).
+`Task.ReturnExisting` asks for the existing task whatever it holds, also when the server's
+default is to report conflicts. With none of `Replace`, `RejectConflict` and `ReturnExisting`,
+the server's default applies.
+
 `Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,
 `ClearDeadline` (at most one of the three), and `Tags`, which replaces the task's tags when it
 is not nil (an empty map removes them). `Updated` has `ID`, `Status` (unchanged by the update),

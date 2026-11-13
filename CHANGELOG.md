@@ -9,6 +9,26 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Conflict detection for duplicate keys. A submission with `on_key_conflict = reject` whose key
+  belongs to a task that was submitted with other content is refused with that task's id and
+  status, instead of being answered like a retry and silently dropped. A retry of the same
+  submission is still a duplicate. Tasks store a 128-bit fingerprint: the server computes it
+  from payload, content type, pool, kind, priority and dependencies; in-process callers pass
+  their own (`Task::fingerprint`, `fingerprint=` in Python). A batch with a conflict admits
+  nothing and names the task. The error is `SubmitError::KeyConflict` (Rust), `SubmitError` with
+  code `key_conflict` (Python), `FAILED_PRECONDITION` with `cronoq-conflict-task` metadata
+  (gRPC) and 422 (HTTP). Fingerprints are durable, so conflicts are found after a failover.
+  The default for submissions that do not choose is a setting (`server.on_key_conflict`,
+  `Builder::on_key_conflict`, `Scheduler(on_key_conflict=...)`), `return_existing` in this
+  release.
+- **Upcoming change:** the default `on_key_conflict` becomes `reject` in the next minor
+  release. Set it explicitly to keep either behaviour across the upgrade.
+- Helm chart: `onKeyConflict` sets the server's `server.on_key_conflict`.
+- gRPC-Web: browsers can read the `cronoq-*` response metadata (conflicting task, batch index,
+  shard hints), which the server now lists in `access-control-expose-headers`.
+- Batch errors name the task that caused them: `Error::Batch { index, error }` in Rust,
+  `SubmitError.index` in Python, `cronoq-batch-index` metadata over gRPC, `index` in the HTTP
+  error body. Batch responses carry `outcome` per task.
 - Replace by key ("latest wins"). A submission with `on_key_conflict = replace_queued` and a
   key lets the newest submission of that key win, in one atomic call. A task that has not
   started is replaced in place: same id, dependents and place in line, new payload, kind,
@@ -69,8 +89,18 @@ contain breaking changes; they are called out under **Changed**.
   instead of cancelling it. Reading (`Get`, `Wait`, `Watch`, listings) is unchanged.
   Credentials without a `tenant` are unaffected.
 - **Store schema.** Both stores gain a table, `cronoq_pending`, for submissions stored to run
-  after a started task (Postgres schema version 6, SQLite version 2). The migration runs when
-  the database is opened and only adds the table. An older binary refuses a migrated database.
+  after a started task, and a `fingerprint` column on tasks and on that table (Postgres schema
+  version 8, SQLite version 3). The migrations run when the database is opened and only add
+  the table and the columns. An older binary refuses a migrated database.
+- **Breaking (Rust):** a batch that the engine refuses now fails with `Error::Batch { index,
+  error }` instead of `Error::Submit(error)`. `KeyConflict` has new variants `Configured` (the
+  new default of `SubmitOptions`, meaning the scheduler's setting) and `Reject`; `SubmitError`
+  has a new variant `KeyConflict`; `TaskSpec` and `RecoveredTerminal` have a new field
+  `fingerprint`; `CoreConfig` has a new field `on_key_conflict`. A custom `Store` must keep
+  `TaskSpec::fingerprint` and return it from `recover`, for live and finished tasks.
+- Clients no longer send "return the existing task" when a submission names no
+  `on_key_conflict`: they leave it unset, and the server's `server.on_key_conflict` decides.
+  With the default setting nothing changes.
 - **Breaking (Rust):** `Submitted` has a new field, `outcome`; `Recovered` has a new field,
   `pending`; `Mutation` has new variants `Replaced` and `PendingReplacement`; `SubmitError` has
   a new variant `ReplaceMismatch`; `EventKind` has new variants `Replaced` and `Successor`;

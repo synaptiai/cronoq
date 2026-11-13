@@ -49,6 +49,7 @@ class KeyConflict(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     KEY_CONFLICT_UNSPECIFIED: _ClassVar[KeyConflict]
     KEY_CONFLICT_RETURN_EXISTING: _ClassVar[KeyConflict]
     KEY_CONFLICT_REPLACE_QUEUED: _ClassVar[KeyConflict]
+    KEY_CONFLICT_REJECT: _ClassVar[KeyConflict]
 
 class SubmitOutcome(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -101,6 +102,7 @@ MISS_POLICY_FAIL: MissPolicy
 KEY_CONFLICT_UNSPECIFIED: KeyConflict
 KEY_CONFLICT_RETURN_EXISTING: KeyConflict
 KEY_CONFLICT_REPLACE_QUEUED: KeyConflict
+KEY_CONFLICT_REJECT: KeyConflict
 SUBMIT_OUTCOME_UNSPECIFIED: SubmitOutcome
 SUBMIT_OUTCOME_CREATED: SubmitOutcome
 SUBMIT_OUTCOME_EXISTING: SubmitOutcome
@@ -238,10 +240,12 @@ class SubmitResponse(_message.Message):
     def __init__(self, id: _Optional[int] = ..., duplicate: bool = ..., result: _Optional[_Union[TaskResult, _Mapping]] = ..., outcome: _Optional[_Union[SubmitOutcome, str]] = ...) -> None: ...
 
 class SubmitBatchRequest(_message.Message):
-    __slots__ = ("tasks",)
+    __slots__ = ("tasks", "on_key_conflict")
     TASKS_FIELD_NUMBER: _ClassVar[int]
+    ON_KEY_CONFLICT_FIELD_NUMBER: _ClassVar[int]
     tasks: _containers.RepeatedCompositeFieldContainer[TaskSpec]
-    def __init__(self, tasks: _Optional[_Iterable[_Union[TaskSpec, _Mapping]]] = ...) -> None: ...
+    on_key_conflict: KeyConflict
+    def __init__(self, tasks: _Optional[_Iterable[_Union[TaskSpec, _Mapping]]] = ..., on_key_conflict: _Optional[_Union[KeyConflict, str]] = ...) -> None: ...
 
 class SubmitBatchResponse(_message.Message):
     __slots__ = ("tasks",)

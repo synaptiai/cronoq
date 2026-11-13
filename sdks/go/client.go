@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	pb "github.com/synaptiai/cronoq/sdks/go/cronoqpb"
 )
@@ -214,14 +215,22 @@ func submitted(r *pb.SubmitResponse) Submitted {
 
 // Submit submits one task.
 func (c *Client) Submit(ctx context.Context, t Task) (Submitted, error) {
-	return c.submit(ctx, t.request(), false, 0)
+	req, err := t.request()
+	if err != nil {
+		return Submitted{}, err
+	}
+	return c.submit(ctx, req, false, 0)
 }
 
 // SubmitAndWait submits one task and waits up to timeout (0: the server's limit) for it to
 // finish. When it is still running at the timeout, the error is a [*Error] with
 // [Error.Timeout] true; the task stays submitted.
 func (c *Client) SubmitAndWait(ctx context.Context, t Task, timeout time.Duration) (Submitted, error) {
-	return c.submit(ctx, t.request(), true, timeout)
+	req, err := t.request()
+	if err != nil {
+		return Submitted{}, err
+	}
+	return c.submit(ctx, req, true, timeout)
 }
 
 // SubmitSpec submits a task described by a raw spec.
@@ -234,15 +243,16 @@ func (c *Client) submit(ctx context.Context, req *pb.SubmitRequest, wait bool, t
 	if wait && timeout > 0 {
 		req.WaitTimeoutS = seconds(timeout)
 	}
-	r, err := c.tasks.Submit(ctx, req)
+	var trailer metadata.MD
+	r, err := c.tasks.Submit(ctx, req, grpc.Trailer(&trailer))
 	if err != nil {
-		return Submitted{}, wrap(err)
+		return Submitted{}, wrapWith(err, trailer)
 	}
 	if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED &&
 		r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
 		// A server older than the option ignored it: with the key in use, this submission
 		// was dropped, not stored.
-		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.Replace"}
+		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.Replace", BatchIndex: -1}
 	}
 	return submitted(r), nil
 }
@@ -252,17 +262,33 @@ func (c *Client) SubmitBatch(ctx context.Context, tasks []Task) ([]Submitted, er
 	req := &pb.SubmitBatchRequest{}
 	for i, t := range tasks {
 		if t.Replace || t.RenewPosition {
-			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: Replace and RenewPosition are not supported in a batch", i)}
+			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: Replace and RenewPosition are not supported in a batch", i), BatchIndex: i}
+		}
+		// The mode is one per batch: every task names the same one.
+		if t.RejectConflict != tasks[0].RejectConflict || t.ReturnExisting != tasks[0].ReturnExisting {
+			return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("tasks[%d]: set RejectConflict or ReturnExisting on every task of a batch or on none", i), BatchIndex: i}
 		}
 		req.Tasks = append(req.Tasks, t.Spec())
 	}
-	r, err := c.tasks.SubmitBatch(ctx, req)
+	if len(tasks) > 0 {
+		first, err := tasks[0].request()
+		if err != nil {
+			return nil, err
+		}
+		req.OnKeyConflict = first.OnKeyConflict
+	}
+	var trailer metadata.MD
+	r, err := c.tasks.SubmitBatch(ctx, req, grpc.Trailer(&trailer))
 	if err != nil {
-		return nil, wrap(err)
+		return nil, wrapWith(err, trailer)
 	}
 	out := make([]Submitted, len(r.Tasks))
 	for i, s := range r.Tasks {
 		out[i] = submitted(s)
+		if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REJECT && s.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+			// A server older than the option ignored it and admitted the batch.
+			return out, &Error{Code: codes.Unimplemented, Message: "the server does not support RejectConflict for batches; the batch was submitted without it", BatchIndex: -1}
+		}
 	}
 	return out, nil
 }

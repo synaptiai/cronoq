@@ -727,6 +727,7 @@ fn rebuild(log: &[Mutation<Job>]) -> Recovered<Job> {
                         key: t.spec.key.clone(),
                         status: *status,
                         at: *at,
+                        fingerprint: None,
                     });
                 } else if let Some(t) = tasks.get_mut(id) {
                     t.attempt = *attempt;

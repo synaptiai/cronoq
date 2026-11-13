@@ -54,10 +54,13 @@ pub(crate) enum Cmd<P, O> {
     },
     SubmitBatch {
         specs: Vec<TaskSpec<P>>,
+        /// What each task does when its key is in use.
+        modes: Vec<cronoq_core::KeyConflict>,
         reply: BatchReply<O>,
     },
     EnqueueMany {
         specs: Vec<TaskSpec<P>>,
+        modes: Vec<cronoq_core::KeyConflict>,
         reply: ManyReply,
     },
     Attach {
@@ -165,11 +168,13 @@ enum Blocked<P, O> {
     },
     Many {
         spec: TaskSpec<P>,
+        mode: cronoq_core::KeyConflict,
         slot: usize,
         group: Arc<Mutex<ManyGroup>>,
     },
     Batch {
         specs: Vec<TaskSpec<P>>,
+        modes: Vec<cronoq_core::KeyConflict>,
         reply: BatchReply<O>,
     },
 }
@@ -634,16 +639,28 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     self.submit_one(now, spec, opts, reply, handle);
                 }
             }
-            Cmd::SubmitBatch { specs, reply } => {
+            Cmd::SubmitBatch {
+                specs,
+                modes,
+                reply,
+            } => {
                 if closed {
                     let _ = reply.send(Err(Error::Shutdown));
                 } else if specs.iter().any(|s| self.waits_behind(s)) {
-                    self.blocked.push_back(Blocked::Batch { specs, reply });
-                } else if let Some(b) = self.submit_batch(now, specs, reply) {
+                    self.blocked.push_back(Blocked::Batch {
+                        specs,
+                        modes,
+                        reply,
+                    });
+                } else if let Some(b) = self.submit_batch(now, specs, modes, reply) {
                     self.blocked.push_back(b);
                 }
             }
-            Cmd::EnqueueMany { specs, reply } => {
+            Cmd::EnqueueMany {
+                specs,
+                modes,
+                reply,
+            } => {
                 if closed {
                     let _ = reply.send(specs.iter().map(|_| Err(Error::Shutdown)).collect());
                     return;
@@ -660,15 +677,16 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     }
                     return;
                 }
-                for (slot, spec) in specs.into_iter().enumerate() {
+                for (slot, (spec, mode)) in specs.into_iter().zip(modes).enumerate() {
                     if self.waits_behind(&spec) {
                         self.blocked.push_back(Blocked::Many {
                             spec,
+                            mode,
                             slot,
                             group: group.clone(),
                         });
                     } else {
-                        self.submit_many(now, spec, slot, &group);
+                        self.submit_many(now, spec, mode, slot, &group);
                     }
                 }
             }
@@ -812,11 +830,16 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         &mut self,
         now: cronoq_core::Time,
         spec: TaskSpec<P>,
+        mode: cronoq_core::KeyConflict,
         slot: usize,
         group: &Arc<Mutex<ManyGroup>>,
     ) -> bool {
         let pool = spec.pool.clone();
-        let r = match self.core.try_submit(now, spec) {
+        let opts = cronoq_core::SubmitOptions {
+            on_key_conflict: mode,
+            renew_position: false,
+        };
+        let r = match self.core.try_submit_with(now, spec, opts) {
             Ok(sub) => {
                 if !sub.duplicate {
                     self.metrics.submitted(&pool);
@@ -826,6 +849,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
             Err((SubmitError::Full, spec)) if self.fits_when_empty(std::slice::from_ref(&spec)) => {
                 self.blocked.push_back(Blocked::Many {
                     spec,
+                    mode,
                     slot,
                     group: group.clone(),
                 });
@@ -852,10 +876,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
         &mut self,
         now: cronoq_core::Time,
         specs: Vec<TaskSpec<P>>,
+        modes: Vec<cronoq_core::KeyConflict>,
         reply: BatchReply<O>,
     ) -> Option<Blocked<P, O>> {
         let pools: Vec<_> = specs.iter().map(|s| s.pool.clone()).collect();
-        match self.core.submit_batch(now, specs.clone()) {
+        match self.core.submit_batch_with(now, specs.clone(), &modes) {
             Ok(subs) => {
                 let mut out = Vec::with_capacity(subs.len());
                 for (sub, pool) in subs.into_iter().zip(pools) {
@@ -872,16 +897,18 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 });
                 None
             }
-            Err((_, SubmitError::Full)) if self.fits_when_empty(&specs) => {
-                Some(Blocked::Batch { specs, reply })
-            }
+            Err((_, SubmitError::Full)) if self.fits_when_empty(&specs) => Some(Blocked::Batch {
+                specs,
+                modes,
+                reply,
+            }),
             Err((_, SubmitError::Full)) => {
                 // Larger than the queue bounds: waiting would never succeed.
                 let _ = reply.send(Err(Error::Submit(SubmitError::Overloaded)));
                 None
             }
-            Err((_, e)) => {
-                let _ = reply.send(Err(Error::Submit(e)));
+            Err((index, error)) => {
+                let _ = reply.send(Err(Error::Batch { index, error }));
                 None
             }
         }
@@ -938,11 +965,20 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     reply,
                     handle,
                 } => self.submit_one(now, spec, opts, reply, handle),
-                Blocked::Many { spec, slot, group } => {
-                    self.submit_many(now, spec, slot, &group);
+                Blocked::Many {
+                    spec,
+                    mode,
+                    slot,
+                    group,
+                } => {
+                    self.submit_many(now, spec, mode, slot, &group);
                 }
-                Blocked::Batch { specs, reply } => {
-                    if let Some(b) = self.submit_batch(now, specs, reply) {
+                Blocked::Batch {
+                    specs,
+                    modes,
+                    reply,
+                } => {
+                    if let Some(b) = self.submit_batch(now, specs, modes, reply) {
                         self.blocked.push_back(b);
                     }
                 }

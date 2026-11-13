@@ -173,6 +173,7 @@ fn full_spec() -> TaskSpec<Bytes> {
         .label("gpu", "a100")
         .label("zone", "eu")
         .tenant("acme")
+        .fingerprint(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10)
 }
 
 /// Every mutation kind and spec field survives a commit and recovery; lookups by id and key
@@ -226,7 +227,9 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             12,
             2,
             S,
-            TaskSpec::new(Bytes::from_static(b"c")).key("done"),
+            TaskSpec::new(Bytes::from_static(b"c"))
+                .key("done")
+                .fingerprint(u128::MAX),
         ),
         st(11, TaskStatus::Running, 2 * S),
         st(11, TaskStatus::Retrying, 3 * S),
@@ -305,6 +308,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(a.tags, b.tags);
     assert_eq!(a.labels, b.labels);
     assert_eq!(a.tenant, b.tenant);
+    assert_eq!(a.fingerprint, b.fingerprint);
     let retrying = &rec.tasks[1];
     assert_eq!((retrying.id, retrying.attempt), (TaskId(11), 1));
     // The change made in the batch that inserted the task is in its row.
@@ -336,6 +340,10 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
         (done.id, done.key.as_deref(), done.status, done.at),
         (TaskId(12), Some("done"), TaskStatus::Succeeded, Time(4 * S))
     );
+    // A finished task keeps its fingerprint, so a conflict is still found after a failover;
+    // a task submitted without one has none.
+    assert_eq!(done.fingerprint, Some(u128::MAX));
+    assert_eq!(retrying.spec.fingerprint, None);
 
     assert_eq!(rec.recurring.len(), 1);
     let stored = &rec.recurring[0];
@@ -462,7 +470,8 @@ pub async fn replacements_are_stored_and_dropped<H: Harness>(h: &H) {
         .resource("api", 2)
         .tag("a", "b")
         .label("gpu", "a100")
-        .tenant("acme");
+        .tenant("acme")
+        .fingerprint(77);
     let second = vec![
         Mutation::Replaced {
             id: TaskId(20),
@@ -474,7 +483,8 @@ pub async fn replacements_are_stored_and_dropped<H: Harness>(h: &H) {
                 .deadline(Time(40 * S))
                 .timeout(Duration::from_secs(3))
                 .tag("v", "2")
-                .tenant("acme"),
+                .tenant("acme")
+                .fingerprint(42),
         },
         Mutation::Updated {
             id: TaskId(20),
@@ -516,6 +526,8 @@ pub async fn replacements_are_stored_and_dropped<H: Harness>(h: &H) {
     );
     assert_eq!(q.spec.tags, vec![("v".into(), "3".into())]);
     assert_eq!(q.spec.tenant.as_deref(), Some("acme"));
+    // A replacement stores its own fingerprint; an update leaves it.
+    assert_eq!(q.spec.fingerprint, Some(42));
     // The running task is untouched; what waits behind it is the latest submission, whole.
     assert_eq!(&rec.tasks[1].spec.payload[..], b"r1");
     assert_eq!(rec.pending.len(), 1);
@@ -540,6 +552,7 @@ pub async fn replacements_are_stored_and_dropped<H: Harness>(h: &H) {
         (&b.tags, &b.labels, &b.tenant)
     );
     assert!(a.fixed_start.is_none());
+    assert_eq!(a.fingerprint, Some(77));
 
     // The task ends and its successor takes the key, in one batch: the stored row goes.
     let third = vec![

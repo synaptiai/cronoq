@@ -79,14 +79,20 @@ Accepted by `submit`, `enqueue` and `Task(...)`.
 | `labels` | `dict[str, str]` | Worker labels the task requires; it runs only in a group of workers that has them. |
 | `tenant` | `str` | Tenant, for pools with `tenant_weights` or `fair_share` ([Fair sharing](../concepts/fairness.md)). |
 
-`submit` and `enqueue` also accept `on_key_conflict` (`"return_existing"`, the default, or
-`"replace_queued"`) and `renew_position=True`: with `"replace_queued"` the newest submission of
+`submit`, `enqueue` and `Task(...)` accept `fingerprint` (an `int` below 2**128, or 16 bytes
+such as a digest) and `on_key_conflict="reject"`: a submission whose key belongs to a task with
+a different fingerprint then raises `SubmitError` with code `key_conflict` instead of returning
+that task ([Detecting conflicting submissions](../concepts/key-conflicts.md)).
+`Scheduler(on_key_conflict="reject")` makes that the default for submissions that do not say.
+
+`submit` and `enqueue` also accept `on_key_conflict="replace_queued"` and
+`renew_position=True`: with `"replace_queued"` the newest submission of
 a key wins ([Replacing a task by key](../concepts/replacing.md)). A task that has not started is
 replaced in place; one that has started keeps its payload, and the submission runs after it as
 a new task with the same key. `TaskHandle.outcome` says which; for `"pending"` the handle tracks
 the running task, and `await sched.handle(key)` gives the successor once that task has ended.
 `enqueue` returns only an id (the existing task's when one was replaced or is running), so use
-`submit` when the outcome matters. Both options need a `key`. Neither is accepted by
+`submit` when the outcome matters. Both options need a `key`. Replacing is not accepted by
 `Task(...)`, `submit_batch` or `add_recurring`.
 
 Strings must not contain NUL characters.
@@ -201,7 +207,7 @@ All live in `cronoq` (and `cronoq.errors`), derive from `CronoqError` and can be
 | `Retryable(message="", retry_after=None)` | By executors and worker handlers: retry, not before `retry_after` seconds. |
 | `Permanent(message="")` | By executors and worker handlers: fail without retrying. |
 | `TaskFailed` | Awaiting a task that did not succeed. `.status` (terminal status, `"shutdown"`, or `"succeeded"` when the output is no longer available), `.message`, `.task_id`. |
-| `SubmitError` | Submission rejected. `.code`: `unknown_pool`, `unknown_resource`, `resource_exceeds_capacity`, `reservation_conflict`, `cycle`, `unknown_dependency`, `full`, `overloaded`, `duplicate_key_in_batch`, `replace_mismatch`, `invalid`. |
+| `SubmitError` | Submission rejected. For `key_conflict`, `.task_id` and `.task_status` name the task holding the key; for a refused batch, `.index` is the position of the task that caused it. `.code`: `unknown_pool`, `unknown_resource`, `resource_exceeds_capacity`, `reservation_conflict`, `cycle`, `unknown_dependency`, `full`, `overloaded`, `duplicate_key_in_batch`, `replace_mismatch`, `key_conflict`, `invalid`. |
 | `UpdateError` | `update` refused. `.code`: `not_found` (unknown or already finished), `fixed_start`, `invalid` (for example a reserved tag name). |
 | `SchedulerError` | Scheduler stopped, misconfigured, or its store failed. |
 | `EventsLagged` | An `events(on_lag="raise")` stream fell behind; `.skipped`. |
@@ -224,7 +230,7 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | Method | Returns | Description |
 |---|---|---|
 | `await submit(payload=None, *, wait=False, wait_timeout=None, call_timeout=None, on_key_conflict=None, renew_position=False, **options)` | `Submitted(id, duplicate, result, outcome)` | Options as for [`task`](#taskpayloadnone-options). With `wait=True`, `result` is set when the task finished. `on_key_conflict="replace_queued"` lets the newest submission of a key win ([Replacing a task by key](../concepts/replacing.md)); `outcome` is `"created"`, `"existing"`, `"replaced"` or `"pending"`. Raises `ClientError` `unimplemented` against a server that does not know the option. |
-| `await submit_batch(specs)` | `list[Submitted]` | Atomic batch of specs built with `task(...)`. |
+| `await submit_batch(specs, *, on_key_conflict=None)` | `list[Submitted]` | Atomic batch of specs built with `task(...)`. `on_key_conflict` is `"return_existing"` or `"reject"`. A refused batch raises `ClientError` with `.index`. |
 | `await cancel(ref)` | `bool` | By id or key. |
 | `await update(ref, *, priority=None, deadline_in=None, deadline_at=None, clear_deadline=False, tags=None)` | `Updated(id, status, deferred, changed)` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. Raises `ClientError` `not_found` for an unknown or finished task and `failed_precondition` for one with a fixed start. |
 | `await get(ref)` | `TaskInfo` | Raises `ClientError` with code `not_found` for unknown tasks. |
@@ -256,7 +262,10 @@ Result types (frozen dataclasses):
 | `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions`, `superseded` (counters since the leader started) |
 
 Failed calls raise `ClientError`: `.code` is the lower-case gRPC status name and `.retryable`
-is true for `unavailable` and `resource_exhausted`. A `watch` stream ends with `ClientError`
+is true for `unavailable` and `resource_exhausted`. `on_key_conflict="reject"` on `submit`
+reports a key reused with other content as a `ClientError` with `.key_conflict` true and the
+existing task in `.task_id` and `.task_status`
+([Detecting conflicting submissions](../concepts/key-conflicts.md)). A `watch` stream ends with `ClientError`
 `unavailable` when the server stops serving and `data_loss` when the consumer fell behind:
 reconnect and reconcile with `get` or `wait`.
 

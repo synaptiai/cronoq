@@ -34,14 +34,30 @@ fn submit_code(e: &SubmitError) -> &'static str {
         SubmitError::Overloaded => "overloaded",
         SubmitError::DuplicateKeyInBatch(_) => "duplicate_key_in_batch",
         SubmitError::ReplaceMismatch(_) => "replace_mismatch",
+        SubmitError::KeyConflict { .. } => "key_conflict",
         SubmitError::Invalid(_) => "invalid",
     }
+}
+
+/// `SubmitError(code, message, task_id, task_status, index)`: the last three name the task
+/// that holds a conflicting key and the position of the offending task in a batch.
+fn submit_pyerr(py: Python<'_>, e: &SubmitError, message: String, index: Option<usize>) -> PyErr {
+    let (task_id, task_status) = match e {
+        SubmitError::KeyConflict { id, status } => (Some(id.0), Some(status.name())),
+        _ => (None, None),
+    };
+    py_error(
+        py,
+        "SubmitError",
+        (submit_code(e), message, task_id, task_status, index),
+    )
 }
 
 /// Scheduler errors become `SubmitError` (with a `.code`) or `SchedulerError`.
 pub(crate) fn to_pyerr(e: Error) -> PyErr {
     Python::attach(|py| match &e {
-        Error::Submit(s) => py_error(py, "SubmitError", (submit_code(s), e.to_string())),
+        Error::Submit(s) => submit_pyerr(py, s, e.to_string(), None),
+        Error::Batch { index, error } => submit_pyerr(py, error, e.to_string(), Some(*index)),
         Error::Update(u) => {
             let code = match u {
                 cronoq::UpdateError::NotFound => "not_found",

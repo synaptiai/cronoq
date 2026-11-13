@@ -376,6 +376,10 @@ pub struct CoreConfig {
     pub retention: Duration,
     /// Maximum number of remembered terminal statuses.
     pub retention_max: usize,
+    /// What a submission whose key is already in use does when it does not say itself
+    /// ([`KeyConflict::Configured`](crate::KeyConflict::Configured)): `ReturnExisting` (the default; `Configured` here means
+    /// the same) or `Reject`.
+    pub on_key_conflict: crate::KeyConflict,
     /// Emit `Action::Persist` mutations.
     pub persist: bool,
     /// Unix time (ns) corresponding to `Time::ZERO`; used for cron schedules.
@@ -403,6 +407,7 @@ impl Default for CoreConfig {
             global_bounds: Bounds::default(),
             retention: Duration::from_secs(3600),
             retention_max: 1_000_000,
+            on_key_conflict: crate::KeyConflict::ReturnExisting,
             persist: false,
             epoch_unix_nanos: 0,
             id_epoch: 0,
@@ -419,6 +424,12 @@ impl CoreConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.pools.is_empty() {
             return Err("at least one pool is required".into());
+        }
+        if self.on_key_conflict == crate::KeyConflict::ReplaceQueued {
+            return Err(
+                "on_key_conflict: replace_queued is chosen per submission, not as the default"
+                    .into(),
+            );
         }
         let mut names = std::collections::HashSet::new();
         for p in &self.pools {

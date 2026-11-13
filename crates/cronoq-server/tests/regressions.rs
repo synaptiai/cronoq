@@ -295,7 +295,10 @@ async fn unread_worker_is_evicted_and_work_completes_elsewhere() {
     for _ in 0..4 {
         let specs: Vec<_> = (0..25).map(|_| spec(&[b'p'; 256 << 10])).collect();
         let r = c
-            .submit_batch(pb::SubmitBatchRequest { tasks: specs })
+            .submit_batch(pb::SubmitBatchRequest {
+                tasks: specs,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_inner();
@@ -1014,6 +1017,7 @@ async fn hostile_input_is_rejected() {
     );
     let batch = pb::SubmitBatchRequest {
         tasks: (0..1001).map(|_| spec(b"x")).collect(),
+        ..Default::default()
     };
     assert_eq!(
         c.submit_batch(batch).await.unwrap_err().code(),
@@ -1398,7 +1402,10 @@ async fn pool_scoped_tokens_cannot_reach_other_pools_through_keys_or_deps() {
     reuse.pool = "a".into();
     reuse.key = "kb".into();
     let e = a
-        .submit_batch(pb::SubmitBatchRequest { tasks: vec![reuse] })
+        .submit_batch(pb::SubmitBatchRequest {
+            tasks: vec![reuse],
+            ..Default::default()
+        })
         .await
         .unwrap_err();
     assert_eq!(e.code(), tonic::Code::AlreadyExists);
@@ -1428,6 +1435,7 @@ async fn pool_scoped_tokens_cannot_reach_other_pools_through_keys_or_deps() {
     let r = a
         .submit_batch(pb::SubmitBatchRequest {
             tasks: vec![first, second],
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -1461,7 +1469,10 @@ async fn batch_cannot_bind_to_another_pools_key() {
     reuse.key = "kb".into();
     for tasks in [vec![probe.clone(), reuse.clone()], vec![reuse, probe]] {
         let e = a
-            .submit_batch(pb::SubmitBatchRequest { tasks })
+            .submit_batch(pb::SubmitBatchRequest {
+                tasks,
+                ..Default::default()
+            })
             .await
             .unwrap_err();
         assert!(

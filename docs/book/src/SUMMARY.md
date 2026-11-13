@@ -34,6 +34,7 @@
 - [Recurring schedules](concepts/recurring.md)
 - [Dependencies and keys](concepts/dependencies.md)
 - [Replacing a task by key](concepts/replacing.md)
+- [Detecting conflicting submissions](concepts/key-conflicts.md)
 - [Retries, timeouts and leases](concepts/reliability.md)
 - [Resources: semaphores and rate limits](concepts/resources.md)
 - [Worker labels](concepts/labels.md)

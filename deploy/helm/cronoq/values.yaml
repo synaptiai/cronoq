@@ -56,6 +56,10 @@ tls:
 # insecure-redirect option). Required for shards without TLS.
 insecurePeerHttp: false
 
+# What a submission whose key is already in use does when it does not say itself (the server's
+# server.on_key_conflict): "return_existing" or "reject". Empty: the server's default.
+onKeyConflict: ""
+
 grpcWeb:
   # Browser origins allowed to call the gRPC listener over gRPC-Web. Empty: off.
   allowedOrigins: []

@@ -207,6 +207,80 @@ pub fn is_occurrence_key(key: &str) -> bool {
         })
 }
 
+/// The fingerprint of a submission: what it asks for, as far as two submissions of the same
+/// key must agree to count as the same request. It covers the payload, content type, pool,
+/// kind, priority and dependencies. It leaves out what legitimately differs between a
+/// submission and its retry (relative deadlines and start times, tags such as trace context)
+/// and what only tunes execution (timeout, retry policy, hints, resources, labels, tenant).
+///
+/// It is taken over the request as sent: the payload bytes, not their meaning (two JSON
+/// encodings of one value differ), and each dependency as written (a key and the id it names
+/// differ). A retry through the same client is stable.
+///
+/// The value is stored with tasks, so its definition must not change: SHA-256 over the
+/// fields, each prefixed with its length, truncated to 128 bits. A test pins it.
+pub fn fingerprint(spec: &pb::TaskSpec) -> u128 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut field = |bytes: &[u8]| {
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(bytes);
+    };
+    field(&spec.payload);
+    // No content type means bytes, which is what the HTTP API says for a binary payload.
+    field(if spec.content_type.is_empty() {
+        b"application/octet-stream"
+    } else {
+        spec.content_type.as_bytes()
+    });
+    field(spec_pool(spec).as_bytes());
+    field(if spec.kind.is_empty() {
+        b"default"
+    } else {
+        spec.kind.as_bytes()
+    });
+    // Unspecified means normal.
+    let class = match pb::Priority::try_from(spec.priority) {
+        Ok(pb::Priority::Unspecified) | Err(_) => pb::Priority::Normal as i32,
+        Ok(p) => p as i32,
+    };
+    field(&class.to_be_bytes());
+    // Dependencies in any order: each as kind, target and condition (unspecified means
+    // on success).
+    let mut deps: Vec<Vec<u8>> = spec
+        .deps
+        .iter()
+        .map(|d| {
+            let mut v = Vec::new();
+            match d.target.as_ref().and_then(|t| t.target.as_ref()) {
+                Some(pb::task_ref::Target::Id(id)) => {
+                    v.push(1);
+                    v.extend(id.to_be_bytes());
+                }
+                Some(pb::task_ref::Target::Key(k)) => {
+                    v.push(2);
+                    v.extend(k.as_bytes());
+                }
+                None => v.push(0),
+            }
+            let cond = match pb::EdgeCond::try_from(d.cond) {
+                Ok(pb::EdgeCond::Unspecified) | Err(_) => pb::EdgeCond::OnSuccess as i32,
+                Ok(c) => c as i32,
+            };
+            v.extend(cond.to_be_bytes());
+            v
+        })
+        .collect();
+    deps.sort();
+    deps.dedup();
+    field(&(deps.len() as u64).to_be_bytes());
+    for d in &deps {
+        field(d);
+    }
+    let digest = h.finalize();
+    u128::from_be_bytes(digest[..16].try_into().expect("16 bytes"))
+}
+
 /// Build a task from its wire form, enforcing `limits`.
 pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, Status> {
     check_str("kind", &spec.kind, limits.max_kind_len)?;
@@ -243,7 +317,13 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
             limits.max_resources
         )));
     }
-    let mut t = Task::new(Bytes::from(spec.payload)).priority(priority(spec.priority)?);
+    // Computed once the cheap checks have passed: it reads the whole payload.
+    let class = priority(spec.priority)?;
+    let fingerprint = (!spec.key.is_empty()).then(|| fingerprint(&spec));
+    let mut t = Task::new(Bytes::from(spec.payload)).priority(class);
+    if let Some(f) = fingerprint {
+        t = t.fingerprint(f);
+    }
     if !spec.kind.is_empty() {
         t = t.kind(spec.kind);
     }
@@ -567,6 +647,16 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
 pub fn error(e: Error) -> Status {
     match e {
         Error::Submit(e) => submit_error(e),
+        Error::Batch { index, error } => {
+            let message = format!("tasks[{index}]: {error}");
+            let s = submit_error(error);
+            let mut out = Status::new(s.code(), message);
+            *out.metadata_mut() = s.metadata().clone();
+            if let Ok(v) = index.to_string().parse() {
+                out.metadata_mut().insert(BATCH_INDEX, v);
+            }
+            out
+        }
         Error::Update(e) => match e {
             cronoq::UpdateError::NotFound => Status::not_found("task not found"),
             cronoq::UpdateError::FixedStart => Status::failed_precondition(e.to_string()),
@@ -584,13 +674,7 @@ pub fn error(e: Error) -> Status {
 
 /// The options of a submission from their wire form.
 pub fn submit_options(on_key_conflict: i32, renew_position: bool) -> Result<SubmitOptions, Status> {
-    let on_key_conflict = match pb::KeyConflict::try_from(on_key_conflict) {
-        Ok(pb::KeyConflict::Unspecified | pb::KeyConflict::ReturnExisting) => {
-            KeyConflict::ReturnExisting
-        }
-        Ok(pb::KeyConflict::ReplaceQueued) => KeyConflict::ReplaceQueued,
-        Err(_) => return Err(Status::invalid_argument("unknown on_key_conflict")),
-    };
+    let on_key_conflict = key_conflict(on_key_conflict)?;
     if renew_position && on_key_conflict != KeyConflict::ReplaceQueued {
         return Err(Status::invalid_argument(
             "renew_position needs on_key_conflict = replace_queued",
@@ -601,6 +685,34 @@ pub fn submit_options(on_key_conflict: i32, renew_position: bool) -> Result<Subm
         renew_position,
     })
 }
+
+/// What a submission does when its key is in use, from its wire form.
+pub fn key_conflict(mode: i32) -> Result<KeyConflict, Status> {
+    match pb::KeyConflict::try_from(mode) {
+        Ok(pb::KeyConflict::Unspecified) => Ok(KeyConflict::Configured),
+        Ok(pb::KeyConflict::ReturnExisting) => Ok(KeyConflict::ReturnExisting),
+        Ok(pb::KeyConflict::ReplaceQueued) => Ok(KeyConflict::ReplaceQueued),
+        Ok(pb::KeyConflict::Reject) => Ok(KeyConflict::Reject),
+        Err(_) => Err(Status::invalid_argument("unknown on_key_conflict")),
+    }
+}
+
+/// The wire form of `mode`.
+pub fn key_conflict_to_pb(mode: KeyConflict) -> pb::KeyConflict {
+    match mode {
+        KeyConflict::Configured => pb::KeyConflict::Unspecified,
+        KeyConflict::ReturnExisting => pb::KeyConflict::ReturnExisting,
+        KeyConflict::ReplaceQueued => pb::KeyConflict::ReplaceQueued,
+        KeyConflict::Reject => pb::KeyConflict::Reject,
+    }
+}
+
+/// Response metadata naming the task that holds a key (see [`submit_error`]).
+pub const CONFLICT_TASK: &str = "cronoq-conflict-task";
+/// Response metadata with that task's status.
+pub const CONFLICT_STATUS: &str = "cronoq-conflict-status";
+/// Response metadata naming the task of a batch that made it fail (counted from 0).
+pub const BATCH_INDEX: &str = "cronoq-batch-index";
 
 /// What a submission did, in wire form.
 pub fn outcome(o: SubmitOutcome) -> pb::SubmitOutcome {
@@ -615,6 +727,18 @@ pub fn outcome(o: SubmitOutcome) -> pb::SubmitOutcome {
 /// Map a submission error to a gRPC status.
 pub fn submit_error(e: SubmitError) -> Status {
     let msg = e.to_string();
+    if let SubmitError::KeyConflict { id, status: st } = &e {
+        // Told apart from the other failed preconditions by its metadata: the task that
+        // holds the key, and its status.
+        let mut s = Status::failed_precondition(msg);
+        if let Ok(v) = id.0.to_string().parse() {
+            s.metadata_mut().insert(CONFLICT_TASK, v);
+        }
+        if let Ok(v) = st.name().parse() {
+            s.metadata_mut().insert(CONFLICT_STATUS, v);
+        }
+        return s;
+    }
     match e {
         SubmitError::Full | SubmitError::Overloaded => Status::resource_exhausted(msg),
         SubmitError::ReservationConflict | SubmitError::ReplaceMismatch(_) => {
@@ -633,6 +757,141 @@ mod tests {
 
     fn lim() -> LimitsConfig {
         LimitsConfig::default()
+    }
+
+    const GOLDEN_SAMPLE: u128 = 205_463_613_675_420_669_576_048_596_842_996_947_764;
+    const GOLDEN_EMPTY: u128 = 199_608_815_901_939_724_870_666_655_128_220_384_641;
+
+    fn dep(target: pb::task_ref::Target, cond: pb::EdgeCond) -> pb::Dep {
+        pb::Dep {
+            target: Some(pb::TaskRef {
+                target: Some(target),
+            }),
+            cond: cond as i32,
+        }
+    }
+
+    fn sample() -> pb::TaskSpec {
+        pb::TaskSpec {
+            payload: b"{\"n\":1}".to_vec(),
+            content_type: "application/json".into(),
+            kind: "index".into(),
+            pool: "llm".into(),
+            priority: pb::Priority::High as i32,
+            key: "doc-42".into(),
+            deps: vec![
+                dep(
+                    pb::task_ref::Target::Key("extract".into()),
+                    pb::EdgeCond::OnSuccess,
+                ),
+                dep(pb::task_ref::Target::Id(7), pb::EdgeCond::OnComplete),
+            ],
+            ..Default::default()
+        }
+    }
+
+    // Fingerprints are stored with tasks. If this value changes, every retry of a task that
+    // was submitted before the change is reported as a conflict: change the function only
+    // together with a migration of the stored values.
+    #[test]
+    fn the_fingerprint_is_pinned() {
+        assert_eq!(fingerprint(&sample()), GOLDEN_SAMPLE);
+        assert_eq!(fingerprint(&pb::TaskSpec::default()), GOLDEN_EMPTY);
+    }
+
+    #[test]
+    fn the_fingerprint_covers_what_a_submission_asks_for_and_nothing_else() {
+        let base = fingerprint(&sample());
+        let with = |f: fn(&mut pb::TaskSpec)| {
+            let mut s = sample();
+            f(&mut s);
+            fingerprint(&s)
+        };
+        // Covered.
+        for changed in [
+            with(|s| s.payload.push(b' ')),
+            with(|s| s.content_type = "text/plain".into()),
+            with(|s| s.kind = "other".into()),
+            with(|s| s.pool = "batch".into()),
+            with(|s| s.priority = pb::Priority::Low as i32),
+            with(|s| s.deps.truncate(1)),
+            with(|s| s.deps[0].cond = pb::EdgeCond::OnFailure as i32),
+            with(|s| s.deps[1] = dep(pb::task_ref::Target::Id(8), pb::EdgeCond::OnComplete)),
+            // A parent named by key and by id are different references.
+            with(|s| {
+                s.deps[1] = dep(
+                    pb::task_ref::Target::Key("7".into()),
+                    pb::EdgeCond::OnComplete,
+                )
+            }),
+        ] {
+            assert_ne!(changed, base);
+        }
+        // Not covered: what differs between a submission and its retry, or tunes execution.
+        for same in [
+            with(|s| s.key = "another".into()),
+            with(|s| s.deadline_in_s = Some(5.0)),
+            with(|s| s.start_in_s = Some(60.0)),
+            with(|s| s.timeout_s = Some(1.0)),
+            with(|s| s.duration_hint_s = Some(1.0)),
+            with(|s| s.tenant = "acme".into()),
+            with(|s| {
+                s.tags.insert("traceparent".into(), "00-a-b-01".into());
+            }),
+            with(|s| {
+                s.labels.insert("gpu".into(), "a100".into());
+            }),
+            with(|s| {
+                s.resources.insert("api".into(), 2);
+            }),
+            with(|s| {
+                s.retry = Some(pb::RetryPolicy {
+                    max_attempts: 9,
+                    ..Default::default()
+                })
+            }),
+            // The order of dependencies, and naming one twice, mean nothing.
+            with(|s| s.deps.reverse()),
+            with(|s| {
+                let again = s.deps[0].clone();
+                s.deps.push(again);
+            }),
+        ] {
+            assert_eq!(same, base);
+        }
+        // Defaults count as what they stand for, on every surface.
+        let plain = |f: fn(&mut pb::TaskSpec)| {
+            let mut s = pb::TaskSpec::default();
+            f(&mut s);
+            fingerprint(&s)
+        };
+        let empty = fingerprint(&pb::TaskSpec::default());
+        for same in [
+            plain(|s| s.pool = "default".into()),
+            plain(|s| s.kind = "default".into()),
+            plain(|s| s.priority = pb::Priority::Normal as i32),
+            plain(|s| s.content_type = "application/octet-stream".into()),
+        ] {
+            assert_eq!(same, empty);
+        }
+        let unspecified = {
+            let mut s = sample();
+            s.deps[0].cond = pb::EdgeCond::Unspecified as i32;
+            fingerprint(&s)
+        };
+        assert_eq!(
+            unspecified, base,
+            "an unspecified condition means on success"
+        );
+        // Fields cannot run into each other.
+        let split = |payload: &[u8], ct: &str| {
+            fingerprint(&pb::TaskSpec {
+                payload: payload.to_vec(),
+                content_type: ct.into(),
+                ..Default::default()
+            })
+        };
+        assert_ne!(split(b"ab", "c"), split(b"a", "bc"));
     }
 
     #[test]

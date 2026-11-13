@@ -569,6 +569,7 @@ impl Store<u64, u64> for LogStore {
                                 key: t.spec.key,
                                 status: *status,
                                 at: *at,
+                                fingerprint: t.spec.fingerprint,
                             });
                         }
                     } else if let Some(t) = tasks.get_mut(id) {

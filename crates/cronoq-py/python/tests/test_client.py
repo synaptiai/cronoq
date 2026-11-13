@@ -377,6 +377,38 @@ async def test_replace_by_key(server: Server, client: Client) -> None:
     assert [text for _, text in seen] == ["v2", "v5"]
 
 
+async def test_key_conflict_is_reported(client: Client) -> None:
+    first = await client.submit("edit-1", key="op-7")
+    # A retry of the same submission is a duplicate; other content is a conflict.
+    again = await client.submit("edit-1", key="op-7", on_key_conflict="reject")
+    assert (again.id, again.outcome) == (first.id, "existing")
+    with pytest.raises(ClientError) as e:
+        await client.submit("edit-2", key="op-7", on_key_conflict="reject")
+    err = e.value
+    assert err.key_conflict and err.code == "failed_precondition"
+    assert (err.task_id, err.task_status, err.index) == (first.id, "ready", None)
+    # Without the option the submission is still answered with the existing task.
+    assert (await client.submit("edit-2", key="op-7")).id == first.id
+    # Another failed precondition is not a key conflict.
+    with pytest.raises(ClientError) as other:
+        await client.submit("x", key="op-7", start_in=60, on_key_conflict="replace_queued")
+    assert not other.value.key_conflict
+
+    batch = [task("new", key="op-8"), task("edit-2", key="op-7")]
+    with pytest.raises(ClientError) as b:
+        await client.submit_batch(batch, on_key_conflict="reject")
+    assert (b.value.index, b.value.task_id) == (1, first.id)
+    with pytest.raises(ClientError) as missing:
+        await client.get("op-8")
+    assert missing.value.code == "not_found", "nothing of the batch was admitted"
+    with pytest.raises(ValueError):
+        await client.submit_batch(batch, on_key_conflict="replace_queued")
+    with pytest.raises(ValueError):
+        await client.submit("x", key="op-7", on_key_conflict="newest")
+    assert [s.outcome for s in await client.submit_batch(batch)] == ["created", "existing"]
+    assert await client.cancel("op-7") and await client.cancel("op-8")
+
+
 async def test_cancel_queued_task(client: Client) -> None:
     # No workers are connected, so the task stays queued.
     sub = await client.submit("never", key="cancel-me")

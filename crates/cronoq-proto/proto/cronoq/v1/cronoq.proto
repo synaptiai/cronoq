@@ -115,7 +115,7 @@ message SubmitRequest {
 
 // What a submission whose key is already in use does.
 enum KeyConflict {
-  KEY_CONFLICT_UNSPECIFIED = 0; // treated as RETURN_EXISTING
+  KEY_CONFLICT_UNSPECIFIED = 0; // the server's default (`server.on_key_conflict`)
   // Return the existing task and drop this submission.
   KEY_CONFLICT_RETURN_EXISTING = 1;
   // The newest submission wins. A task that has not started is replaced in place (same id
@@ -123,6 +123,12 @@ enum KeyConflict {
   // as a new task with the same key once that one succeeds, fails or is dead-lettered; a
   // newer submission replaces the stored one. With no live task, a task is created.
   KEY_CONFLICT_REPLACE_QUEUED = 2;
+  // Return the existing task if this submission asks for the same thing, and refuse it if it
+  // asks for something else. The server compares a fingerprint of payload, content type,
+  // pool, kind, priority and dependencies with the one stored when the task was submitted.
+  // A different one fails with FAILED_PRECONDITION and the response metadata
+  // `cronoq-conflict-task` (the existing task's id) and `cronoq-conflict-status`.
+  KEY_CONFLICT_REJECT = 3;
 }
 
 // What an accepted submission did.
@@ -147,6 +153,10 @@ message SubmitResponse {
 
 message SubmitBatchRequest {
   repeated TaskSpec tasks = 1; // admitted atomically; may reference each other's keys
+  // What tasks whose key is already in use do: RETURN_EXISTING or REJECT (REPLACE_QUEUED is
+  // for single submissions). With REJECT, the first task that conflicts fails the batch; a
+  // failed batch names the task in the response metadata `cronoq-batch-index`.
+  KeyConflict on_key_conflict = 2;
 }
 
 message SubmitBatchResponse {

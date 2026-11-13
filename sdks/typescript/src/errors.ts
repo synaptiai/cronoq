@@ -12,6 +12,32 @@ export class CronoqError extends Error {
     super(`${code}: ${message}`);
   }
 
+  /**
+   * True when a submission with `onKeyConflict: "reject"` found its key in use by a task that
+   * was submitted with other content. {@link conflictTask} and {@link conflictStatus} name
+   * that task.
+   */
+  get keyConflict(): boolean {
+    return this.metadata.has("cronoq-conflict-task");
+  }
+
+  /** The task that holds the key of a refused submission. */
+  get conflictTask(): bigint | undefined {
+    const id = this.metadata.get("cronoq-conflict-task");
+    return id !== null && /^\d+$/.test(id) ? BigInt(id) : undefined;
+  }
+
+  /** The status of {@link conflictTask}. */
+  get conflictStatus(): string | undefined {
+    return this.metadata.get("cronoq-conflict-status") ?? undefined;
+  }
+
+  /** The position of the task that made a batch fail. */
+  get batchIndex(): number | undefined {
+    const i = this.metadata.get("cronoq-batch-index");
+    return i !== null && /^\d+$/.test(i) ? Number(i) : undefined;
+  }
+
   /** The message without the code. */
   get detail(): string {
     return this.message.slice(this.code.length + 2);

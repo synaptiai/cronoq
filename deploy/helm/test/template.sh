@@ -40,6 +40,10 @@ refused() {
 }
 
 valid --set auth.existingSecret=t --set store.postgres.urlSecret.name=db
+valid --set auth.existingSecret=t --set store.postgres.urlSecret.name=db --set onKeyConflict=reject
+grep -q 'on_key_conflict = "reject"' "$work/cronoq.toml" || { echo "onKeyConflict was not written"; exit 1; }
+refused "onKeyConflict" --set auth.existingSecret=t --set store.postgres.urlSecret.name=db \
+  --set onKeyConflict=newest
 valid --set auth.insecureNoAuth=true --set store.kind=memory --set replicas=1 \
   --set 'grpcWeb.allowedOrigins={https://dash.example.com}'
 SHARD=cpu valid --set auth.existingSecret=t -f "$here/sharded.yaml"

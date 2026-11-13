@@ -38,6 +38,7 @@ Durations are seconds (floats). They must be finite and between their minimum an
 | `insecure_no_auth` | bool | `false` | Allow starting with no tokens and no certificate mappings while listening on a non-loopback address. Without it the server refuses to start in that situation. |
 | `shutdown_grace_s` | float ≥ 0 | `10` | On shutdown (or loss of leadership), running attempts may finish for this long before they are aborted. |
 | `shard` | string, optional | unset | With [`[[shards]]`](#shards), the shard this server serves. Usually set per deployment with `--shard` or `CRONOQ_SHARD`, so all shards share one file. |
+| `on_key_conflict` | `"return_existing"` or `"reject"` | `"return_existing"` | What a submission whose key is in use does when it does not say itself. `return_existing` returns the existing task and drops the submission. `reject` refuses a submission that asks for something else than that task ([Detecting conflicting submissions](../concepts/key-conflicts.md)). The default becomes `reject` in the next minor release; set it to keep either behaviour. |
 | `insecure_peer_http` | bool | `false` | Forward callers' tokens to other shards over plain `http://` endpoints on other hosts. Without it, such calls are refused with the shard's endpoint. Trusted networks only. |
 
 ### `[server.tls]`

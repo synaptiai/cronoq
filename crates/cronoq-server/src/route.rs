@@ -67,10 +67,9 @@ pub async fn submit(
             task: Some(spec),
             wait: wait.is_some(),
             wait_timeout_s: wait.map(|d| d.as_secs_f64()),
-            on_key_conflict: match opts.on_key_conflict {
-                cronoq::KeyConflict::ReturnExisting => pb::KeyConflict::ReturnExisting,
-                cronoq::KeyConflict::ReplaceQueued => pb::KeyConflict::ReplaceQueued,
-            } as i32,
+            // This server's default, not the other shard's: the caller asked here.
+            on_key_conflict: convert::key_conflict_to_pb(configured(app, opts.on_key_conflict))
+                as i32,
             renew_position: opts.renew_position,
         };
         return answer(sh, c.tasks.submit(bounded(app, req)).await);
@@ -78,11 +77,20 @@ pub async fn submit(
     grpc::submit_one(app, p, spec, opts, wait, stop).await
 }
 
+/// What `mode` means on this server: its configured default if the caller named none.
+fn configured(app: &AppState, mode: cronoq::KeyConflict) -> cronoq::KeyConflict {
+    match mode {
+        cronoq::KeyConflict::Configured => app.on_key_conflict,
+        mode => mode,
+    }
+}
+
 /// Submit a batch atomically, on the one shard that serves all of its pools.
 pub async fn submit_batch(
     app: &AppState,
     p: &Principal,
     specs: Vec<pb::TaskSpec>,
+    mode: cronoq::KeyConflict,
 ) -> Result<pb::SubmitBatchResponse, Status> {
     if let Some(map) = routing(app, p) {
         // The shard of each task: `None` for this one.
@@ -99,8 +107,25 @@ pub async fn submit_batch(
                     check_pool(p, convert::spec_pool(s))?;
                 }
                 let mut c = clients(app, p, sh, "this batch")?;
-                let req = pb::SubmitBatchRequest { tasks: specs };
-                return answer(sh, c.tasks.submit_batch(bounded(app, req)).await);
+                let mode = configured(app, mode);
+                let req = pb::SubmitBatchRequest {
+                    tasks: specs,
+                    on_key_conflict: convert::key_conflict_to_pb(mode) as i32,
+                };
+                let r = answer(sh, c.tasks.submit_batch(bounded(app, req)).await)?;
+                // A shard older than the option ignores it on a batch and admits the tasks.
+                // It also sends no outcome, which is how to tell.
+                let unspecified = pb::SubmitOutcome::Unspecified as i32;
+                if mode == cronoq::KeyConflict::Reject
+                    && r.tasks.iter().any(|t| t.outcome == unspecified)
+                {
+                    return Err(Status::unimplemented(format!(
+                        "shard '{}' does not support on_key_conflict = reject for batches; \
+                         the batch was submitted without it",
+                        sh.name
+                    )));
+                }
+                return Ok(r);
             }
             [] | [None] => {}
             _ => {
@@ -114,7 +139,7 @@ pub async fn submit_batch(
             }
         }
     }
-    grpc::submit_batch(app, p, specs).await
+    grpc::submit_batch(app, p, specs, mode).await
 }
 
 /// Where a task lives.

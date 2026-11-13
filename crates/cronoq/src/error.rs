@@ -96,6 +96,15 @@ pub enum Error {
     /// The engine rejected a submission.
     #[error(transparent)]
     Submit(#[from] SubmitError),
+    /// The engine rejected a batch because of the task at `index` (counted from 0); nothing
+    /// of the batch was admitted.
+    #[error("task {index} of the batch: {error}")]
+    Batch {
+        /// Position of the task in the batch.
+        index: usize,
+        /// Why it was rejected.
+        error: SubmitError,
+    },
     /// The engine refused an update of a task.
     #[error(transparent)]
     Update(#[from] UpdateError),

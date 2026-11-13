@@ -118,7 +118,7 @@ Two more fields control what a submission does when its `key` is in use
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `on_key_conflict` | string | `return_existing` | `return_existing`: return the existing task and drop this submission. `replace_queued`: the newest submission wins. Needs a `key`. |
+| `on_key_conflict` | string | the server's `server.on_key_conflict` | `return_existing`: return the existing task and drop this submission. `reject`: return it only if this submission asks for the same thing (payload, content type, pool, kind, priority, dependencies), and answer 422 otherwise ([Detecting conflicting submissions](../concepts/key-conflicts.md)). `replace_queued`: the newest submission wins; needs a `key`. |
 | `renew_position` | boolean | `false` | With `replace_queued`: take this submission's place in line instead of keeping the place of the task it replaces. |
 
 The response says what happened in `outcome`:
@@ -131,8 +131,16 @@ The response says what happened in `outcome`:
 | `pending` | `true` | The task has started and keeps its payload. This submission is stored and runs after it as a new task with the same key. `id`, and `result` with `wait`, are the running task's. |
 
 A replacement that differs from the task in pool, resources, labels, tenant or dependencies, or
-that involves a fixed start, is refused with 409. Both fields are refused in
-`POST /v1/tasks:batch` (400).
+that involves a fixed start, is refused with 409. Both fields are refused on the tasks of
+`POST /v1/tasks:batch` (400); the batch has its own `on_key_conflict`.
+
+A key conflict (`reject`, and the key belongs to a task submitted with other content) is
+answered with 422 and names that task:
+
+```json
+{"error": "the key belongs to task 17 (running), which was submitted with different content",
+ "code": "unprocessable_entity", "task_id": "17", "task_status": "running"}
+```
 
 With `"wait": true` the response also carries the [result](#result-object):
 
@@ -155,12 +163,18 @@ keeps running and its result can be fetched with `GET /v1/tasks/{id}/result`.
 ```
 
 ```json
-{"tasks": [{"id": "18", "duplicate": false}, {"id": "19", "duplicate": false}]}
+{"tasks": [{"id": "18", "duplicate": false, "outcome": "created"},
+           {"id": "19", "duplicate": false, "outcome": "created"}]}
 ```
 
 The batch is admitted atomically: either every task is accepted, or none is and the error names
-the offending task. Dependencies may reference keys defined anywhere in the same batch, in any
+the offending task, in its message (`tasks[1]: ...`) and as `index` in the error body.
+Dependencies may reference keys defined anywhere in the same batch, in any
 order. Results are in request order. At most `limits.max_tasks_per_batch` tasks (default 1000).
+
+A top-level `"on_key_conflict"` (`return_existing` or `reject`; default: the server's) says what
+tasks whose key is in use do. With `reject`, the first task that reuses a key with other
+content fails the batch with 422.
 
 ## `GET /v1/tasks/{id}` and `GET /v1/tasks/by-key/{key}`
 
@@ -382,6 +396,7 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 | 405 | – | Method not allowed on this route. |
 | 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a `replace_queued` submission that does not match the task it would replace; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
 | 413 | – | Body larger than `limits.max_http_body_bytes`. |
+| 422 | `FAILED_PRECONDITION` with `cronoq-conflict-task` metadata | A submission with `on_key_conflict = reject` whose key belongs to a task submitted with other content. The body carries `task_id` and `task_status`, and `index` for a batch. |
 | 415 | – | Missing or wrong `content-type`. |
 | 429 | `RESOURCE_EXHAUSTED` | Pool (`max_pending`) or server (`max_pending_total`) queue full. Retry with backoff. |
 | 500 | `INTERNAL` | Unexpected server error. |

@@ -172,6 +172,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         self.store = s;
         self
     }
+    /// What a submission whose key is already in use does when its task does not say
+    /// ([`Task::on_key_conflict`]): [`KeyConflict::ReturnExisting`](cronoq_core::KeyConflict::ReturnExisting)
+    /// (the default) or [`KeyConflict::Reject`](cronoq_core::KeyConflict::Reject).
+    pub fn on_key_conflict(mut self, mode: cronoq_core::KeyConflict) -> Self {
+        self.core.on_key_conflict = mode;
+        self
+    }
     /// Broadcast every status transition on [`Scheduler::events`], not only terminal ones.
     pub fn emit_transitions(mut self, on: bool) -> Self {
         self.emit_transitions = on;
@@ -233,6 +240,12 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         }
         core.priority.validate().map_err(Error::Config)?;
         core.urgency.validate().map_err(Error::Config)?;
+        if core.on_key_conflict == cronoq_core::KeyConflict::ReplaceQueued {
+            return Err(Error::Config(
+                "on_key_conflict: replace_queued is chosen per submission, not as the default"
+                    .into(),
+            ));
+        }
         let clock = Clock::start();
         let base = TimeBase {
             unix_nanos_at_zero: clock.unix_nanos_at_zero(),
@@ -426,18 +439,25 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         tasks: Vec<Task<P>>,
     ) -> Result<Vec<Result<Submitted, Error>>, Error> {
         let mut specs = Vec::with_capacity(tasks.len());
+        let mut modes = Vec::with_capacity(tasks.len());
         let mut early: Vec<Option<Error>> = Vec::with_capacity(tasks.len());
         for t in tasks {
+            let mode = t.opts.on_key_conflict;
             match no_replace(t).and_then(|t| t.resolve(&self.inner.clock)) {
                 Ok(s) => {
                     specs.push(s);
+                    modes.push(mode);
                     early.push(None);
                 }
                 Err(e) => early.push(Some(e)),
             }
         }
         let mut admitted = self
-            .call(|reply| Cmd::EnqueueMany { specs, reply })
+            .call(|reply| Cmd::EnqueueMany {
+                specs,
+                modes,
+                reply,
+            })
             .await?
             .into_iter();
         Ok(early
@@ -454,12 +474,17 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
     ///
     /// [`OverflowPolicy::Wait`]: cronoq_core::OverflowPolicy::Wait
     pub async fn submit_batch(&self, tasks: Vec<Task<P>>) -> Result<Vec<TaskHandle<O>>, Error> {
+        let modes: Vec<_> = tasks.iter().map(|t| t.opts.on_key_conflict).collect();
         let specs = tasks
             .into_iter()
             .map(|t| no_replace(t)?.resolve(&self.inner.clock))
             .collect::<Result<Vec<_>, _>>()?;
         let subs = self
-            .call(|reply| Cmd::SubmitBatch { specs, reply })
+            .call(|reply| Cmd::SubmitBatch {
+                specs,
+                modes,
+                reply,
+            })
             .await??;
         Ok(subs
             .into_iter()
@@ -670,7 +695,8 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
 
 /// Batches admit tasks as written: replacing by key is for single submissions.
 fn no_replace<P>(t: Task<P>) -> Result<Task<P>, Error> {
-    if t.opts == cronoq_core::SubmitOptions::default() {
+    let replacing = t.opts.on_key_conflict == cronoq_core::KeyConflict::ReplaceQueued;
+    if !replacing && !t.opts.renew_position {
         Ok(t)
     } else {
         Err(Error::Submit(cronoq_core::SubmitError::Invalid(

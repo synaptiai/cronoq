@@ -96,6 +96,10 @@ const MIGRATIONS: &[&str] = &[
         labels            JSONB NOT NULL DEFAULT '[]'::jsonb,
         tenant            TEXT
     )",
+    // v7, v8: the fingerprint a task was submitted with (16 bytes, big-endian), compared when
+    // a later submission of its key asks for conflicts to be reported.
+    "ALTER TABLE cronoq_tasks ADD COLUMN IF NOT EXISTS fingerprint BYTEA",
+    "ALTER TABLE cronoq_pending ADD COLUMN IF NOT EXISTS fingerprint BYTEA",
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -881,6 +885,7 @@ fn decode_task(base: TimeBase, r: &sqlx::postgres::PgRow) -> Result<RecoveredTas
     spec.tags = tags_from(&r.get::<String, _>("tags"))?;
     spec.labels = tags_from(&r.get::<String, _>("labels"))?;
     spec.tenant = r.get::<Option<String>, _>("tenant").map(Into::into);
+    spec.fingerprint = fingerprint_from(r.get("fingerprint"));
     Ok(RecoveredTask {
         id: TaskId(r.get::<i64, _>("id") as u64),
         seq: r.get::<i64, _>("seq") as u64,
@@ -890,6 +895,11 @@ fn decode_task(base: TimeBase, r: &sqlx::postgres::PgRow) -> Result<RecoveredTas
     })
 }
 
+/// A stored fingerprint: 16 bytes, big-endian. Anything else reads as none.
+fn fingerprint_from(bytes: Option<Vec<u8>>) -> Option<u128> {
+    Some(u128::from_be_bytes(bytes?.try_into().ok()?))
+}
+
 fn terminal_from(base: TimeBase, r: &sqlx::postgres::PgRow) -> Option<RecoveredTerminal> {
     let status: String = r.get("status");
     Some(RecoveredTerminal {
@@ -897,6 +907,7 @@ fn terminal_from(base: TimeBase, r: &sqlx::postgres::PgRow) -> Option<RecoveredT
         key: r.get::<Option<String>, _>("key").map(Into::into),
         status: TaskStatus::from_name(&status)?,
         at: from_unix(base, r.get("updated_unix_ns")),
+        fingerprint: fingerprint_from(r.get("fingerprint")),
     })
 }
 
@@ -1037,7 +1048,8 @@ impl Store<Bytes, Bytes> for PgStore {
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
              fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
              retry::text AS retry, deps::text AS deps, resources::text AS resources, \
-             tags::text AS tags, labels::text AS labels, tenant, attempt FROM cronoq_tasks \
+             tags::text AS tags, labels::text AS labels, tenant, fingerprint, attempt \
+             FROM cronoq_tasks \
              WHERE NOT terminal \
              ORDER BY id",
         )
@@ -1066,7 +1078,12 @@ impl Store<Bytes, Bytes> for PgStore {
         .await
         .map_err(db)?;
         let rows = sqlx::query(
-            "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload,              deadline_unix_ns, NULL::bigint AS fixed_at_unix_ns, NULL::bigint AS fixed_tolerance_ns,              NULL::text AS fixed_on_miss, duration_hint_ns, timeout_ns, retry::text AS retry,              deps::text AS deps, resources::text AS resources, tags::text AS tags,              labels::text AS labels, tenant, 0::int AS attempt FROM cronoq_pending              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE NOT terminal) ORDER BY task_id",
+            "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload, \
+             deadline_unix_ns, NULL::bigint AS fixed_at_unix_ns, NULL::bigint AS fixed_tolerance_ns, \
+             NULL::text AS fixed_on_miss, duration_hint_ns, timeout_ns, retry::text AS retry, \
+             deps::text AS deps, resources::text AS resources, tags::text AS tags, \
+             labels::text AS labels, tenant, fingerprint, 0::int AS attempt FROM cronoq_pending \
+             WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE NOT terminal) ORDER BY task_id",
         )
         .fetch_all(pool)
         .await
@@ -1118,7 +1135,7 @@ impl Store<Bytes, Bytes> for PgStore {
             }
         }
         let rows = sqlx::query(
-            "SELECT id, key, status, updated_unix_ns FROM cronoq_tasks \
+            "SELECT id, key, status, updated_unix_ns, fingerprint FROM cronoq_tasks \
              WHERE terminal AND (updated_unix_ns >= $1 OR id = ANY($2) OR key = ANY($3)) \
              ORDER BY updated_unix_ns, id",
         )
@@ -1136,6 +1153,7 @@ impl Store<Bytes, Bytes> for PgStore {
                 key: key.map(Into::into),
                 status: TaskStatus::Failed,
                 at: from_unix(base, now),
+                fingerprint: None,
             }));
 
         let rows = sqlx::query(
@@ -1220,6 +1238,7 @@ struct Inserts {
     tags: Vec<String>,
     labels: Vec<String>,
     tenant: Vec<Option<String>>,
+    fingerprint: Vec<Option<Vec<u8>>>,
     status: Vec<&'static str>,
     terminal: Vec<bool>,
     attempt: Vec<i32>,
@@ -1258,6 +1277,8 @@ impl Inserts {
         self.tags.push(tags_json(s));
         self.labels.push(labels_json(s));
         self.tenant.push(s.tenant.as_deref().map(cleaned));
+        self.fingerprint
+            .push(s.fingerprint.map(|f| f.to_be_bytes().to_vec()));
         self.status.push(QUEUED);
         self.terminal.push(false);
         self.attempt.push(0);
@@ -1272,8 +1293,26 @@ impl Inserts {
             ($($f:ident),*) => { $( self.$f[i] = new.$f.pop().expect("one row"); )* };
         }
         take!(
-            seq, arrival, pool, kind, priority, key, payload, deadline, fixed_at, fixed_tol,
-            fixed_miss, hint, timeout, retry, deps, resources, tags, labels, tenant
+            seq,
+            arrival,
+            pool,
+            kind,
+            priority,
+            key,
+            payload,
+            deadline,
+            fixed_at,
+            fixed_tol,
+            fixed_miss,
+            hint,
+            timeout,
+            retry,
+            deps,
+            resources,
+            tags,
+            labels,
+            tenant,
+            fingerprint
         );
     }
 
@@ -1284,7 +1323,10 @@ impl Inserts {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<(), StoreError> {
         sqlx::query(
-            "UPDATE cronoq_tasks SET seq = $2, arrival_unix_ns = $3, kind = $4, priority = $5,              payload = $6, deadline_unix_ns = $7, duration_hint_ns = $8, timeout_ns = $9,              retry = $10::jsonb, tags = $11::jsonb, tenant = $12 WHERE id = $1 AND NOT terminal",
+            "UPDATE cronoq_tasks SET seq = $2, arrival_unix_ns = $3, kind = $4, priority = $5, \
+             payload = $6, deadline_unix_ns = $7, duration_hint_ns = $8, timeout_ns = $9, \
+             retry = $10::jsonb, tags = $11::jsonb, tenant = $12, fingerprint = $13 \
+             WHERE id = $1 AND NOT terminal",
         )
         .bind(self.id[0])
         .bind(self.seq[0])
@@ -1298,6 +1340,7 @@ impl Inserts {
         .bind(self.retry.pop().flatten())
         .bind(self.tags.pop())
         .bind(self.tenant.pop().flatten())
+        .bind(self.fingerprint.pop().flatten())
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1312,7 +1355,19 @@ impl Inserts {
         renew: bool,
     ) -> Result<(), StoreError> {
         sqlx::query(
-            "INSERT INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool, kind, priority,              key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry, deps, resources,              tags, labels, tenant) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,              $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18)              ON CONFLICT (task_id) DO UPDATE SET seq = excluded.seq,              arrival_unix_ns = excluded.arrival_unix_ns, renew = excluded.renew,              pool = excluded.pool, kind = excluded.kind, priority = excluded.priority,              key = excluded.key, payload = excluded.payload,              deadline_unix_ns = excluded.deadline_unix_ns,              duration_hint_ns = excluded.duration_hint_ns, timeout_ns = excluded.timeout_ns,              retry = excluded.retry, deps = excluded.deps, resources = excluded.resources,              tags = excluded.tags, labels = excluded.labels, tenant = excluded.tenant",
+            "INSERT INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool, kind, priority, \
+             key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry, deps, resources, \
+             tags, labels, tenant, fingerprint) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+             $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19) \
+             ON CONFLICT (task_id) DO UPDATE SET seq = excluded.seq, \
+             arrival_unix_ns = excluded.arrival_unix_ns, renew = excluded.renew, \
+             pool = excluded.pool, kind = excluded.kind, priority = excluded.priority, \
+             key = excluded.key, payload = excluded.payload, \
+             deadline_unix_ns = excluded.deadline_unix_ns, \
+             duration_hint_ns = excluded.duration_hint_ns, timeout_ns = excluded.timeout_ns, \
+             retry = excluded.retry, deps = excluded.deps, resources = excluded.resources, \
+             tags = excluded.tags, labels = excluded.labels, tenant = excluded.tenant, \
+             fingerprint = excluded.fingerprint",
         )
         .bind(self.id[0])
         .bind(self.seq[0])
@@ -1332,6 +1387,7 @@ impl Inserts {
         .bind(self.tags.pop())
         .bind(self.labels.pop())
         .bind(self.tenant.pop().flatten())
+        .bind(self.fingerprint.pop().flatten())
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1356,17 +1412,19 @@ impl Inserts {
         sqlx::query(
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
-             retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, labels, tenant) \
+             retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, labels, tenant, \
+             fingerprint) \
              SELECT u.id, u.seq, u.arrival, u.pool, u.kind, u.priority, u.key, u.payload, u.deadline, u.fixed_at, \
              u.fixed_tol, u.fixed_miss, u.hint, u.timeout, u.retry::jsonb, u.deps::jsonb, u.resources::jsonb, \
-             u.tags::jsonb, u.status, u.terminal, u.attempt, u.updated, u.message, u.labels::jsonb, u.tenant \
+             u.tags::jsonb, u.status, u.terminal, u.attempt, u.updated, u.message, u.labels::jsonb, u.tenant, \
+             u.fingerprint \
              FROM UNNEST($1::bigint[], $2::bigint[], $3::bigint[], $4::text[], $5::text[], $6::smallint[], \
              $7::text[], $8::bytea[], $9::bigint[], $10::bigint[], $11::bigint[], $12::text[], $13::bigint[], \
              $14::bigint[], $15::text[], $16::text[], $17::text[], $18::text[], $19::text[], $20::bool[], \
-             $21::int[], $22::bigint[], $23::text[], $24::text[], $25::text[]) \
+             $21::int[], $22::bigint[], $23::text[], $24::text[], $25::text[], $26::bytea[]) \
              AS u(id, seq, arrival, pool, kind, priority, key, payload, deadline, fixed_at, fixed_tol, fixed_miss, \
              hint, timeout, retry, deps, resources, tags, status, terminal, attempt, updated, message, labels, \
-             tenant) \
+             tenant, fingerprint) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
@@ -1394,6 +1452,7 @@ impl Inserts {
         .bind(self.message)
         .bind(self.labels)
         .bind(self.tenant)
+        .bind(self.fingerprint)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
