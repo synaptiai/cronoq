@@ -30,6 +30,9 @@ impl R {
 
 /// Updates that changed a task, over all seeds (coverage check).
 static UPDATES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Coverage counters: replacements in place, and replacements stored behind a started task.
+static REPLACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STORED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone)]
 struct Planned {
@@ -230,10 +233,55 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
             }
             s.drain();
         }
+        // Random replacements by key ("latest wins") of tasks in any state. A task that has
+        // not started takes the new payload; one that has started keeps its own and is
+        // followed by a successor. The payload carries a duration no other task has, so the
+        // check below can tell which payload each attempt saw.
+        if r.chance(0.05) && !keyed.is_empty() {
+            let (key, id) = keyed[r.below(keyed.len() as u64) as usize].clone();
+            if let Some(i) = planned.iter().position(|p| p.id == id) {
+                let dur = 0.01 + (i as f64) * 1e-6 + r.f() * 1e-7;
+                let spec = TaskSpec::new(Job::ok(dur))
+                    .pool(pool_names[planned[i].pool])
+                    .priority(Priority::from_index(r.below(4) as usize).unwrap())
+                    .key(key);
+                match s.replace(spec, r.chance(0.5)) {
+                    Ok(sub) => {
+                        match sub.outcome {
+                            SubmitOutcome::Replaced => {
+                                REPLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            SubmitOutcome::Pending => {
+                                STORED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            _ => {}
+                        }
+                        if sub.id == id {
+                            planned[i].plain = false;
+                        }
+                    }
+                    Err(SubmitError::ReplaceMismatch(_) | SubmitError::Overloaded) => {}
+                    Err(e) => panic!("seed {seed}: unexpected replace error {e:?}"),
+                }
+            }
+        }
     }
     s.core.set_capacity(s.now, PoolId(2), 3);
     s.drain();
     s.run_to_completion(20_000.0);
+
+    // Every attempt of one task saw the same payload: a replacement never changes a task
+    // that has started.
+    let mut seen: HashMap<TaskId, f64> = HashMap::new();
+    for st in &s.started {
+        let first = *seen.entry(st.id).or_insert(st.dur);
+        assert!(
+            first == st.dur,
+            "seed {seed}: task {} ran with two payloads ({first} and {})",
+            st.id,
+            st.dur
+        );
+    }
 
     for e in &s.events {
         if e.status.is_terminal() {
@@ -324,6 +372,8 @@ fn randomized_workloads() {
     assert!(agg.succeeded > 0 && agg.retries > 0 && agg.skipped > 0 && agg.dead_lettered > 0);
     assert!(agg.failed > 0 && agg.cancelled > 0 && scales > 0 && agg.shed > 0 && agg.timeouts > 0);
     assert!(UPDATES.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(REPLACED.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(STORED.load(std::sync::atomic::Ordering::Relaxed) > 0);
 }
 
 #[test]

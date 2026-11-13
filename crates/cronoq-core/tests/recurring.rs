@@ -101,6 +101,7 @@ fn recovered_queued_schedule_waits_for_its_predecessor() {
     let mut s = sim();
     let prev = TaskId(7);
     let rec = Recovered {
+        pending: Vec::new(),
         tasks: vec![RecoveredTask {
             id: prev,
             seq: 0,
@@ -142,6 +143,7 @@ fn keyed_occurrences_are_not_duplicated_after_recovery() {
             on_miss: MissPolicy::RunLate,
         });
     let rec = Recovered {
+        pending: Vec::new(),
         tasks: vec![RecoveredTask {
             id: TaskId(3),
             seq: 0,

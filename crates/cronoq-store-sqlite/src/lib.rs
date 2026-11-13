@@ -67,7 +67,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 /// Ordered schema migrations; `cronoq_schema_version` records how many were applied.
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+const MIGRATIONS: &[&str] = &[include_str!("schema.sql"), include_str!("migration_2.sql")];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
 /// Fencing epochs stay within 1..=32767 so epoch-prefixed task ids fit in a signed integer.
@@ -546,6 +546,12 @@ impl SqliteStore {
         let mut updated: HashMap<TaskId, usize> = HashMap::new();
         // Latest priority, deadline and tags of tasks changed in this batch (inserted earlier).
         let mut patches: HashMap<TaskId, (i64, Option<i64>, String)> = HashMap::new();
+        // Tasks inserted earlier whose whole description was replaced in this batch.
+        let mut replaced: HashMap<TaskId, InsertRow> = HashMap::new();
+        // Submissions stored to run after a live task (latest per task), and tasks that ended
+        // in this batch: whatever was stored for those goes.
+        let mut pending: HashMap<TaskId, (InsertRow, bool)> = HashMap::new();
+        let mut ended: Vec<TaskId> = Vec::new();
         for m in batch {
             match m {
                 Mutation::Submitted {
@@ -572,6 +578,10 @@ impl SqliteStore {
                         at: to_unix(base, *at),
                         message: message.as_deref().map(cleaned),
                     };
+                    if st.is_terminal() {
+                        pending.remove(id);
+                        ended.push(*id);
+                    }
                     if let Some(&i) = inserted.get(id) {
                         match &mut inserts[i].status {
                             Some(s) => s.fold(row),
@@ -599,14 +609,45 @@ impl SqliteStore {
                         deadline.map(|d| to_unix(base, d)),
                         tag_pairs_json(tags),
                     );
-                    match inserted.get(id) {
-                        Some(&i) => {
+                    match (inserted.get(id), replaced.get_mut(id)) {
+                        (Some(&i), _) => {
                             (inserts[i].priority, inserts[i].deadline, inserts[i].tags) = row
                         }
-                        None => {
+                        (None, Some(r)) => (r.priority, r.deadline, r.tags) = row,
+                        (None, None) => {
                             patches.insert(*id, row);
                         }
                     }
+                }
+                Mutation::Replaced {
+                    id,
+                    seq,
+                    arrival,
+                    spec,
+                } => {
+                    let mut row = InsertRow::new(base, now, *id, *seq, *arrival, spec);
+                    match inserted.get(id) {
+                        Some(&i) => {
+                            // Inserted in this batch: the row is written once, as replaced,
+                            // with whatever status it reached.
+                            row.status = inserts[i].status.take();
+                            inserts[i] = row;
+                        }
+                        None => {
+                            patches.remove(id);
+                            replaced.insert(*id, row);
+                        }
+                    }
+                }
+                Mutation::PendingReplacement {
+                    id,
+                    seq,
+                    arrival,
+                    renew,
+                    spec,
+                } => {
+                    let row = InsertRow::new(base, now, *id, *seq, *arrival, spec);
+                    pending.insert(*id, (row, *renew));
                 }
                 // Listed, not `_`: a new mutation kind must fail to compile here until it is
                 // handled (schedules are applied in the second pass).
@@ -667,7 +708,20 @@ impl SqliteStore {
         for r in &inserts {
             r.execute(&mut tx).await?;
         }
-        // Changes to tasks inserted by an earlier batch.
+        // Replacements and changes of tasks inserted by an earlier batch.
+        for r in replaced.values() {
+            r.execute_replace(&mut tx).await?;
+        }
+        for id in &ended {
+            sqlx::query("DELETE FROM cronoq_pending WHERE task_id = ?1")
+                .bind(id.0 as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        for (r, renew) in pending.values() {
+            r.execute_pending(&mut tx, *renew).await?;
+        }
         for (id, (priority, deadline, tags)) in &patches {
             sqlx::query(
                 "UPDATE cronoq_tasks SET priority = ?2, deadline_unix_ns = ?3, tags = ?4 \
@@ -731,8 +785,11 @@ impl SqliteStore {
                     .map_err(db)?;
                 }
                 // Listed, not `_`: tasks were applied in the first pass.
-                Mutation::Submitted { .. } | Mutation::Status { .. } | Mutation::Updated { .. } => {
-                }
+                Mutation::Submitted { .. }
+                | Mutation::Status { .. }
+                | Mutation::Updated { .. }
+                | Mutation::Replaced { .. }
+                | Mutation::PendingReplacement { .. } => {}
             }
         }
         tx.commit().await.map_err(db)
@@ -854,6 +911,69 @@ impl InsertRow {
         .bind(attempt)
         .bind(at)
         .bind(message)
+        .bind(&self.labels)
+        .bind(self.tenant.as_deref())
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+}
+
+impl InsertRow {
+    /// Overwrite the description of a task that has not started, keeping its id, status,
+    /// attempt count and (it is the same) key.
+    async fn execute_replace(
+        &self,
+        tx: &mut Transaction<'static, Sqlite>,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE cronoq_tasks SET seq = ?2, arrival_unix_ns = ?3, kind = ?4, priority = ?5,              payload = ?6, deadline_unix_ns = ?7, duration_hint_ns = ?8, timeout_ns = ?9,              retry = ?10, tags = ?11, tenant = ?12 WHERE id = ?1 AND terminal = 0",
+        )
+        .bind(self.id)
+        .bind(self.seq)
+        .bind(self.arrival)
+        .bind(&self.kind)
+        .bind(self.priority)
+        .bind(self.payload.as_ref())
+        .bind(self.deadline)
+        .bind(self.hint)
+        .bind(self.timeout)
+        .bind(self.retry.as_deref())
+        .bind(&self.tags)
+        .bind(self.tenant.as_deref())
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    /// Store this row as the submission that runs after live task `self.id`, in place of
+    /// any stored for it before.
+    async fn execute_pending(
+        &self,
+        tx: &mut Transaction<'static, Sqlite>,
+        renew: bool,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool,              kind, priority, key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry,              deps, resources, tags, labels, tenant) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,              ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        )
+        .bind(self.id)
+        .bind(self.seq)
+        .bind(self.arrival)
+        .bind(renew)
+        .bind(&self.pool)
+        .bind(&self.kind)
+        .bind(self.priority)
+        .bind(self.key.as_deref())
+        .bind(self.payload.as_ref())
+        .bind(self.deadline)
+        .bind(self.hint)
+        .bind(self.timeout)
+        .bind(self.retry.as_deref())
+        .bind(&self.deps)
+        .bind(&self.resources)
+        .bind(&self.tags)
         .bind(&self.labels)
         .bind(self.tenant.as_deref())
         .execute(&mut **tx)
@@ -1062,6 +1182,29 @@ impl Store<Bytes, Bytes> for SqliteStore {
                     let id: i64 = r.get("id");
                     tracing::error!(task = id, error = %e, "quarantining undecodable task row");
                     corrupt.push((id, r.get("key"), format!("corrupt task row: {e}")));
+                }
+            }
+        }
+        drop(rows);
+        // Submissions stored to run after live tasks.
+        let rows = sqlx::query(
+            "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload,              deadline_unix_ns, NULL AS fixed_at_unix_ns, NULL AS fixed_tolerance_ns,              NULL AS fixed_on_miss, duration_hint_ns, timeout_ns, retry, deps, resources, tags,              labels, tenant, 0 AS attempt FROM cronoq_pending              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE terminal = 0) ORDER BY task_id",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+        for r in &rows {
+            match decode_task(base, r) {
+                Ok(t) => rec.pending.push(cronoq_core::RecoveredPending {
+                    id: t.id,
+                    seq: t.seq,
+                    arrival: t.arrival,
+                    renew: r.get::<bool, _>("renew"),
+                    spec: t.spec,
+                }),
+                Err(e) => {
+                    let id: i64 = r.get("id");
+                    tracing::error!(task = id, error = %e, "dropping undecodable stored replacement");
                 }
             }
         }

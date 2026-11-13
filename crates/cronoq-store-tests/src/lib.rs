@@ -32,6 +32,7 @@ macro_rules! suite {
             second_instance_waits_and_fences_the_first,
             release_lets_a_standby_lead,
             key_reuse_in_same_batch,
+            replacements_are_stored_and_dropped,
             deps_on_parents_outside_retention_survive_failover,
             long_missed_starts_are_not_run_after_restart,
             message_does_not_depend_on_batching,
@@ -206,6 +207,21 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     let batch = vec![
         submitted_at(10, 0, S, full_spec()),
         submitted_at(11, 1, S, TaskSpec::new(Bytes::from_static(b"b"))),
+        // Task 11 is replaced before it starts, in the batch that inserts it: the row must
+        // hold the replacement. Once it has started, a newer submission is stored behind it.
+        Mutation::Replaced {
+            id: TaskId(11),
+            seq: 1,
+            arrival: Time(S),
+            spec: TaskSpec::new(Bytes::from_static(b"b2")).kind("second"),
+        },
+        Mutation::PendingReplacement {
+            id: TaskId(11),
+            seq: 7,
+            arrival: Time(3 * S),
+            renew: true,
+            spec: TaskSpec::new(Bytes::from_static(b"b3")).priority(Priority::Low),
+        },
         submitted_at(
             12,
             2,
@@ -243,7 +259,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     ];
     // Exhaustive on purpose (no `_`): a new mutation kind fails to compile here until this
     // batch commits one and the checks below cover its effect after recovery.
-    let mut kinds = [false; 6];
+    let mut kinds = [false; 8];
     for m in &batch {
         let kind = match m {
             Mutation::Submitted { .. } => 0,
@@ -252,10 +268,12 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             Mutation::RecurringRemove { .. } => 3,
             Mutation::RecurringNext { .. } => 4,
             Mutation::Updated { .. } => 5,
+            Mutation::Replaced { .. } => 6,
+            Mutation::PendingReplacement { .. } => 7,
         };
         kinds[kind] = true;
     }
-    assert_eq!(kinds, [true; 6], "the batch must hold every mutation kind");
+    assert_eq!(kinds, [true; 8], "the batch must hold every mutation kind");
     let out = Bytes::from_static(b"result");
     store
         .commit(epoch, base, &batch, &[(TaskId(12), &out)])
@@ -297,6 +315,21 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     );
     let tags: Vec<(&str, &str)> = changed.tags.iter().map(|(k, v)| (&**k, &**v)).collect();
     assert_eq!(tags, [("cronoq.note", "kept"), ("x", "y")]);
+    // So is the replacement made there, and the submission stored behind the task.
+    assert_eq!(
+        (&changed.payload[..], &*changed.kind),
+        (&b"b2"[..], "second")
+    );
+    assert_eq!(rec.pending.len(), 1);
+    let p = &rec.pending[0];
+    assert_eq!(
+        (p.id, p.seq, p.arrival, p.renew),
+        (TaskId(11), 7, Time(3 * S), true)
+    );
+    assert_eq!(
+        (&p.spec.payload[..], p.spec.priority),
+        (&b"b3"[..], Priority::Low)
+    );
     assert_eq!(rec.terminal.len(), 1);
     let done = &rec.terminal[0];
     assert_eq!(
@@ -391,6 +424,172 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(t.spec.deps, full_spec().deps);
     // The other task keeps what its own batch gave it.
     assert_eq!(rec.tasks[1].spec.priority, Priority::Critical);
+}
+
+/// `replace_queued`: a task that has not started is overwritten in place, a submission stored
+/// behind a started task is kept (the latest one) until that task ends, and its successor can
+/// take the key in the batch that ends the task.
+pub async fn replacements_are_stored_and_dropped<H: Harness>(h: &H) {
+    let store = h.open().await;
+    let epoch = store.acquire_leadership().await.unwrap();
+    let base = base_at(now());
+    let keyed =
+        |payload: &'static [u8], key: &str| TaskSpec::new(Bytes::from_static(payload)).key(key);
+    let first = vec![
+        submitted_at(
+            20,
+            0,
+            S,
+            keyed(b"q1", "queued").priority(Priority::Low).tag("v", "1"),
+        ),
+        submitted_at(21, 1, S, keyed(b"r1", "running")),
+        status(21, TaskStatus::Running, 1, 2 * S, None),
+    ];
+    store.commit(epoch, base, &first, &[]).await.unwrap();
+
+    // A later batch: the queued task is replaced and then updated; two submissions are stored
+    // behind the running one, and the second replaces the first.
+    let rich = TaskSpec::new(Bytes::from_static(b"\x00r3\xff"))
+        .kind("llm")
+        .pool("gpu")
+        .priority(Priority::High)
+        .key("running")
+        .deadline(Time(50 * S))
+        .duration_hint(Duration::from_millis(2500))
+        .timeout(Duration::from_secs(9))
+        .retry(RetryPolicy::none())
+        .dep(Dep::on_failure("parent"))
+        .resource("api", 2)
+        .tag("a", "b")
+        .label("gpu", "a100")
+        .tenant("acme");
+    let second = vec![
+        Mutation::Replaced {
+            id: TaskId(20),
+            seq: 5,
+            arrival: Time(3 * S),
+            spec: keyed(b"q2", "queued")
+                .kind("other")
+                .priority(Priority::High)
+                .deadline(Time(40 * S))
+                .timeout(Duration::from_secs(3))
+                .tag("v", "2")
+                .tenant("acme"),
+        },
+        Mutation::Updated {
+            id: TaskId(20),
+            priority: Priority::Critical,
+            deadline: None,
+            tags: vec![("v".into(), "3".into())].into(),
+            at: Time(4 * S),
+        },
+        Mutation::PendingReplacement {
+            id: TaskId(21),
+            seq: 6,
+            arrival: Time(3 * S),
+            renew: false,
+            spec: keyed(b"r2", "running"),
+        },
+        Mutation::PendingReplacement {
+            id: TaskId(21),
+            seq: 7,
+            arrival: Time(4 * S),
+            renew: true,
+            spec: rich.clone(),
+        },
+    ];
+    store.commit(epoch, base, &second, &[]).await.unwrap();
+    let rec = store.recover(base).await.unwrap();
+    assert_eq!(rec.tasks.len(), 2);
+    let q = &rec.tasks[0];
+    assert_eq!(
+        (q.id, q.seq, q.arrival, q.attempt),
+        (TaskId(20), 5, Time(3 * S), 0)
+    );
+    assert_eq!(
+        (&q.spec.payload[..], &*q.spec.kind, q.spec.key.as_deref()),
+        (&b"q2"[..], "other", Some("queued"))
+    );
+    assert_eq!(
+        (q.spec.priority, q.spec.deadline, q.spec.timeout),
+        (Priority::Critical, None, Some(Duration::from_secs(3)))
+    );
+    assert_eq!(q.spec.tags, vec![("v".into(), "3".into())]);
+    assert_eq!(q.spec.tenant.as_deref(), Some("acme"));
+    // The running task is untouched; what waits behind it is the latest submission, whole.
+    assert_eq!(&rec.tasks[1].spec.payload[..], b"r1");
+    assert_eq!(rec.pending.len(), 1);
+    let p = &rec.pending[0];
+    assert_eq!(
+        (p.id, p.seq, p.arrival, p.renew),
+        (TaskId(21), 7, Time(4 * S), true)
+    );
+    let (a, b) = (&p.spec, &rich);
+    assert_eq!(*a.payload, *b.payload);
+    assert_eq!(
+        (&*a.kind, &*a.pool, a.priority, a.key.as_deref()),
+        ("llm", "gpu", Priority::High, Some("running"))
+    );
+    assert_eq!(
+        (a.deadline, a.duration_hint, a.timeout, a.retry),
+        (b.deadline, b.duration_hint, b.timeout, b.retry)
+    );
+    assert_eq!((&a.deps, &a.resources), (&b.deps, &b.resources));
+    assert_eq!(
+        (&a.tags, &a.labels, &a.tenant),
+        (&b.tags, &b.labels, &b.tenant)
+    );
+    assert!(a.fixed_start.is_none());
+
+    // The task ends and its successor takes the key, in one batch: the stored row goes.
+    let third = vec![
+        status(21, TaskStatus::Succeeded, 1, 5 * S, None),
+        submitted_at(22, 7, 4 * S, rich.clone()),
+    ];
+    store.commit(epoch, base, &third, &[]).await.unwrap();
+    let rec = store.recover(base).await.unwrap();
+    assert!(rec.pending.is_empty());
+    let ids: Vec<u64> = rec.tasks.iter().map(|t| t.id.0).collect();
+    assert_eq!(ids, [20, 22]);
+    assert_eq!(rec.tasks[1].spec.key.as_deref(), Some("running"));
+
+    // A submission stored behind a task that ends in the same batch is not kept, and neither
+    // is one stored behind a task that ends without a successor (a cancel).
+    let fourth = vec![
+        status(22, TaskStatus::Running, 1, 6 * S, None),
+        Mutation::PendingReplacement {
+            id: TaskId(22),
+            seq: 8,
+            arrival: Time(6 * S),
+            renew: false,
+            spec: keyed(b"r4", "running"),
+        },
+        status(22, TaskStatus::Cancelled, 1, 7 * S, None),
+    ];
+    store.commit(epoch, base, &fourth, &[]).await.unwrap();
+    let fifth = vec![
+        status(20, TaskStatus::Running, 1, 8 * S, None),
+        Mutation::PendingReplacement {
+            id: TaskId(20),
+            seq: 9,
+            arrival: Time(8 * S),
+            renew: false,
+            spec: keyed(b"q5", "queued"),
+        },
+    ];
+    store.commit(epoch, base, &fifth, &[]).await.unwrap();
+    assert_eq!(store.recover(base).await.unwrap().pending.len(), 1);
+    store
+        .commit(
+            epoch,
+            base,
+            &[status(20, TaskStatus::Cancelled, 1, 9 * S, None)],
+            &[],
+        )
+        .await
+        .unwrap();
+    let rec = store.recover(base).await.unwrap();
+    assert!(rec.pending.is_empty() && rec.tasks.is_empty());
 }
 
 /// Times are stored as wall-clock time, so a later time base maps them back correctly;

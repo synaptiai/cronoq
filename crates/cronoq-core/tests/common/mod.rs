@@ -47,6 +47,8 @@ pub struct Started {
     pub attempt: u32,
     pub kind: String,
     pub tags: Vec<(String, String)>,
+    /// `dur` of the payload the attempt was handed.
+    pub dur: f64,
 }
 
 pub struct Sim {
@@ -115,6 +117,17 @@ impl Sim {
         r
     }
 
+    /// Submit with `replace_queued` (and `renew_position` if `renew`).
+    pub fn replace(&mut self, spec: TaskSpec<Job>, renew: bool) -> Result<Submitted, SubmitError> {
+        let opts = SubmitOptions {
+            on_key_conflict: KeyConflict::ReplaceQueued,
+            renew_position: renew,
+        };
+        let r = self.core.submit_with(self.now, spec, opts);
+        self.drain();
+        r
+    }
+
     pub fn try_submit(&mut self, spec: TaskSpec<Job>) -> Result<Submitted, SubmitError> {
         let r = self.core.submit(self.now, spec);
         self.drain();
@@ -132,6 +145,7 @@ impl Sim {
                         pool: d.pool,
                         attempt: d.attempt,
                         kind: d.kind.to_string(),
+                        dur: d.payload.dur,
                         tags: d
                             .tags
                             .iter()

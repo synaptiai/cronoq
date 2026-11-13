@@ -150,6 +150,9 @@ pub enum SubmitError {
     Overloaded,
     /// The key already exists and the batch tried to define it twice.
     DuplicateKeyInBatch(Arc<str>),
+    /// A submission asked to replace the task holding its key, but differs from it in
+    /// something a replacement cannot change (named here).
+    ReplaceMismatch(&'static str),
     /// The spec is malformed.
     Invalid(&'static str),
 }
@@ -168,6 +171,9 @@ impl fmt::Display for SubmitError {
             SubmitError::Full => f.write_str("queue full"),
             SubmitError::Overloaded => f.write_str("overloaded"),
             SubmitError::DuplicateKeyInBatch(k) => write!(f, "duplicate key '{k}' in batch"),
+            SubmitError::ReplaceMismatch(what) => {
+                write!(f, "cannot replace the task with this key: {what}")
+            }
             SubmitError::Invalid(m) => write!(f, "invalid task: {m}"),
         }
     }
@@ -175,13 +181,52 @@ impl fmt::Display for SubmitError {
 
 impl std::error::Error for SubmitError {}
 
+/// What a submission whose key is already in use does.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KeyConflict {
+    /// Return the existing task and drop the new submission.
+    #[default]
+    ReturnExisting,
+    /// The newest submission wins: replace the existing task if no attempt of it has started,
+    /// and otherwise run the new submission after it (see [`Core::submit_with`](crate::Core::submit_with)).
+    ReplaceQueued,
+}
+
+/// Options of one submission that are not part of the task itself.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubmitOptions {
+    /// What to do when the task's key is already in use.
+    pub on_key_conflict: KeyConflict,
+    /// With [`KeyConflict::ReplaceQueued`]: the task takes the place in line of this
+    /// submission, not the place of the task it replaces, and its waiting time starts now.
+    pub renew_position: bool,
+}
+
+/// What an accepted submission did.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SubmitOutcome {
+    /// A new task was created.
+    #[default]
+    Created,
+    /// The key was already in use and the existing task is returned unchanged.
+    Existing,
+    /// The existing task had not started: it now carries this submission.
+    Replaced,
+    /// The existing task has started, so its payload is frozen: this submission is kept and
+    /// runs as a new task with the same key once that task succeeds, fails or is
+    /// dead-lettered. The id returned is the existing task's.
+    Pending,
+}
+
 /// Result of an accepted submission.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Submitted {
     /// Id of the task.
     pub id: TaskId,
-    /// The key was already live; `id` is the existing task.
+    /// The key was already in use; `id` is the existing task.
     pub duplicate: bool,
+    /// What the submission did.
+    pub outcome: SubmitOutcome,
 }
 
 /// Why the engine aborted an attempt.
@@ -252,6 +297,12 @@ pub enum EventKind {
     Transition,
     /// The task was changed by [`Core::update`](crate::Core::update); its status is the same.
     Updated,
+    /// A submission with the task's key replaced it, or was stored to run after it
+    /// ([`SubmitOutcome::Replaced`] or [`SubmitOutcome::Pending`]); its status is the same.
+    Replaced,
+    /// The task was created from a stored replacement when the task that held its key ended.
+    /// `message` names that task's id.
+    Successor,
 }
 
 /// Status transition event, or a change to a task that keeps its status (see
@@ -450,6 +501,33 @@ pub enum Mutation<P> {
         /// Time of the change.
         at: Time,
     },
+    /// A live task that had not started was replaced by a new submission with its key: `spec`
+    /// replaces everything stored for the task except its id, status and attempt count.
+    Replaced {
+        /// Task id.
+        id: TaskId,
+        /// Submission sequence number of the task from now on.
+        seq: u64,
+        /// Submission time of the task from now on.
+        arrival: Time,
+        /// The new task spec.
+        spec: TaskSpec<P>,
+    },
+    /// A submission was stored to run after live task `id`, which has started. It replaces
+    /// any replacement stored for that task before. A store drops it when `id` reaches a
+    /// terminal status: the engine then submits the successor itself, in the same batch.
+    PendingReplacement {
+        /// The live task the submission waits for.
+        id: TaskId,
+        /// Sequence number of the replacing submission.
+        seq: u64,
+        /// Time of the replacing submission.
+        arrival: Time,
+        /// The successor takes this submission's place in line instead of the task's.
+        renew: bool,
+        /// The spec of the successor.
+        spec: TaskSpec<P>,
+    },
     /// A recurring schedule was added or replaced.
     RecurringUpsert {
         /// The schedule.
@@ -511,6 +589,30 @@ impl<P> Clone for Mutation<P> {
                 tags: tags.clone(),
                 at: *at,
             },
+            Mutation::Replaced {
+                id,
+                seq,
+                arrival,
+                spec,
+            } => Mutation::Replaced {
+                id: *id,
+                seq: *seq,
+                arrival: *arrival,
+                spec: spec.clone(),
+            },
+            Mutation::PendingReplacement {
+                id,
+                seq,
+                arrival,
+                renew,
+                spec,
+            } => Mutation::PendingReplacement {
+                id: *id,
+                seq: *seq,
+                arrival: *arrival,
+                renew: *renew,
+                spec: spec.clone(),
+            },
             Mutation::RecurringUpsert { spec } => Mutation::RecurringUpsert { spec: spec.clone() },
             Mutation::RecurringRemove { name } => Mutation::RecurringRemove { name: name.clone() },
             Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
@@ -566,6 +668,21 @@ pub struct RecoveredTask<P> {
     pub attempt: u32,
 }
 
+/// A replacement stored for a live task (see [`Mutation::PendingReplacement`]).
+#[derive(Clone, Debug)]
+pub struct RecoveredPending<P> {
+    /// The live task the replacement waits for.
+    pub id: TaskId,
+    /// Sequence number of the replacing submission.
+    pub seq: u64,
+    /// Time of the replacing submission.
+    pub arrival: Time,
+    /// The successor takes the replacing submission's place in line.
+    pub renew: bool,
+    /// The spec of the successor.
+    pub spec: TaskSpec<P>,
+}
+
 /// A recently finished task restored into the retention table (for late dependents).
 #[derive(Clone, Debug)]
 pub struct RecoveredTerminal {
@@ -599,6 +716,8 @@ pub struct Recovered<P> {
     pub terminal: Vec<RecoveredTerminal>,
     /// Recurring schedules.
     pub recurring: Vec<RecoveredRecurring<P>>,
+    /// Replacements stored for live tasks.
+    pub pending: Vec<RecoveredPending<P>>,
     /// Lowest task id the engine may hand out next.
     pub next_id: u64,
 }
@@ -622,6 +741,7 @@ impl<P> Default for Recovered<P> {
             tasks: Vec::new(),
             terminal: Vec::new(),
             recurring: Vec::new(),
+            pending: Vec::new(),
             next_id: 0,
         }
     }
