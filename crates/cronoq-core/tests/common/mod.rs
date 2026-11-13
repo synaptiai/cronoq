@@ -46,6 +46,7 @@ pub struct Started {
     pub pool: PoolId,
     pub attempt: u32,
     pub kind: String,
+    pub tags: Vec<(String, String)>,
 }
 
 pub struct Sim {
@@ -107,6 +108,13 @@ impl Sim {
         r.id
     }
 
+    /// Update a task by id at the current time.
+    pub fn update(&mut self, id: TaskId, patch: TaskPatch) -> Result<Updated, UpdateError> {
+        let r = self.core.update(self.now, &TaskRef::Id(id), patch);
+        self.drain();
+        r
+    }
+
     pub fn try_submit(&mut self, spec: TaskSpec<Job>) -> Result<Submitted, SubmitError> {
         let r = self.core.submit(self.now, spec);
         self.drain();
@@ -124,6 +132,11 @@ impl Sim {
                         pool: d.pool,
                         attempt: d.attempt,
                         kind: d.kind.to_string(),
+                        tags: d
+                            .tags
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect(),
                     });
                     if !self.hang {
                         let end = self.now + secs(d.payload.dur);

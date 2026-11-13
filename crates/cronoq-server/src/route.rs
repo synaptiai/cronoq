@@ -252,6 +252,31 @@ pub async fn cancel(app: &AppState, p: &Principal, target: TaskRef) -> Result<bo
     }
 }
 
+/// Update a task on whichever shard holds it. `req.task` is ignored: `target` names the task.
+pub async fn update(
+    app: &AppState,
+    p: &Principal,
+    target: TaskRef,
+    req: pb::UpdateRequest,
+) -> Result<pb::UpdateResponse, Status> {
+    // Check the request here, also when another shard will carry it out.
+    let update = convert::update(req.clone(), &app.limits)?;
+    match locate(app, p, target, true).await?.0 {
+        Located::There(sh, t) => {
+            let mut c = clients(app, p, sh, &describe(&t))?;
+            let req = pb::UpdateRequest {
+                task: pb_ref(&t),
+                ..req
+            };
+            answer(sh, c.tasks.update(bounded(app, req)).await)
+        }
+        Located::Here(t) => {
+            let t = grpc::authorize_task_of_tenant(app, p, t).await?;
+            grpc::update(app, t, update).await
+        }
+    }
+}
+
 /// Wait for a task on whichever shard holds it; also returns the shards that could not be
 /// asked (for a lookup by key).
 pub async fn wait(

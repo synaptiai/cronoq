@@ -223,6 +223,86 @@ fn invalid(what: &'static str) -> Error {
     Error::Submit(SubmitError::Invalid(what))
 }
 
+/// Changes to a task that has not finished, for
+/// [`Scheduler::update`](crate::Scheduler::update). What is not named keeps its value.
+///
+/// ```
+/// use cronoq::{Priority, Update};
+/// use std::time::Duration;
+///
+/// let promote = Update::new().priority(Priority::High);
+/// let sooner = Update::new().deadline_in(Duration::from_secs(30));
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Update {
+    priority: Option<Priority>,
+    deadline: Option<Option<When>>,
+    tags: Option<Vec<(Arc<str>, Arc<str>)>>,
+}
+
+impl Update {
+    /// An update that changes nothing yet.
+    pub fn new() -> Self {
+        Update::default()
+    }
+    /// Move the task to this priority class. It keeps its place by submission order there,
+    /// and its waiting time for aging still counts from its submission.
+    pub fn priority(mut self, p: Priority) -> Self {
+        self.priority = Some(p);
+        self
+    }
+    /// Set the deadline to this long from now.
+    pub fn deadline_in(mut self, d: Duration) -> Self {
+        self.deadline = Some(Some(When::In(d)));
+        self
+    }
+    /// Set the deadline to this wall-clock time.
+    pub fn deadline_at(mut self, t: SystemTime) -> Self {
+        self.deadline = Some(Some(When::At(t)));
+        self
+    }
+    /// Remove the deadline.
+    pub fn no_deadline(mut self) -> Self {
+        self.deadline = Some(None);
+        self
+    }
+    /// Replace the task's tags. Names starting with `cronoq.` are reserved.
+    pub fn tags<K: Into<Arc<str>>, V: Into<Arc<str>>>(
+        mut self,
+        tags: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        self.tags = Some(
+            tags.into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        );
+        self
+    }
+
+    pub(crate) fn resolve(self, clock: &Clock) -> Result<cronoq_core::TaskPatch, Error> {
+        if let Some(tags) = &self.tags
+            && tags
+                .iter()
+                .any(|(k, v)| k.contains('\0') || v.contains('\0'))
+        {
+            return Err(Error::Update(cronoq_core::UpdateError::Invalid(
+                "tags must not contain NUL characters",
+            )));
+        }
+        let now = clock.now();
+        Ok(cronoq_core::TaskPatch {
+            priority: self.priority,
+            deadline: self.deadline.map(|d| {
+                d.map(|w| match w {
+                    When::In(d) => now + d,
+                    When::At(t) => clock.from_system(t),
+                })
+            }),
+            tags: self.tags,
+        })
+    }
+}
+
 /// Reject values that cannot be stored or would misbehave later.
 pub(crate) fn validate<P>(s: &TaskSpec<P>) -> Result<(), Error> {
     let nul = |v: &str| v.contains('\0');

@@ -216,6 +216,18 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
         st(11, TaskStatus::Retrying, 3 * S),
         st(12, TaskStatus::Running, 2 * S),
         st(12, TaskStatus::Succeeded, 4 * S),
+        // Task 11 is changed in the batch that inserts it; the row must hold the new values.
+        Mutation::Updated {
+            id: TaskId(11),
+            priority: Priority::Critical,
+            deadline: Some(Time(90 * S)),
+            tags: vec![
+                ("cronoq.note".into(), "kept".into()),
+                ("x".into(), "y".into()),
+            ]
+            .into(),
+            at: Time(3 * S),
+        },
         Mutation::RecurringUpsert {
             spec: recurring.clone(),
         },
@@ -231,7 +243,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     ];
     // Exhaustive on purpose (no `_`): a new mutation kind fails to compile here until this
     // batch commits one and the checks below cover its effect after recovery.
-    let mut kinds = [false; 5];
+    let mut kinds = [false; 6];
     for m in &batch {
         let kind = match m {
             Mutation::Submitted { .. } => 0,
@@ -239,10 +251,11 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             Mutation::RecurringUpsert { .. } => 2,
             Mutation::RecurringRemove { .. } => 3,
             Mutation::RecurringNext { .. } => 4,
+            Mutation::Updated { .. } => 5,
         };
         kinds[kind] = true;
     }
-    assert_eq!(kinds, [true; 5], "the batch must hold every mutation kind");
+    assert_eq!(kinds, [true; 6], "the batch must hold every mutation kind");
     let out = Bytes::from_static(b"result");
     store
         .commit(epoch, base, &batch, &[(TaskId(12), &out)])
@@ -276,6 +289,14 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(a.tenant, b.tenant);
     let retrying = &rec.tasks[1];
     assert_eq!((retrying.id, retrying.attempt), (TaskId(11), 1));
+    // The change made in the batch that inserted the task is in its row.
+    let changed = &retrying.spec;
+    assert_eq!(
+        (changed.priority, changed.deadline),
+        (Priority::Critical, Some(Time(90 * S)))
+    );
+    let tags: Vec<(&str, &str)> = changed.tags.iter().map(|(k, v)| (&**k, &**v)).collect();
+    assert_eq!(tags, [("cronoq.note", "kept"), ("x", "y")]);
     assert_eq!(rec.terminal.len(), 1);
     let done = &rec.terminal[0];
     assert_eq!(
@@ -341,6 +362,35 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
         .await
         .unwrap();
     assert_eq!(store.recover(base).await.unwrap().tasks.len(), 2);
+    // A later batch changes a task inserted earlier: the last change wins, the deadline can be
+    // removed, and nothing else in the row moves.
+    let later = vec![
+        Mutation::Updated {
+            id: TaskId(10),
+            priority: Priority::Low,
+            deadline: Some(Time(50 * S)),
+            tags: vec![("a".into(), "1".into())].into(),
+            at: Time(5 * S),
+        },
+        Mutation::Updated {
+            id: TaskId(10),
+            priority: Priority::Normal,
+            deadline: None,
+            tags: Vec::new().into(),
+            at: Time(6 * S),
+        },
+    ];
+    store.commit(epoch, base, &later, &[]).await.unwrap();
+    let rec = store.recover(base).await.unwrap();
+    let t = &rec.tasks[0];
+    assert_eq!((t.id, t.seq, t.attempt), (TaskId(10), 0, 0));
+    assert_eq!((t.spec.priority, t.spec.deadline), (Priority::Normal, None));
+    assert!(t.spec.tags.is_empty());
+    assert_eq!(*t.spec.payload, *full_spec().payload);
+    assert_eq!(t.spec.key.as_deref(), Some("job-1"));
+    assert_eq!(t.spec.deps, full_spec().deps);
+    // The other task keeps what its own batch gave it.
+    assert_eq!(rec.tasks[1].spec.priority, Priority::Critical);
 }
 
 /// Times are stored as wall-clock time, so a later time base maps them back correctly;

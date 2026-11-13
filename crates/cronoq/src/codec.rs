@@ -246,6 +246,13 @@ pub fn tags_json<P>(spec: &TaskSpec<P>) -> String {
     serde_json::to_string(&v).expect("serializable")
 }
 
+/// Tags given as pairs, as a JSON array of `[key, value]` (the form [`tags_json`] writes).
+pub fn tag_pairs_json(tags: &[(Arc<str>, Arc<str>)]) -> String {
+    let v: Vec<(Cow<'_, str>, Cow<'_, str>)> =
+        tags.iter().map(|(k, v)| (clean(k), clean(v))).collect();
+    serde_json::to_string(&v).expect("serializable")
+}
+
 /// Required worker labels as a JSON array of `[name, value]`.
 pub fn labels_json<P>(spec: &TaskSpec<P>) -> String {
     let v: Vec<(Cow<'_, str>, Cow<'_, str>)> = spec

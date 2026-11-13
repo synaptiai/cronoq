@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cronoq_core::{SubmitError, TaskId, TaskStatus};
+use cronoq_core::{SubmitError, TaskId, TaskStatus, UpdateError};
 
 /// Error returned by an executor for one attempt.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -96,6 +96,9 @@ pub enum Error {
     /// The engine rejected a submission.
     #[error(transparent)]
     Submit(#[from] SubmitError),
+    /// The engine refused an update of a task.
+    #[error(transparent)]
+    Update(#[from] UpdateError),
     /// The scheduler is shut down (or shutting down).
     #[error("scheduler is shut down")]
     Shutdown,

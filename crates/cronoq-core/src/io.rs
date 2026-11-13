@@ -244,7 +244,18 @@ impl<P> Clone for Dispatch<P> {
     }
 }
 
-/// Status transition event.
+/// What a [`StatusEvent`] reports.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EventKind {
+    /// The task changed status.
+    #[default]
+    Transition,
+    /// The task was changed by [`Core::update`](crate::Core::update); its status is the same.
+    Updated,
+}
+
+/// Status transition event, or a change to a task that keeps its status (see
+/// [`StatusEvent::kind`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusEvent {
     /// Task id.
@@ -253,7 +264,7 @@ pub struct StatusEvent {
     pub pool: PoolId,
     /// Idempotency key, if any.
     pub key: Option<Arc<str>>,
-    /// New status.
+    /// New status (the current one for [`EventKind::Updated`]).
     pub status: TaskStatus,
     /// Attempts made so far.
     pub attempt: u32,
@@ -261,7 +272,88 @@ pub struct StatusEvent {
     pub at: Time,
     /// Error or reason, if any.
     pub message: Option<Arc<str>>,
+    /// The task's priority class at the time of the event.
+    pub priority: Priority,
+    /// What the event reports.
+    pub kind: EventKind,
 }
+
+/// Changes to a task that has not finished, for [`Core::update`](crate::Core::update). Fields
+/// left `None` keep their value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TaskPatch {
+    /// New priority class.
+    pub priority: Option<Priority>,
+    /// New deadline; `Some(None)` removes it.
+    pub deadline: Option<Option<Time>>,
+    /// New tags, replacing the task's own. Tags whose name starts with `cronoq.` belong to
+    /// the engine: they cannot be set here and are kept as they are.
+    pub tags: Option<Vec<(Arc<str>, Arc<str>)>>,
+}
+
+impl TaskPatch {
+    /// Whether the patch names no field at all.
+    pub fn is_empty(&self) -> bool {
+        self.priority.is_none() && self.deadline.is_none() && self.tags.is_none()
+    }
+    /// Set the priority class.
+    pub fn priority(mut self, p: Priority) -> Self {
+        self.priority = Some(p);
+        self
+    }
+    /// Set the deadline.
+    pub fn deadline(mut self, t: Time) -> Self {
+        self.deadline = Some(Some(t));
+        self
+    }
+    /// Remove the deadline.
+    pub fn no_deadline(mut self) -> Self {
+        self.deadline = Some(None);
+        self
+    }
+    /// Replace the tags.
+    pub fn tags(mut self, tags: Vec<(Arc<str>, Arc<str>)>) -> Self {
+        self.tags = Some(tags);
+        self
+    }
+}
+
+/// Result of [`Core::update`](crate::Core::update).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Updated {
+    /// Id of the task.
+    pub id: TaskId,
+    /// Its status, which an update never changes.
+    pub status: TaskStatus,
+    /// An attempt is running: it is not interrupted, and the new values apply to what
+    /// happens after it (a retry, and what the task reports).
+    pub deferred: bool,
+    /// Whether anything changed (`false` when every value given was already in place).
+    pub changed: bool,
+}
+
+/// Why an update was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UpdateError {
+    /// No live task with this id or key (unknown, or already finished).
+    NotFound,
+    /// The task has a fixed start: its reservation was sized at admission and cannot change.
+    FixedStart,
+    /// The patch is malformed.
+    Invalid(&'static str),
+}
+
+impl fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UpdateError::NotFound => f.write_str("no live task with this id or key"),
+            UpdateError::FixedStart => f.write_str("a task with a fixed start cannot be updated"),
+            UpdateError::Invalid(m) => write!(f, "invalid update: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for UpdateError {}
 
 /// Overlap behaviour for recurring schedules.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -344,6 +436,20 @@ pub enum Mutation<P> {
         /// Error or reason, if any.
         message: Option<Arc<str>>,
     },
+    /// A live task was changed by [`Core::update`](crate::Core::update). The fields hold the
+    /// task's values after the change, whether or not each one changed.
+    Updated {
+        /// Task id.
+        id: TaskId,
+        /// Priority class.
+        priority: Priority,
+        /// Deadline, if any.
+        deadline: Option<Time>,
+        /// All tags of the task.
+        tags: crate::spec::Tags,
+        /// Time of the change.
+        at: Time,
+    },
     /// A recurring schedule was added or replaced.
     RecurringUpsert {
         /// The schedule.
@@ -391,6 +497,19 @@ impl<P> Clone for Mutation<P> {
                 attempt: *attempt,
                 at: *at,
                 message: message.clone(),
+            },
+            Mutation::Updated {
+                id,
+                priority,
+                deadline,
+                tags,
+                at,
+            } => Mutation::Updated {
+                id: *id,
+                priority: *priority,
+                deadline: *deadline,
+                tags: tags.clone(),
+                at: *at,
             },
             Mutation::RecurringUpsert { spec } => Mutation::RecurringUpsert { spec: spec.clone() },
             Mutation::RecurringRemove { name } => Mutation::RecurringRemove { name: name.clone() },

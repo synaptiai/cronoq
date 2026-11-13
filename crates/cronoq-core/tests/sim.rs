@@ -28,6 +28,9 @@ impl R {
     }
 }
 
+/// Updates that changed a task, over all seeds (coverage check).
+static UPDATES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Clone)]
 struct Planned {
     id: TaskId,
@@ -206,6 +209,27 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
             s.core.set_capacity(s.now, PoolId(2), 1 + r.below(4) as u32);
             s.drain();
         }
+        // Random updates of tasks in any state: a new class, a new deadline or none. The
+        // engine's invariants are checked after each (in `drain`). A changed task leaves the
+        // FIFO check below, which compares tasks by the class they were submitted with.
+        if r.chance(0.03) && !planned.is_empty() {
+            let i = r.below(planned.len() as u64) as usize;
+            let patch = match r.below(3) {
+                0 => TaskPatch::default()
+                    .priority(Priority::from_index(r.below(4) as usize).unwrap()),
+                1 => TaskPatch::default().deadline(s.now + secs(r.f() * 120.0)),
+                _ => TaskPatch::default().no_deadline(),
+            };
+            match s.core.update(s.now, &TaskRef::Id(planned[i].id), patch) {
+                Ok(u) if u.changed => {
+                    planned[i].plain = false;
+                    UPDATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(_) | Err(UpdateError::NotFound | UpdateError::FixedStart) => {}
+                Err(e) => panic!("seed {seed}: unexpected update error {e:?}"),
+            }
+            s.drain();
+        }
     }
     s.core.set_capacity(s.now, PoolId(2), 3);
     s.drain();
@@ -299,6 +323,7 @@ fn randomized_workloads() {
     // The generator must actually exercise the interesting paths.
     assert!(agg.succeeded > 0 && agg.retries > 0 && agg.skipped > 0 && agg.dead_lettered > 0);
     assert!(agg.failed > 0 && agg.cancelled > 0 && scales > 0 && agg.shed > 0 && agg.timeouts > 0);
+    assert!(UPDATES.load(std::sync::atomic::Ordering::Relaxed) > 0);
 }
 
 #[test]

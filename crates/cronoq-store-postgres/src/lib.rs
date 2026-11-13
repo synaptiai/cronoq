@@ -542,6 +542,8 @@ impl PgStore {
         let mut inserted: HashMap<TaskId, usize> = HashMap::new();
         let mut updates: Vec<(TaskId, StatusRow)> = Vec::new();
         let mut updated: HashMap<TaskId, usize> = HashMap::new();
+        // Latest priority, deadline and tags of tasks changed in this batch (inserted earlier).
+        let mut patches: HashMap<TaskId, (i16, Option<i64>, String)> = HashMap::new();
         let now = now_unix();
         for m in batch {
             match m {
@@ -578,6 +580,25 @@ impl PgStore {
                                 e.insert(updates.len());
                                 updates.push((*id, row));
                             }
+                        }
+                    }
+                }
+                Mutation::Updated {
+                    id,
+                    priority,
+                    deadline,
+                    tags,
+                    at: _,
+                } => {
+                    let row = (
+                        *priority as i16,
+                        deadline.map(|d| to_unix(base, d)),
+                        tag_pairs_json(tags),
+                    );
+                    match inserted.get(id) {
+                        Some(&i) => (ins.priority[i], ins.deadline[i], ins.tags[i]) = row,
+                        None => {
+                            patches.insert(*id, row);
                         }
                     }
                 }
@@ -655,6 +676,32 @@ impl PgStore {
         if !ins.id.is_empty() {
             ins.execute(&mut tx).await?;
         }
+        // Changes to tasks inserted by an earlier batch, in one statement.
+        if !patches.is_empty() {
+            let mut ids = Vec::with_capacity(patches.len());
+            let mut priorities = Vec::with_capacity(patches.len());
+            let mut deadlines = Vec::with_capacity(patches.len());
+            let mut tags = Vec::with_capacity(patches.len());
+            for (id, (priority, deadline, t)) in patches {
+                ids.push(id.0 as i64);
+                priorities.push(priority);
+                deadlines.push(deadline);
+                tags.push(t);
+            }
+            sqlx::query(
+                "UPDATE cronoq_tasks t SET priority = u.priority, deadline_unix_ns = u.deadline, \
+                 tags = u.tags::jsonb \
+                 FROM UNNEST($1::bigint[], $2::smallint[], $3::bigint[], $4::text[]) \
+                 AS u(id, priority, deadline, tags) WHERE t.id = u.id",
+            )
+            .bind(ids)
+            .bind(priorities)
+            .bind(deadlines)
+            .bind(tags)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
         // 3. Outputs of tasks that succeeded in this batch.
         if !outputs.is_empty() {
             let ids: Vec<i64> = outputs.iter().map(|(id, _)| id.0 as i64).collect();
@@ -711,7 +758,8 @@ impl PgStore {
                     .map_err(db)?;
                 }
                 // Listed, not `_`: tasks were applied in the first pass.
-                Mutation::Submitted { .. } | Mutation::Status { .. } => {}
+                Mutation::Submitted { .. } | Mutation::Status { .. } | Mutation::Updated { .. } => {
+                }
             }
         }
         tx.commit().await.map_err(db)

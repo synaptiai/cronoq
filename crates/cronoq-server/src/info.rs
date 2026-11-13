@@ -131,6 +131,7 @@ impl TaskInfoCache {
             e.key = ev.key.clone();
         }
         e.status = Some(ev.status);
+        e.priority = Some(ev.priority);
         e.attempt = e.attempt.max(ev.attempt);
         if ev.status == TaskStatus::Running {
             e.started_ns = Some(at_ns);
@@ -209,6 +210,8 @@ mod tests {
             attempt: 1,
             at: cronoq::Time(0),
             message: message.map(Arc::from),
+            priority: cronoq::Priority::Normal,
+            kind: cronoq::EventKind::Transition,
         };
         c.on_event(&ev(TaskStatus::Running, None), &p, 10);
         c.on_event(&ev(TaskStatus::Failed, Some("boom")), &p, 20);
@@ -250,6 +253,8 @@ mod tests {
             attempt: 1,
             at: cronoq::Time(0),
             message: None,
+            priority: cronoq::Priority::Normal,
+            kind: cronoq::EventKind::Transition,
         };
         let (a, b): (Arc<str>, Arc<str>) = ("a".into(), "b".into());
         c.on_event(&ev(4, TaskStatus::Succeeded), &a, 1);
