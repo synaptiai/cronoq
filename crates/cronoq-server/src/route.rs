@@ -246,7 +246,7 @@ pub async fn cancel(app: &AppState, p: &Principal, target: TaskRef) -> Result<bo
             Ok(answer(sh, c.tasks.cancel(bounded(app, req)).await)?.cancelled)
         }
         Located::Here(t) => {
-            let t = grpc::authorize_task(app, p, t).await?;
+            let t = grpc::authorize_task_of_tenant(app, p, t).await?;
             grpc::cancel(app, t).await
         }
     }

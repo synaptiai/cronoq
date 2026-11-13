@@ -443,6 +443,52 @@ async fn credentials_limit_which_tasks_can_be_updated() {
         .unwrap_err();
     assert_eq!(e.code(), tonic::Code::NotFound);
 
+    // Cancel follows the same rule: a pinned token cancels its own tenant's tasks only, and
+    // can still read the others.
+    let e = acme
+        .cancel(pb::CancelRequest {
+            task: by_id(theirs),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::NotFound);
+    let e = acme
+        .cancel(pb::CancelRequest {
+            task: by_key("globex-key"),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::NotFound);
+    assert_eq!(
+        info(&mut acme, theirs).await.status,
+        pb::TaskStatus::Ready as i32
+    );
+    let mut mine = spec(b"acme-cancel");
+    mine.key = "acme-key".into();
+    let mine = queued(&mut acme, mine, pb::Priority::Low).await;
+    // The second call finds the task already cancelled, and still as its own.
+    for (target, cancelled) in [(by_key("acme-key"), true), (by_id(mine), false)] {
+        let r = acme
+            .cancel(pb::CancelRequest { task: target })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.cancelled, cancelled);
+    }
+    assert_eq!(
+        info(&mut acme, mine).await.status,
+        pb::TaskStatus::Cancelled as i32
+    );
+    assert!(
+        any.cancel(pb::CancelRequest {
+            task: by_id(theirs),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .cancelled
+    );
+
     // Credentials limited to a pool reach that pool's tasks only.
     let e = batch
         .update(priority(by_id(own), pb::Priority::Critical))

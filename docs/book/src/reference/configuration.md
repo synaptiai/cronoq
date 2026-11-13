@@ -102,7 +102,7 @@ pools = ["llm"]            # optional
 | `token_env` | string | Read the token from this environment variable (it must be set at startup). |
 | `role` | `client` \| `worker` \| `metrics` \| `admin` | What the token may do. |
 | `pools` | list of pool names, optional | Restrict a `client` or `worker` token to these pools. Tasks in other pools behave as if they did not exist (`NOT_FOUND`), `Watch` filters them out, and workers may only register for these pools. Submitting a key already used in another pool fails with `ALREADY_EXISTS`, and dependencies on tasks of other pools are refused. |
-| `tenant` | string, optional | Tenant of every task submitted with a `client` token: tasks without a tenant get it, and naming another tenant is refused (`PERMISSION_DENIED`). See [Fair sharing](../concepts/fairness.md). |
+| `tenant` | string, optional | Tenant of every task submitted with a `client` token: tasks without a tenant get it, and naming another tenant is refused (`PERMISSION_DENIED`). The token can update and cancel that tenant's tasks only (others are `NOT_FOUND`); reading is not limited. See [Fair sharing](../concepts/fairness.md). |
 | `labels` | list of `"name=value"`, optional | Labels a `worker` token may claim when it registers; a worker claiming any other label is refused (`PERMISSION_DENIED`). Without it, a worker may claim any labels. See [Worker labels](../concepts/labels.md). |
 
 Exactly one of `token` / `token_env` is required. Tokens must be at least **16** characters
