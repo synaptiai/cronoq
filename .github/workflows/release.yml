@@ -67,7 +67,7 @@ jobs:
           - { os: ubuntu-24.04, target: x86_64, manylinux: auto }
           - { os: ubuntu-24.04, target: aarch64, manylinux: auto }
           - { os: macos-15-intel, target: x86_64 }
-          - { os: macos-14, target: aarch64 }
+          - { os: macos-15, target: aarch64 }
           - { os: windows-2022, target: x64 }
           - { os: windows-11-arm, target: aarch64 }
     steps:
@@ -113,8 +113,8 @@ jobs:
           - { os: ubuntu-24.04, artifact: wheels-ubuntu-24.04-x86_64, python: "3.15" }
           - { os: ubuntu-24.04-arm, artifact: wheels-ubuntu-24.04-aarch64, python: "3.14" }
           - { os: macos-15-intel, artifact: wheels-macos-15-intel-x86_64, python: "3.14" }
-          - { os: macos-14, artifact: wheels-macos-14-aarch64, python: "3.14" }
-          - { os: macos-14, artifact: wheels-macos-14-aarch64, python: "3.15" }
+          - { os: macos-15, artifact: wheels-macos-15-aarch64, python: "3.14" }
+          - { os: macos-15, artifact: wheels-macos-15-aarch64, python: "3.15" }
           - { os: windows-2022, artifact: wheels-windows-2022-x64, python: "3.14" }
           - { os: windows-2022, artifact: wheels-windows-2022-x64, python: "3.15" }
           # grpcio has no Windows ARM wheel to install, so only the engine bindings are tested there.
@@ -154,7 +154,7 @@ jobs:
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
           - { os: macos-15-intel, target: x86_64-apple-darwin }
-          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-15, target: aarch64-apple-darwin }
           - { os: windows-2022, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

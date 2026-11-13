@@ -24,6 +24,14 @@ allow-wildcard-paths = true
 [advisories]
 yanked = "deny"
 unmaintained = "workspace"
+ignore = [
+    # Bundled SQLite before 3.54.0 can return uninitialised memory when it opens a database with
+    # a crafted `-wal` file. The fix needs libsqlite3-sys >= 0.39, and sqlx-sqlite 0.9.0 (the
+    # latest release) requires < 0.38, so it cannot be selected yet. The SQLite store opens a path
+    # the operator chooses. Remove this entry when sqlx releases the wider bound:
+    # https://github.com/synaptiai/cronoq/issues/80
+    { id = "RUSTSEC-2026-0459", reason = "no sqlx release accepts the patched libsqlite3-sys yet; see issue 80" },
+]
 
 [sources]
 unknown-registry = "deny"
