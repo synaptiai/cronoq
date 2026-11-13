@@ -107,13 +107,31 @@ class ClientError(CronoqError):
     (reservation conflict), ``invalid_argument``, ``unavailable`` (not the leader or shutting
     down: retry, e.g. against the new leader)."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        task_id: int | None = None,
+        task_status: str | None = None,
+        index: int | None = None,
+    ) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        #: For a key conflict (``on_key_conflict="reject"`` and the key belongs to a task that
+        #: was submitted with other content): that task's id and status.
+        self.task_id = task_id
+        self.task_status = task_status
+        #: For a rejected batch: the position of the task that caused it.
+        self.index = index
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (type(self), (self.code, self.message))
+        return (type(self), (self.code, self.message, self.task_id, self.task_status, self.index))
+
+    @property
+    def key_conflict(self) -> bool:
+        """True when the submission's key belongs to a task submitted with other content."""
+        return self.task_id is not None
 
     @property
     def retryable(self) -> bool:
@@ -124,7 +142,24 @@ class ClientError(CronoqError):
     def from_rpc(cls, e: grpc.RpcError) -> ClientError:
         code = e.code() if hasattr(e, "code") else None
         details = e.details() if hasattr(e, "details") else str(e)
-        return cls(code.name.lower() if code is not None else "unknown", details or "")
+        md: dict[str, str] = {}
+        try:
+            for k, v in e.trailing_metadata() or ():
+                if isinstance(v, str):
+                    md[k] = v
+        except Exception:  # not every RpcError carries metadata
+            pass
+
+        def number(name: str) -> int | None:
+            return int(md[name]) if md.get(name, "").isdigit() else None
+
+        return cls(
+            code.name.lower() if code is not None else "unknown",
+            details or "",
+            number("cronoq-conflict-task"),
+            md.get("cronoq-conflict-status"),
+            number("cronoq-batch-index"),
+        )
 
 
 class Reject(CronoqError):
@@ -220,6 +255,18 @@ _OUTCOMES = {
     pb.SUBMIT_OUTCOME_REPLACED: "replaced",
     pb.SUBMIT_OUTCOME_PENDING: "pending",
 }
+
+
+def _key_conflict(name: str | None) -> int:
+    try:
+        return {
+            None: pb.KEY_CONFLICT_UNSPECIFIED,
+            "return_existing": pb.KEY_CONFLICT_RETURN_EXISTING,
+            "replace_queued": pb.KEY_CONFLICT_REPLACE_QUEUED,
+            "reject": pb.KEY_CONFLICT_REJECT,
+        }[name]
+    except KeyError:
+        raise ValueError("on_key_conflict must be 'return_existing', 'replace_queued' or 'reject'") from None
 
 
 def _outcome(r: Any) -> str:
@@ -789,6 +836,13 @@ class Client:
         tenant and dependencies as the task; otherwise the call fails with
         ``failed_precondition``.
 
+        ``"reject"`` returns the existing task only when this submission asks for the same
+        thing (payload, content type, pool, kind, priority and dependencies), which makes a
+        retry safe; a submission that asks for something else under the same key fails with a
+        :class:`ClientError` whose ``key_conflict`` is true and whose ``task_id`` and
+        ``task_status`` name the existing task, instead of being dropped silently. Left out,
+        the server's default applies.
+
         With ``wait=True`` the call returns when the task finished, with ``Submitted.result``
         set. ``wait_timeout`` bounds the wait on the server (which also caps it at its
         ``limits.max_wait_s``); ``call_timeout`` bounds the whole call on the client. Either
@@ -796,11 +850,9 @@ class Client:
         later). :class:`ClientError` ``unavailable`` means the server shut down or lost
         leadership before the task finished."""
         req = pb.SubmitRequest(task=task(payload, **opts), wait=wait)
+        req.on_key_conflict = cast(Any, _key_conflict(on_key_conflict))
         if on_key_conflict == "replace_queued":
-            req.on_key_conflict = pb.KEY_CONFLICT_REPLACE_QUEUED
             req.renew_position = bool(renew_position)
-        elif on_key_conflict not in (None, "return_existing"):
-            raise ValueError("on_key_conflict must be 'return_existing' or 'replace_queued'")
         elif renew_position:
             raise ValueError("renew_position needs on_key_conflict='replace_queued'")
         if wait_timeout is not None:
@@ -817,9 +869,19 @@ class Client:
         result = Result._from_pb(r.result) if r.HasField("result") else None
         return Submitted(r.id, r.duplicate, result, _outcome(r))
 
-    async def submit_batch(self, tasks: Sequence[pb.TaskSpec]) -> list[Submitted]:
-        """Submit specs built with :func:`task` atomically; they may reference each other's keys."""
-        r = await self._call(self._tasks.SubmitBatch, pb.SubmitBatchRequest(tasks=list(tasks)))
+    async def submit_batch(
+        self, tasks: Sequence[pb.TaskSpec], *, on_key_conflict: str | None = None
+    ) -> list[Submitted]:
+        """Submit specs built with :func:`task` atomically; they may reference each other's keys.
+
+        ``on_key_conflict`` is ``"return_existing"`` or ``"reject"`` (see :meth:`submit`; left
+        out, the server's default). A batch that is refused admits nothing, and the
+        :class:`ClientError` names the task that caused it in ``index``.
+        """
+        if on_key_conflict == "replace_queued":
+            raise ValueError("on_key_conflict='replace_queued' is not supported in a batch")
+        req = pb.SubmitBatchRequest(tasks=list(tasks), on_key_conflict=cast(Any, _key_conflict(on_key_conflict)))
+        r = await self._call(self._tasks.SubmitBatch, req)
         return [Submitted(t.id, t.duplicate, None, _outcome(t)) for t in r.tasks]
 
     async def cancel(self, ref: TaskRef) -> bool:

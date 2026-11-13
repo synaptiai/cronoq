@@ -712,6 +712,35 @@ pub(crate) struct Opts {
     tags: Vec<(Arc<str>, Arc<str>)>,
     labels: Vec<(Arc<str>, Arc<str>)>,
     tenant: Option<Arc<str>>,
+    pub(crate) fingerprint: Option<u128>,
+    pub(crate) on_key_conflict: cronoq::KeyConflict,
+}
+
+/// A fingerprint: an `int` below 2**128, or 16 bytes (big-endian), for example a digest.
+pub(crate) fn extract_fingerprint(obj: &Bound<'_, PyAny>) -> PyResult<u128> {
+    if let Ok(bytes) = obj.extract::<Vec<u8>>()
+        && !obj.is_instance_of::<pyo3::types::PyInt>()
+    {
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| PyValueError::new_err("a fingerprint given as bytes has 16 bytes"))?;
+        return Ok(u128::from_be_bytes(bytes));
+    }
+    obj.extract::<u128>()
+        .map_err(|_| PyValueError::new_err("fingerprint must be an int in 0..2**128 or 16 bytes"))
+}
+
+/// `on_key_conflict` by name (`None` = the scheduler's default).
+pub(crate) fn parse_key_conflict(name: Option<&str>) -> PyResult<cronoq::KeyConflict> {
+    match name {
+        None => Ok(cronoq::KeyConflict::Configured),
+        Some("return_existing") => Ok(cronoq::KeyConflict::ReturnExisting),
+        Some("replace_queued") => Ok(cronoq::KeyConflict::ReplaceQueued),
+        Some("reject") => Ok(cronoq::KeyConflict::Reject),
+        Some(_) => Err(PyValueError::new_err(
+            "on_key_conflict must be 'return_existing', 'replace_queued' or 'reject'",
+        )),
+    }
 }
 
 pub(crate) fn parse_miss(s: &str) -> PyResult<MissPolicy> {
@@ -874,6 +903,10 @@ impl Opts {
         for (k, v) in &self.labels {
             t = t.label(k.clone(), v.clone());
         }
+        if let Some(f) = self.fingerprint {
+            t = t.fingerprint(f);
+        }
+        t = t.on_key_conflict(self.on_key_conflict);
         if let Some(tn) = &self.tenant {
             t = t.tenant(tn.clone());
         }
@@ -895,7 +928,7 @@ impl Task {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None, tenant=None
+        tags=None, labels=None, tenant=None, fingerprint=None, on_key_conflict=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -919,8 +952,17 @@ impl Task {
         tags: Option<&Bound<'_, PyDict>>,
         labels: Option<&Bound<'_, PyDict>>,
         tenant: Option<&str>,
+        fingerprint: Option<&Bound<'_, PyAny>>,
+        on_key_conflict: Option<&str>,
     ) -> PyResult<Self> {
-        let opts = Opts::parse(
+        let mode = parse_key_conflict(on_key_conflict)?;
+        if mode == cronoq::KeyConflict::ReplaceQueued {
+            return Err(PyValueError::new_err(
+                "on_key_conflict='replace_queued' is for submit and enqueue, not for a batch",
+            ));
+        }
+        let fingerprint = fingerprint.map(extract_fingerprint).transpose()?;
+        let mut opts = Opts::parse(
             priority,
             pool,
             kind,
@@ -941,6 +983,8 @@ impl Task {
             labels,
             tenant,
         )?;
+        opts.fingerprint = fingerprint;
+        opts.on_key_conflict = mode;
         Ok(Task { payload, opts })
     }
 

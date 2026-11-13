@@ -308,6 +308,7 @@ impl Store<PyObj, PyObj> for CodecStore {
                             key: t.spec.key.clone(),
                             status: TaskStatus::Failed,
                             at: t.arrival,
+                            fingerprint: t.spec.fingerprint,
                         });
                     }
                 }

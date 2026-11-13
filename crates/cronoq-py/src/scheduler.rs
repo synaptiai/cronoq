@@ -16,7 +16,8 @@ use crate::executor::{LoopClosed, PyExecutor};
 use crate::store::{Codec, CodecStore, SqliteStore};
 use crate::types::{
     Dep, Opts, Pool, PriorityConfig, PyObj, Resource, RetryPolicy, Task, UrgencyConfig,
-    extract_priority, extract_ref, parse_miss, parse_overlap, secs, to_system_time,
+    extract_fingerprint, extract_priority, extract_ref, parse_key_conflict, parse_miss,
+    parse_overlap, secs, to_system_time,
 };
 
 type Sched = cronoq::Scheduler<PyObj, PyObj>;
@@ -107,6 +108,7 @@ pub struct Scheduler {
     emit_transitions: bool,
     priority: Option<cronoq::PriorityConfig>,
     urgency: Option<cronoq::UrgencyConfig>,
+    default_conflict: cronoq::KeyConflict,
     shutdown_grace: f64,
     event_capacity: usize,
     default_pool: Arc<str>,
@@ -196,7 +198,7 @@ impl Scheduler {
     /// Payloads and results are then encoded with `codec` (an object with `encode(obj) ->
     /// bytes` and `decode(bytes) -> obj`), JSON by default.
     #[new]
-    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None, priority=None, urgency=None))]
+    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None, priority=None, urgency=None, on_key_conflict=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -209,7 +211,17 @@ impl Scheduler {
         codec: Option<PyObj>,
         priority: Option<PriorityConfig>,
         urgency: Option<UrgencyConfig>,
+        on_key_conflict: Option<&str>,
     ) -> PyResult<Self> {
+        let default_conflict = match parse_key_conflict(on_key_conflict)? {
+            cronoq::KeyConflict::ReplaceQueued => {
+                return Err(PyValueError::new_err(
+                    "on_key_conflict='replace_queued' is chosen per submission, not as the default",
+                ));
+            }
+            cronoq::KeyConflict::Configured => cronoq::KeyConflict::ReturnExisting,
+            mode => mode,
+        };
         if pools.is_empty() {
             return Err(PyValueError::new_err("at least one pool is required"));
         }
@@ -272,6 +284,7 @@ impl Scheduler {
             emit_transitions,
             priority: priority.map(|p| p.to_core()),
             urgency: urgency.map(|u| u.to_core()),
+            default_conflict,
             shutdown_grace,
             event_capacity,
             default_pool,
@@ -314,7 +327,9 @@ impl Scheduler {
                 shared.stop_unexpectedly("its asyncio event loop was closed");
             }
         });
-        let mut b = Sched::builder().emit_transitions(self.emit_transitions);
+        let mut b = Sched::builder()
+            .emit_transitions(self.emit_transitions)
+            .on_key_conflict(self.default_conflict);
         if let Some(p) = &self.priority {
             b = b.priority(p.clone());
         }
@@ -384,7 +399,7 @@ impl Scheduler {
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None,
-        on_key_conflict=None, renew_position=false
+        on_key_conflict=None, renew_position=false, fingerprint=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn submit<'py>(
@@ -412,6 +427,7 @@ impl Scheduler {
         tenant: Option<&str>,
         on_key_conflict: Option<&str>,
         renew_position: bool,
+        fingerprint: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -435,11 +451,14 @@ impl Scheduler {
             tenant,
         )?;
         let s = self.sched(py)?;
-        let task = replacing(
+        let mut task = replacing(
             self.task(py, &opts, payload)?,
             on_key_conflict,
             renew_position,
         )?;
+        if let Some(f) = fingerprint {
+            task = task.fingerprint(extract_fingerprint(f)?);
+        }
         spawn_py(py, async move {
             let h = s.submit(task).await.map_err(to_pyerr)?;
             Ok(TaskHandle::new(h, s))
@@ -452,7 +471,7 @@ impl Scheduler {
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None,
-        on_key_conflict=None, renew_position=false
+        on_key_conflict=None, renew_position=false, fingerprint=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn enqueue<'py>(
@@ -480,6 +499,7 @@ impl Scheduler {
         tenant: Option<&str>,
         on_key_conflict: Option<&str>,
         renew_position: bool,
+        fingerprint: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -503,11 +523,14 @@ impl Scheduler {
             tenant,
         )?;
         let s = self.sched(py)?;
-        let task = replacing(
+        let mut task = replacing(
             self.task(py, &opts, payload)?,
             on_key_conflict,
             renew_position,
         )?;
+        if let Some(f) = fingerprint {
+            task = task.fingerprint(extract_fingerprint(f)?);
+        }
         spawn_py(py, async move {
             let sub = s.enqueue(task).await.map_err(to_pyerr)?;
             Ok(sub.id.0)
@@ -881,22 +904,13 @@ fn replacing(
     on_key_conflict: Option<&str>,
     renew_position: bool,
 ) -> PyResult<cronoq::Task<PyObj>> {
-    let task = match on_key_conflict {
-        None | Some("return_existing") => {
-            if renew_position {
-                return Err(PyValueError::new_err(
-                    "renew_position needs on_key_conflict='replace_queued'",
-                ));
-            }
-            return Ok(task);
-        }
-        Some("replace_queued") => task.replace_queued(),
-        Some(_) => {
-            return Err(PyValueError::new_err(
-                "on_key_conflict must be 'return_existing' or 'replace_queued'",
-            ));
-        }
-    };
+    let mode = parse_key_conflict(on_key_conflict)?;
+    if renew_position && mode != cronoq::KeyConflict::ReplaceQueued {
+        return Err(PyValueError::new_err(
+            "renew_position needs on_key_conflict='replace_queued'",
+        ));
+    }
+    let task = task.on_key_conflict(mode);
     Ok(if renew_position {
         task.renew_position()
     } else {

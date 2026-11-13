@@ -20,16 +20,30 @@ class SubmitError(CronoqError):
 
     ``code`` is one of: ``unknown_pool``, ``unknown_resource``, ``resource_exceeds_capacity``,
     ``reservation_conflict``, ``cycle``, ``unknown_dependency``, ``full``, ``overloaded``,
-    ``duplicate_key_in_batch``, ``invalid``.
+    ``duplicate_key_in_batch``, ``replace_mismatch``, ``key_conflict``, ``invalid``.
+
+    For ``key_conflict`` (the key belongs to a task submitted with a different fingerprint, and
+    the submission asked for that to be reported), ``task_id`` and ``task_status`` name that
+    task. For a rejected batch, ``index`` is the position of the task that caused it.
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        task_id: int | None = None,
+        task_status: str | None = None,
+        index: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.task_id = task_id
+        self.task_status = task_status
+        self.index = index
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (type(self), (self.code, self.message))
+        return (type(self), (self.code, self.message, self.task_id, self.task_status, self.index))
 
 
 class UpdateError(CronoqError):

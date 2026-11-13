@@ -222,6 +222,58 @@ async def test_replace_by_key_latest_wins():
         assert ("successor", successor.id) in kinds
 
 
+async def test_key_conflicts_are_reported_by_fingerprint():
+    gate = asyncio.Event()
+
+    async def run(ctx, payload):
+        await gate.wait()
+        return payload
+
+    digest = bytes(range(16))
+    async with Scheduler([Pool("default", run, max=1, autoscale=False)]) as s:
+        first = await s.submit("edit-1", key="op-7", fingerprint=digest)
+        # The same fingerprint (as bytes or as the int they spell) is a retry.
+        same = await s.submit(
+            "edit-1", key="op-7", fingerprint=int.from_bytes(digest, "big"), on_key_conflict="reject"
+        )
+        assert (same.id, same.outcome) == (first.id, "existing")
+        with pytest.raises(cronoq.SubmitError) as e:
+            await s.submit("edit-2", key="op-7", fingerprint=7, on_key_conflict="reject")
+        err = e.value
+        assert (err.code, err.task_id, err.index) == ("key_conflict", first.id, None)
+        assert err.task_status in ("ready", "running")
+        # Without the option, or without a fingerprint on one side, it is a duplicate.
+        assert (await s.submit("edit-2", key="op-7", fingerprint=7)).id == first.id
+        assert (await s.submit("edit-2", key="op-7", on_key_conflict="reject")).id == first.id
+
+        batch = [
+            Task("new", key="op-8", fingerprint=1, on_key_conflict="reject"),
+            Task("edit-2", key="op-7", fingerprint=7, on_key_conflict="reject"),
+        ]
+        with pytest.raises(cronoq.SubmitError) as b:
+            await s.submit_batch(batch)
+        assert (b.value.code, b.value.index, b.value.task_id) == ("key_conflict", 1, first.id)
+        assert await s.status("op-8") is None, "nothing of the batch was admitted"
+
+        with pytest.raises(ValueError):
+            await s.submit("x", key="k", fingerprint=b"short")
+        with pytest.raises(ValueError):
+            await s.submit("x", key="k", fingerprint=-1)
+        with pytest.raises(ValueError):
+            Task("x", key="k", on_key_conflict="replace_queued")
+        gate.set()
+        assert await first == "edit-1"
+
+    # The scheduler's default can be to report conflicts; a submission can still opt out.
+    async with Scheduler([Pool("default", run, max=1, autoscale=False)], on_key_conflict="reject") as s:
+        first = await s.submit("a", key="k", fingerprint=1)
+        with pytest.raises(cronoq.SubmitError):
+            await s.submit("b", key="k", fingerprint=2)
+        assert (await s.submit("b", key="k", fingerprint=2, on_key_conflict="return_existing")).id == first.id
+    with pytest.raises(ValueError):
+        Scheduler([Pool("default", run)], on_key_conflict="replace_queued")
+
+
 async def test_cancellation_of_running_and_queued_tasks():
     started = asyncio.Event()
 

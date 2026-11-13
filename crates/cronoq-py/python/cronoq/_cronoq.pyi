@@ -198,6 +198,8 @@ class Task:
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
         tenant: str | None = None,
+        fingerprint: int | bytes | None = None,
+        on_key_conflict: Literal["return_existing", "reject"] | None = None,
     ) -> Self: ...
 
 @final
@@ -330,6 +332,7 @@ class Scheduler:
         codec: Any = None,
         priority: PriorityConfig | None = None,
         urgency: UrgencyConfig | None = None,
+        on_key_conflict: Literal["return_existing", "reject"] | None = None,
     ) -> Self: ...
     def start(self) -> Awaitable[None]: ...
     def submit(
@@ -355,8 +358,9 @@ class Scheduler:
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
         tenant: str | None = None,
-        on_key_conflict: Literal["return_existing", "replace_queued"] | None = None,
+        on_key_conflict: Literal["return_existing", "replace_queued", "reject"] | None = None,
         renew_position: bool = False,
+        fingerprint: int | bytes | None = None,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
@@ -381,8 +385,9 @@ class Scheduler:
         tags: Mapping[str, Any] | None = None,
         labels: Mapping[str, str] | None = None,
         tenant: str | None = None,
-        on_key_conflict: Literal["return_existing", "replace_queued"] | None = None,
+        on_key_conflict: Literal["return_existing", "replace_queued", "reject"] | None = None,
         renew_position: bool = False,
+        fingerprint: int | bytes | None = None,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...
