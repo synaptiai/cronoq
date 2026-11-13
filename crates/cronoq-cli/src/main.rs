@@ -201,7 +201,7 @@ enum PriorityArg {
 }
 
 impl PriorityArg {
-    fn to_pb(&self) -> pb::Priority {
+    fn to_pb(self) -> pb::Priority {
         match self {
             PriorityArg::Critical => pb::Priority::Critical,
             PriorityArg::High => pb::Priority::High,
