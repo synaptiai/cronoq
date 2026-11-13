@@ -7,6 +7,20 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Rust worker client (`cronoq_server::worker`) now gives its slots back when it starts
+  draining. Before, the server kept leasing to it and it refused each lease; when no other
+  worker could take one, the attempt failed and counted against the task's retry budget, so a
+  task could be dead-lettered during a drain without running. The Go, TypeScript and Python
+  clients already did this.
+
+### Changed
+
+- The Postgres and SQLite stores list the mutation kinds they skip in each pass instead of
+  using a catch-all, so a new kind of `Mutation` fails to compile until every store handles it.
+  The store conformance test fails to compile likewise until it covers the new kind.
+
 ## [0.2.2] - 2026-11-03
 
 ### Fixed

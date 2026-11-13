@@ -573,6 +573,14 @@ where
             _ = shutdown.as_mut(), if draining.is_none() => {
                 tracing::info!(running = running.count.load(Ordering::SeqCst), "worker draining");
                 draining = Some(tokio::time::Instant::now() + opts.drain_timeout);
+                // Stop the server leasing to this worker. Refusing each lease instead would
+                // fail the attempt, and spend retry budget, whenever no other worker can
+                // take it. Leases already on the wire are still refused below.
+                let _ = tx
+                    .send(pb::WorkerMessage {
+                        msg: Some(Msg::SetSlots(pb::SetSlots { slots: 0 })),
+                    })
+                    .await;
                 continue;
             }
             _ = drain_done => {

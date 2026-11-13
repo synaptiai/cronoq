@@ -588,6 +588,97 @@ async fn worker_drains_running_leases_on_shutdown() {
     s.stop().await;
 }
 
+/// A draining worker gives its slots back, so work submitted meanwhile waits for another worker
+/// instead of being leased to it, refused, and charged an attempt.
+#[tokio::test(flavor = "multi_thread")]
+async fn draining_worker_takes_no_new_leases() {
+    let s = TestServer::start("").await;
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let started = Arc::new(AtomicU32::new(0));
+    let finished = Arc::new(AtomicU32::new(0));
+    let (st, fin) = (started.clone(), finished.clone());
+    let opts = WorkerOptions::new(s.grpc_url(), "default")
+        .token(WORKER)
+        .slots(2);
+    let w = tokio::spawn(run_worker(
+        opts,
+        move |l| {
+            let (st, fin) = (st.clone(), fin.clone());
+            async move {
+                st.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                fin.fetch_add(1, Ordering::SeqCst);
+                Ok(l.payload)
+            }
+        },
+        async {
+            let _ = stop_rx.await;
+        },
+    ));
+    s.wait_capacity(2).await;
+    let mut c = s.tasks(CLIENT).await;
+    let first = c
+        .submit(submit(spec(b"x"), false))
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+    while started.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // One slot is busy and one is free when the drain starts.
+    stop_tx.send(()).unwrap();
+    s.wait_capacity(0).await;
+    // The slots are gone while the worker is still connected and running its handler, not
+    // because it disconnected.
+    assert_eq!(finished.load(Ordering::SeqCst), 0);
+    let second = c
+        .submit(submit(spec(b"y"), false))
+        .await
+        .unwrap()
+        .into_inner()
+        .id;
+    tokio::time::timeout(Duration::from_secs(5), w)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        wait(&s, first).await.status,
+        pb::TaskStatus::Succeeded as i32
+    );
+    let queued = c
+        .get(pb::GetRequest {
+            task: by_id(second),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(queued.attempt, 0, "the draining worker was leased new work");
+
+    let opts = WorkerOptions::new(s.grpc_url(), "default")
+        .token(WORKER)
+        .slots(1);
+    tokio::spawn(run_worker(
+        opts,
+        |l| async move { Ok(l.payload) },
+        std::future::pending(),
+    ));
+    assert_eq!(
+        wait(&s, second).await.status,
+        pb::TaskStatus::Succeeded as i32
+    );
+    let done = c
+        .get(pb::GetRequest {
+            task: by_id(second),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(done.attempt, 1);
+    s.stop().await;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Results
 
