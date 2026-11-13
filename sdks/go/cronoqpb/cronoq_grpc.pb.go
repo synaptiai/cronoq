@@ -38,6 +38,7 @@ const (
 	Tasks_Submit_FullMethodName      = "/cronoq.v1.Tasks/Submit"
 	Tasks_SubmitBatch_FullMethodName = "/cronoq.v1.Tasks/SubmitBatch"
 	Tasks_Cancel_FullMethodName      = "/cronoq.v1.Tasks/Cancel"
+	Tasks_Update_FullMethodName      = "/cronoq.v1.Tasks/Update"
 	Tasks_Get_FullMethodName         = "/cronoq.v1.Tasks/Get"
 	Tasks_ListTasks_FullMethodName   = "/cronoq.v1.Tasks/ListTasks"
 	Tasks_Wait_FullMethodName        = "/cronoq.v1.Tasks/Wait"
@@ -51,6 +52,9 @@ type TasksClient interface {
 	Submit(ctx context.Context, in *SubmitRequest, opts ...grpc.CallOption) (*SubmitResponse, error)
 	SubmitBatch(ctx context.Context, in *SubmitBatchRequest, opts ...grpc.CallOption) (*SubmitBatchResponse, error)
 	Cancel(ctx context.Context, in *CancelRequest, opts ...grpc.CallOption) (*CancelResponse, error)
+	// Change the priority, deadline or tags of a task that has not finished. NOT_FOUND for an
+	// unknown or finished task, FAILED_PRECONDITION for a task with a fixed start.
+	Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error)
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*TaskInfo, error)
 	ListTasks(ctx context.Context, in *ListTasksRequest, opts ...grpc.CallOption) (*ListTasksResponse, error)
 	Wait(ctx context.Context, in *WaitRequest, opts ...grpc.CallOption) (*TaskResult, error)
@@ -91,6 +95,16 @@ func (c *tasksClient) Cancel(ctx context.Context, in *CancelRequest, opts ...grp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CancelResponse)
 	err := c.cc.Invoke(ctx, Tasks_Cancel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tasksClient) Update(ctx context.Context, in *UpdateRequest, opts ...grpc.CallOption) (*UpdateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateResponse)
+	err := c.cc.Invoke(ctx, Tasks_Update_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +167,9 @@ type TasksServer interface {
 	Submit(context.Context, *SubmitRequest) (*SubmitResponse, error)
 	SubmitBatch(context.Context, *SubmitBatchRequest) (*SubmitBatchResponse, error)
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
+	// Change the priority, deadline or tags of a task that has not finished. NOT_FOUND for an
+	// unknown or finished task, FAILED_PRECONDITION for a task with a fixed start.
+	Update(context.Context, *UpdateRequest) (*UpdateResponse, error)
 	Get(context.Context, *GetRequest) (*TaskInfo, error)
 	ListTasks(context.Context, *ListTasksRequest) (*ListTasksResponse, error)
 	Wait(context.Context, *WaitRequest) (*TaskResult, error)
@@ -177,6 +194,9 @@ func (UnimplementedTasksServer) SubmitBatch(context.Context, *SubmitBatchRequest
 }
 func (UnimplementedTasksServer) Cancel(context.Context, *CancelRequest) (*CancelResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Cancel not implemented")
+}
+func (UnimplementedTasksServer) Update(context.Context, *UpdateRequest) (*UpdateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Update not implemented")
 }
 func (UnimplementedTasksServer) Get(context.Context, *GetRequest) (*TaskInfo, error) {
 	return nil, status.Error(codes.Unimplemented, "method Get not implemented")
@@ -265,6 +285,24 @@ func _Tasks_Cancel_Handler(srv interface{}, ctx context.Context, dec func(interf
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Tasks_Update_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TasksServer).Update(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Tasks_Update_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TasksServer).Update(ctx, req.(*UpdateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Tasks_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetRequest)
 	if err := dec(in); err != nil {
@@ -348,6 +386,10 @@ var Tasks_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Cancel",
 			Handler:    _Tasks_Cancel_Handler,
+		},
+		{
+			MethodName: "Update",
+			Handler:    _Tasks_Update_Handler,
 		},
 		{
 			MethodName: "Get",

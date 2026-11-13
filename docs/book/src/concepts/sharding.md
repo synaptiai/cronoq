@@ -64,8 +64,8 @@ Clients can call the server of any shard. It answers from every shard that the c
   names tasks in two shards is refused (`FAILED_PRECONDITION`, use the task id). While a shard
   cannot be asked, `Get` and `Wait` by key still find a task that one reachable shard holds and
   name the missing shards (`cronoq-unavailable-shards` metadata; `unavailable_shards` over
-  HTTP), but `Cancel` by key is refused with `UNAVAILABLE`, since the missing shard might hold
-  the same key. Keys are unique only within a shard, so prefer ids for anything that changes
+  HTTP), but `Cancel` and `Update` by key are refused with `UNAVAILABLE`, since the missing shard
+  might hold the same key. Keys are unique only within a shard, so prefer ids for anything that changes
   a task, or keep each key's tasks in one shard's pools.
 - **Reads cover every shard:** task listings (paged across shards in id order), `Watch`,
   worker and schedule listings, and snapshots. When a shard cannot be reached, the others still

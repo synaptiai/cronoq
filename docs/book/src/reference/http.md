@@ -43,9 +43,11 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
 | `GET /v1/tasks` | client | List tasks, live and finished, one page at a time. |
 | `POST /v1/tasks:batch` | client | Submit up to `max_tasks_per_batch` tasks atomically. |
 | `GET /v1/tasks/{id}` | client | Task details by numeric id. |
+| `PATCH /v1/tasks/{id}` | client | Change a task's priority, deadline or tags by id. |
 | `DELETE /v1/tasks/{id}` | client | Cancel a task by id. |
 | `GET /v1/tasks/{id}/result` | client | Wait for a task's result by id. |
 | `GET /v1/tasks/by-key/{key}` | client | Task details by key. |
+| `PATCH /v1/tasks/by-key/{key}` | client | Change a task's priority, deadline or tags by key. |
 | `DELETE /v1/tasks/by-key/{key}` | client | Cancel a task by key. |
 | `GET /v1/tasks/by-key/{key}/result` | client | Wait for a task's result by key. |
 | `GET /v1/snapshot` | metrics | Per-pool state, quality signals and totals. |
@@ -215,6 +217,34 @@ Recurring schedules of the pools the caller may use, by name. `tz` is absent for
 `next_unix_ns` when the schedule has no further occurrence, and `last_task_id` before the first
 occurrence.
 
+## `PATCH /v1/tasks/{id}` and `PATCH /v1/tasks/by-key/{key}`
+
+[Change](../concepts/updating.md) a task that has not finished. Keys left out keep their value.
+
+```json
+{"priority": "high", "deadline_in_s": 30, "tags": {"reason": "user is waiting"}}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `priority` | string | `critical`, `high`, `normal` or `low`. |
+| `deadline_in_s` | number | New deadline, in seconds from now. |
+| `deadline_unix_ns` | integer | New deadline as Unix nanoseconds. |
+| `clear_deadline` | boolean | Remove the deadline. At most one of the three deadline fields may be set. |
+| `tags` | object | Replaces the task's tags; `{}` removes them. Names starting with `cronoq.` are reserved. |
+
+```json
+{"id": "17", "status": "ready", "deferred": false, "changed": true}
+```
+
+`status` is the task's status, which an update does not change. `deferred` is true when an
+attempt is running: it is not interrupted, and the new values apply to what follows it.
+`changed` is false when the task already had every value given.
+
+404 for a task that is unknown, already finished, or outside the credentials' pools or tenant;
+409 for a task with a fixed start; 400 for an invalid body. With a durable store (Postgres or
+SQLite), the change is stored before the response is sent.
+
 ## `DELETE /v1/tasks/{id}` and `DELETE /v1/tasks/by-key/{key}`
 
 ```json
@@ -329,7 +359,7 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 | 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
-| 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
+| 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
 | 413 | – | Body larger than `limits.max_http_body_bytes`. |
 | 415 | – | Missing or wrong `content-type`. |
 | 429 | `RESOURCE_EXHAUSTED` | Pool (`max_pending`) or server (`max_pending_total`) queue full. Retry with backoff. |

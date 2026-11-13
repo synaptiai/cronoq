@@ -60,6 +60,9 @@ mode the top bits carry the leader's fencing epoch, so ids stay unique across fa
 | `Missed` | ✔ | Fixed start missed with `MissPolicy::Skip`. |
 | `Shed` | ✔ | Evicted to make room under overload. |
 
+A task's priority, deadline and tags can be changed while it has not finished; see
+[Updating queued tasks](updating.md).
+
 Terminal statuses are retained for the **retention window** (1 hour, up to 1,000,000 entries by
 default). During that window the task can still be looked up, keys stay reserved, and new tasks
 may depend on it.
@@ -79,7 +82,9 @@ Handles are not required: `enqueue` submits without one, which is cheaper.
 ## Events
 
 Every terminal transition is published as a `StatusEvent { id, pool, key, status, attempt, at,
-message }`. With `emit_transitions` enabled, every intermediate transition is published as well.
+message, priority, kind }`. With `emit_transitions` enabled, every intermediate transition is
+published as well, and so is each [update](updating.md) of a task, as an event of `kind`
+`Updated` that carries the task's unchanged status.
 Subscribe with `Scheduler::events()` in Rust, `sched.events()` in Python, or `Tasks/Watch` over
 gRPC (with `all_transitions` for intermediate ones). Slow subscribers lose the oldest events
 rather than slowing the scheduler down.

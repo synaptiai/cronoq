@@ -51,6 +51,7 @@ opened on the first call.
 | `Get(ctx, Ref)` | `*TaskInfo` | A task's details. |
 | `Wait(ctx, Ref, timeout)` | `*Result` | Wait for a task to finish. |
 | `Cancel(ctx, Ref)` | `bool` | Cancel a task that has not finished. |
+| `Update(ctx, Ref, Update)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. |
 | `ListTasks(ctx, ListOptions)` | `*TaskPage` | One page of tasks by pool and status, in id order. Pass `NextAfter` as `After` for the next page. |
 | `Watch(ctx, WatchOptions)` | `iter.Seq2[Event, error]` | Status events until `ctx` ends or the stream fails (for example when the server loses leadership: watch again). |
 | `Snapshot(ctx)` | `*cronoqpb.SnapshotResponse` | Pools, queues and totals (metrics role). |
@@ -77,6 +78,14 @@ opened on the first call.
 `StartIn`, `After` (`[]Dep{{Ref: cronoq.Key("extract"), Cond: cronoq.OnSuccess}}`),
 `Resources`, `Tags`, `Labels` (worker labels the task requires) and `MaxAttempts` (replaces the
 pool's retry policy with this many attempts and the server's default backoff).
+
+`Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,
+`ClearDeadline` (at most one of the three), and `Tags`, which replaces the task's tags when it
+is not nil (an empty map removes them). `Updated` has `ID`, `Status` (unchanged by the update),
+`Deferred` (an attempt is running; the values apply to what follows it) and `Changed` (false
+when the task already had every value). `Event.Priority` is the task's class at the time of the
+event, and `Event.Updated` is true for an event that reports an update instead of a status
+change (delivered with `AllTransitions`).
 
 `TaskInfo`, `Result` and `Event` carry a `Status` (`cronoq.Ready`, `Running`, `Succeeded`, ...;
 `Status.Done()` is true for terminal ones). `TaskPage.UnavailableShards` names shards that could

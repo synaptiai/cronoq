@@ -48,6 +48,8 @@ enum Command {
     Get(RefArgs),
     /// Cancel a task.
     Cancel(RefArgs),
+    /// Change the priority, deadline or tags of a task that has not finished.
+    Update(UpdateArgs),
     /// Wait for a task to finish and print its output.
     Wait {
         #[command(flatten)]
@@ -149,6 +151,27 @@ struct SpecArgs {
 }
 
 #[derive(Args, Debug)]
+struct UpdateArgs {
+    #[command(flatten)]
+    target: RefArgs,
+    /// New priority class. A waiting task keeps its place by submission order in that class.
+    #[arg(long, value_enum)]
+    priority: Option<PriorityArg>,
+    /// New deadline, in seconds from now.
+    #[arg(long, value_name = "SECONDS", conflicts_with = "no_deadline")]
+    deadline_in: Option<f64>,
+    /// Remove the deadline.
+    #[arg(long)]
+    no_deadline: bool,
+    /// Replace the task's tags with these `name=value` pairs (repeatable).
+    #[arg(long = "tag", value_name = "NAME=VALUE", value_parser = pair, conflicts_with = "no_tags")]
+    tags: Vec<(String, String)>,
+    /// Remove all tags.
+    #[arg(long)]
+    no_tags: bool,
+}
+
+#[derive(Args, Debug)]
 struct SubmitArgs {
     #[command(flatten)]
     spec: SpecArgs,
@@ -175,6 +198,17 @@ enum PriorityArg {
     High,
     Normal,
     Low,
+}
+
+impl PriorityArg {
+    fn to_pb(self) -> pb::Priority {
+        match self {
+            PriorityArg::Critical => pb::Priority::Critical,
+            PriorityArg::High => pb::Priority::High,
+            PriorityArg::Normal => pb::Priority::Normal,
+            PriorityArg::Low => pb::Priority::Low,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -282,12 +316,7 @@ impl SpecArgs {
                 .unwrap_or_else(|| default_type.to_string()),
             kind: self.kind.clone(),
             pool: self.pool.clone(),
-            priority: match self.priority {
-                PriorityArg::Critical => pb::Priority::Critical,
-                PriorityArg::High => pb::Priority::High,
-                PriorityArg::Normal => pb::Priority::Normal,
-                PriorityArg::Low => pb::Priority::Low,
-            } as i32,
+            priority: self.priority.to_pb() as i32,
             deadline_in_s: self.deadline_in,
             timeout_s: self.timeout_s,
             resources: self.resources.iter().cloned().collect(),
@@ -417,6 +446,40 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Output::Json => print_json(&serde_json::json!({ "cancelled": r.cancelled })),
                 Output::Text if r.cancelled => println!("cancelled"),
                 Output::Text => println!("already finished"),
+            }
+        }
+        Command::Update(a) => {
+            if a.priority.is_none()
+                && a.deadline_in.is_none()
+                && !a.no_deadline
+                && a.tags.is_empty()
+                && !a.no_tags
+            {
+                bail!(
+                    "nothing to change: pass --priority, --deadline-in, --no-deadline, --tag or --no-tags"
+                );
+            }
+            let r = rpc(tasks
+                .update(pb::UpdateRequest {
+                    task: Some(a.target.to_pb()?),
+                    priority: a.priority.map_or(pb::Priority::Unspecified, |p| p.to_pb()) as i32,
+                    deadline_in_s: a.deadline_in,
+                    deadline_unix_ns: None,
+                    clear_deadline: a.no_deadline,
+                    set_tags: a.no_tags || !a.tags.is_empty(),
+                    tags: a.tags.iter().cloned().collect(),
+                })
+                .await)?;
+            match out {
+                Output::Json => print_json(&serde_json::json!({
+                    "id": r.id.to_string(), "status": fmt::status(r.status),
+                    "deferred": r.deferred, "changed": r.changed,
+                })),
+                Output::Text if !r.changed => println!("unchanged"),
+                Output::Text if r.deferred => {
+                    println!("updated (applies after the running attempt)")
+                }
+                Output::Text => println!("updated"),
             }
         }
         Command::Wait { target, timeout } => {
@@ -613,16 +676,30 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                             "id": ev.id.to_string(), "pool": ev.pool, "key": ev.key,
                             "status": fmt::status(ev.status), "attempt": ev.attempt,
                             "at_unix_ns": ev.at_unix_ns.to_string(), "message": ev.message,
+                            "priority": fmt::priority(ev.priority),
+                            "updated": ev.kind == pb::EventKind::Updated as i32,
                         })
                     ),
                     Output::Text => {
+                        let updated = ev.kind == pb::EventKind::Updated as i32;
                         let mut line = format!(
                             "{}  {:<13} {}  pool={}",
                             fmt::time(ev.at_unix_ns),
-                            fmt::status(ev.status),
+                            if updated {
+                                "updated"
+                            } else {
+                                fmt::status(ev.status)
+                            },
                             ev.id,
                             ev.pool
                         );
+                        if updated {
+                            line.push_str(&format!(
+                                " status={} priority={}",
+                                fmt::status(ev.status),
+                                fmt::priority(ev.priority).unwrap_or("-")
+                            ));
+                        }
                         if !ev.key.is_empty() {
                             line.push_str(&format!(" key={}", ev.key));
                         }

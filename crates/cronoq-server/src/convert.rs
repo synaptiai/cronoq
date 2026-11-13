@@ -431,7 +431,54 @@ pub fn event(e: &StatusEvent, pools: &[Arc<str>], clock: &Clock) -> pb::StatusEv
         attempt: e.attempt,
         at_unix_ns: unix_ns(clock.to_system(e.at)),
         message: e.message.as_deref().unwrap_or_default().to_string(),
+        priority: priority_to_pb(e.priority) as i32,
+        kind: match e.kind {
+            cronoq::EventKind::Transition => pb::EventKind::Transition,
+            cronoq::EventKind::Updated => pb::EventKind::Updated,
+        } as i32,
     }
+}
+
+/// Map a wire update to the changes it asks for (the task reference is mapped separately).
+pub fn update(req: pb::UpdateRequest, limits: &LimitsConfig) -> Result<cronoq::Update, Status> {
+    let mut u = cronoq::Update::new();
+    if req.priority != pb::Priority::Unspecified as i32 {
+        u = u.priority(priority(req.priority)?);
+    }
+    match (req.deadline_in_s, req.deadline_unix_ns, req.clear_deadline) {
+        (None, None, false) => {}
+        (Some(s), None, false) => u = u.deadline_in(secs(s)?),
+        (None, Some(ns), false) => u = u.deadline_at(unix("deadline_unix_ns", ns)?),
+        (None, None, true) => u = u.no_deadline(),
+        _ => {
+            return Err(Status::invalid_argument(
+                "set at most one of deadline_in_s, deadline_unix_ns and clear_deadline",
+            ));
+        }
+    }
+    if req.set_tags {
+        if req.tags.len() > limits.max_tags {
+            return Err(Status::invalid_argument(format!(
+                "too many tags (limit {})",
+                limits.max_tags
+            )));
+        }
+        let mut tags: Vec<_> = req.tags.into_iter().collect();
+        tags.sort();
+        for (k, v) in &tags {
+            check_str("tag key", k, limits.max_tag_len)?;
+            check_str("tag value", v, limits.max_tag_len)?;
+            if k.starts_with("cronoq.") {
+                return Err(Status::invalid_argument(
+                    "tag keys starting with 'cronoq.' are reserved",
+                ));
+            }
+        }
+        u = u.tags(tags);
+    } else if !req.tags.is_empty() {
+        return Err(Status::invalid_argument("tags are given without set_tags"));
+    }
+    Ok(u)
 }
 
 /// Map a scheduler snapshot to the wire.
@@ -516,6 +563,11 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
 pub fn error(e: Error) -> Status {
     match e {
         Error::Submit(e) => submit_error(e),
+        Error::Update(e) => match e {
+            cronoq::UpdateError::NotFound => Status::not_found("task not found"),
+            cronoq::UpdateError::FixedStart => Status::failed_precondition(e.to_string()),
+            cronoq::UpdateError::Invalid(_) => Status::invalid_argument(e.to_string()),
+        },
         Error::Shutdown => Status::unavailable("scheduler is shutting down"),
         Error::Config(m) => Status::invalid_argument(m),
         Error::Store(e) => {

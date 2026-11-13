@@ -33,6 +33,8 @@ cronoq submit --file report.pdf --kind ocr --wait > text.txt
 cronoq get 17                               # details; --key to look up by key
 cronoq get --key doc-42
 cronoq wait 17 --timeout 60                 # prints the output
+cronoq update 17 --priority high --deadline-in 30   # change a task that has not finished
+cronoq update doc-42 --key --no-deadline --tag team=search   # --tag replaces all tags; --no-tags removes them
 cronoq cancel 17
 cronoq tasks --pool llm --status running --status failed --limit 50
 cronoq tasks --all                          # follow every page

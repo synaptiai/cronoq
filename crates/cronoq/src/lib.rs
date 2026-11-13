@@ -51,7 +51,7 @@ pub use scheduler::{Builder, Pool, Scheduler, TaskHandle};
 #[cfg(feature = "store-codec")]
 pub mod codec;
 pub use store::{MemoryStore, Store, StoreQueries, TaskRecord, TimeBase};
-pub use task::{Recurring, Task, When};
+pub use task::{Recurring, Task, Update, When};
 
 pub use cronoq_core as core;
 /// Engine types re-exported for convenience.
@@ -62,3 +62,4 @@ pub use cronoq_core::{
     ResourceConfig, ResourceKind, RetryPolicy, Snapshot, StatusEvent, SubmitError, Submitted,
     TaskId, TaskRef, TaskSpec, TaskStatus, TaskSummary, Time, UnknownDependency, UrgencyConfig,
 };
+pub use cronoq_core::{EventKind, TaskPatch, UpdateError, Updated};

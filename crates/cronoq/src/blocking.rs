@@ -132,6 +132,15 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> BlockingScheduler<P, O>
         let target = target.into();
         block_on(self.handle(), self.inner.cancel(target))
     }
+    /// Blocking [`Scheduler::update`].
+    pub fn update(
+        &self,
+        target: impl Into<TaskRef>,
+        update: crate::Update,
+    ) -> Result<crate::Updated, Error> {
+        let target = target.into();
+        block_on(self.handle(), self.inner.update(target, update))
+    }
     /// Blocking [`Scheduler::status`].
     pub fn status(&self, target: impl Into<TaskRef>) -> Result<Option<TaskStatus>, Error> {
         let target = target.into();

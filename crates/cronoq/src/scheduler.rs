@@ -483,12 +483,44 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         self.call(|reply| Cmd::Cancel { target, reply }).await?
     }
 
+    /// Change the priority, deadline or tags of a task that has not finished.
+    ///
+    /// A waiting task takes the new values at once; a running attempt is not interrupted and
+    /// the values apply to what follows it ([`Updated::deferred`](crate::Updated)). Giving the
+    /// values the task already has succeeds without changing anything. Fails with
+    /// [`Error::Update`] for a task that is unknown or finished, or has a fixed start. With a
+    /// persistent store, returns once the change is durable.
+    pub async fn update(
+        &self,
+        target: impl Into<TaskRef>,
+        update: crate::Update,
+    ) -> Result<cronoq_core::Updated, Error> {
+        let target = target.into();
+        let patch = update.resolve(&self.inner.clock)?;
+        self.call(|reply| Cmd::Update {
+            target,
+            patch,
+            reply,
+        })
+        .await?
+    }
+
     /// Current status of a task (live or recently finished), as the engine holds it. With a
     /// durable store this can report a terminal status shortly before that status is committed;
     /// a [`TaskHandle`] resolves, and [`Scheduler::events`] report the change, only after it is.
     pub async fn status(&self, target: impl Into<TaskRef>) -> Result<Option<TaskStatus>, Error> {
         let target = target.into();
         self.call(|reply| Cmd::Status { target, reply }).await
+    }
+
+    /// One task that has not finished, by id or key, as the engine holds it: `None` for a task
+    /// that is unknown or has finished.
+    pub async fn task(
+        &self,
+        target: impl Into<TaskRef>,
+    ) -> Result<Option<crate::TaskSummary>, Error> {
+        let target = target.into();
+        self.call(|reply| Cmd::Task { target, reply }).await
     }
 
     /// Live tasks in id order: those in one of `pools` (any if empty) with one of `statuses`

@@ -208,11 +208,14 @@ pub fn router(st: St) -> Router {
     let api = Router::new()
         .route("/v1/tasks", post(submit).get(list_tasks))
         .route("/v1/tasks:batch", post(submit_batch))
-        .route("/v1/tasks/{id}", get(get_by_id).delete(cancel_by_id))
+        .route(
+            "/v1/tasks/{id}",
+            get(get_by_id).delete(cancel_by_id).patch(update_by_id),
+        )
         .route("/v1/tasks/{id}/result", get(result_by_id))
         .route(
             "/v1/tasks/by-key/{key}",
-            get(get_by_key).delete(cancel_by_key),
+            get(get_by_key).delete(cancel_by_key).patch(update_by_key),
         )
         .route("/v1/tasks/by-key/{key}/result", get(result_by_key));
     let metrics = Router::new()
@@ -477,15 +480,8 @@ impl TaskJson {
             (None, None) => (Vec::new(), ""),
         };
         let priority = match self.priority.as_deref() {
-            None | Some("normal") => pb::Priority::Normal,
-            Some("critical") => pb::Priority::Critical,
-            Some("high") => pb::Priority::High,
-            Some("low") => pb::Priority::Low,
-            Some(p) => {
-                return Err(bad(format!(
-                    "unknown priority '{p}' (critical, high, normal, low)"
-                )));
-            }
+            None => pb::Priority::Normal,
+            Some(name) => parse_priority(name)?,
         };
         let on_miss = match self.on_miss.as_deref() {
             None | Some("run_late") => pb::MissPolicy::RunLate,
@@ -637,6 +633,21 @@ fn info_json(i: &pb::TaskInfo) -> Value {
     v
 }
 
+/// A priority class by its lower-case name.
+fn parse_priority(name: &str) -> Result<pb::Priority, ApiError> {
+    Ok(match name {
+        "normal" => pb::Priority::Normal,
+        "critical" => pb::Priority::Critical,
+        "high" => pb::Priority::High,
+        "low" => pb::Priority::Low,
+        p => {
+            return Err(bad(format!(
+                "unknown priority '{p}' (critical, high, normal, low)"
+            )));
+        }
+    })
+}
+
 /// Lower-case name of a wire priority (`None` if unspecified).
 fn priority_name(p: i32) -> Option<&'static str> {
     match pb::Priority::try_from(p).ok()? {
@@ -777,6 +788,65 @@ async fn cancel_by_key(
 ) -> Result<Json<Value>, ApiError> {
     let target = key(app(&st)?, k)?;
     cancel_task(&st, &p, target).await
+}
+
+/// Body of `PATCH /v1/tasks/{id}`: what to change. Keys left out keep their value.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateJson {
+    priority: Option<String>,
+    deadline_in_s: Option<f64>,
+    deadline_unix_ns: Option<i64>,
+    #[serde(default)]
+    clear_deadline: bool,
+    /// Replaces the task's tags (an empty object removes them).
+    tags: Option<std::collections::HashMap<String, String>>,
+}
+
+async fn update_task(
+    st: &Shared,
+    p: &Principal,
+    target: TaskRef,
+    body: UpdateJson,
+) -> Result<Json<Value>, ApiError> {
+    let app = app(st)?;
+    let priority = match body.priority.as_deref() {
+        None => pb::Priority::Unspecified,
+        Some(name) => parse_priority(name)?,
+    };
+    let req = pb::UpdateRequest {
+        task: None,
+        priority: priority as i32,
+        deadline_in_s: body.deadline_in_s,
+        deadline_unix_ns: body.deadline_unix_ns,
+        clear_deadline: body.clear_deadline,
+        set_tags: body.tags.is_some(),
+        tags: body.tags.unwrap_or_default(),
+    };
+    let r = crate::route::update(app, p, target, req).await?;
+    Ok(Json(json!({
+        "id": r.id.to_string(), "status": status_name(r.status),
+        "deferred": r.deferred, "changed": r.changed,
+    })))
+}
+
+async fn update_by_id(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<UpdateJson>,
+) -> Result<Json<Value>, ApiError> {
+    update_task(&st, &p, parse_id(&id)?, body).await
+}
+
+async fn update_by_key(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path(k): Path<String>,
+    ApiJson(body): ApiJson<UpdateJson>,
+) -> Result<Json<Value>, ApiError> {
+    let target = key(app(&st)?, k)?;
+    update_task(&st, &p, target, body).await
 }
 
 #[derive(Deserialize)]

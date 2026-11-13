@@ -28,6 +28,7 @@
 
 - [Tasks and their lifecycle](concepts/tasks.md)
 - [Priorities and aging](concepts/priorities.md)
+- [Updating queued tasks](concepts/updating.md)
 - [Deadlines and urgency](concepts/deadlines.md)
 - [Fixed starts and reservations](concepts/fixed-starts.md)
 - [Recurring schedules](concepts/recurring.md)

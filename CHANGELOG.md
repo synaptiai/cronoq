@@ -9,6 +9,20 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Update a task that has not finished: change its priority, deadline or tags without cancelling
+  and resubmitting it. The task keeps its id, key, dependents and attempt count; with a new
+  priority it moves to that class and keeps its place by submission order there. A running
+  attempt is not interrupted, and the new values apply to what follows it. Tasks with a fixed
+  start cannot be updated. Available as `Scheduler::update` with `Update` (Rust, also on the
+  blocking facade), `Scheduler.update` (Python), `Tasks/Update` (gRPC),
+  `PATCH /v1/tasks/{id}` and `PATCH /v1/tasks/by-key/{key}` (HTTP), `Client.update` in the
+  Python, Go and TypeScript clients, and `cronoq update` on the command line. With a durable
+  store the change is stored before the call returns and survives a restart.
+- Status events carry the task's `priority` and a `kind`. With `emit_transitions`
+  (`all_transitions` over `Watch`), an update is published as an event of kind `Updated` with
+  the task's unchanged status.
+- `Scheduler::task(target)` (Rust) and `Core::task`: one task that has not finished, by id or
+  key, with its pool, kind, priority, status, attempt and tenant.
 - Priority and urgency settings in the server and the Python package, and per pool everywhere.
   The server reads `[priority]` (`base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and
   `[urgency]` (`max`, `window_s`, `overdue_rate`, `overdue_cap`), and each pool accepts
@@ -32,12 +46,19 @@ contain breaking changes; they are called out under **Changed**.
   `PoolConfig` has new fields `priority` and `urgency`; `PoolSnapshot` has new fields
   `priority` and `urgency`. Code that builds these with a struct literal needs
   `..Default::default()` or the new fields.
+- **Breaking (Rust):** `StatusEvent` has new fields `priority` and `kind`, `Mutation` has a new
+  variant `Updated`, and `Error` has a new variant `Update`. A custom `Store` must apply
+  `Mutation::Updated` (set the task's priority, deadline and tags), or updates are lost on
+  restart; exhaustive matches on `Mutation` or `Error` need the new arm.
 - The Postgres and SQLite stores list the mutation kinds they skip in each pass instead of
   using a catch-all, so a new kind of `Mutation` fails to compile until every store handles it.
   The store conformance test fails to compile likewise until it covers the new kind.
 
 ### Fixed
 
+- A cancel of an unknown or finished task that was the first call after a retry or a delayed
+  start became due left that work waiting until the next call to the scheduler. It is now
+  dispatched at once.
 - The Rust worker client (`cronoq_server::worker`) now gives its slots back when it starts
   draining. Before, the server kept leasing to it and it refused each lease; when no other
   worker could take one, the attempt failed and counted against the task's retry budget, so a

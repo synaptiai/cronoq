@@ -54,7 +54,7 @@ curl -s "$CRONOQ/v1/tasks:batch" -H "$AUTH" -H "$JSON" -d '{"tasks": [
 and its tasks may reference each other in any order. `alert` runs only if `load` fails; if
 `load` succeeds, `alert` ends as `skipped`.
 
-## Status, results, cancellation
+## Status, results, updates, cancellation
 
 Ids and keys have separate routes:
 
@@ -66,9 +66,18 @@ curl -s $CRONOQ/v1/tasks/by-key/summary-42 -H "$AUTH"
 curl -s "$CRONOQ/v1/tasks/17/result?timeout_s=60" -H "$AUTH"
 # {"id":"17","output":{...},"output_available":true,"output_b64":"...","status":"succeeded"}
 
+# Move a waiting task to the high class and give it 30 seconds; it keeps its id and its place
+# by submission order.
+curl -s -X PATCH $CRONOQ/v1/tasks/by-key/summary-42 -H "$AUTH" \
+    -H 'content-type: application/json' -d '{"priority": "high", "deadline_in_s": 30}'
+# {"changed":true,"deferred":false,"id":"17","status":"ready"}
+
 curl -s -X DELETE $CRONOQ/v1/tasks/by-key/summary-42 -H "$AUTH"
 # {"cancelled":true}
 ```
+
+See [Updating queued tasks](../concepts/updating.md) for what an update can change and when it
+takes effect.
 
 Percent-encode keys that contain `/` (`report%2F2024`). A result request that times out
 returns 504 while the task keeps running: ask again.

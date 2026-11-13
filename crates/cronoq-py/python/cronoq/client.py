@@ -73,6 +73,7 @@ __all__ = [
     "TaskInfo",
     "TaskPage",
     "Totals",
+    "Updated",
     "UrgencySettings",
     "Worker",
     "WorkerGroup",
@@ -203,6 +204,21 @@ class Submitted:
     result: Result | None = None
 
 
+@dataclass(frozen=True)
+class Updated:
+    """Result of :meth:`Client.update`.
+
+    ``status`` is the task's status, which an update never changes. ``deferred`` is true when an
+    attempt was running: it is not interrupted, and the new values apply to what follows it.
+    ``changed`` is false when every value given was already in place.
+    """
+
+    id: int
+    status: str
+    deferred: bool
+    changed: bool
+
+
 def _opt_secs(msg: Any, field_name: str) -> float | None:
     return getattr(msg, field_name) / 1e9 if msg.HasField(field_name) else None
 
@@ -312,7 +328,11 @@ _TERMINAL = frozenset({"succeeded", "failed", "dead_lettered", "cancelled", "ski
 
 @dataclass(frozen=True)
 class Event:
-    """A task status transition."""
+    """A task status transition, or a change made by :meth:`Client.update`.
+
+    ``priority`` is the task's class at the time of the event. ``updated`` is true for an
+    event that reports an update: ``status`` is then the task's unchanged status.
+    """
 
     id: int
     pool: str
@@ -321,6 +341,8 @@ class Event:
     attempt: int
     at: float  # Unix seconds
     message: str
+    priority: str | None = None
+    updated: bool = False
 
 
 @dataclass(frozen=True)
@@ -746,6 +768,45 @@ class Client:
         r = await self._call(self._tasks.Cancel, pb.CancelRequest(task=_ref(ref)))
         return r.cancelled
 
+    async def update(
+        self,
+        ref: TaskRef,
+        *,
+        priority: Any = None,
+        deadline_in: float | None = None,
+        deadline_at: datetime | float | None = None,
+        clear_deadline: bool = False,
+        tags: Mapping[str, str] | None = None,
+    ) -> Updated:
+        """Change the priority, deadline or tags of a task that has not finished, by id or key.
+
+        Arguments left out keep their value. A waiting task takes the new values at once; a
+        running attempt is not interrupted and the values apply to what follows it
+        (``Updated.deferred``). Give at most one of ``deadline_in`` (seconds from now),
+        ``deadline_at`` (Unix seconds or a timezone-aware ``datetime``) and
+        ``clear_deadline``. ``tags`` replaces the task's tags; ``{}`` removes them.
+
+        Raises :class:`ClientError` ``not_found`` for a task that is unknown or finished, and
+        ``failed_precondition`` for a task with a fixed start.
+        """
+        if (deadline_in is not None) + (deadline_at is not None) + bool(clear_deadline) > 1:
+            raise ValueError("use only one of deadline_in, deadline_at and clear_deadline")
+        req = pb.UpdateRequest(
+            task=_ref(ref),
+            # Unspecified keeps the task's class.
+            priority=cast(Any, pb.PRIORITY_UNSPECIFIED if priority is None else _priority(priority)),
+            clear_deadline=bool(clear_deadline),
+        )
+        if deadline_in is not None:
+            req.deadline_in_s = float(deadline_in)
+        elif deadline_at is not None:
+            req.deadline_unix_ns = _unix_ns(deadline_at)
+        if tags is not None:
+            req.set_tags = True
+            req.tags.update(tags)
+        r = await self._call(self._tasks.Update, req)
+        return Updated(r.id, _status_name(r.status), r.deferred, r.changed)
+
     async def get(self, ref: TaskRef) -> TaskInfo:
         """Task details by id or key. Raises :class:`ClientError` ``not_found`` if the task is
         unknown (or no longer retained)."""
@@ -848,6 +909,8 @@ class Client:
                     attempt=e.attempt,
                     at=e.at_unix_ns / 1e9,
                     message=e.message,
+                    priority=_priority_name(e.priority),
+                    updated=e.kind == pb.EVENT_KIND_UPDATED,
                 )
         except grpc.aio.AioRpcError as e:
             if e.code() != grpc.StatusCode.CANCELLED:

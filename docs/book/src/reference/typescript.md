@@ -68,6 +68,7 @@ browsers their own token, limited to the pools and role they need.
 | `get(ref)` | `TaskInfo` | A task's details. |
 | `wait(ref, timeout?)` | `Result` | Wait for a task to finish. |
 | `cancel(ref)` | `boolean` | Cancel a task that has not finished. |
+| `update(ref, changes)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. |
 | `listTasks({ pools, statuses, after, limit })` | `TaskPage` | One page of tasks, in id order. Pass `nextAfter` as `after` for the next page. |
 | `watch({ pools, ids, keys, allTransitions }, { signal })` | `AsyncGenerator<Event>` | Status events until `signal` aborts or the stream fails (for example when the server loses leadership: watch again). |
 | `snapshot()` | `pb.SnapshotResponse` | Pools, queues and totals (metrics role). |
@@ -96,6 +97,14 @@ are the generated Connect clients, for calls the class does not wrap (such as `a
 or `"on_failure"`), `resources`, `tags`, `labels` (worker labels the task requires) and
 `maxAttempts` (replaces the pool's retry policy with this many attempts and the server's default
 backoff).
+
+`update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:
+`deadlineIn` is seconds from now, `deadlineAt` a `Date`, at most one of the three deadline
+fields may be given, and `tags` replaces the task's tags (`{}` removes them). `Updated` has
+`id`, `status` (unchanged by the update), `deferred` (an attempt is running; the values apply to
+what follows it) and `changed` (false when the task already had every value). `Event.priority`
+is the task's class at the time of the event, and `Event.updated` is true for an event that
+reports an update instead of a status change (delivered with `allTransitions`).
 
 Payloads and outputs: a `Uint8Array` is sent as is, a string as UTF-8 text, `null` or
 `undefined` as empty, and anything else as JSON. `text(bytes)` and `json(bytes)` decode them.

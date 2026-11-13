@@ -41,6 +41,14 @@ fn submit_code(e: &SubmitError) -> &'static str {
 pub(crate) fn to_pyerr(e: Error) -> PyErr {
     Python::attach(|py| match &e {
         Error::Submit(s) => py_error(py, "SubmitError", (submit_code(s), e.to_string())),
+        Error::Update(u) => {
+            let code = match u {
+                cronoq::UpdateError::NotFound => "not_found",
+                cronoq::UpdateError::FixedStart => "fixed_start",
+                cronoq::UpdateError::Invalid(_) => "invalid",
+            };
+            py_error(py, "UpdateError", (code, e.to_string()))
+        }
         _ => py_error(py, "SchedulerError", (e.to_string(),)),
     })
 }

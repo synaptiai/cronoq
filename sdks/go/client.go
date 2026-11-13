@@ -250,6 +250,58 @@ func (c *Client) Cancel(ctx context.Context, ref Ref) (bool, error) {
 	return r.GetCancelled(), nil
 }
 
+// Update names what to change on a task that has not finished. Zero fields keep their value.
+type Update struct {
+	// Priority moves the task to this class; "" keeps its class.
+	Priority Priority
+	// DeadlineIn sets the deadline this far from now.
+	DeadlineIn time.Duration
+	// DeadlineAt sets the deadline to this time.
+	DeadlineAt time.Time
+	// ClearDeadline removes the deadline.
+	ClearDeadline bool
+	// Tags, when not nil, replace the task's tags (an empty map removes them).
+	Tags map[string]string
+}
+
+// Updated is the result of [Client.Update].
+type Updated struct {
+	ID uint64
+	// Status is the task's status, which an update never changes.
+	Status Status
+	// Deferred reports that an attempt is running: it is not interrupted, and the new values
+	// apply to what follows it.
+	Deferred bool
+	// Changed is false when every value given was already in place.
+	Changed bool
+}
+
+// Update changes the priority, deadline or tags of a task that has not finished. A waiting
+// task takes the new values at once and keeps its place by submission order in its new class.
+// It fails with [NotFound] for an unknown or finished task and with [FailedPrecondition] for a
+// task with a fixed start.
+func (c *Client) Update(ctx context.Context, ref Ref, u Update) (Updated, error) {
+	req := &pb.UpdateRequest{
+		Task: ref.pb(), Priority: u.Priority.pb(), ClearDeadline: u.ClearDeadline,
+		SetTags: u.Tags != nil, Tags: u.Tags,
+	}
+	if u.DeadlineIn > 0 {
+		req.DeadlineInS = seconds(u.DeadlineIn)
+	}
+	if !u.DeadlineAt.IsZero() {
+		ns := u.DeadlineAt.UnixNano()
+		req.DeadlineUnixNs = &ns
+	}
+	r, err := c.tasks.Update(ctx, req)
+	if err != nil {
+		return Updated{}, wrap(err)
+	}
+	return Updated{
+		ID: r.GetId(), Status: statusOf(r.GetStatus()), Deferred: r.GetDeferred(),
+		Changed: r.GetChanged(),
+	}, nil
+}
+
 // ListOptions select tasks for [Client.ListTasks].
 type ListOptions struct {
 	Pools    []string // empty: every pool the caller may see
@@ -306,6 +358,11 @@ type Event struct {
 	Attempt uint32
 	At      time.Time
 	Message string
+	// Priority is the task's class at the time of the event ("" from older servers).
+	Priority Priority
+	// Updated reports that the event is not a status change: the task was changed by
+	// [Client.Update] and Status is its unchanged status. Only delivered with AllTransitions.
+	Updated bool
 }
 
 // Watch streams status events until ctx ends or the stream fails. The stream ends with an
@@ -331,6 +388,8 @@ func (c *Client) Watch(ctx context.Context, o WatchOptions) iter.Seq2[Event, err
 			ev := Event{
 				ID: e.GetId(), Pool: e.GetPool(), Key: e.GetKey(), Status: statusOf(e.GetStatus()),
 				Attempt: e.GetAttempt(), At: time.Unix(0, e.GetAtUnixNs()), Message: e.GetMessage(),
+				Priority: priority(e.GetPriority()),
+				Updated:  e.GetKind() == pb.EventKind_EVENT_KIND_UPDATED,
 			}
 			if !yield(ev, nil) {
 				return

@@ -88,6 +88,39 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     await watching;
   });
 
+  test("update changes a queued task", async () => {
+    const c = connect(s.target, { token: CLIENT });
+    const ac = new AbortController();
+    const events: Array<{ updated: boolean; priority?: string; status: string }> = [];
+    const watching = (async () => {
+      for await (const e of c.watch({ keys: ["upd"], allTransitions: true }, { signal: ac.signal })) events.push(e);
+    })();
+    await new Promise((r) => setTimeout(r, 200));
+    // Nothing serves the pool, so the task stays queued.
+    const sub = await c.submit({ payload: "x", key: "upd", priority: "low" });
+    const u = await c.update("upd", { priority: "high", deadlineIn: 60, tags: { team: "search" } });
+    assert.deepEqual(u, { id: sub.id, status: "ready", deferred: false, changed: true });
+    assert.equal((await c.get(sub.id)).priority, "high");
+    // The same class again changes nothing; clearing the deadline and the tags does.
+    assert.equal((await c.update(sub.id, { priority: "high" })).changed, false);
+    assert.equal((await c.update(sub.id, { clearDeadline: true, tags: {} })).changed, true);
+    assert.equal((await c.update(sub.id, { deadlineAt: new Date(Date.now() + 3_600_000) })).changed, true);
+
+    await assert.rejects(c.update("missing", { priority: "high" }), (e: unknown) => e instanceof CronoqError && e.code === "not_found");
+    await assert.rejects(
+      c.update(sub.id, { deadlineIn: 1, clearDeadline: true }),
+      (e: unknown) => e instanceof CronoqError && e.code === "invalid_argument",
+    );
+
+    await waitFor(() => events.some((e) => e.updated), "an update event");
+    const first = events.find((e) => e.updated)!;
+    assert.equal(first.priority, "high");
+    assert.equal(first.status, "ready");
+    assert.ok(events.filter((e) => !e.updated && events.indexOf(e) < events.indexOf(first)).every((e) => e.priority === "low"));
+    ac.abort();
+    await watching;
+  });
+
   test("handler outcomes and fencing tokens", async () => {
     const attempts = new Map<bigint, number[]>();
     const stop = worker(

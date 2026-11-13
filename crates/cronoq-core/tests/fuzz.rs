@@ -97,6 +97,19 @@ fn run(seed: u64) {
                 let _ = sim.core.snapshot(sim.now);
                 sim.drain();
             }
+            8 => {
+                if !ids.is_empty() {
+                    let id = ids[r.n(ids.len() as u64) as usize];
+                    let patch = match r.n(4) {
+                        0 => TaskPatch::default().deadline(sim.now + secs(r.n(20) as f64)),
+                        1 => TaskPatch::default().no_deadline(),
+                        2 => TaskPatch::default().tags(vec![("t".into(), "1".into())]),
+                        _ => TaskPatch::default()
+                            .priority(Priority::from_index(r.n(4) as usize).unwrap()),
+                    };
+                    let _ = sim.update(id, patch);
+                }
+            }
             _ => {
                 let until = sim.now + secs(r.n(20) as f64 / 10.0);
                 sim.run_until(until);

@@ -67,9 +67,18 @@ pub(crate) enum Cmd<P, O> {
         target: TaskRef,
         reply: Reply<Result<bool, Error>>,
     },
+    Update {
+        target: TaskRef,
+        patch: cronoq_core::TaskPatch,
+        reply: Reply<Result<cronoq_core::Updated, Error>>,
+    },
     Status {
         target: TaskRef,
         reply: Reply<Option<TaskStatus>>,
+    },
+    Task {
+        target: TaskRef,
+        reply: Reply<Option<cronoq_core::TaskSummary>>,
     },
     ListTasks {
         pools: Vec<Arc<str>>,
@@ -668,8 +677,27 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     });
                 });
             }
+            Cmd::Update {
+                target,
+                patch,
+                reply,
+            } => match self.core.update(now, &target, patch) {
+                // Answered once the change is durable, like a cancellation.
+                Ok(u) => self.defer(move |e| {
+                    let _ = reply.send(match e {
+                        None => Ok(u),
+                        Some(e) => Err(e.clone()),
+                    });
+                }),
+                Err(e) => {
+                    let _ = reply.send(Err(Error::Update(e)));
+                }
+            },
             Cmd::Status { target, reply } => {
                 let _ = reply.send(self.core.status(&target));
+            }
+            Cmd::Task { target, reply } => {
+                let _ = reply.send(self.core.task(&target));
             }
             Cmd::ListTasks {
                 pools,

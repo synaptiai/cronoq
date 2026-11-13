@@ -130,6 +130,31 @@ message CancelResponse {
   bool cancelled = 1;
 }
 
+// Change a task that has not finished. What is not named keeps its value.
+message UpdateRequest {
+  TaskRef task = 1;
+  // New priority class; PRIORITY_UNSPECIFIED keeps the current one.
+  Priority priority = 2;
+  // At most one of these three; none keeps the current deadline.
+  optional double deadline_in_s = 3;
+  optional int64 deadline_unix_ns = 4;
+  bool clear_deadline = 5;
+  // Replace the task's tags with `tags` (also when `tags` is empty). Keys starting with
+  // "cronoq." are reserved.
+  bool set_tags = 6;
+  map<string, string> tags = 7;
+}
+
+message UpdateResponse {
+  uint64 id = 1;
+  // The task's status, which an update never changes.
+  TaskStatus status = 2;
+  // An attempt is running: it is not interrupted, and the new values apply to what follows.
+  bool deferred = 3;
+  // False when every value given was already in place.
+  bool changed = 4;
+}
+
 message GetRequest {
   TaskRef task = 1;
 }
@@ -194,6 +219,14 @@ message WatchRequest {
   bool all_transitions = 4;
 }
 
+// What a status event reports.
+enum EventKind {
+  // The task changed status.
+  EVENT_KIND_TRANSITION = 0;
+  // The task was changed by Update; `status` is its unchanged status.
+  EVENT_KIND_UPDATED = 1;
+}
+
 message StatusEvent {
   uint64 id = 1;
   string pool = 2;
@@ -202,12 +235,18 @@ message StatusEvent {
   uint32 attempt = 5;
   int64 at_unix_ns = 6;
   string message = 7;
+  // The task's priority class at the time of the event (UNSPECIFIED from older servers).
+  Priority priority = 8;
+  EventKind kind = 9;
 }
 
 service Tasks {
   rpc Submit(SubmitRequest) returns (SubmitResponse);
   rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
   rpc Cancel(CancelRequest) returns (CancelResponse);
+  // Change the priority, deadline or tags of a task that has not finished. NOT_FOUND for an
+  // unknown or finished task, FAILED_PRECONDITION for a task with a fixed start.
+  rpc Update(UpdateRequest) returns (UpdateResponse);
   rpc Get(GetRequest) returns (TaskInfo);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc Wait(WaitRequest) returns (TaskResult);

@@ -24,6 +24,8 @@ export {
   type TaskInfo,
   type TaskPage,
   type TaskRef,
+  type Update,
+  type Updated,
 } from "./client.js";
 export { CancelTask, CronoqError, Permanent, Reject, Retryable } from "./errors.js";
 export { MAX_REDIRECTS, PROTOCOL_VERSION, type Handler, type Lease, type WorkerOptions } from "./worker.js";

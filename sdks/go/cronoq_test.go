@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc/codes"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,6 +154,80 @@ func TestBatchWaitCancelAndWatch(t *testing.T) {
 	}
 	if seen["first"] != cronoq.Cancelled || !seen["second"].Done() {
 		t.Fatalf("events = %v", seen)
+	}
+}
+
+func TestUpdate(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	ctx := ctxFor(t)
+
+	events := make(chan cronoq.Event, 16)
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go func() {
+		o := cronoq.WatchOptions{Keys: []string{"upd"}, AllTransitions: true}
+		for ev, err := range c.Watch(watchCtx, o) {
+			if err != nil {
+				return
+			}
+			events <- ev
+		}
+	}()
+	time.Sleep(200 * time.Millisecond)
+
+	// Nothing serves the pool, so the task stays queued.
+	sub, err := c.Submit(ctx, cronoq.Task{Payload: []byte("x"), Key: "upd", Priority: cronoq.Low})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := c.Update(ctx, cronoq.Key("upd"), cronoq.Update{
+		Priority: cronoq.High, DeadlineIn: time.Minute, Tags: map[string]string{"team": "search"},
+	})
+	if err != nil || u.ID != sub.ID || !u.Changed || u.Deferred || u.Status != cronoq.Ready {
+		t.Fatalf("update = %+v, %v", u, err)
+	}
+	info, err := c.Get(ctx, cronoq.ID(sub.ID))
+	if err != nil || info.Priority != cronoq.High {
+		t.Fatalf("get = %+v, %v", info, err)
+	}
+	// The same class again changes nothing; clearing the deadline and the tags does.
+	if u, err := c.Update(ctx, cronoq.ID(sub.ID), cronoq.Update{Priority: cronoq.High}); err != nil || u.Changed {
+		t.Fatalf("repeat = %+v, %v", u, err)
+	}
+	u, err = c.Update(ctx, cronoq.ID(sub.ID), cronoq.Update{ClearDeadline: true, Tags: map[string]string{}})
+	if err != nil || !u.Changed {
+		t.Fatalf("clear = %+v, %v", u, err)
+	}
+	u, err = c.Update(ctx, cronoq.ID(sub.ID), cronoq.Update{DeadlineAt: time.Now().Add(time.Hour)})
+	if err != nil || !u.Changed {
+		t.Fatalf("deadline at = %+v, %v", u, err)
+	}
+
+	var e *cronoq.Error
+	if _, err := c.Update(ctx, cronoq.Key("missing"), cronoq.Update{Priority: cronoq.High}); !errors.As(err, &e) || e.Code != codes.NotFound {
+		t.Fatalf("unknown task: %v", err)
+	}
+	if _, err := c.Update(ctx, cronoq.ID(sub.ID), cronoq.Update{DeadlineIn: time.Second, ClearDeadline: true}); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("conflicting deadline: %v", err)
+	}
+
+	for {
+		select {
+		case ev := <-events:
+			if !ev.Updated {
+				if ev.Priority != cronoq.Low {
+					t.Fatalf("transition before the update: %+v", ev)
+				}
+				continue
+			}
+			if ev.Priority != cronoq.High || ev.Status != cronoq.Ready || ev.Key != "upd" {
+				t.Fatalf("update event: %+v", ev)
+			}
+			return
+		case <-time.After(10 * time.Second):
+			t.Fatal("no update event")
+		}
 	}
 }
 

@@ -1213,6 +1213,19 @@ impl<P> Core<P> {
         start
     }
 
+    /// Take back the charge of one task of `tenant` in `class` of a fair pool, for a task that
+    /// leaves the class without running there. The tenant's later tasks in the class keep
+    /// their tags; its next one starts one task's cost earlier.
+    fn fair_refund(&mut self, pool: u16, class: usize, tenant: u32) {
+        let f = self.pools[pool as usize].fair.as_mut().unwrap();
+        let Some(&cost) = f.cost.get(&tenant) else {
+            return;
+        };
+        if let Some(fin) = f.finish.get_mut(&(class as u8, tenant)) {
+            *fin = fin.saturating_sub(cost);
+        }
+    }
+
     fn intern_constraint(&mut self, labels: &[(Arc<str>, Arc<str>)]) -> u32 {
         if labels.is_empty() {
             return 0;
@@ -1753,8 +1766,17 @@ impl<P> Core<P> {
         if retryable && attempt < max {
             self.schedule_retry(now, key, retry_after);
             let e = self.entry(key);
-            let (id, pool, k, at) = (e.id, e.pool, e.key.clone(), e.attempt);
-            self.push_status(id, pool, k, TaskStatus::Retrying, at, Some(message), true);
+            let (id, pool, class, k, at) = (e.id, e.pool, e.class, e.key.clone(), e.attempt);
+            self.push_status(
+                id,
+                pool,
+                class,
+                k,
+                TaskStatus::Retrying,
+                at,
+                Some(message),
+                true,
+            );
         } else if retryable {
             self.finish(key, TaskStatus::DeadLettered, Some(message));
         } else {
@@ -1828,6 +1850,8 @@ impl<P> Core<P> {
     pub fn cancel(&mut self, now: Time, target: &TaskRef) -> bool {
         self.advance(now);
         let Some(key) = self.lookup(target) else {
+            // Advancing the clock may have made work ready.
+            self.pump();
             return false;
         };
         if let Some(lease) = self.entry(key).lease
@@ -1843,6 +1867,206 @@ impl<P> Core<P> {
         self.finish(key, TaskStatus::Cancelled, Some("cancelled".into()));
         self.pump();
         true
+    }
+
+    /// Change the priority, deadline or tags of a task that has not finished.
+    ///
+    /// A task that is waiting (blocked, scheduled, ready, waiting for a retry, a resource or a
+    /// worker label) takes the new values at once: with a new priority it moves to that class
+    /// and keeps its place by submission order there, and its waiting time for aging still
+    /// counts from its submission. A running attempt is not interrupted; the new values apply
+    /// to what follows it ([`Updated::deferred`]). Giving the values a task already has
+    /// changes nothing and succeeds.
+    ///
+    /// A task waiting for a resource keeps its place among that resource's waiters, which are
+    /// served in the order they started waiting whatever their class; its new values count
+    /// once the resource lets it through.
+    ///
+    /// A promotion is not checked against the pending bound of the class it moves to. Tasks
+    /// with a fixed start cannot be updated.
+    pub fn update(
+        &mut self,
+        now: Time,
+        target: &TaskRef,
+        patch: TaskPatch,
+    ) -> Result<Updated, UpdateError> {
+        self.advance(now);
+        let r = self.apply_update(target, patch);
+        // Also when nothing changed: advancing the clock may have made work ready.
+        self.pump();
+        r
+    }
+
+    fn apply_update(&mut self, target: &TaskRef, patch: TaskPatch) -> Result<Updated, UpdateError> {
+        let Some(k) = self.lookup(target) else {
+            return Err(UpdateError::NotFound);
+        };
+        if patch.deadline == Some(Some(Time::MAX)) {
+            return Err(UpdateError::Invalid(
+                "the deadline is too far in the future; remove it instead",
+            ));
+        }
+        if let Some(tags) = &patch.tags
+            && tags.iter().any(|(name, _)| name.starts_with("cronoq."))
+        {
+            return Err(UpdateError::Invalid(
+                "tags starting with `cronoq.` are reserved",
+            ));
+        }
+        let (id, pool, status, old_class, old_deadline, loc, kind, hint_ns) = {
+            let e = self.entry(k);
+            if e.fixed.is_some() {
+                return Err(UpdateError::FixedStart);
+            }
+            (
+                e.id, e.pool, e.status, e.class, e.deadline, e.loc, e.kind, e.hint_ns,
+            )
+        };
+        let class = patch.priority.map_or(old_class, |p| p as u8);
+        let deadline = match patch.deadline {
+            None => old_deadline,
+            Some(d) => d.unwrap_or(Time::MAX),
+        };
+        // The task's tags after the change: the caller's, then the engine's own.
+        let tags: Option<Tags> = patch.tags.map(|new| {
+            let mut all = new;
+            all.extend(
+                self.entry(k)
+                    .tags
+                    .iter()
+                    .flat_map(|t| t.iter())
+                    .filter(|(name, _)| name.starts_with("cronoq."))
+                    .cloned(),
+            );
+            all.into()
+        });
+        // The same pairs in another order are not a change.
+        let tags = tags.filter(|t| {
+            let sorted = |tags: &[(Arc<str>, Arc<str>)]| {
+                let mut v: Vec<_> = tags.to_vec();
+                v.sort();
+                v
+            };
+            let old = self
+                .entry(k)
+                .tags
+                .as_ref()
+                .map_or(Vec::new(), |o| sorted(o));
+            old != sorted(t)
+        });
+        let tags_changed = tags.is_some();
+        let deferred = status == TaskStatus::Running;
+        let changed = class != old_class || deadline != old_deadline || tags_changed;
+        if !changed {
+            return Ok(Updated {
+                id,
+                status,
+                deferred,
+                changed,
+            });
+        }
+        // A task in a ready queue leaves it under its old class and deadline, and goes back
+        // under the new ones.
+        let queued = matches!(loc, Loc::Lane | Loc::Edf | Loc::Fair);
+        if queued {
+            self.unqueue(k);
+        }
+        if class != old_class {
+            let (was_pending, retrying) = {
+                let e = self.entry(k);
+                (e.pending, e.status == TaskStatus::Retrying)
+            };
+            let (from, to) = (old_class as usize, class as usize);
+            let p = &mut self.pools[pool as usize];
+            if was_pending {
+                p.pending_class[from] -= 1;
+                p.pending_class[to] += 1;
+                self.pending_class[from] -= 1;
+                self.pending_class[to] += 1;
+            }
+            if retrying {
+                p.retrying[from] -= 1;
+                p.retrying[to] += 1;
+            }
+        }
+        let lst = if deadline == Time::MAX {
+            Time::MAX
+        } else {
+            deadline - self.estimate_raw(pool, Some(kind), hint_ns)
+        };
+        // In a pool with fair sharing, a task that is eligible to run and has no deadline is
+        // ordered by a tag of its class: it needs a new one when its class changed or when it
+        // had a deadline until now (and so never had a tag).
+        let eligible = queued || matches!(loc, Loc::Parked(_) | Loc::LabelWait);
+        let fair = self.pools[pool as usize].fair.is_some();
+        let retag = fair
+            && eligible
+            && deadline == Time::MAX
+            && (class != old_class || old_deadline != Time::MAX);
+        let vtag = if retag {
+            let tenant = self.entry(k).tenant;
+            if class != old_class && old_deadline == Time::MAX {
+                // The task was charged to its tenant in the old class when it got its tag
+                // there. Give that back, so a change of class costs the tenant nothing extra.
+                self.fair_refund(pool, old_class as usize, tenant);
+            }
+            Some(self.fair_tag(pool, class as usize, tenant))
+        } else {
+            None
+        };
+        {
+            let e = self.entry_mut(k);
+            e.class = class;
+            e.deadline = deadline;
+            e.lst = lst;
+            if let Some(t) = tags {
+                e.tags = (!t.is_empty()).then_some(t);
+            }
+            if let Some(v) = vtag {
+                e.vtag = v;
+            }
+        }
+        if queued {
+            self.requeue_ready(k);
+        }
+        let e = self.entry(k);
+        let (key, attempt, all_tags) = (
+            e.key.clone(),
+            e.attempt,
+            e.tags.clone().unwrap_or_else(|| self.empty_tags.clone()),
+        );
+        if self.cfg.persist {
+            self.actions
+                .push_back(Action::Persist(Box::new(Mutation::Updated {
+                    id,
+                    priority: Priority::from_index(class as usize).unwrap_or_default(),
+                    deadline: (deadline != Time::MAX).then_some(deadline),
+                    tags: all_tags,
+                    at: self.now,
+                })));
+        }
+        if self.emit_transitions {
+            self.actions.push_back(Action::Status(StatusEvent {
+                id,
+                pool: PoolId(pool),
+                key,
+                status,
+                attempt,
+                at: self.now,
+                message: None,
+                priority: Priority::from_index(class as usize).unwrap_or_default(),
+                kind: EventKind::Updated,
+            }));
+        }
+        // A waiting task may now be the best candidate of its pool.
+        self.mark_dirty(pool);
+        self.pump();
+        Ok(Updated {
+            id,
+            status,
+            deferred,
+            changed,
+        })
     }
 
     /// Report the capacity actually available in a pool (its unlabeled workers).
@@ -1950,21 +2174,26 @@ impl<P> Core<P> {
             .collect();
         ids.sort_unstable_by_key(|(id, _)| *id);
         ids.truncate(limit);
-        ids.into_iter()
-            .map(|(id, k)| {
-                let e = self.entry(k);
-                TaskSummary {
-                    id,
-                    key: e.key.clone(),
-                    pool: self.pools[e.pool as usize].cfg.name.clone(),
-                    kind: self.kinds[e.kind as usize].clone(),
-                    priority: Priority::from_index(e.class as usize).unwrap_or_default(),
-                    status: e.status,
-                    attempt: e.attempt,
-                    tenant: (e.tenant != 0).then(|| self.tenants[e.tenant as usize].clone()),
-                }
-            })
-            .collect()
+        ids.into_iter().map(|(_, k)| self.summary(k)).collect()
+    }
+
+    /// One live task, by id or key; `None` for a task that is unknown or has finished.
+    pub fn task(&self, target: &TaskRef) -> Option<TaskSummary> {
+        self.lookup(target).map(|k| self.summary(k))
+    }
+
+    fn summary(&self, k: Key) -> TaskSummary {
+        let e = self.entry(k);
+        TaskSummary {
+            id: e.id,
+            key: e.key.clone(),
+            pool: self.pools[e.pool as usize].cfg.name.clone(),
+            kind: self.kinds[e.kind as usize].clone(),
+            priority: Priority::from_index(e.class as usize).unwrap_or_default(),
+            status: e.status,
+            attempt: e.attempt,
+            tenant: (e.tenant != 0).then(|| self.tenants[e.tenant as usize].clone()),
+        }
     }
 
     /// Number of distinct unknown keys that live tasks are waiting for.
@@ -2276,6 +2505,7 @@ impl<P> Core<P> {
                 self.push_status(
                     t.id,
                     0,
+                    t.spec.priority as u8,
                     t.spec.key,
                     TaskStatus::Failed,
                     t.attempt,
@@ -2692,6 +2922,7 @@ impl<P> Core<P> {
             self.push_status(
                 e.id,
                 e.pool,
+                e.class,
                 e.key.clone(),
                 status,
                 e.attempt,
@@ -2749,8 +2980,8 @@ impl<P> Core<P> {
         let e = self.entry_mut(k);
         e.status = status;
         if emit {
-            let (id, pool, key, at) = (e.id, e.pool, e.key.clone(), e.attempt);
-            self.push_status(id, pool, key, status, at, None, false);
+            let (id, pool, class, key, at) = (e.id, e.pool, e.class, e.key.clone(), e.attempt);
+            self.push_status(id, pool, class, key, status, at, None, false);
         }
     }
 
@@ -2758,9 +2989,9 @@ impl<P> Core<P> {
         let emit = self.emit_transitions;
         let e = self.entry_mut(k);
         e.status = status;
-        let (id, pool, key, at) = (e.id, e.pool, e.key.clone(), e.attempt);
+        let (id, pool, class, key, at) = (e.id, e.pool, e.class, e.key.clone(), e.attempt);
         if emit {
-            self.push_status(id, pool, key, status, at, message, false);
+            self.push_status(id, pool, class, key, status, at, message, false);
         }
     }
 
@@ -2769,6 +3000,7 @@ impl<P> Core<P> {
         &mut self,
         id: TaskId,
         pool: u16,
+        class: u8,
         key: Option<Arc<str>>,
         status: TaskStatus,
         attempt: u32,
@@ -2797,6 +3029,8 @@ impl<P> Core<P> {
                 attempt,
                 at: self.now,
                 message,
+                priority: Priority::from_index(class as usize).unwrap_or_default(),
+                kind: EventKind::Transition,
             }));
         }
     }
@@ -3179,9 +3413,18 @@ impl<P> Core<P> {
                 .labels
                 .clone(),
         };
-        let key = e.key.clone();
+        let (key, class) = (e.key.clone(), e.class);
         self.actions.push_back(Action::Dispatch(d));
-        self.push_status(id, pool, key, TaskStatus::Running, attempt, None, false);
+        self.push_status(
+            id,
+            pool,
+            class,
+            key,
+            TaskStatus::Running,
+            attempt,
+            None,
+            false,
+        );
     }
 
     // -----------------------------------------------------------------------------------------

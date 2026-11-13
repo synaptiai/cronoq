@@ -544,6 +544,8 @@ impl SqliteStore {
         let mut inserted: HashMap<TaskId, usize> = HashMap::new();
         let mut updates: Vec<(TaskId, StatusRow)> = Vec::new();
         let mut updated: HashMap<TaskId, usize> = HashMap::new();
+        // Latest priority, deadline and tags of tasks changed in this batch (inserted earlier).
+        let mut patches: HashMap<TaskId, (i64, Option<i64>, String)> = HashMap::new();
         for m in batch {
             match m {
                 Mutation::Submitted {
@@ -582,6 +584,27 @@ impl SqliteStore {
                                 e.insert(updates.len());
                                 updates.push((*id, row));
                             }
+                        }
+                    }
+                }
+                Mutation::Updated {
+                    id,
+                    priority,
+                    deadline,
+                    tags,
+                    at: _,
+                } => {
+                    let row = (
+                        *priority as i64,
+                        deadline.map(|d| to_unix(base, d)),
+                        tag_pairs_json(tags),
+                    );
+                    match inserted.get(id) {
+                        Some(&i) => {
+                            (inserts[i].priority, inserts[i].deadline, inserts[i].tags) = row
+                        }
+                        None => {
+                            patches.insert(*id, row);
                         }
                     }
                 }
@@ -644,6 +667,20 @@ impl SqliteStore {
         for r in &inserts {
             r.execute(&mut tx).await?;
         }
+        // Changes to tasks inserted by an earlier batch.
+        for (id, (priority, deadline, tags)) in &patches {
+            sqlx::query(
+                "UPDATE cronoq_tasks SET priority = ?2, deadline_unix_ns = ?3, tags = ?4 \
+                 WHERE id = ?1",
+            )
+            .bind(id.0 as i64)
+            .bind(priority)
+            .bind(deadline)
+            .bind(tags)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        }
         // 3. Outputs of tasks that succeeded in this batch.
         let mut missing = 0usize;
         for (id, out) in outputs {
@@ -694,7 +731,8 @@ impl SqliteStore {
                     .map_err(db)?;
                 }
                 // Listed, not `_`: tasks were applied in the first pass.
-                Mutation::Submitted { .. } | Mutation::Status { .. } => {}
+                Mutation::Submitted { .. } | Mutation::Status { .. } | Mutation::Updated { .. } => {
+                }
             }
         }
         tx.commit().await.map_err(db)

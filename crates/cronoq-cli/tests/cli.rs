@@ -174,6 +174,47 @@ async fn tasks_can_be_submitted_inspected_listed_and_cancelled() {
         );
     }
 
+    // Update: by id and by key, then nothing left to change, then nothing asked.
+    let o = s
+        .cli(
+            CLIENT,
+            &["update", &id, "--priority", "high", "--deadline-in", "60"],
+        )
+        .await;
+    assert_eq!(stdout(&o).trim(), "updated", "{}", stderr(&o));
+    let v = json(&s.cli(CLIENT, &["-o", "json", "get", &id]).await);
+    assert_eq!(v["priority"], "high");
+    let v = json(
+        &s.cli(
+            CLIENT,
+            &[
+                "-o",
+                "json",
+                "update",
+                "greeting",
+                "--key",
+                "--priority",
+                "high",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(v["id"], id);
+    assert_eq!(v["status"], "ready");
+    assert_eq!(v["changed"], false);
+    assert_eq!(v["deferred"], false);
+    let o = s
+        .cli(CLIENT, &["update", &id, "--tag", "a=1", "--no-tags"])
+        .await;
+    assert_eq!(o.status.code(), Some(2));
+    let o = s.cli(CLIENT, &["update", &id]).await;
+    assert!(!o.status.success());
+    assert!(stderr(&o).contains("nothing to change"), "{}", stderr(&o));
+    let o = s
+        .cli(CLIENT, &["update", "999999", "--priority", "low"])
+        .await;
+    assert!(!o.status.success());
+
     let o = s.cli(CLIENT, &["cancel", &id]).await;
     assert_eq!(stdout(&o).trim(), "cancelled");
     // Waiting on a task that did not succeed exits with 1.

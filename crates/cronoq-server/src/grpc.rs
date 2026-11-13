@@ -743,6 +743,70 @@ pub async fn cancel(app: &AppState, target: TaskRef) -> Result<bool, Status> {
     app.sched.cancel(target).await.map_err(convert::error)
 }
 
+/// Change a live task's priority, deadline or tags.
+pub async fn update(
+    app: &AppState,
+    target: TaskRef,
+    update: cronoq::Update,
+) -> Result<pb::UpdateResponse, Status> {
+    let priority = update.new_priority();
+    let u = app
+        .sched
+        .update(target, update)
+        .await
+        .map_err(convert::error)?;
+    if let Some(p) = priority {
+        // Lookups read the priority from this cache, which the event stream fills later.
+        app.info.set_priority(u.id.0, p);
+    }
+    Ok(pb::UpdateResponse {
+        id: u.id.0,
+        status: convert::status(u.status) as i32,
+        deferred: u.deferred,
+        changed: u.changed,
+    })
+}
+
+/// Like [`authorize_task`], and for credentials pinned to a tenant also requires the task to
+/// belong to that tenant. A task of another tenant is reported as not found.
+pub async fn authorize_task_of_tenant(
+    app: &AppState,
+    principal: &Principal,
+    target: TaskRef,
+) -> Result<TaskRef, Status> {
+    let target = authorize_task(app, principal, target).await?;
+    let Some(pinned) = &principal.tenant else {
+        return Ok(target);
+    };
+    let id = resolve_id(app, &target).await?.ok_or_else(not_found)?;
+    // The task cache knows the tenant of tasks submitted to this process. After a restart, or
+    // for a task a schedule created, its entry comes from events, which carry no tenant: then
+    // the store knows, and without a store the scheduler does for pools that share capacity
+    // between tenants. A task whose tenant cannot be established is not reachable.
+    let mut tenant = app.info.get(id.0).and_then(|m| m.tenant);
+    if tenant.is_none()
+        && let Some(q) = &app.queries
+    {
+        tenant = q
+            .get_task(&TaskRef::Id(id))
+            .await
+            .map_err(store_error)?
+            .and_then(|r| r.tenant.map(|t| Arc::from(t.as_str())));
+    }
+    if tenant.is_none() {
+        tenant = app
+            .sched
+            .task(id)
+            .await
+            .map_err(convert::error)?
+            .and_then(|t| t.tenant);
+    }
+    match tenant {
+        Some(t) if t == *pinned => Ok(TaskRef::Id(id)),
+        _ => Err(not_found()),
+    }
+}
+
 /// Which status events a Watch stream delivers.
 #[derive(Clone, Debug)]
 pub struct WatchFilter {
@@ -890,6 +954,19 @@ impl pb::tasks_server::Tasks for TasksService {
         Ok(Response::new(pb::CancelResponse {
             cancelled: crate::route::cancel(app, &p, target).await?,
         }))
+    }
+
+    async fn update(
+        &self,
+        req: Request<pb::UpdateRequest>,
+    ) -> Result<Response<pb::UpdateResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Client)?;
+        let app = self.shared.app_or_unavailable()?;
+        let mut req = req.into_inner();
+        let target = convert::task_ref(req.task.take(), &app.limits)?;
+        Ok(Response::new(
+            crate::route::update(app, &p, target, req).await?,
+        ))
     }
 
     async fn get(&self, req: Request<pb::GetRequest>) -> Result<Response<pb::TaskInfo>, Status> {
