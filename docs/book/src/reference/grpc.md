@@ -74,10 +74,34 @@ The fields match the [HTTP task object](http.md#task-object), which documents th
 
 ### Submit and batches
 
-`SubmitRequest{task, wait, wait_timeout_s}` returns `SubmitResponse{id, duplicate, result}`.
+`SubmitRequest{task, wait, wait_timeout_s, on_key_conflict, renew_position}` returns
+`SubmitResponse{id, duplicate, result, outcome}`.
 `duplicate` is true when the key already exists (then `id` is the existing task). With `wait`,
 `result` is set once the task finished; if `wait_timeout_s` (capped at `limits.max_wait_s`)
 expires first the call fails with `DEADLINE_EXCEEDED` and the task keeps running.
+
+`on_key_conflict` says what happens when the task's key is in use
+([Replacing a task by key](../concepts/replacing.md)):
+
+| Value | Behaviour |
+|---|---|
+| `KEY_CONFLICT_UNSPECIFIED`, `KEY_CONFLICT_RETURN_EXISTING` | Return the existing task and drop this submission. |
+| `KEY_CONFLICT_REPLACE_QUEUED` | The newest submission wins: a task that has not started is replaced in place; one that has started keeps its payload and is followed by a new task with the same key. Needs a key. With `renew_position`, the task takes this submission's place in line. |
+
+`outcome` says what the submission did:
+
+| Value | Meaning |
+|---|---|
+| `SUBMIT_OUTCOME_CREATED` | A new task was created. |
+| `SUBMIT_OUTCOME_EXISTING` | The key was in use; `id` is that task, unchanged. |
+| `SUBMIT_OUTCOME_REPLACED` | The task had not started and now carries this submission. |
+| `SUBMIT_OUTCOME_PENDING` | The task has started: this submission is stored and runs after it. `id`, and `result` with `wait`, are the running task's. |
+| `SUBMIT_OUTCOME_UNSPECIFIED` | From a server older than the field: use `duplicate`. |
+
+A replacement that does not match the task (pool, resources, labels, tenant, dependencies, or a
+fixed start on either side) fails with `FAILED_PRECONDITION`. `renew_position` without
+`KEY_CONFLICT_REPLACE_QUEUED`, or `KEY_CONFLICT_REPLACE_QUEUED` without a key, is
+`INVALID_ARGUMENT`.
 
 `SubmitBatchRequest{tasks}` is admitted atomically: all tasks or none. Dependencies may name
 keys defined anywhere in the batch. The response lists one `SubmitResponse` per task, in request
@@ -157,7 +181,10 @@ Each `StatusEvent` carries `{id, pool, key, status, attempt, at_unix_ns, message
 kind}`. `kind` is `EVENT_KIND_TRANSITION` for a status change. With `all_transitions`, each
 `Update` that changed a task is delivered as an event of kind `EVENT_KIND_UPDATED`, whose
 `status` is the task's unchanged status and whose `priority` is the class after the change;
-servers before this field send neither `priority` nor `kind`. The stream
+servers before this field send neither `priority` nor `kind`. Likewise with `all_transitions`,
+`EVENT_KIND_REPLACED` reports that a submission replaced the task or was stored to run after it,
+and `EVENT_KIND_SUCCESSOR` reports a task created from such a stored submission (`message`
+names the task it follows). The stream
 ends with `UNAVAILABLE` when the server shuts down or loses leadership, and with `DATA_LOSS`
 when the client reads too slowly and events were dropped. Events are live only: reconnect and
 use `Get` / `Wait` to reconcile anything that happened while disconnected.
@@ -301,7 +328,7 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle; oversize string or collection. |
 | `NOT_FOUND` | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | The key is already used by a task in a pool outside the credentials' scope. |
-| `FAILED_PRECONDITION` | Fixed-start reservation conflict; an `Update` of a task with a fixed start; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
+| `FAILED_PRECONDITION` | Fixed-start reservation conflict; an `Update` of a task with a fixed start; a `KEY_CONFLICT_REPLACE_QUEUED` submission that does not match the task it would replace; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
 | `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |

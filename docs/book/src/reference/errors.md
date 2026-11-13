@@ -16,6 +16,7 @@ APIs, and says what a caller should do about it.
 | `Full` | `full` | `RESOURCE_EXHAUSTED` | 429 | Queue bounds reached with the `wait` overflow policy. In-process callers wait for space instead of seeing this. | Retry with backoff. |
 | `Overloaded` | `overloaded` | `RESOURCE_EXHAUSTED` | 429 | Bounds reached with `reject`, or shedding found nothing lower to evict. | Retry with backoff, or shed load upstream. |
 | `DuplicateKeyInBatch(key)` | `duplicate_key_in_batch` | `INVALID_ARGUMENT` | 400 | A batch defines the same new key twice. | Deduplicate the batch. |
+| `ReplaceMismatch(what)` | `replace_mismatch` | `FAILED_PRECONDITION` | 409 | A `replace_queued` submission differs from the task holding its key in something a replacement cannot change (pool, resources, worker labels, tenant, dependencies), or one of them has a fixed start. | Submit the same work description; cancel and resubmit to change these. |
 | `Invalid(reason)` | `invalid` | `INVALID_ARGUMENT` | 400 | Malformed spec: zero resource units, `max_attempts = 0`, NUL in a string, ... | Fix the request. |
 
 The server also returns `INVALID_ARGUMENT` / 400 for requests that fail its own checks
@@ -96,7 +97,7 @@ return database messages to clients.
 | `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
-| `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; an update of a task with a fixed start; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
+| `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; an update of a task with a fixed start; a replacement that does not match its task; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | – | 413, 415 | no | Body too large, wrong content type. |
 | `RESOURCE_EXHAUSTED` | 429 | yes, with backoff | Queue bounds reached. |
 | `INTERNAL` | 500 | maybe | Unexpected server error. |
@@ -109,4 +110,5 @@ Submissions with a `key` are idempotent while the original task is live, and aft
 for as long as the server keeps its key (`limits.key_retention_s`, default 3600 s, and at most
 `limits.key_retention_max` finished tasks). Within that window, retrying a submit after
 `UNAVAILABLE` or a lost connection does not create a second task: the retry returns the
-original id with `duplicate = true`.
+original id with `duplicate = true`. A `replace_queued` submission is safe to retry too: sending
+the same payload again replaces the task with the same payload, or stores it again.

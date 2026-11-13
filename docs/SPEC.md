@@ -167,6 +167,29 @@ pub enum MissPolicy { RunLate /*default*/, Skip, Fail }
 - Submitting a `key` that is already live, or still in the retention table, returns
   `Submitted { id, duplicate: true }` with the existing task's id. This gives idempotent
   submit within the retention window.
+- **Replace by key** (`SubmitOptions { on_key_conflict: ReplaceQueued, renew_position }`), for
+  work where only the newest value matters:
+  - No live task holds the key (none, or a finished one in retention): a task is created
+    (`SubmitOutcome::Created`) and the key names it.
+  - The live task has no attempt started (`attempt == 0`, no lease): it is replaced in place
+    (`Replaced`). It keeps id, dependents, attempt count, and its `seq` and arrival unless
+    `renew_position`; it takes payload, kind, class, deadline, tags, timeout, retry policy
+    and duration hint. Queues and per-class counters move as for `update`.
+  - An attempt has started: **the payload is frozen** (every attempt of one task sees the same
+    payload). The submission is stored on the task (`Pending`), replacing any stored before,
+    and holds one place in the pending bounds of its pool and class (checked when first
+    stored). When the task ends as `Succeeded`, `Failed` or `DeadLettered`, a successor with
+    the same key and a new id is inserted in the same engine call, after the ended task's
+    status mutation: at the ended task's `seq` and arrival, or with `renew_position` on the
+    last stored submission at that submission's. The successor has no dependencies. Any other
+    terminal status drops the stored submission.
+  - A replacement must name the task's pool, resources, worker labels, tenant and
+    dependencies (compared as given), and neither side may have a fixed start; otherwise
+    `SubmitError::ReplaceMismatch`. Batches do not take the option.
+  - Each submission dropped without running counts in `Totals::superseded`.
+  - Invariants: at most one live task per key, and the key map points at it; a stored
+    submission exists only on a task that has started, has that task's key, and is counted in
+    the pending bounds; no attempt of a task ever sees two payloads (checked in `sim.rs`).
 - Tasks live in a slab arena (`u32` index + generation). Queues hold 8-byte keys.
   Cancelling a queued task removes it from its lane, deadline queue or fair queue directly;
   only resource and label waiter queues are cleaned lazily.
@@ -503,6 +526,8 @@ impl<P> Core<P> {
     pub fn submit(&mut self, now: Time, spec: TaskSpec<P>) -> Result<Submitted, SubmitError>;
     pub fn try_submit(&mut self, now: Time, spec: TaskSpec<P>)
         -> Result<Submitted, (SubmitError, TaskSpec<P>)>;   // hands the spec back
+    pub fn try_submit_with(&mut self, now: Time, spec: TaskSpec<P>, opts: SubmitOptions)
+        -> Result<Submitted, (SubmitError, TaskSpec<P>)>;   // replace by key
     pub fn submit_batch(&mut self, now: Time, specs: Vec<TaskSpec<P>>)
         -> Result<Vec<Submitted>, (usize, SubmitError)>;
     pub fn complete(&mut self, now: Time, lease: LeaseId, outcome: Outcome) -> bool;
@@ -709,7 +734,9 @@ shard named by `--shard`.
 - **Event stream**: `scheduler.events()` gives a broadcast of `StatusEvent`s (terminal ones by
   default, every transition with `emit_transitions`); gRPC `Watch`. Each event carries the
   task's priority and a kind: `Transition`, or `Updated` for a change made by `update`
-  (published with `emit_transitions` only, with the task's unchanged status).
+  (published with `emit_transitions` only, with the task's unchanged status). `Replaced` and
+  `Successor` report a replacement by key and the task created from a stored submission, under
+  the same rule.
 
 ---
 
@@ -772,7 +799,8 @@ server aborts the attempt. Ids are `bigint`s.
 
 ### Server (`cronoq-server --config cronoq.toml`)
 gRPC (`cronoq.v1`):
-- `Tasks`: Submit, SubmitBatch, Cancel, Update (priority, deadline or tags of a task that has
+- `Tasks`: Submit (with `on_key_conflict` and `renew_position`; the response carries the
+  outcome), SubmitBatch, Cancel, Update (priority, deadline or tags of a task that has
   not finished), Get, ListTasks (pages of live and finished tasks),
   Wait, Watch (stream).
 - `Workers.Work` (bidirectional stream): the worker sends `Register{pool, slots, worker_name,
@@ -827,17 +855,19 @@ worker slots; HTTP/2 keepalive detects dead connections.
     durations and batch jobs, with transient and permanent failures, retries, timeouts,
     deadlines, fixed starts with every miss policy, token-bucket and semaphore resources,
     dependencies by key with every edge condition, awaits on keys defined later, shedding,
-    cancellations, capacity changes and autoscaling. At the end it checks that every task
-    reached a terminal status exactly once, that no child started before its parents ended,
-    and that plain tasks of the same pool and class started in arrival order.
+    cancellations, updates, replacements by key, capacity changes and autoscaling. At the end
+    it checks that every task reached a terminal status exactly once, that no child started
+    before its parents ended, that plain tasks of the same pool and class started in arrival
+    order, and that every attempt of one task saw the same payload.
   - `fuzz.rs` interleaves submissions with every option, cancellations, capacity changes and
     snapshots with time, and checks at the end that nothing is stuck: no live tasks, holds,
     reservations, pending counts or awaited keys.
   - Both call `Core::check_invariants` after every step. It checks that internal state is
     consistent: each running task has exactly one lease, busy, held, pending and per-class
     counts match the tasks, every queued or waiting task is in exactly the queue its location
-    names, every live fixed-start task keeps its reservation, and unmet dependency counts match
-    live parents plus awaited keys.
+    names, every live fixed-start task keeps its reservation, unmet dependency counts match
+    live parents plus awaited keys, every live keyed task holds its key, and a stored
+    replacement sits only on a started task and is counted in the bounds.
 - **Scenario tests** in `crates/cronoq-core/tests` cover recurring schedules (including DST
   transitions), fairness, worker labels, listing and regressions; the server's tests cover
   failover (`ha.rs`), sharding, routing, TLS and gRPC-Web.

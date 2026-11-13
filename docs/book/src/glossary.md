@@ -28,6 +28,9 @@ decisions.
 
 **Fencing**: rejecting writes from a leader whose epoch is no longer current.
 
+**Freeze rule**: every attempt of one task sees the same payload; a task that has started is
+never changed by a [replacement](concepts/replacing.md), only followed.
+
 **Fixed start**: a time at which a task should begin, backed by a reservation.
 
 **Hold**: a worker slot kept free for a fixed-start task about to begin.
@@ -55,6 +58,12 @@ decisions.
 **Retention window**: how long terminal statuses are remembered.
 
 **Shed**: evicted under overload by a shedding overflow policy.
+
+**Successor**: the task created, with the same key and a new id, from a submission that was
+stored to run after a task that had already started ([Replacing a task by key](concepts/replacing.md)).
+
+**Superseded**: said of a submission that was dropped without running because a newer one with
+its key replaced it.
 
 **Slot**: capacity to run one attempt at a time.
 

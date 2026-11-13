@@ -9,6 +9,23 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Replace by key ("latest wins"). A submission with `on_key_conflict = replace_queued` and a
+  key lets the newest submission of that key win, in one atomic call. A task that has not
+  started is replaced in place: same id, dependents and place in line, new payload, kind,
+  priority, deadline, tags, timeout and retry policy. A task that has started keeps its payload
+  for every attempt; the submission is stored, and when the task succeeds, fails or is
+  dead-lettered it runs as a new task with the same key (a cancel drops it). `renew_position`
+  takes the new submission's place in line instead. The response says what happened
+  (`outcome`: created, existing, replaced or pending). A replacement must match the task's
+  pool, resources, worker labels, tenant and dependencies, and neither may have a fixed start.
+  Available as `Task::replace_queued` and `Task::renew_position` (Rust), `on_key_conflict` and
+  `renew_position` on `submit` and `enqueue` (Python) and on `POST /v1/tasks`, `SubmitRequest`
+  (gRPC), `Client.submit` (Python client), `Task.Replace` (Go), `Task.onKeyConflict`
+  (TypeScript) and `cronoq submit --replace`. Not available in batches or schedules.
+  Replacements and stored submissions are durable.
+- Status events of kind `Replaced` and `Successor` (with `emit_transitions` /
+  `all_transitions`), the `superseded` total in snapshots, and the
+  `cronoq_tasks_superseded_total` metric.
 - Update a task that has not finished: change its priority, deadline or tags without cancelling
   and resubmitting it. The task keeps its id, key, dependents and attempt count; with a new
   priority it moves to that class and keeps its place by submission order there. A running
@@ -50,6 +67,17 @@ contain breaking changes; they are called out under **Changed**.
   `Cancel` of another tenant's task, or of a task without a tenant, answers `NOT_FOUND` (404)
   instead of cancelling it. Reading (`Get`, `Wait`, `Watch`, listings) is unchanged.
   Credentials without a `tenant` are unaffected.
+- **Store schema.** Both stores gain a table, `cronoq_pending`, for submissions stored to run
+  after a started task (Postgres schema version 6, SQLite version 2). The migration runs when
+  the database is opened and only adds the table. An older binary refuses a migrated database.
+- **Breaking (Rust):** `Submitted` has a new field, `outcome`; `Recovered` has a new field,
+  `pending`; `Mutation` has new variants `Replaced` and `PendingReplacement`; `SubmitError` has
+  a new variant `ReplaceMismatch`; `EventKind` has new variants `Replaced` and `Successor`;
+  `Totals` has a new field `superseded`. A custom `Store` must apply the two new mutations,
+  drop a stored submission when its task reaches a terminal status, and return stored
+  submissions from `recover`.
+- The engine now records the tenant of every task, not only in pools with fair sharing, so
+  `TaskSummary::tenant` is set for all of them.
 - **Breaking (Rust):** `StatusEvent` has new fields `priority` and `kind`, `Mutation` has a new
   variant `Updated`, and `Error` has a new variant `Update`. A custom `Store` must apply
   `Mutation::Updated` (set the task's priority, deadline and tags), or updates are lost on

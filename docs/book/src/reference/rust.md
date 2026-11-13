@@ -90,8 +90,14 @@ With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`
 `deadline_in` / `deadline_at`, `start_in` / `start_at`, `start_tolerance`, `on_miss`,
 `duration_hint`, `timeout`, `retry`, `no_retry`, `after(target)`, `dep(Dep)`,
 `resource(name, units)`, `tag(key, value)`, `label(name, value)` (a required
-[worker label](../concepts/labels.md)), `tenant(name)` ([fair sharing](../concepts/fairness.md)).
-Builder order does not matter. Strings must not contain NUL characters.
+[worker label](../concepts/labels.md)), `tenant(name)` ([fair sharing](../concepts/fairness.md)),
+`replace_queued()` and `renew_position()` ([replacing a task by key](../concepts/replacing.md);
+single submissions only). Builder order does not matter. Strings must not contain NUL characters.
+
+`Submitted` (from `enqueue`) has `id`, `duplicate` and `outcome`: a `SubmitOutcome` of
+`Created`, `Existing`, `Replaced` or `Pending`. `TaskHandle::outcome()` gives the same for
+`submit`. For `Pending`, the id and the handle are those of the running task; the submission
+runs after it as a new task with the same key, which `handle(key)` returns once that task ended.
 
 `Recurring<P>`: `Recurring::new(name, cron, template)`, then `tz`, `overlap(OverlapPolicy)`
 (`Skip`, `Allow`, `Queue`, `QueueOnSuccess`), `tolerance`, `on_miss`. The template's
@@ -114,6 +120,7 @@ attempts keep running.
 
 | Type | Variants |
 |---|---|
+| `SubmitError` | `UnknownPool`, `UnknownResource`, `ResourceExceedsCapacity`, `ReservationConflict`, `Cycle`, `UnknownDependency`, `Full`, `Overloaded`, `DuplicateKeyInBatch`, `ReplaceMismatch(&'static str)`, `Invalid(&'static str)`. |
 | `Error` | `Submit(SubmitError)`, `Update(UpdateError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
 | `UpdateError` | `NotFound`, `FixedStart`, `Invalid(&'static str)`. |
 | `TaskFailure` | `Ended { status, message }`, `OutputUnavailable { id }`, `Shutdown`; `status()`. |
@@ -163,6 +170,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 |---|---|
 | `Core::new(CoreConfig)` | Create; `CoreConfig::validate()` reports problems without panicking. |
 | `submit`, `try_submit`, `submit_batch` | Admission. |
+| `submit_with`, `try_submit_with` | Admission with `SubmitOptions { on_key_conflict, renew_position }`: `KeyConflict::ReplaceQueued` replaces the task holding the key or stores the submission to run after it. Emits `Mutation::Replaced` or `Mutation::PendingReplacement`. |
 | `complete(now, lease, Outcome)`, `heartbeat(now, lease)` | Attempt feedback. |
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
 | `update(now, target, TaskPatch)` | Change a live task's priority, deadline or tags; emits `Mutation::Updated` and, with `emit_transitions`, a `StatusEvent` of `EventKind::Updated`. |

@@ -44,7 +44,7 @@ opened on the first call.
 
 | Method | Returns | Description |
 |---|---|---|
-| `Submit(ctx, Task)` | `Submitted` | Submit one task. `Submitted.Duplicate` is true when a task with the same key existed; its id is returned. |
+| `Submit(ctx, Task)` | `Submitted` | Submit one task. `Submitted.Duplicate` is true when a task with the same key existed; its id is returned. `Submitted.Outcome` says what happened: `OutcomeCreated`, `OutcomeExisting`, `OutcomeReplaced` or `OutcomePending`. |
 | `SubmitAndWait(ctx, Task, timeout)` | `Submitted` | Submit and wait up to `timeout` (0: the server's `limits.max_wait_s`); `Submitted.Result` holds the result. |
 | `SubmitSpec(ctx, *cronoqpb.TaskSpec, wait, timeout)` | `Submitted` | Submit a raw spec, for fields `Task` does not cover. |
 | `SubmitBatch(ctx, []Task)` | `[]Submitted` | Submit atomically; tasks may depend on each other's keys. |
@@ -78,6 +78,14 @@ opened on the first call.
 `StartIn`, `After` (`[]Dep{{Ref: cronoq.Key("extract"), Cond: cronoq.OnSuccess}}`),
 `Resources`, `Tags`, `Labels` (worker labels the task requires) and `MaxAttempts` (replaces the
 pool's retry policy with this many attempts and the server's default backoff).
+
+`Task.Replace` lets the newest submission of `Key` win
+([Replacing a task by key](../concepts/replacing.md)): a task that has not started is replaced
+in place (`OutcomeReplaced`); one that has started keeps its payload, and this task runs after
+it as a new task with the same key (`OutcomePending`, where `Submitted.ID` and `Result` are the
+running task's). `Task.RenewPosition` takes this submission's place in line. Both are ignored by
+`SubmitBatch` and `Task.Spec`. `Event.Kind` is `EventTransition`, `EventUpdated`,
+`EventReplaced` or `EventSuccessor`; the last three are delivered with `AllTransitions`.
 
 `Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,
 `ClearDeadline` (at most one of the three), and `Tags`, which replaces the task's tags when it

@@ -435,7 +435,11 @@ impl Scheduler {
             tenant,
         )?;
         let s = self.sched(py)?;
-        let task = replacing(self.task(py, &opts, payload)?, on_key_conflict, renew_position)?;
+        let task = replacing(
+            self.task(py, &opts, payload)?,
+            on_key_conflict,
+            renew_position,
+        )?;
         spawn_py(py, async move {
             let h = s.submit(task).await.map_err(to_pyerr)?;
             Ok(TaskHandle::new(h, s))
@@ -499,7 +503,11 @@ impl Scheduler {
             tenant,
         )?;
         let s = self.sched(py)?;
-        let task = replacing(self.task(py, &opts, payload)?, on_key_conflict, renew_position)?;
+        let task = replacing(
+            self.task(py, &opts, payload)?,
+            on_key_conflict,
+            renew_position,
+        )?;
         spawn_py(py, async move {
             let sub = s.enqueue(task).await.map_err(to_pyerr)?;
             Ok(sub.id.0)

@@ -79,15 +79,26 @@ Accepted by `submit`, `enqueue` and `Task(...)`.
 | `labels` | `dict[str, str]` | Worker labels the task requires; it runs only in a group of workers that has them. |
 | `tenant` | `str` | Tenant, for pools with `tenant_weights` or `fair_share` ([Fair sharing](../concepts/fairness.md)). |
 
+`submit` and `enqueue` also accept `on_key_conflict` (`"return_existing"`, the default, or
+`"replace_queued"`) and `renew_position=True`: with `"replace_queued"` the newest submission of
+a key wins ([Replacing a task by key](../concepts/replacing.md)). A task that has not started is
+replaced in place; one that has started keeps its payload, and the submission runs after it as
+a new task with the same key. `TaskHandle.outcome` says which; for `"pending"` the handle tracks
+the running task, and `await sched.handle(key)` gives the successor once that task has ended.
+Neither option is accepted by `Task(...)`, `submit_batch` or `add_recurring`.
+
 Strings must not contain NUL characters.
 
 ### Status events
 
 `sched.events()` returns an `EventStream`, an async iterator of `StatusEvent` (`id`, `pool`,
 `key`, `status`, `attempt`, `at` in Unix seconds, `message`, `priority`, `kind`). `kind` is
-`"transition"` for a status change and `"updated"` for an [update](../concepts/updating.md) of
-the task, published with `emit_transitions=True`; `status` is then the task's unchanged status
-and `priority` the class after the change.
+`"transition"` for a status change. With `emit_transitions=True`, three more kinds are
+published, each with the task's status at that moment: `"updated"` for an
+[update](../concepts/updating.md) (`priority` is the class after the change), `"replaced"` when
+a submission [replaces the task by key](../concepts/replacing.md) or is stored to run after it,
+and `"successor"` for the task created from such a stored submission (`message` names the task
+it follows).
 
 ```python
 async with sched.events() as events:
@@ -171,7 +182,7 @@ executors.
 | `UrgencyConfig(max=5000.0, window=5.0, overdue_rate=100.0, overdue_cap=3000.0)` | [Deadline urgency curve](../concepts/deadlines.md#configuration), `window` in seconds. Pass it to `Scheduler(urgency=...)` or `Pool(urgency=...)`. |
 | `Resource.semaphore(name, permits)` / `Resource.token_bucket(name, rate, burst)` | Shared resources. |
 | `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `group` (labels of the worker group the attempt was assigned to), `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
-| `TaskHandle` | Awaitable; `id`, `duplicate`, `await result()`, `done()`, `cancel()`. |
+| `TaskHandle` | Awaitable; `id`, `duplicate`, `outcome` (`"created"`, `"existing"`, `"replaced"` or `"pending"`), `await result()`, `done()`, `cancel()`. |
 | `Updated` | Result of `update`: `id`, `status` (unchanged by the update), `deferred` (an attempt is running; the values apply to what follows it), `changed` (`False` when the task already had every value). |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
 | `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
@@ -188,7 +199,7 @@ All live in `cronoq` (and `cronoq.errors`), derive from `CronoqError` and can be
 | `Retryable(message="", retry_after=None)` | By executors and worker handlers: retry, not before `retry_after` seconds. |
 | `Permanent(message="")` | By executors and worker handlers: fail without retrying. |
 | `TaskFailed` | Awaiting a task that did not succeed. `.status` (terminal status, `"shutdown"`, or `"succeeded"` when the output is no longer available), `.message`, `.task_id`. |
-| `SubmitError` | Submission rejected. `.code`: `unknown_pool`, `unknown_resource`, `resource_exceeds_capacity`, `reservation_conflict`, `cycle`, `unknown_dependency`, `full`, `overloaded`, `duplicate_key_in_batch`, `invalid`. |
+| `SubmitError` | Submission rejected. `.code`: `unknown_pool`, `unknown_resource`, `resource_exceeds_capacity`, `reservation_conflict`, `cycle`, `unknown_dependency`, `full`, `overloaded`, `duplicate_key_in_batch`, `replace_mismatch`, `invalid`. |
 | `UpdateError` | `update` refused. `.code`: `not_found` (unknown or already finished), `fixed_start`, `invalid` (for example a reserved tag name). |
 | `SchedulerError` | Scheduler stopped, misconfigured, or its store failed. |
 | `EventsLagged` | An `events(on_lag="raise")` stream fell behind; `.skipped`. |
@@ -210,7 +221,7 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 
 | Method | Returns | Description |
 |---|---|---|
-| `await submit(payload=None, *, wait=False, wait_timeout=None, call_timeout=None, **options)` | `Submitted(id, duplicate, result)` | Options as for [`task`](#taskpayloadnone-options). With `wait=True`, `result` is set when the task finished. |
+| `await submit(payload=None, *, wait=False, wait_timeout=None, call_timeout=None, on_key_conflict=None, renew_position=False, **options)` | `Submitted(id, duplicate, result, outcome)` | Options as for [`task`](#taskpayloadnone-options). With `wait=True`, `result` is set when the task finished. `on_key_conflict="replace_queued"` lets the newest submission of a key win ([Replacing a task by key](../concepts/replacing.md)); `outcome` is `"created"`, `"existing"`, `"replaced"` or `"pending"`. |
 | `await submit_batch(specs)` | `list[Submitted]` | Atomic batch of specs built with `task(...)`. |
 | `await cancel(ref)` | `bool` | By id or key. |
 | `await update(ref, *, priority=None, deadline_in=None, deadline_at=None, clear_deadline=False, tags=None)` | `Updated(id, status, deferred, changed)` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. Raises `ClientError` `not_found` for an unknown or finished task and `failed_precondition` for one with a fixed start. |
@@ -229,18 +240,18 @@ Result types (frozen dataclasses):
 
 | Type | Fields |
 |---|---|
-| `Submitted` | `id`, `duplicate`, `result` |
+| `Submitted` | `id`, `duplicate`, `result`, `outcome` |
 | `Result` | `id`, `status` (terminal), `output` (bytes or `None`), `message`, `output_available`; `.ok`, `.json()`, `.text()` |
 | `TaskInfo` | `id`, `status`, `pool`, `key`, `kind`, `attempt`, `max_attempts`, `created_at`, `started_at`, `finished_at` (Unix seconds or `None`), `message`, `output_available`, `tenant`, `priority` (name or `None`); `.done` |
 | `TaskPage` | `tasks` (tuple of `TaskInfo`), `next_after` (`int` or `None`), `unavailable_shards` (shards that could not be reached) |
 | `WorkerInfo` | `id`, `name`, `pool`, `labels`, `slots`, `busy`, `connected_at` (Unix seconds) |
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Updated` | `id`, `status` (unchanged by the update), `deferred`, `changed` |
-| `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message`, `priority` (name, or `None` from an older server), `updated` (true for an event that reports an update, delivered with `all_transitions=True`) |
+| `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message`, `priority` (name, or `None` from an older server), `updated` (true for an event that reports an update, delivered with `all_transitions=True`), `kind` (`"transition"`, `"updated"`, `"replaced"` or `"successor"`) |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
 | `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
 | `WorkerGroup` | `labels`, `capacity`, `busy`: the connected workers of a pool that registered the same labels |
-| `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions` (counters since the leader started) |
+| `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions`, `superseded` (counters since the leader started) |
 
 Failed calls raise `ClientError`: `.code` is the lower-case gRPC status name and `.retryable`
 is true for `unavailable` and `resource_exhausted`. A `watch` stream ends with `ClientError`

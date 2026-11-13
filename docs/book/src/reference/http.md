@@ -113,6 +113,27 @@ curl -s localhost:7071/v1/tasks -H "authorization: Bearer $CLIENT_TOKEN" \
 existing task's id and nothing new is enqueued. With a durable store (Postgres or SQLite), the
 response is sent after the task is stored.
 
+Two more fields control what a submission does when its `key` is in use
+([Replacing a task by key](../concepts/replacing.md)):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `on_key_conflict` | string | `return_existing` | `return_existing`: return the existing task and drop this submission. `replace_queued`: the newest submission wins. Needs a `key`. |
+| `renew_position` | boolean | `false` | With `replace_queued`: take this submission's place in line instead of keeping the place of the task it replaces. |
+
+The response says what happened in `outcome`:
+
+| `outcome` | `duplicate` | Meaning |
+|---|---|---|
+| `created` | `false` | A new task was created. |
+| `existing` | `true` | The key was in use; `id` is that task, unchanged. |
+| `replaced` | `true` | The task had not started and now carries this submission; `id` is that task. |
+| `pending` | `true` | The task has started and keeps its payload. This submission is stored and runs after it as a new task with the same key. `id`, and `result` with `wait`, are the running task's. |
+
+A replacement that differs from the task in pool, resources, labels, tenant or dependencies, or
+that involves a fixed start, is refused with 409. Both fields are refused in
+`POST /v1/tasks:batch` (400).
+
 With `"wait": true` the response also carries the [result](#result-object):
 
 ```json
@@ -307,7 +328,7 @@ Results of finished tasks remain available while the leader's output cache
  "totals": {"submitted": 130, "dispatched": 124, "succeeded": 118, "failed": 1,
             "dead_lettered": 0, "cancelled": 2, "skipped": 0, "missed": 0, "shed": 0,
             "retries": 4, "timeouts": 1, "lease_expiries": 0,
-            "stale_completions": 0}}
+            "stale_completions": 0, "superseded": 12}}
 ```
 
 | Field | Description |
@@ -359,7 +380,7 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 | 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
-| 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
+| 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a `replace_queued` submission that does not match the task it would replace; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |
 | 413 | – | Body larger than `limits.max_http_body_bytes`. |
 | 415 | – | Missing or wrong `content-type`. |
 | 429 | `RESOURCE_EXHAUSTED` | Pool (`max_pending`) or server (`max_pending_total`) queue full. Retry with backoff. |

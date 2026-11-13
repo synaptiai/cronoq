@@ -86,8 +86,6 @@ restores the task with its new priority, deadline and tags. No schema migration 
 
 Over the server, `Update` needs the `client` role, like `Cancel`. Credentials limited to
 certain pools or pinned to a tenant can only update tasks in those pools and of that tenant;
-any other task is reported as not found. So is a task whose tenant the server can no longer
-establish, which can happen only without a durable store, for a task old enough to have left
-the server's task cache (`outputs.info_entries`). With [shards](sharding.md), an update is forwarded to
+any other task is reported as not found. With [shards](sharding.md), an update is forwarded to
 the shard that holds the task; an update by key is refused while a shard cannot be asked,
 since that shard might hold the same key.

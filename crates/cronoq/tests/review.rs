@@ -428,6 +428,122 @@ async fn update_waits_for_durability() {
     gate.notify_waiters();
 }
 
+// --- Replace by key: the newest submission wins; a started task keeps its payload and is
+//     followed by a successor; the stored submission is durable before it is acknowledged.
+#[tokio::test]
+async fn replace_queued_replaces_in_place_or_stores_a_successor() {
+    let store = Arc::new(ScriptedStore::default());
+    let gate = Arc::new(Notify::new());
+    let g = gate.clone();
+    let s: Sched = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 1).executor_fn(move |_c, x: Arc<u64>| {
+                let g = g.clone();
+                async move {
+                    if *x == 0 {
+                        g.notified().await;
+                    }
+                    Ok::<_, TaskError>(*x)
+                }
+            }),
+        )
+        .store(Shared(store.clone()))
+        .build()
+        .await
+        .unwrap();
+    let running = s.submit(Task::new(0).key("r")).await.unwrap();
+    while s.status("r").await.unwrap() != Some(TaskStatus::Running) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let queued = s.submit(Task::new(1).key("q")).await.unwrap();
+    assert_eq!(queued.outcome(), SubmitOutcome::Created);
+
+    // Not started: same task, new payload. A plain submission still returns it unchanged.
+    let replaced = s
+        .submit(Task::new(2).key("q").replace_queued())
+        .await
+        .unwrap();
+    assert_eq!(
+        (replaced.id(), replaced.is_duplicate(), replaced.outcome()),
+        (queued.id(), true, SubmitOutcome::Replaced)
+    );
+    let plain = s.enqueue(Task::new(3).key("q")).await.unwrap();
+    assert_eq!(
+        (plain.id, plain.outcome),
+        (queued.id(), SubmitOutcome::Existing)
+    );
+
+    // Started: acknowledged only once the stored submission is durable.
+    store.hold.store(true, Ordering::SeqCst);
+    let s2 = s.clone();
+    let stored = tokio::spawn(async move {
+        s2.enqueue(Task::new(7).key("r").replace_queued().renew_position())
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!stored.is_finished(), "acked before commit");
+    store.hold.store(false, Ordering::SeqCst);
+    store.gate.notify_waiters();
+    let stored = stored.await.unwrap().unwrap();
+    assert_eq!(
+        (stored.id, stored.duplicate, stored.outcome),
+        (running.id(), true, SubmitOutcome::Pending)
+    );
+
+    // A replacement must fit where the task is; batches and schedules admit tasks as written.
+    let r = s
+        .enqueue(Task::new(9).key("q").label("gpu", "a").replace_queued())
+        .await;
+    assert!(
+        matches!(r, Err(Error::Submit(SubmitError::ReplaceMismatch(_)))),
+        "{r:?}"
+    );
+    let many = s
+        .enqueue_many(vec![Task::new(9).key("q").replace_queued()])
+        .await
+        .unwrap();
+    assert!(matches!(
+        many[0],
+        Err(Error::Submit(SubmitError::Invalid(_)))
+    ));
+    assert!(
+        s.submit_batch(vec![Task::new(9).key("q").replace_queued()])
+            .await
+            .is_err()
+    );
+    assert!(
+        s.add_recurring(Recurring::new(
+            "r",
+            "0 0 1 1 *",
+            Task::new(1).key("x").replace_queued()
+        ))
+        .await
+        .is_err()
+    );
+
+    gate.notify_waiters();
+    assert_eq!(
+        *running.await.unwrap(),
+        0,
+        "the running task kept its payload"
+    );
+    assert_eq!(*queued.await.unwrap(), 2);
+    assert_eq!(
+        *replaced.await.unwrap(),
+        2,
+        "both handles track the same task"
+    );
+    // The successor holds the key now.
+    let successor = loop {
+        let h = s.handle("r").await.unwrap().expect("the key is known");
+        if h.id() != stored.id {
+            break h;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    assert_eq!(*successor.await.unwrap(), 7);
+}
+
 // --- Leadership is released when recovery fails, so a standby can take over.
 #[tokio::test]
 async fn failed_recovery_releases_leadership() {

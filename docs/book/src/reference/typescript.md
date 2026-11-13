@@ -98,6 +98,14 @@ or `"on_failure"`), `resources`, `tags`, `labels` (worker labels the task requir
 `maxAttempts` (replaces the pool's retry policy with this many attempts and the server's default
 backoff).
 
+`Task.onKeyConflict: "replace_queued"` lets the newest submission of `key` win
+([Replacing a task by key](../concepts/replacing.md)): a task that has not started is replaced
+in place; one that has started keeps its payload, and this task runs after it as a new task with
+the same key. `Task.renewPosition` takes this submission's place in line. `Submitted.outcome` is
+`"created"`, `"existing"`, `"replaced"` or `"pending"` (then `id` and `result` are the running
+task's). Both options are ignored by `submitBatch` and `spec`. `Event.kind` is `"transition"`,
+`"updated"`, `"replaced"` or `"successor"`; the last three are delivered with `allTransitions`.
+
 `update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:
 `deadlineIn` is seconds from now, `deadlineAt` a `Date`, at most one of the three deadline
 fields may be given, and `tags` replaces the task's tags (`{}` removes them). `Updated` has
