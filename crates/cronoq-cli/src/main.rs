@@ -186,6 +186,10 @@ struct SubmitArgs {
     /// the task it replaces.
     #[arg(long, requires = "replace")]
     renew_position: bool,
+    /// Fail if --key belongs to a task that was submitted with other content (payload,
+    /// content type, pool, kind, priority or dependencies), instead of returning that task.
+    #[arg(long, requires = "key", conflicts_with = "replace")]
+    reject_conflict: bool,
     /// Start at a fixed time, in seconds from now.
     #[arg(long, value_name = "SECONDS")]
     start_in: Option<f64>,
@@ -422,8 +426,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     wait_timeout_s: a.wait_timeout,
                     on_key_conflict: if a.replace {
                         pb::KeyConflict::ReplaceQueued
+                    } else if a.reject_conflict {
+                        pb::KeyConflict::Reject
                     } else {
-                        pb::KeyConflict::ReturnExisting
+                        // The server's default.
+                        pb::KeyConflict::Unspecified
                     } as i32,
                     renew_position: a.renew_position,
                 })

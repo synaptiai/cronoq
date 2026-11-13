@@ -240,6 +240,12 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         }
         core.priority.validate().map_err(Error::Config)?;
         core.urgency.validate().map_err(Error::Config)?;
+        if core.on_key_conflict == cronoq_core::KeyConflict::ReplaceQueued {
+            return Err(Error::Config(
+                "on_key_conflict: replace_queued is chosen per submission, not as the default"
+                    .into(),
+            ));
+        }
         let clock = Clock::start();
         let base = TimeBase {
             unix_nanos_at_zero: clock.unix_nanos_at_zero(),

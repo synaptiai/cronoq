@@ -3,10 +3,12 @@ package cronoq
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/synaptiai/cronoq/sdks/go/cronoqpb"
@@ -47,15 +49,25 @@ type Task struct {
 	// RenewPosition, with Replace, takes this submission's place in line instead of keeping
 	// the place of the task it replaces.
 	RenewPosition bool
+	// RejectConflict reports a Key that belongs to a task submitted with other content
+	// (payload, content type, pool, kind, priority or dependencies) as an [*Error] with
+	// [Error.KeyConflict] true, instead of returning that task. A retry of the same
+	// submission is still answered with the task. In a batch, set it on every task or none.
+	RejectConflict bool
 }
 
 // request builds the submission of the task, with its options.
-func (t Task) request() *pb.SubmitRequest {
+func (t Task) request() (*pb.SubmitRequest, error) {
 	req := &pb.SubmitRequest{Task: t.Spec(), RenewPosition: t.RenewPosition}
-	if t.Replace {
+	switch {
+	case t.Replace && t.RejectConflict:
+		return nil, &Error{Code: codes.InvalidArgument, Message: "Replace and RejectConflict exclude each other", BatchIndex: -1}
+	case t.Replace:
 		req.OnKeyConflict = pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED
+	case t.RejectConflict:
+		req.OnKeyConflict = pb.KeyConflict_KEY_CONFLICT_REJECT
 	}
-	return req
+	return req, nil
 }
 
 // Spec converts the task to its raw protobuf spec.
@@ -236,7 +248,17 @@ type Error struct {
 	// Code is the gRPC status code.
 	Code    codes.Code
 	Message string
+	// ConflictTask and ConflictStatus name the task that holds the key, when a submission
+	// with [Task.RejectConflict] found the key in use by a task with other content.
+	ConflictTask   uint64
+	ConflictStatus Status
+	// BatchIndex is the position of the task that made a batch fail, or -1.
+	BatchIndex int
 }
+
+// KeyConflict reports whether the submission's key belongs to a task that was submitted
+// with other content ([Task.RejectConflict]).
+func (e *Error) KeyConflict() bool { return e.ConflictTask != 0 }
 
 func (e *Error) Error() string { return fmt.Sprintf("cronoq: %s: %s", e.Code, e.Message) }
 
@@ -262,7 +284,30 @@ func wrap(err error) error {
 		return err
 	}
 	if s, ok := status.FromError(err); ok {
-		return &Error{Code: s.Code(), Message: s.Message()}
+		return &Error{Code: s.Code(), Message: s.Message(), BatchIndex: -1}
+	}
+	return err
+}
+
+// wrapWith is wrap for calls whose failure can carry details in the response trailer.
+func wrapWith(err error, trailer metadata.MD) error {
+	err = wrap(err)
+	var e *Error
+	if !errors.As(err, &e) {
+		return err
+	}
+	first := func(name string) string {
+		if v := trailer.Get(name); len(v) > 0 {
+			return v[0]
+		}
+		return ""
+	}
+	if id, perr := strconv.ParseUint(first("cronoq-conflict-task"), 10, 64); perr == nil {
+		e.ConflictTask = id
+		e.ConflictStatus = Status(first("cronoq-conflict-status"))
+	}
+	if i, perr := strconv.Atoi(first("cronoq-batch-index")); perr == nil {
+		e.BatchIndex = i
 	}
 	return err
 }

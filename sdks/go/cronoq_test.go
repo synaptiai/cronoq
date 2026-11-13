@@ -325,6 +325,51 @@ func TestReplaceByKey(t *testing.T) {
 	}
 }
 
+func TestKeyConflict(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	ctx := ctxFor(t)
+
+	first, err := c.Submit(ctx, cronoq.Task{Payload: []byte("edit-1"), Key: "op-7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A retry of the same submission is answered with the task; other content is a conflict.
+	again, err := c.Submit(ctx, cronoq.Task{Payload: []byte("edit-1"), Key: "op-7", RejectConflict: true})
+	if err != nil || again.ID != first.ID || again.Outcome != cronoq.OutcomeExisting {
+		t.Fatalf("retry = %+v, %v", again, err)
+	}
+	var e *cronoq.Error
+	_, err = c.Submit(ctx, cronoq.Task{Payload: []byte("edit-2"), Key: "op-7", RejectConflict: true})
+	if !errors.As(err, &e) || !e.KeyConflict() || e.ConflictTask != first.ID || e.ConflictStatus != cronoq.Ready || e.BatchIndex != -1 {
+		t.Fatalf("conflict: %+v", err)
+	}
+	// Without the option the submission is still answered with the existing task.
+	plain, err := c.Submit(ctx, cronoq.Task{Payload: []byte("edit-2"), Key: "op-7"})
+	if err != nil || plain.ID != first.ID {
+		t.Fatalf("plain = %+v, %v", plain, err)
+	}
+	// Another refusal is not a key conflict.
+	if _, err := c.Submit(ctx, cronoq.Task{Key: "op-7", Replace: true, RejectConflict: true}); !errors.As(err, &e) || e.KeyConflict() {
+		t.Fatalf("both options: %v", err)
+	}
+
+	batch := []cronoq.Task{
+		{Payload: []byte("new"), Key: "op-8", RejectConflict: true},
+		{Payload: []byte("edit-2"), Key: "op-7", RejectConflict: true},
+	}
+	if _, err := c.SubmitBatch(ctx, batch); !errors.As(err, &e) || !e.KeyConflict() || e.BatchIndex != 1 || e.ConflictTask != first.ID {
+		t.Fatalf("batch conflict: %+v", err)
+	}
+	if _, err := c.Get(ctx, cronoq.Key("op-8")); !errors.As(err, &e) || !e.NotFound() {
+		t.Fatalf("nothing of the batch is admitted: %v", err)
+	}
+	batch[0].RejectConflict = false
+	if _, err := c.SubmitBatch(ctx, batch); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("mixed batch: %v", err)
+	}
+}
+
 func TestHandlerOutcomes(t *testing.T) {
 	s := startServer(t)
 	c := client(t, s)

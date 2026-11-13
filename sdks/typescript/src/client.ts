@@ -128,8 +128,13 @@ export interface Task {
    * started is replaced in place (same id and place in line); one that has started keeps its
    * payload, and this task runs after it as a new task with the same key. See
    * {@link Submitted.outcome}. `submitBatch` refuses it; {@link spec} does not carry it.
+   * `"reject"` returns the existing task only for a submission that asks for the same thing
+   * (payload, content type, pool, kind, priority and dependencies); one that asks for
+   * something else fails with a {@link CronoqError} whose `keyConflict` is true, instead of
+   * being dropped. In a batch, set it on every task or on none. Left out, the server's
+   * default applies.
    */
-  onKeyConflict?: "return_existing" | "replace_queued";
+  onKeyConflict?: "return_existing" | "replace_queued" | "reject";
   /** With `"replace_queued"`: take this submission's place in line. */
   renewPosition?: boolean;
 }
@@ -139,8 +144,13 @@ function submitOptions(t: Task): { onKeyConflict: pb.KeyConflict; renewPosition:
   let onKeyConflict: pb.KeyConflict;
   switch (t.onKeyConflict) {
     case undefined:
+      onKeyConflict = pb.KeyConflict.UNSPECIFIED;
+      break;
     case "return_existing":
       onKeyConflict = pb.KeyConflict.RETURN_EXISTING;
+      break;
+    case "reject":
+      onKeyConflict = pb.KeyConflict.REJECT;
       break;
     case "replace_queued":
       onKeyConflict = pb.KeyConflict.REPLACE_QUEUED;
@@ -427,18 +437,24 @@ export class Client {
   /** Submit raw specs atomically; they may depend on each other's keys. */
   submitBatch(tasks: Array<Task | pb.TaskSpec>, opts: CallOptions = {}): Promise<Submitted[]> {
     return this.call(async () => {
+      // The mode is one per batch: every task names the same one (raw specs name none).
+      const modes = tasks.map((t) => ("$typeName" in t ? undefined : (t as Task).onKeyConflict));
       const specs = tasks.map((t, i) => {
         if ("$typeName" in t) return t as pb.TaskSpec;
         const task = t as Task;
-        if (task.onKeyConflict !== undefined || task.renewPosition) {
+        if (task.onKeyConflict === "replace_queued" || task.renewPosition) {
           throw new CronoqError(
             "invalid_argument",
-            `tasks[${i}]: onKeyConflict and renewPosition are not supported in a batch`,
+            `tasks[${i}]: replace_queued and renewPosition are not supported in a batch`,
           );
+        }
+        if (modes[i] !== modes[0]) {
+          throw new CronoqError("invalid_argument", `tasks[${i}]: use the same onKeyConflict for every task of a batch`);
         }
         return spec(task);
       });
-      return (await this.tasks.submitBatch({ tasks: specs }, rpc(opts))).tasks.map(submitted);
+      const onKeyConflict = tasks.length > 0 && !("$typeName" in tasks[0]!) ? submitOptions(tasks[0] as Task).onKeyConflict : pb.KeyConflict.UNSPECIFIED;
+      return (await this.tasks.submitBatch({ tasks: specs, onKeyConflict }, rpc(opts))).tasks.map(submitted);
     });
   }
 

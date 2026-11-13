@@ -544,6 +544,104 @@ async fn replace_queued_replaces_in_place_or_stores_a_successor() {
     assert_eq!(*successor.await.unwrap(), 7);
 }
 
+// --- A key reused with a different fingerprint is reported when the submission asks for it,
+//     singly, in independent submissions and in batches (which then admit nothing).
+#[tokio::test]
+async fn key_conflicts_are_reported_by_fingerprint() {
+    let s: Sched = Scheduler::builder()
+        .pool(pending_pool(1))
+        .build()
+        .await
+        .unwrap();
+    let first = s
+        .enqueue(Task::new(1).key("k").fingerprint(7))
+        .await
+        .unwrap();
+    let reject = |payload, key: &str, fp| {
+        Task::new(payload)
+            .key(key)
+            .fingerprint(fp)
+            .on_key_conflict(KeyConflict::Reject)
+    };
+    let again = s.enqueue(reject(1, "k", 7)).await.unwrap();
+    assert_eq!(
+        (again.id, again.outcome),
+        (first.id, SubmitOutcome::Existing)
+    );
+    let r = s.enqueue(reject(2, "k", 8)).await;
+    assert!(
+        matches!(&r, Err(Error::Submit(SubmitError::KeyConflict { id, .. })) if *id == first.id),
+        "{r:?}"
+    );
+    // Without the option: the existing task, as before.
+    let plain = s
+        .enqueue(Task::new(2).key("k").fingerprint(8))
+        .await
+        .unwrap();
+    assert_eq!(plain.id, first.id);
+
+    // Independent submissions: each is decided by itself.
+    let many = s
+        .enqueue_many(vec![
+            reject(3, "new", 1),
+            reject(2, "k", 8),
+            reject(1, "k", 7),
+        ])
+        .await
+        .unwrap();
+    assert!(many[0].is_ok() && many[2].is_ok());
+    assert!(matches!(
+        many[1],
+        Err(Error::Submit(SubmitError::KeyConflict { .. }))
+    ));
+
+    // A batch: the first conflicting task is named and nothing is admitted.
+    let r = s
+        .submit_batch(vec![
+            reject(4, "b1", 1),
+            reject(2, "k", 8),
+            reject(5, "b2", 2),
+        ])
+        .await;
+    match r {
+        Err(Error::Batch {
+            index: 1,
+            error: SubmitError::KeyConflict { id, .. },
+        }) => assert_eq!(id, first.id),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.status("b1").await.unwrap(), None);
+
+    // The scheduler's default can be to report conflicts.
+    let strict: Sched = Scheduler::builder()
+        .pool(pending_pool(1))
+        .on_key_conflict(KeyConflict::Reject)
+        .build()
+        .await
+        .unwrap();
+    strict
+        .enqueue(Task::new(1).key("k").fingerprint(7))
+        .await
+        .unwrap();
+    assert!(
+        strict
+            .enqueue(Task::new(2).key("k").fingerprint(8))
+            .await
+            .is_err()
+    );
+    let opt_out = Task::new(2)
+        .key("k")
+        .fingerprint(8)
+        .on_key_conflict(KeyConflict::ReturnExisting);
+    assert!(strict.enqueue(opt_out).await.is_ok());
+    let bad = Scheduler::<u64, u64>::builder()
+        .pool(pending_pool(1))
+        .on_key_conflict(KeyConflict::ReplaceQueued)
+        .build()
+        .await;
+    assert!(matches!(bad, Err(Error::Config(_))));
+}
+
 // --- Leadership is released when recovery fails, so a standby can take over.
 #[tokio::test]
 async fn failed_recovery_releases_leadership() {
