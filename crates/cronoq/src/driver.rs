@@ -816,7 +816,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                         self.clock.skip(by);
                         by
                     }
-                    None => self.clock.resync_to(std::time::SystemTime::now()),
+                    None => self.clock.resync(),
                 };
                 // Timers that are due now fire on the next turn of the loop, which works
                 // out its wake-up from the new time.

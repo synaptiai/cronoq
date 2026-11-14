@@ -42,6 +42,10 @@ serde_json = { version = "1", optional = true }
 opentelemetry = { version = "0.33", features = ["metrics", "trace"], optional = true }
 tracing-opentelemetry = { version = "0.34", optional = true }
 
+# The sleep-inclusive monotonic clock for `Scheduler::resync_clock`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 opentelemetry_sdk = { version = "0.33", features = ["metrics", "testing"] }
 tokio = { version = "1.47", features = ["full", "test-util"] }

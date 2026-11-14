@@ -776,26 +776,40 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         &self.inner.pool_names
     }
 
-    /// Move engine time forward to the wall clock, if it is behind it, and return how far it
-    /// moved.
+    /// Move engine time forward by the time it missed while the machine slept, and return
+    /// how far it moved.
     ///
-    /// Engine time follows the monotonic clock, which on some platforms (Apple's, by
-    /// default) stands still while the machine sleeps. After a sleep every timer is then
-    /// late by the time slept: retries after a backoff, delayed starts, timeouts. Call this
-    /// when the program becomes active again. Timers that became due in the meantime fire at
-    /// once; they are not spread out. An attempt that was running across the sleep and has
-    /// a timeout shorter than the sleep times out.
+    /// Engine time follows the clock of the Rust standard library, which on Apple platforms
+    /// and on Linux does not count the time a machine sleeps. After a sleep every timer is
+    /// then late by the time slept: retries after a backoff, delayed starts, timeouts, lease
+    /// expiry. Call this when the program becomes active again. Timers that became due in
+    /// the meantime fire at once; they are not spread out.
     ///
-    /// Engine time never moves back: when it is not behind the wall clock (also after the
-    /// wall clock was set back) this does nothing and returns zero.
+    /// What "fire at once" means for work in progress: an attempt that ran across the sleep
+    /// times out if its timeout is shorter than the sleep, and a lease of a pool with a
+    /// lease TTL expires if the TTL is shorter than the sleep (nobody could extend it). Both
+    /// count as a failed attempt. A task with a fixed start that passed during the sleep is
+    /// handled by its miss policy.
+    ///
+    /// The sleep is measured with a monotonic clock of the operating system that counts
+    /// during sleep (`CLOCK_BOOTTIME` on Linux and Android, `CLOCK_MONOTONIC` on Apple
+    /// platforms), so a change of the wall clock has no effect. Where no such clock is known
+    /// (Windows), the wall clock is used instead, and a wall clock that was set forward is
+    /// followed. Engine time never moves back, and when nothing was missed this does
+    /// nothing and returns zero.
     pub async fn resync_clock(&self) -> Result<Duration, Error> {
         self.call(|reply| Cmd::ResyncClock { by: None, reply })
             .await
     }
 
     /// Move engine time forward by `by`, as if that much time had passed: timers that are
-    /// due within it fire at once. For tests of backoff, delays and timeouts without
-    /// waiting.
+    /// due within it fire at once. **For tests** of backoff, delays and timeouts without
+    /// waiting, with the in-memory store.
+    ///
+    /// Engine time is then ahead of the wall clock for good: the times in events and
+    /// deadlines are in the future, and `start_at` / `deadline_at` with a wall-clock time
+    /// are reached early. Do not use it with a store you keep: the times written to it are
+    /// ahead too, and after a restart retries and schedules are late by that much.
     pub async fn advance_clock(&self, by: Duration) -> Result<(), Error> {
         self.call(|reply| Cmd::ResyncClock {
             by: Some(by),

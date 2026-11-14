@@ -533,18 +533,24 @@ enum cronoq_status cronoq_events_next(const struct cronoq_events *events,
 // other thread uses it.
 void cronoq_events_close(struct cronoq_events *events);
 
-// Move the scheduler's time forward to the wall clock after the machine slept.
+// Move the scheduler's time forward by the time it missed while the machine slept.
 //
-// The scheduler's time follows the monotonic clock. On Apple platforms that clock stands
-// still while the device sleeps, so after a sleep every timer is late by the time slept:
-// retries after a backoff, timeouts, deadlines. Call this when the program becomes active
-// again (on iOS: when the app returns to the foreground). Timers that became due in the
-// meantime fire at once; they are not spread out. An attempt that was held across the sleep
-// and has a timeout shorter than the sleep times out.
+// The scheduler's clock does not count the time a machine sleeps (on Apple platforms and on
+// Linux). After a sleep every timer is late by the time slept: retries after a backoff,
+// timeouts, deadlines, lease expiry. Call this when the program becomes active again (on
+// iOS: when the app returns to the foreground). Timers that became due in the meantime fire
+// at once; they are not spread out.
 //
-// The scheduler's time never moves back. When it is not behind the wall clock, also after
-// the wall clock was set back, this does nothing. Calling it more often than needed is
-// harmless.
+// For a lease that was held across the sleep this means: it times out if its task's timeout
+// is shorter than the sleep, and it expires if its pool has a `lease_ttl_ms` shorter than
+// the sleep. Both count as a failed attempt. Release leases before the program is
+// suspended if you can.
+//
+// The sleep is measured with a monotonic clock of the operating system that counts during
+// sleep, so a change of the wall clock has no effect. On Windows, where the library knows
+// no such clock, the wall clock is used, and a wall clock that was set forward is followed.
+// The scheduler's time never moves back, and when nothing was missed this does nothing:
+// calling it more often than needed is harmless.
 //
 // `*out_moved_ms` (null allowed) is how far the time moved, in milliseconds.
 //
@@ -555,8 +561,9 @@ void cronoq_events_close(struct cronoq_events *events);
 enum cronoq_status cronoq_resync_clock(const struct cronoq_scheduler *s, uint64_t *out_moved_ms);
 
 // Move the scheduler's time forward by `by_ms` milliseconds, as if that much time had
-// passed: timers that are due within it fire at once. For tests of backoff and timeouts
-// without waiting. The time cannot be moved back.
+// passed: timers that are due within it fire at once. **For tests** of backoff and timeouts
+// without waiting. The time cannot be moved back, and it stays ahead of the wall clock:
+// the times in events are in the future. Do not use it with a store you keep.
 //
 // Thread safety: may be called from any number of threads at once.
 //

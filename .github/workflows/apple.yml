@@ -18,9 +18,15 @@ on:
 permissions:
   contents: read
 
+# Called from the release workflow, `github.workflow` is the caller's name: a release and a
+# nightly run on the same branch do not cancel each other.
 concurrency:
-  group: apple-${{ github.ref }}
+  group: apple-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
@@ -87,7 +93,10 @@ jobs:
             -library build/macos/libcronoq_ffi.a -headers build/headers \
             -output build/CCronoq.xcframework
           (cd build && zip -qry ../CCronoq.xcframework.zip CCronoq.xcframework)
-          swift package compute-checksum CCronoq.xcframework.zip | tee CCronoq.xcframework.zip.checksum
+          # The checksum SwiftPM wants for a binary target is the SHA-256 of the archive.
+          shasum -a 256 CCronoq.xcframework.zip | cut -d' ' -f1 > CCronoq.xcframework.zip.checksum
+          test "$(wc -c < CCronoq.xcframework.zip.checksum)" -ge 64
+          cat CCronoq.xcframework.zip.checksum
       - name: The Swift package works with the framework
         run: |
           # The package as a user would set it up: the C target replaced by the framework.
@@ -140,8 +149,15 @@ jobs:
           device=$(xcrun simctl list devices available --json | python3 -c '
           import json, sys
           devices = json.load(sys.stdin)["devices"]
-          phones = [d for runtime, ds in sorted(devices.items()) if "iOS" in runtime for d in ds if "iPhone" in d["name"]]
+          def version(runtime):
+              # com.apple.CoreSimulator.SimRuntime.iOS-18-2 -> (18, 2)
+              return tuple(int(n) for n in runtime.rsplit("iOS-", 1)[-1].split("-") if n.isdigit())
+          phones = [d for runtime, ds in sorted(devices.items(), key=lambda kv: version(kv[0]))
+                    if "iOS" in runtime for d in ds if "iPhone" in d["name"]]
+          if not phones:
+              sys.exit("no iPhone simulator is available on this runner")
           print(phones[-1]["udid"])')
+          test -n "$device"
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device"
       - name: Deterministic simulation of the engine

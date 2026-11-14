@@ -765,13 +765,15 @@ func (e *Events) Close() {
 	e.handle = nil
 }
 
-// ResyncClock moves the scheduler's time forward to the wall clock after the machine slept,
-// and returns how far it moved.
+// ResyncClock moves the scheduler's time forward by the time it missed while the machine
+// slept, and returns how far it moved.
 //
-// The scheduler's time follows the monotonic clock. On Apple platforms that clock stands
-// still while the machine sleeps, so after a sleep every timer is late by the time slept:
-// retries after a backoff, timeouts, deadlines. Call this when the program becomes active
-// again. Timers that became due in the meantime fire at once. The time never moves back,
+// The scheduler's clock does not count the time a machine sleeps (on Apple platforms and on
+// Linux), so after a sleep every timer is late by the time slept: retries after a backoff,
+// timeouts, deadlines, lease expiry. Call this when the program becomes active again. Timers
+// that became due in the meantime fire at once; a lease held across the sleep can time out
+// or expire. The sleep is measured with a monotonic clock that counts during sleep, so the
+// wall clock has no effect (on Windows the wall clock is used). The time never moves back,
 // and calling this more often than needed is harmless.
 func (s *Scheduler) ResyncClock() (time.Duration, error) {
 	h, err := s.enter()
@@ -785,7 +787,7 @@ func (s *Scheduler) ResyncClock() (time.Duration, error) {
 
 // AdvanceClock moves the scheduler's time forward by d, as if that much time had passed:
 // timers that are due within it fire at once. For tests of backoff and timeouts without
-// waiting.
+// waiting: the time stays ahead of the wall clock, so do not use it with a store you keep.
 func (s *Scheduler) AdvanceClock(d time.Duration) error {
 	h, err := s.enter()
 	if err != nil {

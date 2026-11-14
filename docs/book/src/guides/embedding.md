@@ -374,14 +374,16 @@ asks for the next event with a blocking call.
 
 ## Time, sleep and phones
 
-The scheduler measures time with the **monotonic clock**: it reads the wall clock once when it
-starts and then counts on from there.
+The scheduler reads the wall clock once, when it starts, and then counts on with the clock of
+the Rust standard library. That clock is monotonic, and on Apple platforms and on Linux it
+**does not count the time the machine sleeps**.
 
 | Event | What happens |
 |---|---|
-| The wall clock is changed (by the user, or by a time server) | Nothing. Backoffs, timeouts and deadlines that are already set keep running as they were. A deadline given as "in five seconds" stays five seconds away. |
-| The machine sleeps, or the app is suspended | On Apple platforms the monotonic clock stands still during sleep. Nothing runs, no timer fires, and after waking **every timer is late by the time slept**: a retry that was 30 seconds away is still 30 seconds away. |
-| The program calls **resync clock** after waking | The scheduler's time jumps forward to the wall clock. Timers that became due during the sleep fire at once, all of them; they are not spread out. |
+| The wall clock is changed (by the user, or by a time server) | Nothing. Backoffs, timeouts and deadlines that are already set keep running as they were. |
+| The machine sleeps | Nothing runs and no timer fires. After waking, **every timer is late by the time slept**: a retry that was 30 seconds away is still 30 seconds away. |
+| The app is suspended while the device stays awake | The clock keeps counting. Timers that became due fire when the app runs again. |
+| The program calls **resync clock** after waking | The scheduler's time jumps forward by the time it missed. Timers that became due during the sleep fire at once, all of them; they are not spread out. |
 
 Call `cronoq_resync_clock` (Go `ResyncClock`, Swift `resyncClock`) when your program becomes
 active again:
@@ -394,19 +396,26 @@ NotificationCenter.default.addObserver(
 }
 ```
 
-- It returns how far the time moved. When the scheduler is not behind the wall clock it does
-  nothing, so calling it more often than needed is harmless.
-- The scheduler's time never moves back, also when the wall clock was set back.
-- A lease you held across the sleep, for a task with a timeout shorter than the sleep, times
-  out at the resynchronisation. Release leases before the app goes to the background if you
-  can (`release`), or use no timeout for work that survives a suspension.
+- It returns how far the time moved. When nothing was missed it does nothing, so calling it
+  more often than needed is harmless.
+- The sleep is measured with a monotonic clock of the operating system that counts during
+  sleep (`CLOCK_MONOTONIC` on Apple platforms, `CLOCK_BOOTTIME` on Linux). A wrong or changed
+  wall clock has no effect. On Windows the library knows no such clock and uses the wall
+  clock: there, a wall clock that was set forward is followed.
+- The scheduler's time never moves back.
+- **Leases held across the sleep.** A lease times out at the resynchronisation if its task has
+  a timeout shorter than the sleep. It expires if its pool has a `lease_ttl_ms` shorter than
+  the sleep, because nobody could extend it. Both count as a failed attempt and use a retry.
+  Release leases before the app goes to the background if you can (`release`), or use no
+  timeout and no lease TTL for work that survives a suspension.
 - With the SQLite store, the store's claim on the file uses the wall clock: after a long
   sleep, or a wall-clock jump forward, the claim has run out. With one program per file
   nobody else has taken it, and the scheduler simply extends it again.
 
 `cronoq_advance_clock` (Go `AdvanceClock`, Swift `advanceClock`) moves the scheduler's time
-forward by an amount you choose. It is for tests: a backoff of an hour is over after
-`advance clock (1 hour)`, without waiting.
+forward by an amount you choose. **It is for tests**: a backoff of an hour is over after
+`advance clock (1 hour)`, without waiting. The scheduler's time then stays ahead of the wall
+clock, so the times in events are in the future. Do not use it with a store you keep.
 
 **The library does not run in the background.** While the app is suspended or the device
 sleeps, no task is handed out and no timer fires. It does not ask the operating system for
@@ -420,13 +429,14 @@ the app is active again, after the resynchronisation.
 | iOS device, ARM64 (`aarch64-apple-ios`) | Built nightly and for each release. |
 | iOS simulator on Apple silicon (`aarch64-apple-ios-sim`) | Built, and tested in the simulator: the engine's simulation tests, the tests of the C API and the clock tests. |
 | macOS ARM64 and x86-64 | Built and tested on every pull request. |
-| Android | Not built or tested. The code type-checks for it; ask in an issue. |
+| Android | Not built or tested. Ask in an issue. |
 
 Everything in the C API works on iOS: priorities with aging, retries, resources, ordering
 keys, replace, update, pause, release. Each release has a size report,
 `cronoq-embed-apple-sizes.md`, with the stripped size of the library per target, with and
 without cron and time-zone data. The default build, which is what the framework contains, has
-neither.
+neither, and no SQLite store: for a queue that survives restarts, build the library yourself
+with `--features sqlite`.
 
 ## Keeping tasks across restarts
 

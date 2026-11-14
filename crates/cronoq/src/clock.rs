@@ -4,12 +4,13 @@
 //! clock once at start and then advances with tokio's monotonic clock, so engine time never
 //! goes backwards (NTP steps after start are not followed) and paused test time works.
 //!
-//! On some platforms the monotonic clock stands still while the machine sleeps (Apple's
-//! default one does). Engine time is then behind by the time slept, and timers are late by
-//! as much. [`Scheduler::resync_clock`](crate::Scheduler::resync_clock) moves engine time
-//! forward to the wall clock again; it never moves it back.
-//! Persisted timestamps are therefore plain Unix nanoseconds and survive restarts exactly.
-//! `u64` nanoseconds cover 1970 to 2554; conversions saturate at both ends.
+//! The clock that tokio and the Rust standard library use does not count the time a machine
+//! sleeps (on Apple platforms and on Linux). After a sleep, engine time is behind by the time
+//! slept, and timers are late by as much.
+//! [`Scheduler::resync_clock`](crate::Scheduler::resync_clock) moves engine time forward by
+//! what was missed. It measures the sleep with a monotonic clock of the operating system
+//! that keeps counting during sleep, so a change of the wall clock has no effect. Engine
+//! time never moves back.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,6 +30,37 @@ pub struct Clock {
     unix_nanos_at_base: u64,
     /// Nanoseconds that resynchronisations have added to the monotonic clock.
     skipped: Arc<AtomicU64>,
+    /// The reading of the sleep-inclusive clock at the base, where the platform has one.
+    continuous_at_base: Option<Duration>,
+}
+
+/// A monotonic clock that keeps counting while the machine sleeps: `CLOCK_BOOTTIME` on Linux
+/// and Android, `CLOCK_MONOTONIC` on Apple platforms. `None` where there is none we know of.
+fn continuous_now() -> Option<Duration> {
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    {
+        #[cfg(target_vendor = "apple")]
+        const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
+        #[cfg(not(target_vendor = "apple"))]
+        const CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid place for one timespec, and the clock id is a constant
+        // of this platform.
+        if unsafe { libc::clock_gettime(CLOCK, &mut ts) } != 0 {
+            return None;
+        }
+        Some(Duration::new(
+            ts.tv_sec.max(0) as u64,
+            ts.tv_nsec.clamp(0, 999_999_999) as u32,
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    {
+        None
+    }
 }
 
 impl Clock {
@@ -38,7 +70,26 @@ impl Clock {
             base: Instant::now(),
             unix_nanos_at_base: unix_nanos(SystemTime::now()),
             skipped: Arc::default(),
+            continuous_at_base: continuous_now(),
         }
+    }
+
+    /// Move engine time forward by the time it missed while the machine slept, and return
+    /// how far it moved. The sleep is measured with the operating system's monotonic clock
+    /// that counts during sleep; where there is none, with the wall clock.
+    pub(crate) fn resync(&self) -> Duration {
+        match (self.continuous_at_base, continuous_now()) {
+            (Some(base), Some(now)) => self.catch_up(now.saturating_sub(base)),
+            _ => self.resync_to(SystemTime::now()),
+        }
+    }
+
+    /// Move engine time forward so that `real` has passed since the base, if less has.
+    fn catch_up(&self, real: Duration) -> Duration {
+        let real = real.as_nanos().min(u64::MAX as u128) as u64;
+        let behind = real.saturating_sub(self.elapsed());
+        self.skipped.fetch_add(behind, Ordering::Relaxed);
+        Duration::from_nanos(behind)
     }
 
     /// Nanoseconds since the base, including what resynchronisations skipped.
@@ -50,7 +101,7 @@ impl Clock {
 
     /// Move engine time forward to the wall-clock time `wall`, if it is behind it. Returns
     /// how far it moved. Engine time never moves back: a `wall` in the engine's past
-    /// changes nothing.
+    /// changes nothing. Used only where the platform has no sleep-inclusive clock.
     pub(crate) fn resync_to(&self, wall: SystemTime) -> Duration {
         let behind = unix_nanos(wall).saturating_sub(self.now().0);
         self.skipped.fetch_add(behind, Ordering::Relaxed);
@@ -168,6 +219,33 @@ mod tests {
         assert!(c.now().0 - at.0 >= 60_000_000_000);
         c.skip(Duration::MAX);
         assert!(c.now() >= at);
+    }
+
+    #[test]
+    fn a_resync_makes_up_the_time_slept_and_ignores_the_wall_clock() {
+        let c = Clock::start();
+        let before = c.now();
+        // Nothing was missed: the sleep-inclusive clock and tokio's clock agree.
+        assert!(c.resync() < Duration::from_secs(1));
+        // The machine slept for an hour: an hour more has really passed than was counted.
+        let moved = c.catch_up(Duration::from_secs(3600));
+        assert!(moved > Duration::from_secs(3599) && moved <= Duration::from_secs(3600));
+        assert!(c.now().0 - before.0 >= 3_599_000_000_000);
+        // Asked again, there is nothing left to make up.
+        assert_eq!(c.catch_up(Duration::from_secs(3600)), Duration::ZERO);
+        // Engine time is ahead of what really passed (as after `skip`): it does not go back.
+        let at = c.now();
+        assert_eq!(c.resync(), Duration::ZERO);
+        assert!(c.now() >= at);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    #[test]
+    fn the_platform_has_a_sleep_inclusive_clock() {
+        let a = continuous_now().expect("a sleep-inclusive monotonic clock");
+        std::thread::sleep(Duration::from_millis(5));
+        let b = continuous_now().unwrap();
+        assert!(b > a && b - a < Duration::from_secs(5));
     }
 
     #[test]
