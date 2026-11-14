@@ -261,6 +261,10 @@ class PoolSnapshot:
     ordering_keys: int
     ordering_waiting: int
     ordering_halted: int
+    ordering_paused: int
+    paused: str | None
+    paused_classes: dict[str, str]
+    paused_tasks: int
     priority: PriorityConfig
     urgency: UrgencyConfig
 
@@ -300,6 +304,7 @@ class OrderingInfo:
     floor: str | None
     persist: bool
     halted: bool
+    paused: str | None
 
 @final
 class EventStream:
@@ -436,6 +441,24 @@ class Scheduler:
         persist: bool = False,
     ) -> Awaitable[None]: ...
     def resume_ordering(self, key: str, *, pool: str | None = None) -> Awaitable[bool]: ...
+    def pause(
+        self,
+        reason: str,
+        *,
+        pool: str | None = None,
+        priority_class: _PriorityLike | None = None,
+        ordering_key: str | None = None,
+    ) -> Awaitable[bool]: ...
+    def resume(
+        self,
+        *,
+        pool: str | None = None,
+        priority_class: _PriorityLike | None = None,
+        ordering_key: str | None = None,
+    ) -> Awaitable[bool]: ...
+    def paused_orderings(
+        self, *, pool: str | None = None, limit: int = 100
+    ) -> Awaitable[list[tuple[str, str]]]: ...
     def set_capacity(self, pool: str, capacity: int) -> Awaitable[None]: ...
     def set_group_capacity(
         self, pool: str, labels: Mapping[str, str], capacity: int

@@ -354,6 +354,29 @@ map from `seq` to task, per pool. Rules:
   `Recovered::ordering`, inserts every task as `Ordered`, then settles each strand once, so the
   order is the stored `seq` order.
 
+### 5.6 Pause and resume
+`Core::pause(now, pool, &PauseTarget, reason)` / `Core::resume(now, pool, &PauseTarget)`, with
+`PauseTarget::{Pool, Class(Priority), Ordering(key)}`. State: per pool an optional reason for
+the pool and one per class (`PoolPauses`), per strand an optional reason.
+
+- **Pool and class.** Candidate selection skips every class `c` for which the pool or class
+  `c` is paused. Nothing else changes: tasks stay in their queues with their `seq`, arrival
+  and counters, so bounds, shedding, cancel, update and replace work on them as usual. The
+  class is the one a task is queued at (`eff`), so a lifted head of an ordering key is held
+  by a pause of the class it runs at. Due fixed-start tasks are dispatched from their own
+  queue and are not held. The autoscaler's backlog leaves out held classes.
+- **Ordering key.** A paused strand offers nothing (`held = halted || paused`): its head is
+  taken out of its queue, or off its resource or label wait, and waits as `Loc::Ordered`.
+  A paused strand exists while it has no members. `resume` of an ordering key clears pause
+  and halt together.
+- **Idempotent.** `pause` returns whether the target was not paused before; pausing again
+  replaces the reason. `resume` returns whether there was anything to resume.
+- **Durability.** `Mutation::Paused { pool, target, reason }` (`reason: None` = resumed, the
+  store drops the record), emitted when the state or the reason changes. Recovery applies
+  `Recovered::paused` before any task is inserted; pauses of a pool that is gone are dropped
+  from the store.
+- **Not included.** No pause per tenant, no timed resume, no abort of running attempts.
+
 ---
 
 ## 6. Fixed-start and recurring tasks

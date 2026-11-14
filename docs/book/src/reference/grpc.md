@@ -208,7 +208,7 @@ use `Get` / `Wait` to reconcile anything that happened while disconnected.
 | Direction | Message | Meaning |
 |---|---|---|
 | worker → server | `Register{pool, slots, worker_name, protocol_version, labels}` | Must be the first message, within 10 s. Send `protocol_version` 3; older versions are refused with `FAILED_PRECONDITION`. `labels` place the worker in a [group](../concepts/labels.md); a credential with `labels = [...]` may claim only those (`PERMISSION_DENIED` otherwise). |
-| server → worker | `Registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes}` | Registration accepted. `slots` is what was granted: at most the pool's `max_slots_per_worker`. |
+| server → worker | `Registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes, pool_paused}` | Registration accepted. `slots` is what was granted: at most the pool's `max_slots_per_worker`. `pool_paused` is set when the pool is [paused](../concepts/pausing.md) as a whole and carries the reason; the worker stays connected and gets no leases until the pool is resumed. |
 | server → worker | `Lease{lease, task_id, attempt, payload, content_type, kind, key, tags, timeout_s, deadline_unix_ns, pool, priority, lease_ttl_s}` | Run this attempt. `priority` is currently always `UNSPECIFIED`. |
 | worker → server | `Heartbeat{lease}` | Keep a lease alive. |
 | worker → server | `Complete{lease, output, content_type}` | Success; `output` becomes the task's result. |
@@ -262,7 +262,9 @@ implement these rules; see [Writing executors and workers](../guides/workers.md)
 | `GetOrdering` | metrics | `OrderingRequest{pool, key}` → `OrderingInfo` |
 | `ListHaltedOrderings` | metrics | `ListHaltedOrderingsRequest{pool, limit}` → `ListHaltedOrderingsResponse{keys}` |
 | `SetOrderingFloor` | admin | `SetOrderingFloorRequest{pool, key, floor, persist}` → `Empty` |
-| `Resume` | admin | `ResumeRequest{pool, ordering_key}` → `ResumeResponse{resumed}` |
+| `ListPausedOrderings` | metrics | `ListHaltedOrderingsRequest{pool, limit}` → `ListPausedOrderingsResponse{keys}` |
+| `Pause` | admin | `PauseRequest{pool, priority_class, ordering_key, reason}` → `PauseResponse{paused}` |
+| `Resume` | admin | `ResumeRequest{pool, ordering_key, priority_class}` → `ResumeResponse{resumed}` |
 | `AddRecurring` | admin | `RecurringRequest{name, cron, tz, template, overlap}` → `Empty` |
 | `RemoveRecurring` | admin | `RemoveRecurringRequest{name}` → `RemoveRecurringResponse{removed}` |
 | `ListWorkers` | metrics | `Empty` → `ListWorkersResponse{workers}` |
@@ -280,7 +282,10 @@ occurrence); schedules are sorted by name.
 `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`,
 `wait_p50_s`, `wait_p90_s`, `wait_p99_s`, `cost`, `workers_connected`, `groups`: one
 `WorkerGroup{labels, capacity, busy}` per set of worker labels, unlabeled first,
-`ordering_keys`, `ordering_waiting` and `ordering_halted`, and the
+`ordering_keys`, `ordering_waiting`, `ordering_halted` and `ordering_paused`, `paused` (set
+while the whole pool is paused: the reason), `paused_classes` (one
+`ClassPause{priority_class, reason}` per class paused on its own) and `paused_tasks` (ready
+tasks held by a pause), and the
 `priority` and `urgency` settings in effect for the pool), `live_tasks`,
 `running`, `pending`, `workers_connected`, `unavailable_shards` and `totals` (`submitted`,
 `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`,
@@ -292,22 +297,44 @@ The four ordering calls act on one [ordering key](../concepts/ordering-keys.md) 
 otherwise); an unknown pool is `NOT_FOUND`.
 
 - `GetOrdering` returns `OrderingInfo{pool, key, tasks, head, effective, floor, persist,
-  halted}`: the tasks of the key that have not finished, the id of the one at the front
+  halted, paused}`: the tasks of the key that have not finished, the id of the one at the front
   (unset if none), the class that one runs at (`PRIORITY_UNSPECIFIED` without tasks or a
   floor), the class floor (unset if none), whether the floor is kept while the key has no
-  tasks, and whether the key is halted. A key with no tasks and no kept floor has `tasks = 0`
-  and nothing else set.
+  tasks, whether the key is halted, and the reason the key is paused (unset if it is not). A
+  key with no tasks, no kept floor and no pause has `tasks = 0` and nothing else set.
 - `ListHaltedOrderings` returns the halted keys of the pool in name order, at most `limit`
   (default 100, at most 1000).
 - `SetOrderingFloor` sets the class the front task of the key never runs below; an unset
   `floor` removes it. With `persist`, the floor stays when the key has no tasks left. The
   number of keys that keep one is limited by `limits.max_ordering_settings`; beyond it the
   call fails with `RESOURCE_EXHAUSTED`. `persist` without a `floor` is `INVALID_ARGUMENT`.
-- `Resume` resumes a halted key. `resumed` is false when the key was not halted, which is not
-  an error.
+- `Resume` with an `ordering_key` resumes a key that is halted or paused. `resumed` is false
+  when the key was neither, which is not an error. Without a key it resumes the pool or a
+  class; see below.
 
-`SetOrderingFloor` and `Resume` need a key (`INVALID_ARGUMENT` without one). Credentials pinned to a tenant have their own ordering keys: their key `k` is stored, and seen by other credentials, as `<tenant>:k`. They submit to, read and change those keys only.
-With a durable store, both return after the change is stored.
+`SetOrderingFloor` needs a key (`INVALID_ARGUMENT` without one). Credentials pinned to a tenant have their own ordering keys: their key `k` is stored, and seen by other credentials, as `<tenant>:k`. They submit to, read and change those keys only.
+With a durable store, `SetOrderingFloor` and `Resume` return after the change is stored.
+
+`Pause` and `Resume` [pause and resume](../concepts/pausing.md) a pool (`pool` empty:
+`default`), with `priority_class` the tasks of the pool that run at that class, or with
+`ordering_key` that ordering key of the pool. `priority_class` and `ordering_key` together are
+`INVALID_ARGUMENT`, as is a `priority_class` of `PRIORITY_UNSPECIFIED` or an unknown value.
+An `ordering_key` that is set but empty is `INVALID_ARGUMENT` too: an empty key is a mistake in
+the caller, not a way to name the pool. `reason` is required: not empty, one line without
+control characters, at most `limits.max_tag_len` bytes.
+
+- `Pause` takes a `reason` of at most `limits.max_tag_len` bytes (`INVALID_ARGUMENT` beyond
+  it). `paused` is false when the target was already paused; the new reason replaces the old
+  one.
+- `Resume` sets `resumed` to false when there was nothing to resume, which is not an error.
+  For an ordering key it also ends a halt.
+- `ListPausedOrderings` returns the paused keys of the pool as `PausedOrdering{key, reason}`
+  in name order, at most `limit` (default 100, at most 1000).
+
+The pool must be allowed for the credentials (`PERMISSION_DENIED` otherwise); an unknown pool
+is `NOT_FOUND`. Credentials pinned to a tenant pause and resume their own ordering keys only:
+a pool or a class is `PERMISSION_DENIED`, and `ListPausedOrderings` lists their own keys. With
+a durable store, `Pause` and `Resume` return after the change is stored.
 
 `AddRecurring` registers (or replaces) a cron schedule named `name`. `cron` has six fields
 (seconds first) or five (seconds = 0); `tz` is an IANA time zone (default UTC). The template is
@@ -360,13 +387,13 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 
 | Code | Cause |
 |---|---|
-| `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle, including a dependency on a task that is behind the task in its own ordering key; an ordering key together with a start time or in a schedule template; `on_failure` without an ordering key; `SetOrderingFloor` or `Resume` without a key; `persist` without a floor; oversize string or collection. |
+| `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle, including a dependency on a task that is behind the task in its own ordering key; an ordering key together with a start time or in a schedule template; `on_failure` without an ordering key; `SetOrderingFloor` without a key; `persist` without a floor; `Pause` or `Resume` with both a class and an ordering key, or with a class that is unspecified or unknown; a pause reason longer than `limits.max_tag_len`; oversize string or collection. |
 | `NOT_FOUND` | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | The key is already used by a task in a pool outside the credentials' scope. |
 | `FAILED_PRECONDITION` | A key that belongs to a task submitted with other content, for a submission with `KEY_CONFLICT_REJECT` (told apart by the `cronoq-conflict-task` metadata); fixed-start reservation conflict; an `Update` of a task with a fixed start; a `KEY_CONFLICT_REPLACE_QUEUED` submission that does not match the task it would replace; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. For `SetOrderingFloor` with `persist`: too many ordering keys keep a floor (`limits.max_ordering_settings`); retrying does not help until one is removed. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
+| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; credentials pinned to a tenant pause or resume a pool or a class; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
 | `DEADLINE_EXCEEDED` | A wait timed out while the task is still running, or no `Register` within 10 s. |
 | `CANCELLED` | The call ran longer than `limits.max_wait_s + limits.request_timeout_s`, or the client cancelled it. |
 | `UNAVAILABLE` | Not the leader, shutting down, or the store is unavailable. Retry with backoff. |

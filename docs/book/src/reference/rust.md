@@ -65,15 +65,19 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `handle(target)` | `Option<TaskHandle<O>>` | Attach to an existing task by id or key. |
 | `cancel(target)` | `bool` | `false` if the task already finished. |
 | `update(target, Update)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. `Update::new()` with `priority(p)`, `deadline_in(d)`, `deadline_at(t)`, `no_deadline()`, `tags(pairs)`. `Updated` has `id`, `status`, `deferred` and `changed`. |
-| `ordering(pool, key)` | `Option<OrderingInfo>` | An [ordering key](../concepts/ordering-keys.md) of `pool`: `tasks`, `head`, `effective`, `floor`, `persist`, `halted`. `None` for a key with no tasks and no kept floor. |
+| `ordering(pool, key)` | `Option<OrderingInfo>` | An [ordering key](../concepts/ordering-keys.md) of `pool`: `tasks`, `head`, `effective`, `floor`, `persist`, `halted`, `paused` (the reason, if the key is paused). `None` for a key with no tasks and no kept floor. |
 | `halted_orderings(pool, limit)` | `Vec<Arc<str>>` | The halted ordering keys of `pool`, in name order, at most `limit`. |
 | `set_ordering_floor(pool, key, floor, persist)` | `()` | Set the class floor of an ordering key (`floor` is an `Option<Priority>`; `None` removes it). With `persist`, the floor stays when the key has no tasks left; beyond `CoreConfig::max_ordering_settings` kept floors the call fails with `Error::Ordering(OrderingError::TooManySettings)`. |
-| `resume_ordering(pool, key)` | `bool` | Resume a halted ordering key. `false` if the key was not halted, which is not an error. |
+| `resume_ordering(pool, key)` | `bool` | Resume an ordering key that is halted or paused. `false` if the key was neither, which is not an error. |
+| `pause(pool, PauseTarget, reason)` | `bool` | [Pause](../concepts/pausing.md) a pool, one of its classes or one of its ordering keys: `PauseTarget::Pool`, `Class(Priority)` or `Ordering(Arc<str>)`. `false` if it was already paused; the new reason replaces the old one. |
+| `resume(pool, PauseTarget)` | `bool` | Resume what `pause` paused; for an ordering key, also a halt. `false` if there was nothing to resume, which is not an error. |
+| `pauses(pool)` | `PoolPauses` | The pauses of `pool` and of its classes, with their reasons: `pool` (`Option<Arc<str>>`) and `classes` (one `Option<Arc<str>>` per class, most important first); `holds(class)` gives the reason tasks that run at `class` are held, `is_empty()` is true when nothing is paused. Paused ordering keys are not included. |
+| `paused_orderings(pool, limit)` | `Vec<(Arc<str>, Arc<str>)>` | The paused ordering keys of `pool` with their reasons, in name order, at most `limit`. |
 | `status(target)` | `Option<TaskStatus>` | `None` for unknown tasks. |
 | `task(target)` | `Option<TaskSummary>` | One task that has not finished (pool, kind, key, priority, status, attempt, tenant); `None` if unknown or finished. |
 | `list_tasks(pools, statuses, after, limit)` | `Vec<TaskSummary>` | Live tasks in id order, filtered by pool (any if empty) and status (any if empty), with ids above `after`. Finished tasks are listed by a durable store (`StoreQueries::list_finished`). |
 | `list_recurring()` | `Vec<RecurringInfo>` | Recurring schedules with their next occurrence and latest task. |
-| `snapshot()` | `Snapshot` | Metrics and quality signals. `PoolSnapshot::ordering` is an `OrderingSnapshot` (`keys`, `waiting`, `halted`, `settings`) for the pool's [ordering keys](../concepts/ordering-keys.md). |
+| `snapshot()` | `Snapshot` | Metrics and quality signals. `PoolSnapshot::ordering` is an `OrderingSnapshot` (`keys`, `waiting`, `halted`, `paused`, `settings`) for the pool's [ordering keys](../concepts/ordering-keys.md). `PoolSnapshot::pauses` is the pool's `PoolPauses` and `PoolSnapshot::paused_tasks` the number of ready tasks held by a [pause](../concepts/pausing.md). |
 | `set_capacity(pool, n)` | `()` | Report capacity for pools with an `ExternalScaler`. |
 | `set_group_capacity(pool, labels, n)` | `()` | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `add_recurring(Recurring)` / `remove_recurring(name)` | `()` / `bool` | Cron schedules. |
@@ -83,9 +87,9 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `shutdown(grace)` | `()` | Stop admitting, let running attempts finish for `grace`, then stop. |
 
 With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`, `add_recurring`,
-`remove_recurring`, `set_ordering_floor` and `resume_ordering` return only after the change is
-durable. The four ordering methods return `Error::Submit(SubmitError::UnknownPool)` for a pool
-the scheduler does not have.
+`remove_recurring`, `set_ordering_floor`, `resume_ordering`, `pause` and `resume` return only
+after the change is durable. The four ordering methods and the four pause methods return
+`Error::Submit(SubmitError::UnknownPool)` for a pool the scheduler does not have.
 
 `TaskHandle<O>` is a `Future<Output = Result<Arc<O>, TaskFailure>>` with `id()`,
 `is_duplicate()` and `cancel()`.
@@ -162,7 +166,7 @@ See [Errors and status codes](errors.md).
 
 Engine types are re-exported from `cronoq-core`: `AutoscaleConfig`, `Bounds`, `Dep`,
 `EdgeCond`, `MissPolicy`, `OrderFailure`, `OrderingError`, `OrderingInfo`, `OrderingSnapshot`,
-`OverflowPolicy`, `OverlapPolicy`, `PoolConfig`, `PoolSnapshot`,
+`OverflowPolicy`, `OverlapPolicy`, `PauseTarget`, `PoolConfig`, `PoolPauses`, `PoolSnapshot`,
 `Priority`, `PriorityConfig`, `ResourceConfig`, `ResourceKind`, `RetryPolicy`, `Snapshot`,
 `StatusEvent`, `SubmitError`, `Submitted`, `TaskId`, `TaskRef`, `TaskStatus`,
 `UnknownDependency`, `UrgencyConfig`, and more. The whole engine is `cronoq::core`.
@@ -187,12 +191,13 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
 | `update(now, target, TaskPatch)` | Change a live task's priority, deadline or tags; emits `Mutation::Updated` and, with `emit_transitions`, a `StatusEvent` of `EventKind::Updated`. |
 | `set_capacity(now, pool, n)`, `set_group_capacity(now, pool, labels, n)` | Capacity changes, for the whole pool or for the workers with exactly `labels`. |
-| `ordering(pool, key)`, `halted_orderings(pool, limit)`, `set_ordering_floor`, `resume_ordering(now, pool, key)` | [Ordering keys](../concepts/ordering-keys.md): read a key, list halted keys, set or remove a class floor, resume a halted key. Floor and halt changes emit `Mutation::Ordering`. |
+| `ordering(pool, key)`, `halted_orderings(pool, limit)`, `set_ordering_floor`, `resume_ordering(now, pool, key)` | [Ordering keys](../concepts/ordering-keys.md): read a key, list halted keys, set or remove a class floor, resume a halted or paused key. Floor and halt changes emit `Mutation::Ordering`. |
+| `pause(now, pool, &PauseTarget, reason)`, `resume(now, pool, &PauseTarget)`, `pauses(pool)`, `paused_orderings(pool, limit)` | [Pausing](../concepts/pausing.md): pause or resume a pool, a class or an ordering key (`Result<bool, OrderingError>`; `OrderingError::UnknownPool` for a pool the engine does not have), read the pauses of a pool and its classes (`Option<&PoolPauses>`), list paused ordering keys with their reasons. A change emits `Mutation::Paused { pool, target, reason }`; `reason` is `None` for a resume. |
 | `add_recurring`, `remove_recurring`, `recurring_names`, `list_recurring` | Cron schedules. |
 | `tick(now)`, `next_wakeup()` | Timers. |
 | `poll_action()`, `drain_actions()`, `has_actions()` | `Action::{Dispatch, Abort, ScaleTo, Status, Persist, SpaceAvailable}` for the driver. |
 | `snapshot(now)` | Metrics. |
-| `recover(now, Recovered)` | Restore state loaded from a store. |
+| `recover(now, Recovered)` | Restore state loaded from a store. `Recovered::paused` is the pauses in place, each a `RecoveredPause { pool, target, reason }`. |
 | `check_invariants()` | Panics on internal inconsistency (tests and fuzzing). |
 
 `CoreConfig` fields: `pools`, `resources`, `priority`, `urgency`, `global_bounds`, `retention`,

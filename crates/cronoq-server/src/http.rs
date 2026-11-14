@@ -265,6 +265,12 @@ pub fn router(st: St) -> Router {
             "/v1/pools/{pool}/ordering/{key}/floor",
             put(set_ordering_floor).delete(clear_ordering_floor),
         )
+        .route("/v1/pools/{pool}/pause", post(pause_pool))
+        .route("/v1/pools/{pool}/resume", post(resume_pool))
+        .route(
+            "/v1/pools/{pool}/ordering/{key}/pause",
+            post(pause_ordering),
+        )
         .route(
             "/v1/pools/{pool}/ordering/{key}/resume",
             post(resume_ordering),
@@ -1102,7 +1108,7 @@ fn ordering_json(i: &pb::OrderingInfo) -> Value {
         "head": i.head.map(|id| id.to_string()),
         "effective": priority_name(i.effective),
         "floor": i.floor.and_then(priority_name),
-        "persist": i.persist, "halted": i.halted,
+        "persist": i.persist, "halted": i.halted, "paused": i.paused,
     })
 }
 
@@ -1121,8 +1127,9 @@ async fn get_ordering(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HaltedQuery {
-    /// Only `halted=true` is supported: ordering keys are not listed otherwise.
+    /// One of `halted=true` and `paused=true`: ordering keys are not listed otherwise.
     halted: Option<bool>,
+    paused: Option<bool>,
     limit: Option<u32>,
 }
 
@@ -1133,13 +1140,22 @@ async fn list_halted_orderings(
     Path(pool): Path<String>,
     Query(q): Query<HaltedQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    if q.halted != Some(true) {
-        return Err(bad(
-            "only halted ordering keys are listed: add ?halted=true",
-        ));
-    }
     let app = app(&st)?;
     let pool = crate::grpc::ordering_target(&p, &app.limits, &pool, "")?;
+    if q.paused == Some(true) && q.halted != Some(true) {
+        let keys =
+            crate::route::list_paused_orderings(app, &p, &pool, q.limit.unwrap_or(0)).await?;
+        let keys: Vec<Value> = keys
+            .into_iter()
+            .map(|(key, reason)| json!({ "key": key, "reason": reason }))
+            .collect();
+        return Ok(Json(json!({ "pool": pool, "paused": keys })));
+    }
+    if q.halted != Some(true) || q.paused == Some(true) {
+        return Err(bad(
+            "halted or paused ordering keys are listed: add ?halted=true or ?paused=true",
+        ));
+    }
     let keys = crate::route::list_halted_orderings(app, &p, &pool, q.limit.unwrap_or(0)).await?;
     Ok(Json(json!({ "pool": pool, "keys": keys })))
 }
@@ -1182,7 +1198,108 @@ async fn clear_ordering_floor(
     Ok(Json(ordering_json(&i)))
 }
 
-/// `POST /v1/pools/{pool}/ordering/{key}/resume`: resume a halted ordering key.
+/// Body of the pause routes.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PauseJson {
+    /// Why, for whoever looks at it later.
+    reason: String,
+    /// Pause this class of the pool only (pool route).
+    class: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResumeQuery {
+    /// Resume this class of the pool, not the pool.
+    class: Option<String>,
+}
+
+async fn pause_or_resume(
+    st: &St,
+    p: &Principal,
+    pool: &str,
+    class: Option<&str>,
+    key: Option<&str>,
+    reason: Option<&str>,
+) -> Result<Json<Value>, ApiError> {
+    let app = app(st)?;
+    // An empty path segment is not the default pool.
+    if pool.is_empty() {
+        return Err(bad("name the pool in the path"));
+    }
+    let class = class.map(parse_priority).transpose()?.map(|c| c as i32);
+    if let Some(reason) = reason {
+        crate::grpc::check_reason(reason, &app.limits)?;
+    }
+    let (pool, target) = crate::grpc::pause_target(p, &app.limits, pool, class, key)?;
+    let changed = crate::route::pause(app, p, &pool, target, reason).await?;
+    Ok(Json(match reason {
+        Some(_) => json!({ "paused": changed }),
+        None => json!({ "resumed": changed }),
+    }))
+}
+
+/// `POST /v1/pools/{pool}/pause`: pause the pool, or one class of it.
+async fn pause_pool(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path(pool): Path<String>,
+    ApiJson(body): ApiJson<PauseJson>,
+) -> Result<Json<Value>, ApiError> {
+    pause_or_resume(
+        &st,
+        &p,
+        &pool,
+        body.class.as_deref(),
+        None,
+        Some(&body.reason),
+    )
+    .await
+}
+
+/// `POST /v1/pools/{pool}/resume`: resume the pool, or one class of it, named with
+/// `?class=...` or in a JSON body `{"class": "..."}` like the pause route takes.
+async fn resume_pool(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path(pool): Path<String>,
+    Query(q): Query<ResumeQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let in_body = match body.iter().all(u8::is_ascii_whitespace) {
+        true => None,
+        false => {
+            serde_json::from_slice::<ResumeQuery>(&body)
+                .map_err(|e| bad(format!("invalid body: {e}")))?
+                .class
+        }
+    };
+    let class = match (q.class, in_body) {
+        (Some(a), Some(b)) if a != b => {
+            return Err(bad("the class in the query and in the body differ"));
+        }
+        (a, b) => a.or(b),
+    };
+    pause_or_resume(&st, &p, &pool, class.as_deref(), None, None).await
+}
+
+/// `POST /v1/pools/{pool}/ordering/{key}/pause`: pause an ordering key.
+async fn pause_ordering(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path((pool, key)): Path<(String, String)>,
+    ApiJson(body): ApiJson<PauseJson>,
+) -> Result<Json<Value>, ApiError> {
+    if body.class.is_some() {
+        return Err(bad("an ordering key is paused as a whole: leave out class"));
+    }
+    let app = app(&st)?;
+    crate::grpc::ordering_change(&p, &app.limits, &pool, &key)?;
+    pause_or_resume(&st, &p, &pool, None, Some(&key), Some(&body.reason)).await
+}
+
+/// `POST /v1/pools/{pool}/ordering/{key}/resume`: resume a halted or paused ordering key.
 async fn resume_ordering(
     State(st): State<St>,
     Extension(p): Extension<Principal>,
@@ -1251,8 +1368,13 @@ async fn snapshot(
                 "cost": p.cost, "workers_connected": p.workers_connected,
                 "ordering": {
                     "keys": p.ordering_keys, "waiting": p.ordering_waiting,
-                    "halted": p.ordering_halted,
+                    "halted": p.ordering_halted, "paused": p.ordering_paused,
                 },
+                "paused": p.paused,
+                "paused_classes": p.paused_classes.iter().map(|c| json!({
+                    "class": priority_name(c.priority_class), "reason": c.reason,
+                })).collect::<Vec<_>>(),
+                "paused_tasks": p.paused_tasks,
                 "groups": p.groups.iter().map(|g| json!({
                     "labels": g.labels, "capacity": g.capacity, "busy": g.busy,
                 })).collect::<Vec<_>>(),

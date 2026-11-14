@@ -538,11 +538,103 @@ async fn ordering_keys_are_submitted_shown_halted_and_resumed() {
     let o = s.cli(ADMIN, &["resume", "--ordering-key", "acct"]).await;
     assert_eq!(stdout(&o).trim(), "resumed", "{}", stderr(&o));
     let o = s.cli(ADMIN, &["resume", "--ordering-key", "acct"]).await;
-    assert_eq!(stdout(&o).trim(), "was not halted");
+    assert_eq!(stdout(&o).trim(), "was not paused or halted");
     let o = s.cli(CLIENT, &["wait", &next_id, "--timeout", "10"]).await;
     assert_eq!(stdout(&o), "NEXT", "{}", stderr(&o));
 
     let _ = stop_worker.send(());
     let _ = worker.await;
+    s.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pool_a_class_and_an_ordering_key_are_paused_and_resumed() {
+    let s = Server::start().await;
+    let o = s.cli(CLIENT, &["pause", "--reason", "x"]).await;
+    assert!(stderr(&o).contains("permission_denied"), "{}", stderr(&o));
+    // A reason is required, and a class and a key exclude each other.
+    let o = s.cli(ADMIN, &["pause"]).await;
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+    let o = s
+        .cli(
+            ADMIN,
+            &[
+                "pause",
+                "--reason",
+                "x",
+                "--class",
+                "low",
+                "--ordering-key",
+                "k",
+            ],
+        )
+        .await;
+    assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+
+    // An empty key is not the pool, and an empty reason is not a reason.
+    for args in [
+        &["pause", "--reason", "x", "--ordering-key", ""][..],
+        &["resume", "--ordering-key", ""],
+        &["pause", "--reason", ""],
+    ] {
+        let o = s.cli(ADMIN, args).await;
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", stderr(&o));
+    }
+    let o = s.cli(ADMIN, &["pause", "--reason", "deploy 14:00"]).await;
+    assert_eq!(stdout(&o).trim(), "paused", "{}", stderr(&o));
+    let o = s.cli(ADMIN, &["pause", "--reason", "deploy 14:00"]).await;
+    assert_eq!(stdout(&o).trim(), "was already paused");
+    let o = s
+        .cli(
+            ADMIN,
+            &["pause", "--class", "low", "--reason", "backfill off"],
+        )
+        .await;
+    assert_eq!(stdout(&o).trim(), "paused", "{}", stderr(&o));
+    let o = s
+        .cli(
+            ADMIN,
+            &[
+                "pause",
+                "--ordering-key",
+                "acct",
+                "--reason",
+                "customer asked",
+            ],
+        )
+        .await;
+    assert_eq!(stdout(&o).trim(), "paused", "{}", stderr(&o));
+
+    let v = json(&s.cli(METRICS, &["-o", "json", "snapshot"]).await);
+    assert_eq!(v["pools"][0]["paused"], "deploy 14:00");
+    assert_eq!(v["pools"][0]["paused_classes"][0]["class"], "low");
+    // The text view says what stands still, and why.
+    let text = stdout(&s.cli(METRICS, &["snapshot"]).await);
+    assert!(
+        text.contains("pool default is PAUSED: deploy 14:00")
+            && text.contains("class low is PAUSED: backfill off")
+            && text.contains("1 ordering key(s) paused"),
+        "{text}"
+    );
+    let text = stdout(&s.cli(METRICS, &["ordering", "paused"]).await);
+    assert!(
+        text.contains("acct") && text.contains("customer asked"),
+        "{text}"
+    );
+    let text = stdout(&s.cli(METRICS, &["ordering", "get", "acct"]).await);
+    assert!(text.contains("paused     yes (customer asked)"), "{text}");
+
+    for args in [
+        &["resume"][..],
+        &["resume", "--class", "low"],
+        &["resume", "--ordering-key", "acct"],
+    ] {
+        let o = s.cli(ADMIN, args).await;
+        assert_eq!(stdout(&o).trim(), "resumed", "{args:?}: {}", stderr(&o));
+    }
+    let o = s.cli(ADMIN, &["resume"]).await;
+    assert_eq!(stdout(&o).trim(), "was not paused or halted");
+    let v = json(&s.cli(METRICS, &["-o", "json", "snapshot"]).await);
+    assert_eq!(v["pools"][0]["paused"], serde_json::Value::Null);
     s.stop().await;
 }

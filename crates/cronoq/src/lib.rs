@@ -65,3 +65,4 @@ pub use cronoq_core::{
 };
 pub use cronoq_core::{EventKind, TaskPatch, UpdateError, Updated};
 pub use cronoq_core::{OrderFailure, OrderingError, OrderingInfo, OrderingSnapshot};
+pub use cronoq_core::{PauseTarget, PoolPauses, RecoveredPause};

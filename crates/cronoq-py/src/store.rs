@@ -222,6 +222,15 @@ impl CodecStore {
                         persist: *persist,
                         halted: *halted,
                     },
+                    Mutation::Paused {
+                        pool,
+                        target,
+                        reason,
+                    } => Mutation::Paused {
+                        pool: pool.clone(),
+                        target: target.clone(),
+                        reason: reason.clone(),
+                    },
                     Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
                         name: name.clone(),
                         next: *next,
@@ -276,6 +285,7 @@ impl Store<PyObj, PyObj> for CodecStore {
                 recurring: Vec::with_capacity(rec.recurring.len()),
                 pending: Vec::with_capacity(rec.pending.len()),
                 ordering: rec.ordering,
+                paused: rec.paused,
                 next_id: rec.next_id,
             };
             for p in rec.pending {

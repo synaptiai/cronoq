@@ -442,7 +442,7 @@ func TestOrderingKeys(t *testing.T) {
 	}
 
 	// Changing a key needs the admin role.
-	if _, err := c.Resume(ctx, "", "account-1"); !errors.As(err, &e) || e.Code != codes.PermissionDenied {
+	if _, err := c.Resume(ctx, cronoq.PauseTarget{OrderingKey: "account-1"}); !errors.As(err, &e) || e.Code != codes.PermissionDenied {
 		t.Fatalf("client resume: %v", err)
 	}
 	if err := admin.SetOrderingFloor(ctx, "", "account-1", cronoq.High, true); err != nil {
@@ -455,10 +455,10 @@ func TestOrderingKeys(t *testing.T) {
 	if err := admin.SetOrderingFloor(ctx, "", "account-1", "", false); err != nil {
 		t.Fatal(err)
 	}
-	if resumed, err := admin.Resume(ctx, "", "account-1"); err != nil || !resumed {
+	if resumed, err := admin.Resume(ctx, cronoq.PauseTarget{OrderingKey: "account-1"}); err != nil || !resumed {
 		t.Fatalf("resume = %v, %v", resumed, err)
 	}
-	if resumed, err := admin.Resume(ctx, "", "account-1"); err != nil || resumed {
+	if resumed, err := admin.Resume(ctx, cronoq.PauseTarget{OrderingKey: "account-1"}); err != nil || resumed {
 		t.Fatalf("second resume = %v, %v", resumed, err)
 	}
 	if r, err := c.Wait(ctx, cronoq.ID(last), 10*time.Second); err != nil || string(r.Output) != "last" {
@@ -467,6 +467,85 @@ func TestOrderingKeys(t *testing.T) {
 	info, err = admin.Ordering(ctx, "", "account-1")
 	if err != nil || info.Tasks != 0 || info.Head != 0 || info.Effective != "" || info.Halted {
 		t.Fatalf("emptied = %+v, %v", info, err)
+	}
+}
+
+func TestPauseAndResume(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	ctx := ctxFor(t)
+	admin, err := cronoq.Dial(s.target(), cronoq.Options{Token: adminToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	var e *cronoq.Error
+	if _, err := c.Pause(ctx, cronoq.PauseTarget{}, "x"); !errors.As(err, &e) || e.Code != codes.PermissionDenied {
+		t.Fatalf("client pause: %v", err)
+	}
+	if _, err := admin.Pause(ctx, cronoq.PauseTarget{Class: "urgent"}, "x"); !errors.As(err, &e) || e.Code != codes.InvalidArgument {
+		t.Fatalf("unknown class: %v", err)
+	}
+	// The pool, a class and an ordering key.
+	if paused, err := admin.Pause(ctx, cronoq.PauseTarget{}, "deploy"); err != nil || !paused {
+		t.Fatalf("pause = %v, %v", paused, err)
+	}
+	if paused, err := admin.Pause(ctx, cronoq.PauseTarget{}, "deploy"); err != nil || paused {
+		t.Fatalf("second pause = %v, %v", paused, err)
+	}
+	if _, err := admin.Pause(ctx, cronoq.PauseTarget{Class: cronoq.Low}, "backfill off"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Pause(ctx, cronoq.PauseTarget{OrderingKey: "acct"}, "customer asked"); err != nil {
+		t.Fatal(err)
+	}
+	normal, err := c.Submit(ctx, cronoq.Task{Payload: []byte("normal")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	low, _ := c.Submit(ctx, cronoq.Task{Payload: []byte("low"), Priority: cronoq.Low})
+	keyed, _ := c.Submit(ctx, cronoq.Task{Payload: []byte("keyed"), OrderingKey: "acct"})
+	worker(t, s.target(), cronoq.WorkerOptions{Slots: 4}, upper)
+	time.Sleep(300 * time.Millisecond)
+	snap, err := admin.Snapshot(ctx)
+	if err != nil || snap.Pools[0].GetPaused() != "deploy" || snap.Pools[0].GetPausedTasks() != 3 || len(snap.Pools[0].GetPausedClasses()) != 1 {
+		t.Fatalf("snapshot = %+v, %v", snap.GetPools(), err)
+	}
+	info, err := admin.Ordering(ctx, "", "acct")
+	if err != nil || !info.Paused || info.PausedReason != "customer asked" {
+		t.Fatalf("ordering = %+v, %v", info, err)
+	}
+	keys, err := admin.PausedOrderings(ctx, "", 0)
+	if err != nil || len(keys) != 1 || keys[0] != (cronoq.PausedOrdering{Key: "acct", Reason: "customer asked"}) {
+		t.Fatalf("paused keys = %+v, %v", keys, err)
+	}
+	if got, _ := c.Get(ctx, cronoq.ID(normal.ID)); got.Status != cronoq.Ready {
+		t.Fatalf("held task is %s", got.Status)
+	}
+	// Resumed one by one, each lets its own tasks run.
+	wait := func(id uint64) {
+		t.Helper()
+		if r, err := c.Wait(ctx, cronoq.ID(id), 10*time.Second); err != nil || r.Status != cronoq.Succeeded {
+			t.Fatalf("task %d = %+v, %v", id, r, err)
+		}
+	}
+	if resumed, err := admin.Resume(ctx, cronoq.PauseTarget{}); err != nil || !resumed {
+		t.Fatalf("resume = %v, %v", resumed, err)
+	}
+	wait(normal.ID)
+	if got, _ := c.Get(ctx, cronoq.ID(low.ID)); got.Status != cronoq.Ready {
+		t.Fatalf("low task is %s", got.Status)
+	}
+	if resumed, _ := admin.Resume(ctx, cronoq.PauseTarget{Class: cronoq.Low}); !resumed {
+		t.Fatal("the class was not paused")
+	}
+	wait(low.ID)
+	if resumed, _ := admin.Resume(ctx, cronoq.PauseTarget{OrderingKey: "acct"}); !resumed {
+		t.Fatal("the key was not paused")
+	}
+	wait(keyed.ID)
+	if resumed, _ := admin.Resume(ctx, cronoq.PauseTarget{}); resumed {
+		t.Fatal("nothing was paused")
 	}
 }
 

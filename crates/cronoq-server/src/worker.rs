@@ -551,6 +551,10 @@ where
     // Leave room for the message envelope.
     let max_output = (registered.max_message_bytes as usize).saturating_sub(1024);
     tracing::info!(worker = registered.worker_id, pool = %opts.pool, slots, "worker registered");
+    if let Some(reason) = &registered.pool_paused {
+        // Connected and healthy, but nothing will be leased until the pool is resumed.
+        tracing::warn!(pool = %opts.pool, %reason, "the pool is paused; no tasks until it is resumed");
+    }
     let mut draining: Option<tokio::time::Instant> = None;
     loop {
         let drain_done = async {

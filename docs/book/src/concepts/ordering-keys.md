@@ -105,7 +105,8 @@ cronoq resume --ordering-key import:42
 | List halted keys | `sched.halted_orderings(pool, limit)` | `sched.halted_orderings()` | `GET /v1/pools/{pool}/ordering?halted=true` |
 | Resume | `sched.resume_ordering(pool, key)` | `sched.resume_ordering(key)` | `POST /v1/pools/{pool}/ordering/{key}/resume` |
 
-Resuming a key that is not halted is not an error; the call reports whether it was.
+Resuming a key that is not halted is not an error; the call reports whether it was. Resuming
+also ends a [pause](pausing.md) of the key: one call ends both.
 
 ## A floor for a key
 
@@ -136,6 +137,7 @@ submission is never refused because of it.
 | [Bounds and shedding](backpressure.md) | Every task of a key counts toward the bounds, with its own class. Only a task at the front of its key can be shed: one that waits behind another is never picked. |
 | [Fair sharing](fairness.md) | The front task is charged to its own tenant, in the class it runs at. |
 | [Fixed starts](fixed-starts.md), [schedules](recurring.md) | Not allowed together with an ordering key: a start time and a place in line cannot both be promised. The submission is refused. |
+| [Pausing](pausing.md) | A key can be paused on its own, also before it has tasks. A pause of a class holds the front task of a key by the class it runs at, not by its own priority. |
 | [Pools](autoscaling.md) | A key belongs to its pool: the same key in two pools is two keys. |
 | [Sharding](sharding.md) | A pool lives on one shard, and so do its keys. |
 

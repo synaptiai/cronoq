@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use cronoq::{Store, StoreError, StoreQueries, TimeBase};
 use cronoq_core::{
-    Mutation, OrderFailure, Priority, Recovered, RecoveredRecurring, RecoveredTask,
+    Mutation, OrderFailure, PauseTarget, Priority, Recovered, RecoveredRecurring, RecoveredTask,
     RecoveredTerminal, TaskId, TaskRef, TaskSpec, TaskStatus,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -115,6 +115,15 @@ const MIGRATIONS: &[&str] = &[
         persist  BOOLEAN NOT NULL DEFAULT false,
         halted   BOOLEAN NOT NULL DEFAULT false,
         PRIMARY KEY (pool, key)
+    )",
+    // v14: pauses. A pool (kind 0), one of its classes (1, `name` is the class, 0 =
+    // critical) or one of its ordering keys (2) is paused while it has a row here.
+    "CREATE TABLE IF NOT EXISTS cronoq_paused (
+        pool    TEXT NOT NULL,
+        kind    SMALLINT NOT NULL,
+        name    TEXT NOT NULL,
+        reason  TEXT NOT NULL,
+        PRIMARY KEY (pool, kind, name)
     )",
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
@@ -689,7 +698,8 @@ impl PgStore {
                 Mutation::RecurringUpsert { .. }
                 | Mutation::RecurringRemove { .. }
                 | Mutation::RecurringNext { .. }
-                | Mutation::Ordering { .. } => {}
+                | Mutation::Ordering { .. }
+                | Mutation::Paused { .. } => {}
             }
         }
 
@@ -888,6 +898,33 @@ impl PgStore {
                         .map_err(db)?;
                     }
                 }
+                Mutation::Paused {
+                    pool,
+                    target,
+                    reason,
+                } => {
+                    let (kind, name) = pause_cols(target);
+                    match reason {
+                        Some(reason) => sqlx::query(
+                            "INSERT INTO cronoq_paused (pool, kind, name, reason) \
+                             VALUES ($1, $2, $3, $4) ON CONFLICT (pool, kind, name) \
+                             DO UPDATE SET reason = excluded.reason",
+                        )
+                        .bind(clean(pool))
+                        .bind(kind)
+                        .bind(name)
+                        .bind(clean(reason)),
+                        None => sqlx::query(
+                            "DELETE FROM cronoq_paused WHERE pool = $1 AND kind = $2 AND name = $3",
+                        )
+                        .bind(clean(pool))
+                        .bind(kind)
+                        .bind(name),
+                    }
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+                }
                 // Listed, not `_`: tasks were applied in the first pass.
                 Mutation::Submitted { .. }
                 | Mutation::Status { .. }
@@ -946,6 +983,15 @@ fn decode_task(base: TimeBase, r: &sqlx::postgres::PgRow) -> Result<RecoveredTas
         spec,
         attempt: r.get::<i32, _>("attempt").max(0) as u32,
     })
+}
+
+/// The `kind` and `name` columns of a pause.
+fn pause_cols(target: &PauseTarget) -> (i16, String) {
+    match target {
+        PauseTarget::Pool => (0, String::new()),
+        PauseTarget::Class(c) => (1, c.index().to_string()),
+        PauseTarget::Ordering(key) => (2, cleaned(key)),
+    }
 }
 
 /// A stored fingerprint: 16 bytes, big-endian. Anything else reads as none.
@@ -1210,6 +1256,35 @@ impl Store<Bytes, Bytes> for PgStore {
                 at: from_unix(base, now),
                 fingerprint: None,
             }));
+
+        // Pauses in place.
+        let rows = sqlx::query(
+            "SELECT pool, kind, name, reason FROM cronoq_paused ORDER BY pool, kind, name",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+        for r in rows {
+            let name: String = r.get("name");
+            let target = match r.get::<i16, _>("kind") {
+                0 => Some(PauseTarget::Pool),
+                1 => name
+                    .parse()
+                    .ok()
+                    .and_then(Priority::from_index)
+                    .map(PauseTarget::Class),
+                2 => Some(PauseTarget::Ordering(name.into())),
+                _ => None,
+            };
+            // A row this version cannot read is left alone.
+            if let Some(target) = target {
+                rec.paused.push(cronoq_core::RecoveredPause {
+                    pool: r.get::<String, _>("pool").into(),
+                    target,
+                    reason: r.get::<String, _>("reason").into(),
+                });
+            }
+        }
 
         // Ordering keys with a floor or a halt.
         let rows = sqlx::query(

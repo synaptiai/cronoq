@@ -150,3 +150,25 @@ async def test_ordering_keys_survive_a_restart(tmp_path):
         last = await second.handle("d")
         assert last is not None and await last == "d"
     assert order == ["bad", "b", "c", "d"]
+
+
+async def test_pauses_survive_a_restart(tmp_path):
+    ran = []
+
+    async def run(ctx, payload):
+        ran.append(payload)
+        return payload
+
+    first = Scheduler([Pool("default", run)], store=store(tmp_path))
+    await first.start()
+    await first.pause("maintenance")
+    await first.enqueue("a", key="a")
+    await first.shutdown(grace=1)
+
+    async with Scheduler([Pool("default", run)], store=store(tmp_path)) as second:
+        await asyncio.sleep(0.1)
+        assert ran == []
+        assert (await second.snapshot()).pool("default").paused == "maintenance"
+        assert await second.resume()
+        h = await second.handle("a")
+        assert h is not None and await h == "a"

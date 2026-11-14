@@ -51,7 +51,10 @@ the scheduler stops and further calls raise `SchedulerError`; calls before `star
 | `await ordering(key, *, pool=None)` | `OrderingInfo \| None` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool); `None` for a key with no tasks and no kept floor. |
 | `await halted_orderings(*, pool=None, limit=100)` | `list[str]` | The halted ordering keys of a pool, in name order. |
 | `await set_ordering_floor(key, floor, *, pool=None, persist=False)` | | Set the class floor of an ordering key; `floor=None` removes it. With `persist=True` the floor stays when the key has no tasks left; beyond 100,000 kept floors the call raises `SchedulerError`. `persist=True` without a floor raises `ValueError`. |
-| `await resume_ordering(key, *, pool=None)` | `bool` | Resume a halted ordering key. `False` if the key was not halted, which is not an error. |
+| `await resume_ordering(key, *, pool=None)` | `bool` | Resume an ordering key that is halted or paused. `False` if the key was neither, which is not an error. |
+| `await pause(reason, *, pool=None, priority_class=None, ordering_key=None)` | `bool` | [Pause](../concepts/pausing.md) `pool` (default: the default pool), or with `priority_class` the tasks of the pool that run at that class, or with `ordering_key` that ordering key. `False` if it was already paused; the new reason replaces the old one. Both `priority_class` and `ordering_key` raise `ValueError`. |
+| `await resume(*, pool=None, priority_class=None, ordering_key=None)` | `bool` | Resume what `pause` paused, named the same way; for an ordering key, also a halt. `False` if there was nothing to resume, which is not an error. |
+| `await paused_orderings(*, pool=None, limit=100)` | `list[tuple[str, str]]` | The paused ordering keys of a pool as `(key, reason)` pairs, in name order. |
 | `await set_capacity(pool, n)` | | Report capacity for externally managed pools. |
 | `await set_group_capacity(pool, labels, n)` | | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `await add_recurring(name, cron, payload, **options)` | | Cron schedule. Options: `tz`, `overlap` (`"skip"`, `"allow"`, `"queue"` or `"queue_on_success"`), `tolerance` (1.0), `on_miss` (`"run_late"`), `priority`, `pool`, `kind`, `key` (a prefix: each occurrence gets `"<key>@<start in UTC>"`), `deadline_in` (relative to each occurrence's start), `duration_hint`, `timeout`, `retry`, `resources`, `tags`, `labels`, `tenant`. |
@@ -198,9 +201,9 @@ executors.
 | `TaskContext` | `id`, `attempt`, `kind`, `key`, `pool`, `tags`, `group` (labels of the worker group the attempt was assigned to), `timeout`, `deadline` (Unix seconds); `is_cancelled()`, `heartbeat()`. |
 | `TaskHandle` | Awaitable; `id`, `duplicate`, `outcome` (`"created"`, `"existing"`, `"replaced"` or `"pending"`), `await result()`, `done()`, `cancel()`. |
 | `Updated` | Result of `update`: `id`, `status` (unchanged by the update), `deferred` (an attempt is running; the values apply to what follows it), `changed` (`False` when the task already had every value). |
-| `OrderingInfo` | Result of `ordering`: `tasks` (not finished), `head` (id of the task at the front, or `None`), `effective` (name of the class the front task runs at, or `None`), `floor` (class name or `None`), `persist`, `halted`. |
+| `OrderingInfo` | Result of `ordering`: `tasks` (not finished), `head` (id of the task at the front, or `None`), `effective` (name of the class the front task runs at, or `None`), `floor` (class name or `None`), `persist`, `halted`, `paused` (the reason the key is paused, or `None`). |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (dict), `pool(name)`. |
-| `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, `ordering_keys`, `ordering_waiting` and `ordering_halted` ([Ordering keys](../concepts/ordering-keys.md#metrics)), and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
+| `PoolSnapshot` | The [snapshot fields](../concepts/metrics.md) with times in seconds, plus `pending`, `ordering_keys`, `ordering_waiting`, `ordering_halted` and `ordering_paused` ([Ordering keys](../concepts/ordering-keys.md#metrics)), `paused` (the reason the pool is paused, or `None`), `paused_classes` (class name to reason, for classes paused on their own) and `paused_tasks` (ready tasks held by a pause; [Pausing](../concepts/pausing.md#seeing-what-is-paused)), and the `priority` (`PriorityConfig`) and `urgency` (`UrgencyConfig`) in effect for the pool. |
 | `StatusEvent`, `EventStream` | See [status events](#status-events). |
 
 `cronoq.__version__` is the package version as a string.
@@ -249,7 +252,9 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | `await ordering(key, *, pool=None)` | `OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool). A key with no tasks and no kept floor has `tasks == 0`. Requires a metrics or admin token. |
 | `await halted_orderings(*, pool=None, limit=100)` | `list[str]` | The halted ordering keys of a pool, in name order. Requires a metrics or admin token. |
 | `await set_ordering_floor(key, floor, *, pool=None, persist=False)` | | Set the class floor of an ordering key; `floor=None` removes it. With `persist=True` the floor stays when the key has no tasks left; the server limits how many keys keep one (`ClientError` `resource_exhausted`). Requires an admin token. |
-| `await resume(*, ordering_key, pool=None)` | `bool` | Resume a halted ordering key. `False` if the key was not halted, which is not an error. Requires an admin token. |
+| `await pause(reason, *, pool=None, priority_class=None, ordering_key=None)` | `bool` | [Pause](../concepts/pausing.md) `pool` (default: the default pool), or with `priority_class` the tasks of the pool that run at that class, or with `ordering_key` that ordering key. `False` if it was already paused; the new reason replaces the old one. Both `priority_class` and `ordering_key` raise `ValueError`. Requires an admin token; one pinned to a tenant pauses its own ordering keys only. |
+| `await resume(*, pool=None, priority_class=None, ordering_key=None)` | `bool` | Resume what `pause` paused, named the same way; with `ordering_key`, also a halted key. `False` if there was nothing to resume, which is not an error. Requires an admin token; one pinned to a tenant resumes its own ordering keys only. |
+| `await paused_orderings(*, pool=None, limit=100)` | `list[tuple[str, str]]` | The paused ordering keys of a pool as `(key, reason)` pairs, in name order. Requires a metrics or admin token. |
 | `await add_recurring(name, cron, payload=None, *, tz=None, overlap="skip", **options)` | | Requires an admin token. `payload` may also be a prebuilt `task(...)` spec. `overlap`, `key` and `deadline_in` work as for the native scheduler. |
 | `await remove_recurring(name)` | `bool` | Requires an admin token. |
 | `await list_workers()` | `list[WorkerInfo]` | Connected remote workers. Requires a metrics or admin token. |
@@ -266,10 +271,10 @@ Result types (frozen dataclasses):
 | `WorkerInfo` | `id`, `name`, `pool`, `labels`, `slots`, `busy`, `connected_at` (Unix seconds) |
 | `RecurringInfo` | `name`, `cron`, `tz` (empty for UTC), `pool`, `kind`, `overlap`, `next_at` (Unix seconds or `None`), `last_task_id` (or `None`) |
 | `Updated` | `id`, `status` (unchanged by the update), `deferred`, `changed` |
-| `OrderingInfo` | `pool`, `key`, `tasks`, `head` (task id or `None`), `effective` and `floor` (class names or `None`), `persist`, `halted` |
+| `OrderingInfo` | `pool`, `key`, `tasks`, `head` (task id or `None`), `effective` and `floor` (class names or `None`), `persist`, `halted`, `paused` (reason or `None`) |
 | `Event` | `id`, `pool`, `key`, `status`, `attempt`, `at` (Unix seconds), `message`, `priority` (name, or `None` from an older server), `updated` (true for an event that reports an update, delivered with `all_transitions=True`), `kind` (`"transition"`, `"updated"`, `"replaced"` or `"successor"`) |
 | `Snapshot` | `pools`, `live_tasks`, `running`, `pending`, `totals` (`Totals`), `workers_connected`, `unavailable_shards`; `.pool(name)` |
-| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `ordering_keys`, `ordering_waiting`, `ordering_halted`, `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
+| `PoolSnapshot` | `name`, `capacity`, `busy`, `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`, `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`, `wait_p50`, `wait_p90`, `wait_p99`, `cost`, `workers_connected`, `groups` (tuple of `WorkerGroup`, unlabeled first), `ordering_keys`, `ordering_waiting`, `ordering_halted`, `ordering_paused`, `paused` (the reason the pool is paused, or `None`), `paused_classes` (class name to reason), `paused_tasks`, `priority` (`PrioritySettings`: `base`, `aging_rate`, `age_cap`, `allow_overtaking_high`) and `urgency` (`UrgencySettings`: `max`, `window`, `overdue_rate`, `overdue_cap`), both `None` from a server older than these settings; `.pending` |
 | `WorkerGroup` | `labels`, `capacity`, `busy`: the connected workers of a pool that registered the same labels |
 | `Totals` | `submitted`, `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`, `retries`, `timeouts`, `lease_expiries`, `stale_completions`, `superseded` (counters since the leader started) |
 
@@ -312,6 +317,7 @@ an override). `Result.json()` returns `None` for an empty output.
 | `await wait_registered(timeout=None)` | Wait until registered. |
 | `running` | Leases running now. |
 | `worker_id`, `lease_ttl`, `granted_slots`, `server_protocol`, `max_message_bytes` | From the server's `Registered` message. |
+| `pool_paused` | The reason the pool was [paused](../concepts/pausing.md) when the worker registered, or `None`; also logged as a warning. The worker stays connected and gets no tasks until the pool is resumed. |
 | `last_shutdown`, `connections` | Reason of the last server `Shutdown`; number of connections made. |
 
 `handler(lease)` is an `async def` receiving a `Lease`: `id`, `task_id`, `attempt`, `payload`,

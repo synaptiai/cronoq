@@ -35,6 +35,7 @@ macro_rules! suite {
             replacements_are_stored_and_dropped,
             ordering_keys_are_stored_and_recovered,
             ordering_keys_survive_a_restart,
+            pauses_are_stored_and_survive_a_restart,
             deps_on_parents_outside_retention_survive_failover,
             long_missed_starts_are_not_run_after_restart,
             message_does_not_depend_on_batching,
@@ -268,10 +269,15 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             persist: true,
             halted: true,
         },
+        Mutation::Paused {
+            pool: "gpu".into(),
+            target: PauseTarget::Class(Priority::Low),
+            reason: Some("backfill off".into()),
+        },
     ];
     // Exhaustive on purpose (no `_`): a new mutation kind fails to compile here until this
     // batch commits one and the checks below cover its effect after recovery.
-    let mut kinds = [false; 9];
+    let mut kinds = [false; 10];
     for m in &batch {
         let kind = match m {
             Mutation::Submitted { .. } => 0,
@@ -283,10 +289,11 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             Mutation::Replaced { .. } => 6,
             Mutation::PendingReplacement { .. } => 7,
             Mutation::Ordering { .. } => 8,
+            Mutation::Paused { .. } => 9,
         };
         kinds[kind] = true;
     }
-    assert_eq!(kinds, [true; 9], "the batch must hold every mutation kind");
+    assert_eq!(kinds, [true; 10], "the batch must hold every mutation kind");
     let out = Bytes::from_static(b"result");
     store
         .commit(epoch, base, &batch, &[(TaskId(12), &out)])
@@ -295,6 +302,14 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
 
     let rec = store.recover(base).await.unwrap();
     assert_eq!(rec.next_id, 13);
+    assert_eq!(
+        rec.paused,
+        vec![RecoveredPause {
+            pool: "gpu".into(),
+            target: PauseTarget::Class(Priority::Low),
+            reason: "backfill off".into(),
+        }]
+    );
     assert_eq!(
         rec.ordering,
         vec![RecoveredOrdering {
@@ -1181,6 +1196,94 @@ pub async fn scheduler_resumes_after_restart_without_rerunning_finished_work<H: 
     let epoch2 = s2.enqueue(Task::new(Bytes::from("e"))).await.unwrap().id.0 >> 48;
     assert!(epoch2 >= 2, "new ids carry the new epoch");
     s2.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+/// Pauses of a pool, a class and an ordering key are stored when they are set, replaced when
+/// the reason changes, dropped when they are resumed, and in place after a restart.
+pub async fn pauses_are_stored_and_survive_a_restart<H: Harness>(h: &H) {
+    let store = h.open().await;
+    let epoch = store.acquire_leadership().await.unwrap();
+    let base = base_at(now());
+    let paused = |pool: &str, target: PauseTarget, reason: Option<&str>| Mutation::Paused {
+        pool: pool.into(),
+        target,
+        reason: reason.map(Into::into),
+    };
+    let key = || PauseTarget::Ordering("acct:1".into());
+    let first: Vec<Mutation<Bytes>> = vec![
+        paused("default", PauseTarget::Pool, Some("deploy")),
+        paused("default", PauseTarget::Class(Priority::Critical), Some("a")),
+        paused("default", PauseTarget::Class(Priority::Low), Some("b")),
+        paused("default", key(), Some("customer asked")),
+        paused("other", PauseTarget::Pool, Some("x")),
+        // The last state in a batch wins.
+        paused("default", PauseTarget::Class(Priority::Low), Some("b2")),
+        paused("other", PauseTarget::Pool, None),
+    ];
+    store.commit(epoch, base, &first, &[]).await.unwrap();
+    let rec = store.recover(base).await.unwrap();
+    let got: Vec<_> = rec
+        .paused
+        .iter()
+        .map(|p| (&*p.pool, p.target.clone(), &*p.reason))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("default", PauseTarget::Pool, "deploy"),
+            ("default", PauseTarget::Class(Priority::Critical), "a"),
+            ("default", PauseTarget::Class(Priority::Low), "b2"),
+            ("default", key(), "customer asked"),
+        ]
+    );
+    let second: Vec<Mutation<Bytes>> = vec![
+        paused("default", PauseTarget::Pool, None),
+        paused("default", PauseTarget::Class(Priority::Critical), None),
+        paused("default", key(), None),
+        // Resuming what is not paused is harmless.
+        paused("default", PauseTarget::Class(Priority::High), None),
+    ];
+    store.commit(epoch, base, &second, &[]).await.unwrap();
+    let rec = store.recover(base).await.unwrap();
+    assert_eq!(rec.paused.len(), 1);
+    assert_eq!(rec.paused[0].target, PauseTarget::Class(Priority::Low));
+    store.release_leadership().await;
+    drop(store);
+
+    // A scheduler started on the store holds what the pause holds, until it is resumed.
+    let runs = Runs::default();
+    let store2 = h.open().await;
+    let s = scheduler(store2.clone(), runs.clone(), Duration::from_millis(5)).await;
+    s.enqueue(
+        Task::new(Bytes::from("low"))
+            .key("low")
+            .priority(Priority::Low),
+    )
+    .await
+    .unwrap();
+    let normal = s
+        .submit(Task::new(Bytes::from("normal")).key("normal"))
+        .await
+        .unwrap();
+    normal.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(s.status("low").await.unwrap(), Some(TaskStatus::Ready));
+    let snap = s.snapshot().await.unwrap();
+    assert_eq!(
+        snap.pools[0].pauses.classes[Priority::Low.index()].as_deref(),
+        Some("b2")
+    );
+    assert!(
+        s.resume("default", PauseTarget::Class(Priority::Low))
+            .await
+            .unwrap()
+    );
+    until_status(&s, "low", TaskStatus::Succeeded).await;
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
+    drop(s);
+    store2.release_leadership().await;
+    let store3 = h.open().await;
+    assert!(store3.recover(BASE).await.unwrap().paused.is_empty());
 }
 
 /// A scheduler that is restarted rebuilds its ordering keys from the store: the order of the

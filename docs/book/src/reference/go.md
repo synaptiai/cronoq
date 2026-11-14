@@ -58,7 +58,9 @@ opened on the first call.
 | `Ordering(ctx, pool, key)` | `*OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (empty: the default pool). A key with no tasks and no kept floor has `Tasks` 0 (metrics role). |
 | `HaltedOrderings(ctx, pool, limit)` | `[]string` | The halted ordering keys of `pool`, in name order. A `limit` of 0 takes the server's default (metrics role). |
 | `SetOrderingFloor(ctx, pool, key, floor, persist)` | `error` | Set the class floor of an ordering key; an empty `floor` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`ResourceExhausted`). Admin role. |
-| `Resume(ctx, pool, orderingKey)` | `bool` | Resume a halted ordering key. False if the key was not halted, which is not an error. Admin role. |
+| `Pause(ctx, PauseTarget, reason)` | `bool` | [Pause](../concepts/pausing.md) a pool, one of its classes or one of its ordering keys. False if it was already paused; the new reason replaces the old one. Admin role; credentials pinned to a tenant pause their own ordering keys only. |
+| `Resume(ctx, PauseTarget)` | `bool` | Resume what `Pause` paused; with `OrderingKey`, also a halted key. False if there was nothing to resume, which is not an error. Admin role; credentials pinned to a tenant resume their own ordering keys only. |
+| `PausedOrderings(ctx, pool, limit)` | `[]PausedOrdering` | The paused ordering keys of `pool` with their reasons (`Key`, `Reason`), in name order. A `limit` of 0 takes the server's default (metrics role). |
 
 `Ref` names a task: `cronoq.ID(id)` or `cronoq.Key(key)`.
 
@@ -107,7 +109,13 @@ submissions with the same ordering key are two tasks. It is refused together wit
 (`InvalidArgument`). `Task.HaltOnFailure`, with `OrderingKey`, halts the key if the task ends
 as failed, until `Client.Resume`. `OrderingInfo` has `Pool`, `Key`, `Tasks` (not finished),
 `Head` (id of the task at the front; 0 if there is none), `Effective` (the class that task
-runs at; empty without tasks or a floor), `Floor` (empty if none), `Persist` and `Halted`.
+runs at; empty without tasks or a floor), `Floor` (empty if none), `Persist`, `Halted`,
+`Paused` and `PausedReason`.
+
+`PauseTarget` names what `Pause` and `Resume` act on ([Pausing](../concepts/pausing.md)):
+`Pool` (empty: the default pool); with `Class`, the tasks of the pool that run at that class;
+with `OrderingKey`, that ordering key of the pool. `Class` and `OrderingKey` together are
+refused (`InvalidArgument`). `PauseTarget{}` is the default pool as a whole.
 
 `Update` fields, all optional: `Priority`, `DeadlineIn` (from now), `DeadlineAt`,
 `ClearDeadline` (at most one of the three), and `Tags`, which replaces the task's tags when it
@@ -155,7 +163,9 @@ below. When `ctx` ends, it stops taking leases and lets running handlers finish 
 `DrainTimeout`, then cancels the rest and returns `nil`. A cancelled handler that returns within
 5 more seconds still has its outcome reported; after that its outcome is dropped (the server
 retries the task). It returns an error only for failures that retrying cannot fix, such as a
-rejected token or an unknown pool.
+rejected token or an unknown pool. When the pool is [paused](../concepts/pausing.md) at
+registration, it logs a warning with the reason; the worker stays connected and gets no tasks
+until the pool is resumed.
 
 | Option | Default | Description |
 |---|---|---|

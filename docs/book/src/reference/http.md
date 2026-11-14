@@ -1,7 +1,7 @@
 # HTTP API
 
 The HTTP gateway exposes the `Tasks` service of the [gRPC API](grpc.md) as JSON, except the
-`Watch` stream, plus the read-only `Admin` calls, the [ordering key](../concepts/ordering-keys.md) calls, metrics and health probes. It listens on `server.http_addr` (default `127.0.0.1:7071`) and serves HTTP/1.1
+`Watch` stream, plus the read-only `Admin` calls, the [ordering key](../concepts/ordering-keys.md) and [pause](../concepts/pausing.md) calls, metrics and health probes. It listens on `server.http_addr` (default `127.0.0.1:7071`) and serves HTTP/1.1
 and HTTP/2 (h2c without TLS, ALPN with TLS). With `[server.tls]` configured it serves HTTPS and
 accepts client certificates on the same terms as the gRPC listener.
 
@@ -55,9 +55,13 @@ managed over gRPC (`Admin.AddRecurring`) or in the embedding runtime.
 | `GET /v1/recurring` | metrics | Recurring schedules. |
 | `GET /v1/pools/{pool}/ordering/{key}` | metrics | An ordering key of a pool. |
 | `GET /v1/pools/{pool}/ordering?halted=true` | metrics | The halted ordering keys of a pool. |
+| `GET /v1/pools/{pool}/ordering?paused=true` | metrics | The paused ordering keys of a pool, with their reasons. |
 | `PUT /v1/pools/{pool}/ordering/{key}/floor` | admin | Set the class floor of an ordering key. |
 | `DELETE /v1/pools/{pool}/ordering/{key}/floor` | admin | Remove the class floor of an ordering key. |
-| `POST /v1/pools/{pool}/ordering/{key}/resume` | admin | Resume a halted ordering key. |
+| `POST /v1/pools/{pool}/ordering/{key}/pause` | admin | Pause an ordering key. |
+| `POST /v1/pools/{pool}/ordering/{key}/resume` | admin | Resume a halted or paused ordering key. |
+| `POST /v1/pools/{pool}/pause` | admin | Pause a pool, or one class of it. |
+| `POST /v1/pools/{pool}/resume` | admin | Resume a pool, or one class of it. |
 | `GET /metrics` | metrics | Prometheus text exposition ([metrics reference](metrics.md)). |
 | `GET /healthz` | none | `200 ok` while the process runs (liveness). |
 | `GET /readyz` | none | `200 ready` on the leader, `503 standby` otherwise (readiness). |
@@ -269,7 +273,7 @@ An unknown pool returns 404, a pool the caller may not use 403.
 
 ```json
 {"pool": "default", "key": "account:8842", "tasks": 3, "head": "17",
- "effective": "high", "floor": null, "persist": false, "halted": false}
+ "effective": "high", "floor": null, "persist": false, "halted": false, "paused": null}
 ```
 
 | Field | Description |
@@ -280,6 +284,7 @@ An unknown pool returns 404, a pool the caller may not use 403.
 | `floor` | The class floor, or `null`. |
 | `persist` | The floor stays when the key has no tasks left. |
 | `halted` | A failed task halted the key: nothing of it runs until it is resumed. |
+| `paused` | The reason the key is [paused](../concepts/pausing.md), or `null`. |
 
 A key with no tasks and no kept floor is not an error: it has `tasks` 0.
 
@@ -290,8 +295,19 @@ A key with no tasks and no kept floor is not an error: it has `tasks` 0.
 ```
 
 The halted keys of the pool, in name order, at most `limit` (query parameter, default 100,
-at most 1000). Ordering keys are not listed otherwise: without `halted=true` the route
-returns 400.
+at most 1000).
+
+### `GET /v1/pools/{pool}/ordering?paused=true`
+
+```json
+{"pool": "default", "paused": [{"key": "account:8842", "reason": "repairing this account"}]}
+```
+
+The [paused](../concepts/pausing.md) keys of the pool with their reasons, in name order, at
+most `limit` (query parameter, default 100, at most 1000).
+
+Ordering keys are not listed otherwise: without exactly one of `halted=true` and
+`paused=true` the route returns 400.
 
 ### `PUT` and `DELETE /v1/pools/{pool}/ordering/{key}/floor`
 
@@ -311,12 +327,54 @@ floor and takes no body. Both return the key, as `GET` does.
 {"resumed": true}
 ```
 
-Resumes a halted key. `resumed` is `false` when the key was not halted, which is not an error.
-The route takes no body.
+Resumes a key that is halted or paused. `resumed` is `false` when the key was neither, which
+is not an error. The route takes no body.
+
+### `POST /v1/pools/{pool}/ordering/{key}/pause`
+
+```json
+{"reason": "repairing this account"}
+```
+
+[Pauses](../concepts/pausing.md) the key and returns `{"paused": true}`; `paused` is `false`
+when the key was already paused, and the new reason replaces the old one. `reason` is
+required, at most `limits.max_tag_len` bytes. A `class` in the body returns 400.
 
 Credentials pinned to a tenant have their own ordering keys: their key `k` is stored, and seen by other credentials, as `<tenant>:k`. They submit to, read and change those keys only.
 With a durable store, the change is stored before the response
 is sent.
+
+## Pausing
+
+These routes [pause and resume](../concepts/pausing.md) a pool or one class of it; an ordering
+key is paused and resumed with the [ordering key routes](#ordering-keys). An unknown pool
+returns 404, a pool the caller may not use 403. Credentials pinned to a tenant get 403: they
+pause and resume their own ordering keys only.
+
+### `POST /v1/pools/{pool}/pause`
+
+```json
+{"reason": "backfill is starving interactive work", "class": "low"}
+```
+
+Pauses the pool, or with `class` (`critical`, `high`, `normal` or `low`) the tasks of the pool
+that run at that class. `reason` is required: not empty, one line without control characters,
+at most `limits.max_tag_len` bytes. Returns
+`{"paused": true}`; `paused` is `false` when it was already paused, and the new reason replaces
+the old one.
+
+### `POST /v1/pools/{pool}/resume`
+
+```json
+{"resumed": true}
+```
+
+Resumes the pool, or one class of it, named with the query parameter `class` (`?class=low`) or
+in a JSON body `{"class": "low"}` like the pause route takes; naming two different classes
+is a 400. Resuming the pool leaves a paused class paused. `resumed` is `false` when there was
+nothing to resume, which is not an error.
+
+With a durable store, the change is stored before the response is sent.
 
 ## `PATCH /v1/tasks/{id}` and `PATCH /v1/tasks/by-key/{key}`
 
@@ -397,7 +455,10 @@ Results of finished tasks remain available while the leader's output cache
             "utilization": 0.83, "schedule_efficiency": 0.80,
             "wait_p50_s": 0.2, "wait_p90_s": 1.4, "wait_p99_s": 2.9, "cost": 0.0,
             "workers_connected": 2,
-            "ordering": {"keys": 40, "waiting": 7, "halted": 0},
+            "ordering": {"keys": 40, "waiting": 7, "halted": 0, "paused": 1},
+            "paused": null,
+            "paused_classes": [{"class": "low", "reason": "backfill off"}],
+            "paused_tasks": 5,
             "groups": [{"labels": {}, "capacity": 3, "busy": 3},
                        {"labels": {"gpu": "a100"}, "capacity": 1, "busy": 1}],
             "priority": {"base": [10000.0, 1000.0, 100.0, 10.0],
@@ -426,7 +487,10 @@ Results of finished tasks remain available while the leader's output cache
 | `pools[].wait_p50_s`, `wait_p90_s`, `wait_p99_s` | Time from submission to first start, over the metrics window. |
 | `pools[].cost` | Cost since start (`cost_per_worker_second` × worker-seconds). |
 | `pools[].groups` | Worker groups (workers with the same labels), unlabeled first: labels, slots and busy slots. |
-| `pools[].ordering` | [Ordering keys](../concepts/ordering-keys.md#metrics) of the pool: `keys` that have tasks, ready tasks `waiting` for an older task of their key or for a halted key, and `halted` keys. |
+| `pools[].ordering` | [Ordering keys](../concepts/ordering-keys.md#metrics) of the pool: `keys` that have tasks, ready tasks `waiting` for an older task of their key or for a halted key, `halted` keys and `paused` keys. |
+| `pools[].paused` | The reason the whole pool is [paused](../concepts/pausing.md), or `null`. |
+| `pools[].paused_classes` | Classes of the pool that are paused on their own, each with `class` and `reason`. |
+| `pools[].paused_tasks` | Ready tasks held by a pause of the pool, of their class or of their ordering key. |
 | `pools[].priority`, `urgency` | The [priority and urgency settings](configuration.md#priority-and-urgency) in effect for the pool. Arrays are in the order critical, high, normal, low. `null` for a pool reported by a shard that runs an older version. |
 | `totals` | Lifetime counters of this leader since it started. |
 
@@ -457,9 +521,9 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 
 | Status | gRPC equivalent | Cause |
 |---|---|---|
-| 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle (including a dependency on a task behind the task in its own ordering key), an `ordering_key` with a start time, `on_failure` without an `ordering_key`, invalid id. |
+| 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle (including a dependency on a task behind the task in its own ordering key), an `ordering_key` with a start time, `on_failure` without an `ordering_key`, a pause without a `reason` or with an unknown `class`, invalid id. |
 | 401 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
+| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, credentials pinned to a tenant pause or resume a pool or a class, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
 | 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a `replace_queued` submission that does not match the task it would replace; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |

@@ -98,6 +98,22 @@ pub(crate) enum Cmd<P, O> {
         key: Arc<str>,
         reply: Reply<Result<bool, Error>>,
     },
+    Pause {
+        pool: PoolId,
+        target: cronoq_core::PauseTarget,
+        /// `None` resumes.
+        reason: Option<Arc<str>>,
+        reply: Reply<Result<bool, Error>>,
+    },
+    Pauses {
+        pool: PoolId,
+        reply: Reply<cronoq_core::PoolPauses>,
+    },
+    PausedOrderings {
+        pool: PoolId,
+        limit: usize,
+        reply: Reply<Vec<(Arc<str>, Arc<str>)>>,
+    },
     Status {
         target: TaskRef,
         reply: Reply<Option<TaskStatus>>,
@@ -789,6 +805,35 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     let _ = reply.send(Err(Error::Ordering(e)));
                 }
             },
+            Cmd::Pauses { pool, reply } => {
+                let _ = reply.send(self.core.pauses(pool).cloned().unwrap_or_default());
+            }
+            Cmd::PausedOrderings { pool, limit, reply } => {
+                let _ = reply.send(self.core.paused_orderings(pool, limit));
+            }
+            Cmd::Pause {
+                pool,
+                target,
+                reason,
+                reply,
+            } => {
+                let r = match &reason {
+                    Some(reason) => self.core.pause(now, pool, &target, reason),
+                    None => self.core.resume(now, pool, &target),
+                };
+                match r {
+                    // Answered once the change is durable.
+                    Ok(changed) => self.defer(move |e| {
+                        let _ = reply.send(match e {
+                            None => Ok(changed),
+                            Some(e) => Err(e.clone()),
+                        });
+                    }),
+                    Err(e) => {
+                        let _ = reply.send(Err(Error::Ordering(e)));
+                    }
+                }
+            }
             Cmd::ResumeOrdering { pool, key, reply } => {
                 let resumed = self.core.resume_ordering(now, pool, &key);
                 self.defer(move |e| {

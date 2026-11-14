@@ -137,6 +137,8 @@ struct Strand {
     persist: bool,
     /// A task with `OrderFailure::Halt` failed: nothing runs until the key is resumed.
     halted: bool,
+    /// The key is paused, and why: nothing of it is offered until it is resumed.
+    paused: Option<Arc<str>>,
 }
 
 impl Strand {
@@ -155,6 +157,11 @@ impl Strand {
     /// Whether the key has state a store must keep.
     fn stored(&self) -> bool {
         self.floor.is_some() || self.halted
+    }
+
+    /// Whether nothing of the key may be offered.
+    fn held(&self) -> bool {
+        self.halted || self.paused.is_some()
     }
 }
 
@@ -242,6 +249,8 @@ struct Pool {
     strand_index: StrMap<u32>,
     /// Ordering keys whose floor persists while they have no tasks.
     strand_settings: usize,
+    /// Pauses of the pool and of single classes.
+    pauses: PoolPauses,
     /// Weighted fair queues, when the pool shares capacity between tenants.
     fair: Option<Box<FairState>>,
     lanes: [Lane<Key>; Priority::COUNT],
@@ -533,6 +542,7 @@ impl<P> Core<P> {
                 strand_free: Vec::new(),
                 strand_index: StrMap::default(),
                 strand_settings: 0,
+                pauses: PoolPauses::default(),
                 fair: pc.fairness.as_ref().map(|f| Box::new(FairState::new(f))),
                 lanes: Default::default(),
                 lifted: Default::default(),
@@ -1890,8 +1900,11 @@ impl<P> Core<P> {
             if q.is_empty() {
                 self.pools[pool as usize].label_waiters.remove(&c);
             }
+            // A task that a pause holds takes no slot from the waiters behind it.
+            if !self.class_held(k) {
+                budget -= 1;
+            }
             self.requeue_ready(k);
-            budget -= 1;
         }
         for c in matching {
             if self.pools[pool as usize]
@@ -3146,6 +3159,33 @@ impl<P> Core<P> {
         // belong to parents that finished outside the retention window.
         self.recovering_keys = Some(tasks.iter().filter_map(|t| t.spec.key.clone()).collect());
         self.recovering = true;
+        // Pauses in place. Those of a pool that is gone are dropped from the store.
+        for pause in rec.paused {
+            let Some(&pool) = self.pool_index.get(&pause.pool) else {
+                if self.cfg.persist {
+                    self.actions
+                        .push_back(Action::Persist(Box::new(Mutation::Paused {
+                            pool: pause.pool,
+                            target: pause.target,
+                            reason: None,
+                        })));
+                }
+                continue;
+            };
+            match &pause.target {
+                PauseTarget::Pool => self.pools[pool as usize].pauses.pool = Some(pause.reason),
+                PauseTarget::Class(c) => {
+                    self.pools[pool as usize].pauses.classes[c.index()] = Some(pause.reason)
+                }
+                PauseTarget::Ordering(key) => {
+                    let sidx = self.strand(pool, key);
+                    self.pools[pool as usize].strands[sidx as usize]
+                        .as_mut()
+                        .expect("live strand")
+                        .paused = Some(pause.reason);
+                }
+            }
+        }
         // Stored state of ordering keys, before their tasks join them.
         for o in rec.ordering {
             let Some(&pool) = self.pool_index.get(&o.pool) else {
@@ -3580,7 +3620,10 @@ impl<P> Core<P> {
             self.entry_mut(k).loc = Loc::Lane;
             self.pools[pool as usize].lanes[class].insert(seq, k);
         }
-        self.pools[pool as usize].arrivals += 1;
+        // Work that a pause holds is no arrival for the autoscaler: workers could not run it.
+        if !self.class_held(k) {
+            self.pools[pool as usize].arrivals += 1;
+        }
         self.mark_dirty(pool);
     }
 
@@ -3601,6 +3644,7 @@ impl<P> Core<P> {
             floor: None,
             persist: false,
             halted: false,
+            paused: None,
         };
         let i = match p.strand_free.pop() {
             Some(i) => {
@@ -3632,7 +3676,7 @@ impl<P> Core<P> {
     fn offerable(&self, k: Key) -> bool {
         self.recovering_keys.is_none()
             && self.in_run(k)
-            && self.strand_of(k).is_some_and(|st| !st.halted)
+            && self.strand_of(k).is_some_and(|st| !st.held())
     }
 
     /// The class `k` runs at: its own, or for the head of an ordering key the highest among
@@ -3692,7 +3736,7 @@ impl<P> Core<P> {
             if dropped_floor {
                 st.floor = None;
             }
-            if st.halted || st.floor.is_some() {
+            if st.held() || st.floor.is_some() {
                 if dropped_floor {
                     self.persist_ordering(pool, sidx);
                 }
@@ -3716,17 +3760,19 @@ impl<P> Core<P> {
             }
             return;
         }
-        let halted = st.halted;
+        let halted = st.held();
         let run: Vec<Key> = st.members.values().take(Strand::RUN).copied().collect();
         // A task that came in ahead (a successor takes the place of the task it follows)
-        // pushes the task that was offered out of the head run: it waits again.
+        // pushes the task that was offered out of the head run: it waits again. So does
+        // the head run itself when the key is paused while it is offered.
         let pushed: Vec<Key> = st
             .members
             .values()
-            .skip(Strand::RUN)
+            .skip(if halted { 0 } else { Strand::RUN })
             .take(Strand::RUN)
             .copied()
             .collect();
+        let mut freed: Vec<u16> = Vec::new();
         for k in pushed {
             let (loc, eff, deadline, tenant) = {
                 let e = self.entry(k);
@@ -3745,6 +3791,13 @@ impl<P> Core<P> {
             let e = self.entry_mut(k);
             e.eff = e.class;
             e.loc = Loc::Ordered;
+            if let Loc::Parked(r) = loc {
+                freed.push(r.0);
+            }
+        }
+        // It no longer waits for the resource: the tasks behind it may go ahead.
+        for r in freed {
+            self.wake_waiters(r);
         }
         for k in run {
             let want = self.effective(k);
@@ -3838,26 +3891,135 @@ impl<P> Core<P> {
         Ok(())
     }
 
-    /// Resume a halted ordering key: its oldest task is offered again. Returns whether the
-    /// key was halted.
+    /// Resume an ordering key that is halted or paused: its oldest task is offered again.
+    /// Returns whether there was anything to resume.
     pub fn resume_ordering(&mut self, now: Time, pool: PoolId, key: &str) -> bool {
+        self.resume(now, pool, &PauseTarget::Ordering(key.into()))
+            .unwrap_or(false)
+    }
+
+    /// Pause a pool, one of its classes or one of its ordering keys. What is paused stays
+    /// queued: tasks keep their place and their age and count toward the bounds, and
+    /// submissions are still accepted. Nothing of it is offered to workers until
+    /// [`Core::resume`]. Attempts that are running are not interrupted; a task that retries
+    /// waits. Tasks with a fixed start are not held.
+    ///
+    /// A class pause holds the tasks that *run at* that class: the head of an ordering key
+    /// lifted to it is held, whatever its own class.
+    ///
+    /// Returns whether this paused something that was not; pausing again replaces the reason.
+    pub fn pause(
+        &mut self,
+        now: Time,
+        pool: PoolId,
+        target: &PauseTarget,
+        reason: &str,
+    ) -> Result<bool, OrderingError> {
         self.advance(now);
-        let resumed = (|| {
-            let p = self.pools.get_mut(pool.0 as usize)?;
-            let sidx = *p.strand_index.get(key)?;
-            let st = p.strands[sidx as usize].as_mut()?;
-            if !st.halted {
-                return None;
+        if pool.0 as usize >= self.pools.len() {
+            return Err(OrderingError::UnknownPool);
+        }
+        let reason: Arc<str> = reason.into();
+        let old = match target {
+            PauseTarget::Pool => self.pools[pool.0 as usize]
+                .pauses
+                .pool
+                .replace(reason.clone()),
+            PauseTarget::Class(c) => {
+                self.pools[pool.0 as usize].pauses.classes[c.index()].replace(reason.clone())
             }
-            st.halted = false;
-            Some(sidx)
-        })();
-        if let Some(sidx) = resumed {
-            self.persist_ordering(pool.0, sidx);
-            self.settle(pool.0, sidx);
+            PauseTarget::Ordering(key) => {
+                let sidx = self.strand(pool.0, key);
+                let st = self.pools[pool.0 as usize].strands[sidx as usize]
+                    .as_mut()
+                    .expect("live strand");
+                let old = st.paused.replace(reason.clone());
+                // The task it offered, if any, waits again.
+                self.settle(pool.0, sidx);
+                old
+            }
+        };
+        if old.as_ref() != Some(&reason) {
+            self.persist_pause(pool.0, target, Some(reason));
         }
         self.pump();
-        resumed.is_some()
+        Ok(old.is_none())
+    }
+
+    /// Resume what [`Core::pause`] paused; for an ordering key, also what a failed task
+    /// halted. Resuming what is neither is not an error: the result says whether there was
+    /// anything to resume.
+    pub fn resume(
+        &mut self,
+        now: Time,
+        pool: PoolId,
+        target: &PauseTarget,
+    ) -> Result<bool, OrderingError> {
+        self.advance(now);
+        if pool.0 as usize >= self.pools.len() {
+            return Err(OrderingError::UnknownPool);
+        }
+        let p = &mut self.pools[pool.0 as usize];
+        let resumed = match target {
+            PauseTarget::Pool => p.pauses.pool.take().is_some(),
+            PauseTarget::Class(c) => p.pauses.classes[c.index()].take().is_some(),
+            PauseTarget::Ordering(key) => {
+                let found = p.strand_index.get(key).copied();
+                let state = found
+                    .and_then(|sidx| p.strands[sidx as usize].as_mut())
+                    .map(|st| (st.paused.take().is_some(), std::mem::take(&mut st.halted)));
+                if let (Some(sidx), Some((paused, halted))) = (found, state) {
+                    if paused {
+                        self.persist_pause(pool.0, target, None);
+                    }
+                    if halted {
+                        self.persist_ordering(pool.0, sidx);
+                    }
+                    self.settle(pool.0, sidx);
+                    self.pump();
+                    return Ok(paused || halted);
+                }
+                false
+            }
+        };
+        if resumed {
+            self.persist_pause(pool.0, target, None);
+            self.mark_dirty(pool.0);
+        }
+        self.pump();
+        Ok(resumed)
+    }
+
+    fn persist_pause(&mut self, pool: u16, target: &PauseTarget, reason: Option<Arc<str>>) {
+        if self.cfg.persist {
+            let m = Mutation::Paused {
+                pool: self.pools[pool as usize].cfg.name.clone(),
+                target: target.clone(),
+                reason,
+            };
+            self.actions.push_back(Action::Persist(Box::new(m)));
+        }
+    }
+
+    /// The pauses of a pool and of its classes (`None` for an unknown pool).
+    pub fn pauses(&self, pool: PoolId) -> Option<&PoolPauses> {
+        self.pools.get(pool.0 as usize).map(|p| &p.pauses)
+    }
+
+    /// The paused ordering keys of a pool with their reasons, in name order, at most `limit`.
+    pub fn paused_orderings(&self, pool: PoolId, limit: usize) -> Vec<(Arc<str>, Arc<str>)> {
+        let Some(p) = self.pools.get(pool.0 as usize) else {
+            return Vec::new();
+        };
+        let mut keys: Vec<(Arc<str>, Arc<str>)> = p
+            .strands
+            .iter()
+            .flatten()
+            .filter_map(|st| Some((st.key.clone(), st.paused.clone()?)))
+            .collect();
+        keys.sort();
+        keys.truncate(limit);
+        keys
     }
 
     /// The halted ordering keys of a pool, at most `limit` of them.
@@ -3889,6 +4051,7 @@ impl<P> Core<P> {
             floor: st.floor.and_then(class),
             persist: st.persist,
             halted: st.halted,
+            paused: st.paused.clone(),
         })
     }
 
@@ -4350,6 +4513,10 @@ impl<P> Core<P> {
         let p = &self.pools[pool as usize];
         let mut best: Option<(f64, u8, u64, Key)> = None;
         for c in 0..Priority::COUNT {
+            // A paused class keeps its queue: nothing of it is a candidate.
+            if p.pauses.pool.is_some() || p.pauses.classes[c].is_some() {
+                continue;
+            }
             let heads = [
                 p.lanes[c].first(),
                 p.edf[c].first_key_value().map(|(_, k)| *k),
@@ -4454,9 +4621,21 @@ impl<P> Core<P> {
                 break;
             }
             self.resources[r as usize].waiters.pop_front();
-            budget -= need as f64;
+            // A task that a pause holds goes back to its queue without a claim on the
+            // resource: it will not run, and must not keep the tasks behind it waiting. It
+            // asks for the resource again when it is dispatched.
+            if !self.class_held(k) {
+                budget -= need as f64;
+            }
             self.requeue_ready(k);
         }
+    }
+
+    /// Whether the class `k` is queued at is paused, by its pool or on its own.
+    fn class_held(&self, k: Key) -> bool {
+        let e = self.entry(k);
+        let pauses = &self.pools[e.pool as usize].pauses;
+        pauses.pool.is_some() || pauses.classes[e.eff as usize].is_some()
     }
 
     fn dispatch(&mut self, now: Time, pool: u16, k: Key, group: u16) {
@@ -4467,10 +4646,12 @@ impl<P> Core<P> {
             let p = &self.pools[pool as usize];
             // Measured against the class the task runs at.
             let c = self.entry(k).eff as usize;
+            // What a pause holds is not waiting to be run before this task.
             (0..c).any(|h| {
-                !p.lanes[h].is_empty()
-                    || !p.edf[h].is_empty()
-                    || p.fair.as_ref().is_some_and(|f| !f.queues[h].is_empty())
+                p.pauses.classes[h].is_none()
+                    && (!p.lanes[h].is_empty()
+                        || !p.edf[h].is_empty()
+                        || p.fair.as_ref().is_some_and(|f| !f.queues[h].is_empty()))
             })
         };
         let (vtag, class) = {
@@ -4590,6 +4771,10 @@ impl<P> Core<P> {
         p.last_eval = now;
         let mut backlog = [0u64; Priority::COUNT];
         for (c, b) in backlog.iter_mut().enumerate() {
+            // Workers could not run what a pause holds: it is no reason to add any.
+            if p.pauses.pool.is_some() || p.pauses.classes[c].is_some() {
+                continue;
+            }
             let fair = p.fair.as_ref().map_or(0, |f| f.queues[c].len());
             *b = (p.lanes[c].len() + p.edf[c].len() + fair + p.retrying[c]) as u64;
         }
@@ -4627,22 +4812,29 @@ impl<P> Core<P> {
         self.advance(now);
         // Timers fired by `advance` may have made work ready.
         self.pump();
-        let ordering: Vec<OrderingSnapshot> = self
+        // Per pool: its ordering keys, and the tasks that wait in paused ones.
+        let ordering: Vec<(OrderingSnapshot, usize)> = self
             .pools
             .iter()
             .map(|p| {
                 let mut ordering = OrderingSnapshot::default();
+                let mut held = 0;
                 for st in p.strands.iter().flatten() {
                     ordering.keys += !st.members.is_empty() as usize;
                     ordering.halted += st.halted as usize;
                     ordering.settings += (st.persist && st.floor.is_some()) as usize;
-                    ordering.waiting += st
+                    ordering.paused += st.paused.is_some() as usize;
+                    let waiting = st
                         .members
                         .values()
                         .filter(|k| self.slot_entry(**k).is_some_and(|e| e.loc == Loc::Ordered))
                         .count();
+                    ordering.waiting += waiting;
+                    if st.paused.is_some() {
+                        held += waiting;
+                    }
                 }
-                ordering
+                (ordering, held)
             })
             .collect();
         let mut pools = Vec::with_capacity(self.pools.len());
@@ -4651,9 +4843,17 @@ impl<P> Core<P> {
             let w = p.window.total(now);
             let mut pending = [0usize; Priority::COUNT];
             pending.copy_from_slice(&p.pending_class);
-            let ordering = ordering[pi];
+            let (ordering, mut paused_tasks) = ordering[pi];
+            for c in 0..Priority::COUNT {
+                if p.pauses.pool.is_some() || p.pauses.classes[c].is_some() {
+                    let fair = p.fair.as_ref().map_or(0, |f| f.queues[c].len());
+                    paused_tasks += p.lanes[c].len() + p.edf[c].len() + fair;
+                }
+            }
             pools.push(PoolSnapshot {
                 ordering,
+                pauses: p.pauses.clone(),
+                paused_tasks,
                 name: p.cfg.name.clone(),
                 capacity: p.capacity,
                 busy: p.busy,
@@ -4898,7 +5098,7 @@ impl<P> Core<P> {
                         self.effective(*k),
                         "task {id} is queued at a stale class"
                     );
-                    assert!(!st.halted, "task {id} is queued in a halted ordering key");
+                    assert!(!st.held(), "task {id} is queued in a held ordering key");
                 }
             }
             if matches!(
@@ -5017,7 +5217,7 @@ impl<P> Core<P> {
                     st.key
                 );
                 assert!(
-                    !st.members.is_empty() || st.halted || (st.persist && st.floor.is_some()),
+                    !st.members.is_empty() || st.held() || (st.persist && st.floor.is_some()),
                     "ordering key '{}' kept without tasks or a setting",
                     st.key
                 );

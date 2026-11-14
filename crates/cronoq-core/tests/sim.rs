@@ -231,6 +231,17 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
                 .unwrap();
             s.drain();
         }
+        // Pauses of a pool, a class or an ordering key; all are resumed with the halts.
+        if r.chance(0.02) {
+            let pool = PoolId(r.below(3) as u16);
+            let target = match r.below(4) {
+                0 => PauseTarget::Pool,
+                1 => PauseTarget::Ordering(format!("o{}", r.below(5)).into()),
+                _ => PauseTarget::Class(Priority::from_index(r.below(4) as usize).unwrap()),
+            };
+            s.core.pause(s.now, pool, &target, "sim").unwrap();
+            s.drain();
+        }
         if r.chance(0.03) {
             let n = s.resume_halted();
             RESUMED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);

@@ -188,3 +188,66 @@ async fn a_key_is_halted_resumed_and_given_a_floor() {
     ));
     s.shutdown(Duration::from_secs(1)).await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_pool_a_class_and_a_key_are_paused_and_resumed() {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let s: Sched = Scheduler::builder()
+        .pool(pool(4, seen.clone(), Duration::from_millis(10)))
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        s.pause("default", PauseTarget::Pool, "deploy")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !s.pause("default", PauseTarget::Pool, "deploy")
+            .await
+            .unwrap()
+    );
+    let held = s.submit(task(1, 0)).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(s.status(held.id()).await.unwrap(), Some(TaskStatus::Ready));
+    let snap = s.snapshot().await.unwrap();
+    assert_eq!(snap.pools[0].pauses.pool.as_deref(), Some("deploy"));
+    assert_eq!(snap.pools[0].paused_tasks, 1);
+    assert!(s.resume("default", PauseTarget::Pool).await.unwrap());
+    assert!(!s.resume("default", PauseTarget::Pool).await.unwrap());
+    held.await.unwrap();
+
+    // A class, and an ordering key.
+    let low = PauseTarget::Class(Priority::Low);
+    assert!(
+        s.pause("default", low.clone(), "backfill off")
+            .await
+            .unwrap()
+    );
+    let key = PauseTarget::Ordering("k2".into());
+    assert!(
+        s.pause("default", key.clone(), "customer asked")
+            .await
+            .unwrap()
+    );
+    let a = s.submit(task(3, 0).priority(Priority::Low)).await.unwrap();
+    let b = s.submit(task(2, 0)).await.unwrap();
+    let c = s.submit(task(4, 0)).await.unwrap();
+    c.await.unwrap();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        s.paused_orderings("default", 10).await.unwrap(),
+        vec![(Arc::<str>::from("k2"), Arc::<str>::from("customer asked"))]
+    );
+    let info = s.ordering("default", "k2").await.unwrap().unwrap();
+    assert_eq!(info.paused.as_deref(), Some("customer asked"));
+    assert_eq!(seen.lock().unwrap().started, [(1, 0), (4, 0)]);
+    assert!(s.resume("default", low).await.unwrap());
+    // An ordering key is resumed by either call.
+    assert!(s.resume_ordering("default", "k2").await.unwrap());
+    assert!(!s.resume("default", key).await.unwrap());
+    a.await.unwrap();
+    b.await.unwrap();
+    assert!(s.pause("nope", PauseTarget::Pool, "x").await.is_err());
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
+}

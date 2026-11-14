@@ -75,7 +75,9 @@ browsers their own token, limited to the pools and role they need.
 | `ordering(key, pool?)` | `OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool). A key with no tasks and no kept floor has `tasks` `0n` (metrics role). |
 | `haltedOrderings({ pool, limit })` | `string[]` | The halted ordering keys of a pool, in name order (metrics role). |
 | `setOrderingFloor(key, floor, { pool, persist })` | `void` | Set the class floor of an ordering key; `floor: undefined` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`resource_exhausted`). Admin role. |
-| `resume({ orderingKey, pool })` | `boolean` | Resume a halted ordering key. `false` if the key was not halted, which is not an error. Admin role. |
+| `pause(target, reason)` | `boolean` | [Pause](../concepts/pausing.md) a pool, one of its classes or one of its ordering keys (`target` is a `PauseTarget`). `false` if it was already paused; the new reason replaces the old one. Admin role; credentials pinned to a tenant pause their own ordering keys only. |
+| `resume(target = {})` | `boolean` | Resume what `pause` paused; with `orderingKey`, also a halted key. `false` if there was nothing to resume, which is not an error. Admin role; credentials pinned to a tenant resume their own ordering keys only. |
+| `pausedOrderings({ pool, limit })` | `{ key, reason }[]` | The paused ordering keys of a pool with their reasons, in name order (metrics role). |
 
 | `listTasks` filter | Default | Description |
 |---|---|---|
@@ -125,7 +127,12 @@ submissions with the same ordering key are two tasks. It is refused together wit
 (`invalid_argument`). `Task.haltOnFailure`, with `orderingKey`, halts the key if the task ends
 as failed, until `client.resume`. `OrderingInfo` has `pool`, `key`, `tasks` (not finished),
 `head` (id of the task at the front, if any), `effective` (the class that task runs at),
-`floor` (if set), `persist` and `halted`.
+`floor` (if set), `persist`, `halted` and `paused` (the reason, if the key is paused).
+
+`PauseTarget` is `{ pool?, class?, orderingKey? }` ([Pausing](../concepts/pausing.md)):
+`pool` (default: the default pool); with `class`, the tasks of the pool that run at that class;
+with `orderingKey`, that ordering key of the pool. `class` and `orderingKey` together are
+refused (`invalid_argument`). `{}` is the default pool as a whole.
 
 `update` takes `{ priority, deadlineIn, deadlineAt, clearDeadline, tags }`, all optional:
 `deadlineIn` is seconds from now, `deadlineAt` a `Date`, at most one of the three deadline
@@ -172,7 +179,9 @@ below. When `signal` aborts, it stops taking leases and lets running handlers fi
 `drainTimeout`, then aborts the rest and resolves. An aborted handler that returns within 5 more
 seconds still has its outcome reported; after that its outcome is dropped (the server retries
 the task). It rejects only for failures that retrying
-cannot fix, such as a rejected token or an unknown pool.
+cannot fix, such as a rejected token or an unknown pool. When the pool is
+[paused](../concepts/pausing.md) at registration, it logs a warning with the reason; the worker
+stays connected and gets no tasks until the pool is resumed.
 
 | Option | Default | Description |
 |---|---|---|

@@ -36,6 +36,7 @@
 - [Replacing a task by key](concepts/replacing.md)
 - [Detecting conflicting submissions](concepts/key-conflicts.md)
 - [Ordering keys](concepts/ordering-keys.md)
+- [Pausing and resuming](concepts/pausing.md)
 - [Retries, timeouts and leases](concepts/reliability.md)
 - [Resources: semaphores and rate limits](concepts/resources.md)
 - [Worker labels](concepts/labels.md)

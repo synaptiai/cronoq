@@ -503,6 +503,16 @@ class AdminStub(object):
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.SetOrderingFloorRequest.SerializeToString,
                 response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
                 _registered_method=True)
+        self.ListPausedOrderings = channel.unary_unary(
+                '/cronoq.v1.Admin/ListPausedOrderings',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListPausedOrderingsResponse.FromString,
+                _registered_method=True)
+        self.Pause = channel.unary_unary(
+                '/cronoq.v1.Admin/Pause',
+                request_serializer=cronoq_dot_v1_dot_cronoq__pb2.PauseRequest.SerializeToString,
+                response_deserializer=cronoq_dot_v1_dot_cronoq__pb2.PauseResponse.FromString,
+                _registered_method=True)
         self.Resume = channel.unary_unary(
                 '/cronoq.v1.Admin/Resume',
                 request_serializer=cronoq_dot_v1_dot_cronoq__pb2.ResumeRequest.SerializeToString,
@@ -561,6 +571,24 @@ class AdminServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListPausedOrderings(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Pause(self, request, context):
+        """Pause and resume (admin role, for a pool the credentials allow). What is paused stays
+        queued: tasks keep their place and their age and count toward the bounds, and
+        submissions are still accepted. Nothing of it is leased until it is resumed. Attempts
+        that are running are not interrupted; a task that retries waits. Tasks with a start
+        time, and so the occurrences of schedules, are not held. Credentials pinned to a tenant
+        pause and resume their own ordering keys only.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Resume(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -614,6 +642,16 @@ def add_AdminServicer_to_server(servicer, server):
                     servicer.SetOrderingFloor,
                     request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.SetOrderingFloorRequest.FromString,
                     response_serializer=cronoq_dot_v1_dot_cronoq__pb2.Empty.SerializeToString,
+            ),
+            'ListPausedOrderings': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListPausedOrderings,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.ListPausedOrderingsResponse.SerializeToString,
+            ),
+            'Pause': grpc.unary_unary_rpc_method_handler(
+                    servicer.Pause,
+                    request_deserializer=cronoq_dot_v1_dot_cronoq__pb2.PauseRequest.FromString,
+                    response_serializer=cronoq_dot_v1_dot_cronoq__pb2.PauseResponse.SerializeToString,
             ),
             'Resume': grpc.unary_unary_rpc_method_handler(
                     servicer.Resume,
@@ -749,6 +787,60 @@ class Admin(object):
             '/cronoq.v1.Admin/SetOrderingFloor',
             cronoq_dot_v1_dot_cronoq__pb2.SetOrderingFloorRequest.SerializeToString,
             cronoq_dot_v1_dot_cronoq__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListPausedOrderings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/ListPausedOrderings',
+            cronoq_dot_v1_dot_cronoq__pb2.ListHaltedOrderingsRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.ListPausedOrderingsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Pause(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cronoq.v1.Admin/Pause',
+            cronoq_dot_v1_dot_cronoq__pb2.PauseRequest.SerializeToString,
+            cronoq_dot_v1_dot_cronoq__pb2.PauseResponse.FromString,
             options,
             channel_credentials,
             insecure,

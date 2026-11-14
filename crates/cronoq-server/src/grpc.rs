@@ -1180,6 +1180,14 @@ impl pb::workers_server::Workers for WorkersService {
             .map(|(k, _)| k.clone())
             .unwrap();
         let name = convert::sanitize_name(&reg.worker_name);
+        // A worker of a paused pool is told so, and why: it will get no leases for now.
+        let pool_paused = app
+            .sched
+            .pauses(&pool)
+            .await
+            .ok()
+            .and_then(|p| p.pool)
+            .map(|r| r.to_string());
         let slots = reg.slots.min(info.slot_cap);
         let (tx, rx) = mpsc::channel(channel_capacity(info.slot_cap));
         let registry = app.registry.clone();
@@ -1192,6 +1200,7 @@ impl pb::workers_server::Workers for WorkersService {
                 slots,
                 protocol_version: cronoq_proto::PROTOCOL_VERSION,
                 max_message_bytes: app.limits.max_message_bytes as u64,
+                pool_paused,
             })),
         }));
         let cut = CancellationToken::new();
@@ -1380,6 +1389,7 @@ pub async fn get_ordering(
             floor: class(i.floor),
             persist: i.persist,
             halted: i.halted,
+            paused: i.paused.map(|r| r.to_string()),
         },
         None => pb::OrderingInfo {
             pool: pool.to_string(),
@@ -1437,13 +1447,103 @@ pub async fn set_ordering_floor(
         .map_err(convert::error)
 }
 
-/// Resume a halted ordering key of a pool of this shard.
-pub async fn resume_ordering(app: &AppState, pool: &str, key: &str) -> Result<bool, Status> {
+/// What a pause or resume call names, checked: the pool (the default one if unnamed, and one
+/// the caller may use), and the pool itself, one of its classes or one of its ordering keys.
+/// Credentials pinned to a tenant reach their own ordering keys only.
+pub fn pause_target(
+    p: &Principal,
+    limits: &LimitsConfig,
+    pool: &str,
+    class: Option<i32>,
+    key: Option<&str>,
+) -> Result<(String, cronoq::PauseTarget), Status> {
+    // A key that is named but empty is a mistake, not a way to name the pool.
+    if key == Some("") {
+        return Err(Status::invalid_argument(
+            "an ordering key that is set must not be empty; leave it unset to name the pool",
+        ));
+    }
+    let key = key.unwrap_or_default();
+    let pool = ordering_target(p, limits, pool, key)?;
+    let target = match (class, key.is_empty()) {
+        (Some(_), false) => {
+            return Err(Status::invalid_argument(
+                "name a class or an ordering key, not both",
+            ));
+        }
+        (Some(c), true) => {
+            if c == pb::Priority::Unspecified as i32 {
+                return Err(Status::invalid_argument("class must name a class"));
+            }
+            cronoq::PauseTarget::Class(convert::priority(c)?)
+        }
+        (None, false) => cronoq::PauseTarget::Ordering(key.into()),
+        (None, true) => cronoq::PauseTarget::Pool,
+    };
+    if p.tenant.is_some() && !matches!(target, cronoq::PauseTarget::Ordering(_)) {
+        return Err(Status::permission_denied(
+            "credentials pinned to a tenant pause and resume their own ordering keys only",
+        ));
+    }
+    Ok((pool, target))
+}
+
+/// The reason of a pause: people read it in snapshots, tools and worker logs, so it is
+/// required, one line, and free of control characters.
+pub fn check_reason(reason: &str, limits: &LimitsConfig) -> Result<(), Status> {
+    convert::check_str("reason", reason, limits.max_tag_len)?;
+    if reason.trim().is_empty() {
+        return Err(Status::invalid_argument("a pause needs a reason"));
+    }
+    if reason.chars().any(char::is_control) {
+        return Err(Status::invalid_argument(
+            "reason must be one line without control characters",
+        ));
+    }
+    Ok(())
+}
+
+/// `target` as it is stored: an ordering key of pinned credentials has their tenant's prefix.
+pub fn tenant_target(p: &Principal, target: cronoq::PauseTarget) -> cronoq::PauseTarget {
+    match target {
+        cronoq::PauseTarget::Ordering(key) => {
+            cronoq::PauseTarget::Ordering(tenant_key(p, &key).into())
+        }
+        other => other,
+    }
+}
+
+/// Pause (`reason` set) or resume something of a pool of this shard.
+pub async fn pause(
+    app: &AppState,
+    pool: &str,
+    target: cronoq::PauseTarget,
+    reason: Option<&str>,
+) -> Result<bool, Status> {
     check_pool_shard(app, pool)?;
-    app.sched
-        .resume_ordering(pool, key)
+    match reason {
+        Some(reason) => app.sched.pause(pool, target, reason).await,
+        None => app.sched.resume(pool, target).await,
+    }
+    .map_err(convert::error)
+}
+
+/// The paused ordering keys of a pool of this shard, with their reasons.
+pub async fn list_paused_orderings(
+    app: &AppState,
+    pool: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>, Status> {
+    check_pool_shard(app, pool)?;
+    let keys = app
+        .sched
+        .paused_orderings(pool, limit)
         .await
-        .map_err(convert::error)
+        .map_err(convert::error)?;
+    Ok(keys
+        .iter()
+        .map(|(k, r)| (k.to_string(), r.to_string()))
+        .collect())
 }
 
 #[tonic::async_trait]
@@ -1494,6 +1594,42 @@ impl pb::admin_server::Admin for AdminService {
         Ok(Response::new(pb::Empty {}))
     }
 
+    async fn list_paused_orderings(
+        &self,
+        req: Request<pb::ListHaltedOrderingsRequest>,
+    ) -> Result<Response<pb::ListPausedOrderingsResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Metrics)?;
+        let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        let pool = ordering_target(&p, &app.limits, &r.pool, "")?;
+        let keys = crate::route::list_paused_orderings(app, &p, &pool, r.limit).await?;
+        Ok(Response::new(pb::ListPausedOrderingsResponse {
+            keys: keys
+                .into_iter()
+                .map(|(key, reason)| pb::PausedOrdering { key, reason })
+                .collect(),
+        }))
+    }
+
+    async fn pause(
+        &self,
+        req: Request<pb::PauseRequest>,
+    ) -> Result<Response<pb::PauseResponse>, Status> {
+        let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
+        let app = self.shared.app_or_unavailable()?;
+        let r = req.into_inner();
+        check_reason(&r.reason, &app.limits)?;
+        let (pool, target) = pause_target(
+            &p,
+            &app.limits,
+            &r.pool,
+            r.priority_class,
+            r.ordering_key.as_deref(),
+        )?;
+        let paused = crate::route::pause(app, &p, &pool, target, Some(&r.reason)).await?;
+        Ok(Response::new(pb::PauseResponse { paused }))
+    }
+
     async fn resume(
         &self,
         req: Request<pb::ResumeRequest>,
@@ -1501,8 +1637,14 @@ impl pb::admin_server::Admin for AdminService {
         let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
         let app = self.shared.app_or_unavailable()?;
         let r = req.into_inner();
-        let pool = ordering_change(&p, &app.limits, &r.pool, &r.ordering_key)?;
-        let resumed = crate::route::resume_ordering(app, &p, &pool, &r.ordering_key).await?;
+        let (pool, target) = pause_target(
+            &p,
+            &app.limits,
+            &r.pool,
+            r.priority_class,
+            r.ordering_key.as_deref(),
+        )?;
+        let resumed = crate::route::pause(app, &p, &pool, target, None).await?;
         Ok(Response::new(pb::ResumeResponse { resumed }))
     }
 

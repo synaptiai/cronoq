@@ -359,6 +359,20 @@ fn render_pools(f: &mut Frame, st: &State, area: Rect) {
         }
     };
     let rows = s.pools.iter().map(|p| row(pool_cells(p)));
+    // Pauses go in the title, where a queue that stands still is looked at first.
+    let pauses = pause_lines(s);
+    let block = match pauses.trim().lines().next() {
+        Some(first) => {
+            let more = pauses.trim().lines().count() - 1;
+            let tail = if more > 0 {
+                format!(" (+{more} more: cronoq snapshot)")
+            } else {
+                String::new()
+            };
+            Block::bordered().title(format!(" Pools | {first}{tail} "))
+        }
+        None => block,
+    };
     let table = Table::new(rows, [Constraint::Fill(1); 10])
         .header(Row::new(POOL_HEADER).style(header()))
         .block(block);
@@ -394,12 +408,42 @@ fn pool_cells(p: &pb::PoolSnapshot) -> Vec<String> {
 }
 
 /// The pools of a snapshot as a text table (for `cronoq snapshot`).
+/// One line per pause of a pool or a class, and per pool with paused or halted ordering
+/// keys: a queue that stands still should say why.
+pub fn pause_lines(s: &pb::SnapshotResponse) -> String {
+    let mut out = String::new();
+    for p in &s.pools {
+        let name = fmt::clean(&p.name, false);
+        if let Some(reason) = &p.paused {
+            out += &format!("\npool {name} is PAUSED: {}", fmt::clean(reason, false));
+        }
+        for c in &p.paused_classes {
+            out += &format!(
+                "\npool {name}, class {} is PAUSED: {}",
+                fmt::priority(c.priority_class).unwrap_or("?"),
+                fmt::clean(&c.reason, false)
+            );
+        }
+        if p.ordering_paused > 0 || p.ordering_halted > 0 {
+            out += &format!(
+                "\npool {name}: {} ordering key(s) paused, {} halted (cronoq ordering paused|halted)",
+                p.ordering_paused, p.ordering_halted
+            );
+        }
+        if p.paused_tasks > 0 {
+            out += &format!("\npool {name}: {} task(s) held by a pause", p.paused_tasks);
+        }
+    }
+    out
+}
+
 pub fn pools_table(s: &pb::SnapshotResponse) -> String {
     let rows: Vec<Vec<String>> = s.pools.iter().map(pool_cells).collect();
     let t = s.totals.unwrap_or_default();
     format!(
-        "{}\n\nlive {}  running {}  pending {}  workers {}  submitted {}  succeeded {}  failed {}",
+        "{}{}\n\nlive {}  running {}  pending {}  workers {}  submitted {}  succeeded {}  failed {}",
         fmt::table(&POOL_HEADER, &rows),
+        pause_lines(s),
         s.live_tasks,
         s.running,
         s.pending,

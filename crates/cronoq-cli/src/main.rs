@@ -71,13 +71,31 @@ enum Command {
     /// submission order.
     #[command(subcommand)]
     Ordering(OrderingCommand),
-    /// Resume what a failure halted: an ordering key (admin role).
-    Resume {
-        /// The halted ordering key.
-        #[arg(long, value_name = "KEY")]
-        ordering_key: String,
+    /// Pause a pool, one of its classes or one of its ordering keys (admin role). What is
+    /// paused stays queued and keeps its place; nothing of it starts until `cronoq resume`.
+    /// Running attempts are not interrupted.
+    Pause {
         #[arg(long, default_value = "default")]
         pool: String,
+        /// Pause only the tasks of the pool that run at this class.
+        #[arg(long, value_enum, conflicts_with = "ordering_key")]
+        class: Option<PriorityArg>,
+        /// Pause only this ordering key of the pool.
+        #[arg(long, value_name = "KEY", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        ordering_key: Option<String>,
+        /// Why, for whoever looks at it later.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        reason: String,
+    },
+    /// Resume a pool, a class or an ordering key that was paused; for an ordering key, also
+    /// one that a failed task halted (admin role).
+    Resume {
+        #[arg(long, default_value = "default")]
+        pool: String,
+        #[arg(long, value_enum, conflicts_with = "ordering_key")]
+        class: Option<PriorityArg>,
+        #[arg(long, value_name = "KEY", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        ordering_key: Option<String>,
     },
     /// Show pools, quality signals and totals (metrics role).
     Snapshot,
@@ -281,6 +299,13 @@ enum OrderingCommand {
         #[arg(long, default_value_t = 100)]
         limit: u32,
     },
+    /// List the paused ordering keys of a pool, with their reasons (metrics role).
+    Paused {
+        #[arg(long, default_value = "default")]
+        pool: String,
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
     /// Set the class the front of an ordering key never runs below (admin role).
     Floor {
         key: String,
@@ -417,7 +442,7 @@ fn print_ordering(out: Output, i: &pb::OrderingInfo) {
             "pool": i.pool, "key": i.key, "tasks": i.tasks,
             "head": i.head.map(|id| id.to_string()),
             "effective": class(i.effective), "floor": i.floor.and_then(class),
-            "persist": i.persist, "halted": i.halted,
+            "persist": i.persist, "halted": i.halted, "paused": i.paused,
         })),
         Output::Text => {
             let or_none = |v: Option<String>| v.unwrap_or_else(|| "-".into());
@@ -435,6 +460,10 @@ fn print_ordering(out: Output, i: &pb::OrderingInfo) {
                 or_none(i.floor.and_then(class).map(|c| format!("{c}{kept}")))
             );
             println!("halted     {}", if i.halted { "yes" } else { "no" });
+            match &i.paused {
+                Some(reason) => println!("paused     yes ({})", fmt::clean(reason, false)),
+                None => println!("paused     no"),
+            }
         }
     }
 }
@@ -812,12 +841,67 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let i = rpc(admin.get_ordering(pb::OrderingRequest { pool, key }).await)?;
             print_ordering(out, &i);
         }
-        Command::Resume { ordering_key, pool } => {
-            let r = rpc(admin.resume(pb::ResumeRequest { pool, ordering_key }).await)?;
+        Command::Ordering(OrderingCommand::Paused { pool, limit }) => {
+            let r = rpc(admin
+                .list_paused_orderings(pb::ListHaltedOrderingsRequest { pool, limit })
+                .await)?;
+            match out {
+                Output::Json => print_json(&serde_json::json!({
+                    "paused": r.keys.iter().map(|k| serde_json::json!({
+                        "key": k.key, "reason": k.reason,
+                    })).collect::<Vec<_>>(),
+                })),
+                Output::Text => {
+                    let rows: Vec<Vec<String>> = r
+                        .keys
+                        .iter()
+                        .map(|k| {
+                            vec![
+                                fmt::clean(&k.key, false).into_owned(),
+                                fmt::clean(&k.reason, false).into_owned(),
+                            ]
+                        })
+                        .collect();
+                    println!("{}", fmt::table(&["KEY", "REASON"], &rows));
+                }
+            }
+        }
+        Command::Pause {
+            pool,
+            class,
+            ordering_key,
+            reason,
+        } => {
+            let r = rpc(admin
+                .pause(pb::PauseRequest {
+                    pool,
+                    priority_class: class.map(|c| c.to_pb() as i32),
+                    ordering_key,
+                    reason,
+                })
+                .await)?;
+            match out {
+                Output::Json => print_json(&serde_json::json!({ "paused": r.paused })),
+                Output::Text if r.paused => println!("paused"),
+                Output::Text => println!("was already paused"),
+            }
+        }
+        Command::Resume {
+            pool,
+            class,
+            ordering_key,
+        } => {
+            let r = rpc(admin
+                .resume(pb::ResumeRequest {
+                    pool,
+                    ordering_key,
+                    priority_class: class.map(|c| c.to_pb() as i32),
+                })
+                .await)?;
             match out {
                 Output::Json => print_json(&serde_json::json!({ "resumed": r.resumed })),
                 Output::Text if r.resumed => println!("resumed"),
-                Output::Text => println!("was not halted"),
+                Output::Text => println!("was not paused or halted"),
             }
         }
         Command::Snapshot => {

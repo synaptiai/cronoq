@@ -692,6 +692,7 @@ impl Scheduler {
                 floor: i.floor.map(|c| c.name().to_string()),
                 persist: i.persist,
                 halted: i.halted,
+                paused: i.paused.map(|r| r.to_string()),
             }))
         })
     }
@@ -753,6 +754,70 @@ impl Scheduler {
         let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
         spawn_py(py, async move {
             s.resume_ordering(&pool, &key).await.map_err(to_pyerr)
+        })
+    }
+
+    /// Pause a pool (the default pool if `pool` is left out), or with `priority_class` the
+    /// tasks of the pool that run at that class, or with `ordering_key` that ordering key.
+    /// What is paused stays queued: tasks keep their place and their age and count toward
+    /// the bounds, and submissions are still accepted. Nothing of it starts until `resume`.
+    /// Running attempts are not interrupted; a task that retries waits; tasks with a fixed
+    /// start are not held. `reason` is shown in snapshots. Resolves to whether this paused
+    /// something that was not paused; pausing again replaces the reason.
+    #[pyo3(signature = (reason, *, pool=None, priority_class=None, ordering_key=None))]
+    fn pause<'py>(
+        &self,
+        py: Python<'py>,
+        reason: String,
+        pool: Option<String>,
+        priority_class: Option<&Bound<'py, PyAny>>,
+        ordering_key: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        let target = pause_target(priority_class, ordering_key)?;
+        if reason.trim().is_empty() {
+            return Err(PyValueError::new_err("a pause needs a reason"));
+        }
+        spawn_py(py, async move {
+            s.pause(&pool, target, &reason).await.map_err(to_pyerr)
+        })
+    }
+
+    /// Resume what `pause` paused (named the same way); for an ordering key, also a key
+    /// that a failed task halted. Resolves to whether there was anything to resume.
+    #[pyo3(signature = (*, pool=None, priority_class=None, ordering_key=None))]
+    fn resume<'py>(
+        &self,
+        py: Python<'py>,
+        pool: Option<String>,
+        priority_class: Option<&Bound<'py, PyAny>>,
+        ordering_key: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        let target = pause_target(priority_class, ordering_key)?;
+        spawn_py(py, async move {
+            s.resume(&pool, target).await.map_err(to_pyerr)
+        })
+    }
+
+    /// The paused ordering keys of a pool as `(key, reason)` pairs, in name order.
+    #[pyo3(signature = (*, pool=None, limit=100))]
+    fn paused_orderings<'py>(
+        &self,
+        py: Python<'py>,
+        pool: Option<String>,
+        limit: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let s = self.sched(py)?;
+        let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
+        spawn_py(py, async move {
+            let keys = s.paused_orderings(&pool, limit).await.map_err(to_pyerr)?;
+            Ok(keys
+                .iter()
+                .map(|(k, r)| (k.to_string(), r.to_string()))
+                .collect::<Vec<_>>())
         })
     }
 
@@ -1108,6 +1173,24 @@ impl TaskHandle {
 // ---------------------------------------------------------------------------------------------
 // Events
 
+/// What a `pause` or `resume` call names: the pool, a class of it or an ordering key of it.
+fn pause_target(
+    priority_class: Option<&Bound<'_, PyAny>>,
+    ordering_key: Option<String>,
+) -> PyResult<cronoq::PauseTarget> {
+    match (priority_class, ordering_key) {
+        (Some(_), Some(_)) => Err(PyValueError::new_err(
+            "name a priority_class or an ordering_key, not both",
+        )),
+        (None, Some(k)) if k.is_empty() => Err(PyValueError::new_err(
+            "ordering_key must not be empty; leave it out to name the pool",
+        )),
+        (Some(c), None) => Ok(cronoq::PauseTarget::Class(extract_priority(c)?)),
+        (None, Some(k)) => Ok(cronoq::PauseTarget::Ordering(k.into())),
+        (None, None) => Ok(cronoq::PauseTarget::Pool),
+    }
+}
+
 /// An ordering key as the scheduler holds it (`Scheduler.ordering`).
 #[pyclass(frozen, get_all, module = "cronoq._cronoq")]
 #[derive(Clone, Debug)]
@@ -1124,6 +1207,8 @@ pub struct OrderingInfo {
     persist: bool,
     /// A failed task halted the key: nothing of it runs until it is resumed.
     halted: bool,
+    /// The reason the key is paused, or None.
+    paused: Option<String>,
 }
 
 #[pymethods]
@@ -1453,6 +1538,14 @@ pub struct PoolSnapshot {
     ordering_waiting: usize,
     /// Ordering keys halted by a failed task.
     ordering_halted: usize,
+    /// Ordering keys that are paused.
+    ordering_paused: usize,
+    /// The reason the whole pool is paused, or None.
+    paused: Option<String>,
+    /// Classes of the pool that are paused on their own: class name to reason.
+    paused_classes: std::collections::BTreeMap<String, String>,
+    /// Ready tasks held by a pause of the pool, of their class or of their ordering key.
+    paused_tasks: usize,
     /// Class scores and aging in effect for this pool.
     priority: PriorityConfig,
     /// Deadline urgency curve in effect for this pool.
@@ -1561,6 +1654,16 @@ impl From<cronoq::Snapshot> for Snapshot {
                             ordering_keys: p.ordering.keys,
                             ordering_waiting: p.ordering.waiting,
                             ordering_halted: p.ordering.halted,
+                            ordering_paused: p.ordering.paused,
+                            paused: p.pauses.pool.as_ref().map(|r| r.to_string()),
+                            paused_classes: cronoq::Priority::ALL
+                                .into_iter()
+                                .filter_map(|c| {
+                                    let r = p.pauses.classes[c.index()].as_ref()?;
+                                    Some((c.name().to_string(), r.to_string()))
+                                })
+                                .collect(),
+                            paused_tasks: p.paused_tasks,
                             priority: PriorityConfig::from_core(&p.priority),
                             urgency: UrgencyConfig::from_core(&p.urgency),
                         },

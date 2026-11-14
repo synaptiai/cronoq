@@ -145,6 +145,34 @@ pub fn render(s: &pb::SnapshotResponse) -> String {
     );
     o.per_pool(
         s,
+        "cronoq_pool_paused",
+        "gauge",
+        "1 while the whole pool is paused",
+        |p| p.paused.is_some() as u8 as f64,
+    );
+    o.per_pool(
+        s,
+        "cronoq_pool_paused_classes",
+        "gauge",
+        "Classes of the pool that are paused on their own",
+        |p| p.paused_classes.len() as f64,
+    );
+    o.per_pool(
+        s,
+        "cronoq_pool_paused_tasks",
+        "gauge",
+        "Ready tasks held by a pause of the pool, of their class or of their ordering key",
+        |p| p.paused_tasks as f64,
+    );
+    o.per_pool(
+        s,
+        "cronoq_pool_ordering_paused",
+        "gauge",
+        "Ordering keys that are paused",
+        |p| p.ordering_paused as f64,
+    );
+    o.per_pool(
+        s,
         "cronoq_pool_reservations",
         "gauge",
         "Fixed-start reservations",

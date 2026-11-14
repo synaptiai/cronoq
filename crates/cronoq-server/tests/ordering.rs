@@ -198,7 +198,8 @@ async fn a_failed_task_halts_its_key_until_an_admin_resumes_it() {
     // Who may resume: the admin role, for a pool it may use.
     let resume = || pb::ResumeRequest {
         pool: String::new(),
-        ordering_key: "acct".into(),
+        ordering_key: Some("acct".into()),
+        priority_class: None,
     };
     for token in [METRICS, CLIENT, BATCH_ADMIN] {
         let e = s.admin(token).await.resume(resume()).await.unwrap_err();
@@ -219,15 +220,14 @@ async fn a_failed_task_halts_its_key_until_an_admin_resumes_it() {
     no_lease(&mut w).await;
 
     let mut admin = s.admin(ADMIN).await;
-    let e = admin
-        .resume(pb::ResumeRequest::default())
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), tonic::Code::InvalidArgument);
+    // Without a key the call names the pool, which is not paused.
+    let pool = admin.resume(pb::ResumeRequest::default()).await.unwrap();
+    assert!(!pool.into_inner().resumed);
     let e = admin
         .resume(pb::ResumeRequest {
             pool: "nope".into(),
-            ordering_key: "acct".into(),
+            ordering_key: Some("acct".into()),
+            priority_class: None,
         })
         .await
         .unwrap_err();
@@ -603,7 +603,8 @@ async fn ordering_keys_survive_a_restart() {
         admin
             .resume(pb::ResumeRequest {
                 pool: String::new(),
-                ordering_key: "acct".into(),
+                ordering_key: Some("acct".into()),
+                priority_class: None,
             })
             .await
             .unwrap()
@@ -694,7 +695,8 @@ async fn a_pinned_tenant_has_its_own_ordering_keys() {
     assert_eq!(stored.floor, Some(pb::Priority::High as i32));
     let resume = pb::ResumeRequest {
         pool: String::new(),
-        ordering_key: "shared".into(),
+        ordering_key: Some("shared".into()),
+        priority_class: None,
     };
     assert!(
         acme_admin

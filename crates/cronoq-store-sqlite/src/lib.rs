@@ -55,7 +55,7 @@ use bytes::Bytes;
 use cronoq::codec::*;
 use cronoq::{Store, StoreError, StoreQueries, TimeBase};
 use cronoq_core::{
-    Mutation, OrderFailure, Priority, Recovered, RecoveredRecurring, RecoveredTask,
+    Mutation, OrderFailure, PauseTarget, Priority, Recovered, RecoveredRecurring, RecoveredTask,
     RecoveredTerminal, TaskId, TaskRef, TaskSpec, TaskStatus, Time,
 };
 use sqlx::sqlite::{
@@ -72,6 +72,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migration_2.sql"),
     include_str!("migration_3.sql"),
     include_str!("migration_4.sql"),
+    include_str!("migration_5.sql"),
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -659,7 +660,8 @@ impl SqliteStore {
                 Mutation::RecurringUpsert { .. }
                 | Mutation::RecurringRemove { .. }
                 | Mutation::RecurringNext { .. }
-                | Mutation::Ordering { .. } => {}
+                | Mutation::Ordering { .. }
+                | Mutation::Paused { .. } => {}
             }
         }
 
@@ -823,6 +825,33 @@ impl SqliteStore {
                         .await
                         .map_err(db)?;
                     }
+                }
+                Mutation::Paused {
+                    pool,
+                    target,
+                    reason,
+                } => {
+                    let (kind, name) = pause_cols(target);
+                    match reason {
+                        Some(reason) => sqlx::query(
+                            "INSERT INTO cronoq_paused (pool, kind, name, reason) \
+                             VALUES (?1, ?2, ?3, ?4) ON CONFLICT (pool, kind, name) \
+                             DO UPDATE SET reason = excluded.reason",
+                        )
+                        .bind(clean(pool))
+                        .bind(kind)
+                        .bind(name)
+                        .bind(clean(reason)),
+                        None => sqlx::query(
+                            "DELETE FROM cronoq_paused WHERE pool = ?1 AND kind = ?2 AND name = ?3",
+                        )
+                        .bind(clean(pool))
+                        .bind(kind)
+                        .bind(name),
+                    }
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
                 }
                 // Listed, not `_`: tasks were applied in the first pass.
                 Mutation::Submitted { .. }
@@ -1043,6 +1072,15 @@ impl InsertRow {
         .await
         .map_err(db)?;
         Ok(())
+    }
+}
+
+/// The `kind` and `name` columns of a pause.
+fn pause_cols(target: &PauseTarget) -> (i64, String) {
+    match target {
+        PauseTarget::Pool => (0, String::new()),
+        PauseTarget::Class(c) => (1, c.index().to_string()),
+        PauseTarget::Ordering(key) => (2, cleaned(key)),
     }
 }
 
@@ -1352,6 +1390,35 @@ impl Store<Bytes, Bytes> for SqliteStore {
                 at: from_unix(base, now),
                 fingerprint: None,
             }));
+
+        // Pauses in place.
+        let rows = sqlx::query(
+            "SELECT pool, kind, name, reason FROM cronoq_paused ORDER BY pool, kind, name",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+        for r in rows {
+            let name: String = r.get("name");
+            let target = match r.get::<i64, _>("kind") {
+                0 => Some(PauseTarget::Pool),
+                1 => name
+                    .parse()
+                    .ok()
+                    .and_then(Priority::from_index)
+                    .map(PauseTarget::Class),
+                2 => Some(PauseTarget::Ordering(name.into())),
+                _ => None,
+            };
+            // A row this version cannot read is left alone.
+            if let Some(target) = target {
+                rec.paused.push(cronoq_core::RecoveredPause {
+                    pool: r.get::<String, _>("pool").into(),
+                    target,
+                    reason: r.get::<String, _>("reason").into(),
+                });
+            }
+        }
 
         // Ordering keys with a floor or a halt.
         let rows = sqlx::query(

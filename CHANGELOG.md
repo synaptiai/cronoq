@@ -9,6 +9,23 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Pause and resume. A pool, one class of a pool or one ordering key can be paused with a
+  reason: its tasks stay queued, keep their place and their age and count toward the bounds,
+  submissions are still accepted, and nothing of it is started until it is resumed. Running
+  attempts are not interrupted; tasks with a fixed start and occurrences of schedules are not
+  held. Pauses are durable: they are in place after a restart or a failover. Resuming an
+  ordering key also resumes a key that a failed task halted. Available in Rust
+  (`Scheduler::pause`, `resume`, `pauses`, `paused_orderings`), Python (in process and
+  client), Go, TypeScript, gRPC (`Admin.Pause`, `Admin.Resume`, `Admin.ListPausedOrderings`),
+  HTTP (`POST /v1/pools/{pool}/pause`, `/resume`, `/ordering/{key}/pause`) and the
+  command-line tool (`cronoq pause`, `cronoq resume`, `cronoq ordering paused`). Pausing needs
+  the admin role; credentials pinned to a tenant pause their own ordering keys only. See
+  [Pausing and resuming](docs/book/src/concepts/pausing.md).
+- Snapshot and metrics show what is paused and why: per pool the pool's reason, the paused
+  classes, the number of held tasks and of paused ordering keys (`cronoq_pool_paused`,
+  `cronoq_pool_paused_classes`, `cronoq_pool_paused_tasks`, `cronoq_pool_ordering_paused`).
+- A worker that registers for a pool that is paused is told so, with the reason
+  (`Registered.pool_paused`); the worker libraries log it.
 - Ordering keys. Tasks of one pool that share an `ordering_key` run one at a time, in the
   order they were submitted, however many workers are free; tasks with different keys do not
   wait for each other. Use it for work that must not overlap or overtake for one subject: an
@@ -126,6 +143,15 @@ contain breaking changes; they are called out under **Changed**.
   with a floor or a halt (Postgres schema version 13, SQLite version 4). The migrations run
   when the database is opened and only add the columns and the table. An older binary refuses
   a migrated database.
+- **Store schema.** For pauses, both stores gain a table `cronoq_paused` (Postgres schema
+  version 14, SQLite version 5).
+- **Breaking (Rust):** for pauses, `Recovered` has a new field `paused`, `Mutation` a new
+  variant `Paused`, `PoolSnapshot` new fields `pauses` and `paused_tasks`, `OrderingInfo` a
+  new field `paused`. A custom `Store` must apply `Mutation::Paused` and return the stored
+  pauses from `recover`.
+- `Admin.Resume` without an ordering key now resumes the pool (or, with `priority_class`,
+  a class) instead of failing with `INVALID_ARGUMENT`. The Go client's `Resume` takes a
+  `PauseTarget`; the Python client's `resume` takes `ordering_key` as an optional keyword.
 - **Breaking (Rust):** `TaskSpec` has new fields `ordering_key` and `on_failure`; `Recovered`
   has a new field `ordering`; `Mutation` has a new variant `Ordering`; `PoolSnapshot` has a
   new field `ordering`; `CoreConfig` has a new field `max_ordering_settings`; `Error` has a new
