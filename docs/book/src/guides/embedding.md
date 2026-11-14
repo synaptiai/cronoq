@@ -105,7 +105,7 @@ cronoq_free(s);
 ```sh
 cc -I include app.c libcronoq_ffi.a -lpthread -ldl -lm -o app                      # Linux
 cc -I include app.c libcronoq_ffi.a -o app                                         # macOS
-gcc -I include app.c libcronoq_ffi.a -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lkernel32 -o app.exe   # Windows (MinGW)
+gcc -I include app.c libcronoq_ffi.a -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp -lsynchronization -o app.exe   # Windows (MinGW)
 ```
 
 A complete program is in

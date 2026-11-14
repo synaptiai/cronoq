@@ -6,7 +6,7 @@ package embedded
 #cgo CFLAGS: -I${SRCDIR}/include
 #cgo linux LDFLAGS: -lcronoq_ffi -lpthread -ldl -lm
 #cgo darwin LDFLAGS: -lcronoq_ffi -lm
-#cgo windows LDFLAGS: -lcronoq_ffi -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lkernel32
+#cgo windows LDFLAGS: -lcronoq_ffi -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp -lsynchronization
 #include <stdlib.h>
 #include "cronoq.h"
 */

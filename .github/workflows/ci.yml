@@ -216,7 +216,7 @@ jobs:
             target: x86_64-pc-windows-gnu
             dylib: cronoq_ffi.dll
             cc: gcc
-            libs: -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lkernel32
+            libs: -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp -lsynchronization
     defaults:
       run:
         shell: bash
