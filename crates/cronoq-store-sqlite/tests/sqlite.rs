@@ -79,6 +79,37 @@ async fn paused_leader_is_fenced_after_a_takeover() {
     assert!(b.get_task(&TaskRef::Id(TaskId(2))).await.unwrap().is_some());
 }
 
+// A wall-clock jump forward, or a machine that slept past the lease (both simulated by
+// expiring the lease in the file), costs a sole leader nothing: no one took the lease, so its
+// next commit goes through and the renewal extends it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sole_leader_survives_a_lease_that_ran_out() {
+    let db = TestDb::new();
+    let a = db.open().await;
+    let ea = a.acquire_leadership().await.unwrap();
+    a.commit(ea, BASE, &[submitted(1)], &[]).await.unwrap();
+    sqlx::query("UPDATE cronoq_leader SET expires_unix_ns = 1")
+        .execute(a.pool())
+        .await
+        .unwrap();
+    a.commit(ea, BASE, &[submitted(2)], &[]).await.unwrap();
+    assert!(a.is_leader());
+    assert!(a.get_task(&TaskRef::Id(TaskId(2))).await.unwrap().is_some());
+    // Again, and this time the renewal task alone has to notice and extend it.
+    sqlx::query("UPDATE cronoq_leader SET expires_unix_ns = 1")
+        .execute(a.pool())
+        .await
+        .unwrap();
+    let lost = tokio::time::timeout(Duration::from_millis(1500), a.leadership_lost()).await;
+    assert!(lost.is_err(), "the leader stepped down");
+    let expires: i64 = sqlx::query_scalar("SELECT expires_unix_ns FROM cronoq_leader")
+        .fetch_one(a.pool())
+        .await
+        .unwrap();
+    assert!(expires as u64 > now(), "the renewal extended the lease");
+    assert!(a.is_leader());
+}
+
 // The renewal task notices a takeover by itself, without a commit.
 #[tokio::test(flavor = "multi_thread")]
 async fn renewal_notices_a_takeover() {

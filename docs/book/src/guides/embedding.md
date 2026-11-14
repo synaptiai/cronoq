@@ -188,13 +188,28 @@ while true {
 `next` blocks its thread: call it from a thread of your own, not from the main thread and not
 from Swift's cooperative thread pool.
 
-The package links the static library. Until a binary framework is published with a release,
-build the library and tell the linker where it is:
+The package links the static library. Build the library and tell the linker where it is:
 
 ```sh
 cargo build --release -p cronoq-ffi
 swift build -Xlinker -L<dir with libcronoq_ffi.a>
 ```
+
+For iOS, and to do without a Rust toolchain, each release has a binary framework,
+`CCronoq.xcframework.zip`, with the static library for iOS devices (ARM64), the Apple-silicon
+iOS simulator and macOS (ARM64 and x86-64), and its checksum. Copy `sdks/swift` into your
+project, delete `Sources/CCronoq`, and replace the `CCronoq` target in `Package.swift`:
+
+```swift
+.binaryTarget(
+    name: "CCronoq",
+    url: "https://github.com/synaptiai/cronoq/releases/download/v<version>/CCronoq.xcframework.zip",
+    checksum: "<contents of CCronoq.xcframework.zip.checksum>"
+),
+```
+
+The release workflow builds the framework and runs the package's tests against it in this
+form.
 
 ## Configuration
 
@@ -277,6 +292,7 @@ an error.
 | [Wait for a result](#results-and-events) | `cronoq_wait` | `Wait` | `wait` |
 | [Status events](#results-and-events) | `cronoq_events_open`, `cronoq_events_next`, `cronoq_events_close` | `Events`, `Events.Next`, `Events.Close` | `events()`, `EventStream.next` |
 | Look | `cronoq_task`, `cronoq_snapshot` | `Task`, `Snapshot` | `task`, `snapshot` |
+| [Time after sleep](#time-sleep-and-phones) | `cronoq_resync_clock`, `cronoq_advance_clock` | `ResyncClock`, `AdvanceClock` | `resyncClock`, `advanceClock` |
 | Version | `cronoq_abi_version`, `cronoq_version` | `Version` | `Scheduler.libraryVersion` |
 
 Three results end an attempt:
@@ -355,6 +371,62 @@ asks for the next event with a blocking call.
   grace period you give it, leases you hold can still be reported; it returns as soon as
   all are. A lease that is still held after that is released: its task keeps its place and
   no retry is used.
+
+## Time, sleep and phones
+
+The scheduler measures time with the **monotonic clock**: it reads the wall clock once when it
+starts and then counts on from there.
+
+| Event | What happens |
+|---|---|
+| The wall clock is changed (by the user, or by a time server) | Nothing. Backoffs, timeouts and deadlines that are already set keep running as they were. A deadline given as "in five seconds" stays five seconds away. |
+| The machine sleeps, or the app is suspended | On Apple platforms the monotonic clock stands still during sleep. Nothing runs, no timer fires, and after waking **every timer is late by the time slept**: a retry that was 30 seconds away is still 30 seconds away. |
+| The program calls **resync clock** after waking | The scheduler's time jumps forward to the wall clock. Timers that became due during the sleep fire at once, all of them; they are not spread out. |
+
+Call `cronoq_resync_clock` (Go `ResyncClock`, Swift `resyncClock`) when your program becomes
+active again:
+
+```swift
+NotificationCenter.default.addObserver(
+    forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil
+) { _ in
+    _ = try? scheduler.resyncClock()
+}
+```
+
+- It returns how far the time moved. When the scheduler is not behind the wall clock it does
+  nothing, so calling it more often than needed is harmless.
+- The scheduler's time never moves back, also when the wall clock was set back.
+- A lease you held across the sleep, for a task with a timeout shorter than the sleep, times
+  out at the resynchronisation. Release leases before the app goes to the background if you
+  can (`release`), or use no timeout for work that survives a suspension.
+- With the SQLite store, the store's claim on the file uses the wall clock: after a long
+  sleep, or a wall-clock jump forward, the claim has run out. With one program per file
+  nobody else has taken it, and the scheduler simply extends it again.
+
+`cronoq_advance_clock` (Go `AdvanceClock`, Swift `advanceClock`) moves the scheduler's time
+forward by an amount you choose. It is for tests: a backoff of an hour is over after
+`advance clock (1 hour)`, without waiting.
+
+**The library does not run in the background.** While the app is suspended or the device
+sleeps, no task is handed out and no timer fires. It does not ask the operating system for
+background time; that is your app's business. What it guarantees is correct behaviour when
+the app is active again, after the resynchronisation.
+
+### Apple platforms
+
+| Target | Status |
+|---|---|
+| iOS device, ARM64 (`aarch64-apple-ios`) | Built nightly and for each release. |
+| iOS simulator on Apple silicon (`aarch64-apple-ios-sim`) | Built, and tested in the simulator: the engine's simulation tests, the tests of the C API and the clock tests. |
+| macOS ARM64 and x86-64 | Built and tested on every pull request. |
+| Android | Not built or tested. The code type-checks for it; ask in an issue. |
+
+Everything in the C API works on iOS: priorities with aging, retries, resources, ordering
+keys, replace, update, pause, release. Each release has a size report,
+`cronoq-embed-apple-sizes.md`, with the stripped size of the library per target, with and
+without cron and time-zone data. The default build, which is what the framework contains, has
+neither.
 
 ## Keeping tasks across restarts
 

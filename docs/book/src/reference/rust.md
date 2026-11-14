@@ -191,6 +191,11 @@ Engine types are re-exported from `cronoq-core`: `AutoscaleConfig`, `Bounds`, `D
 With `default-features = false` none of `otel`, `cron`, `tz` and `rt-multi-thread` is on: name
 the ones you need. `cronoq-core` has `cron` and `tz` with the same meaning.
 
+`Scheduler::resync_clock()` moves engine time forward to the wall clock after the machine
+slept (the monotonic clock of some platforms stands still during sleep) and returns how far
+it moved; `Scheduler::advance_clock(by)` moves it forward by a given time, for tests. `Clock`
+is `Clone` and no longer `Copy`: its clones share one clock.
+
 `BlockingScheduler::start(make)` is `build_blocking` for a builder that must be made on the
 scheduler's own runtime (for example with a store that opens connections there), and
 `BlockingScheduler::block_on(future)` runs a future of the async `scheduler()` on it.

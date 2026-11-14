@@ -765,6 +765,39 @@ func (e *Events) Close() {
 	e.handle = nil
 }
 
+// ResyncClock moves the scheduler's time forward to the wall clock after the machine slept,
+// and returns how far it moved.
+//
+// The scheduler's time follows the monotonic clock. On Apple platforms that clock stands
+// still while the machine sleeps, so after a sleep every timer is late by the time slept:
+// retries after a backoff, timeouts, deadlines. Call this when the program becomes active
+// again. Timers that became due in the meantime fire at once. The time never moves back,
+// and calling this more often than needed is harmless.
+func (s *Scheduler) ResyncClock() (time.Duration, error) {
+	h, err := s.enter()
+	if err != nil {
+		return 0, err
+	}
+	defer s.calls.Done()
+	ms, status, msg := cResyncClock(h)
+	return time.Duration(ms) * time.Millisecond, statusError(status, msg)
+}
+
+// AdvanceClock moves the scheduler's time forward by d, as if that much time had passed:
+// timers that are due within it fire at once. For tests of backoff and timeouts without
+// waiting.
+func (s *Scheduler) AdvanceClock(d time.Duration) error {
+	h, err := s.enter()
+	if err != nil {
+		return err
+	}
+	defer s.calls.Done()
+	if d < 0 {
+		d = 0
+	}
+	return statusError(cAdvanceClock(h, uint64(d/time.Millisecond)))
+}
+
 // Shutdown stops the scheduler: goroutines waiting in Next return ErrShutdown at once and
 // no new lease is handed out. For up to grace, leases that are held can still be reported;
 // Shutdown returns as soon as all are. A lease that is still held after that is released:

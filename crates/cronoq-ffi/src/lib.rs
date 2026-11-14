@@ -1355,6 +1355,64 @@ fn bytes_buf_empty() -> cronoq_buf {
     }
 }
 
+/// Move the scheduler's time forward to the wall clock after the machine slept.
+///
+/// The scheduler's time follows the monotonic clock. On Apple platforms that clock stands
+/// still while the device sleeps, so after a sleep every timer is late by the time slept:
+/// retries after a backoff, timeouts, deadlines. Call this when the program becomes active
+/// again (on iOS: when the app returns to the foreground). Timers that became due in the
+/// meantime fire at once; they are not spread out. An attempt that was held across the sleep
+/// and has a timeout shorter than the sleep times out.
+///
+/// The scheduler's time never moves back. When it is not behind the wall clock, also after
+/// the wall clock was set back, this does nothing. Calling it more often than needed is
+/// harmless.
+///
+/// `*out_moved_ms` (null allowed) is how far the time moved, in milliseconds.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler. `out_moved_ms` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_resync_clock(
+    s: *const cronoq_scheduler,
+    out_moved_ms: *mut u64,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller.
+        let s = unsafe { scheduler(s) }?;
+        let moved = s.with(|b| Ok(b.block_on(b.scheduler().resync_clock())?))?;
+        if !out_moved_ms.is_null() {
+            // SAFETY: caller.
+            unsafe { *out_moved_ms = moved.as_millis().min(u64::MAX as u128) as u64 };
+        }
+        Ok(CRONOQ_OK)
+    })
+}
+
+/// Move the scheduler's time forward by `by_ms` milliseconds, as if that much time had
+/// passed: timers that are due within it fire at once. For tests of backoff and timeouts
+/// without waiting. The time cannot be moved back.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_advance_clock(
+    s: *const cronoq_scheduler,
+    by_ms: u64,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller.
+        let s = unsafe { scheduler(s) }?;
+        let by = Duration::from_millis(by_ms);
+        s.with(|b| Ok(b.block_on(b.scheduler().advance_clock(by))?))?;
+        Ok(CRONOQ_OK)
+    })
+}
+
 /// `CamelCase` as `snake_case`, for the names of statuses.
 fn snake(name: &str) -> String {
     let mut out = String::new();

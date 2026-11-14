@@ -109,6 +109,11 @@ pub(crate) enum Cmd<P, O> {
         pool: PoolId,
         reply: Reply<cronoq_core::PoolPauses>,
     },
+    /// Move engine time forward: to the wall clock, or by a given time.
+    ResyncClock {
+        by: Option<Duration>,
+        reply: Reply<Duration>,
+    },
     PausedOrderings {
         pool: PoolId,
         limit: usize,
@@ -805,6 +810,18 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     let _ = reply.send(Err(Error::Ordering(e)));
                 }
             },
+            Cmd::ResyncClock { by, reply } => {
+                let moved = match by {
+                    Some(by) => {
+                        self.clock.skip(by);
+                        by
+                    }
+                    None => self.clock.resync_to(std::time::SystemTime::now()),
+                };
+                // Timers that are due now fire on the next turn of the loop, which works
+                // out its wake-up from the new time.
+                let _ = reply.send(moved);
+            }
             Cmd::Pauses { pool, reply } => {
                 let _ = reply.send(self.core.pauses(pool).cloned().unwrap_or_default());
             }

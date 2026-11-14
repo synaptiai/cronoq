@@ -40,6 +40,8 @@ var (
 	fnTask             func(s unsafe.Pointer, task uint64, key *byte, out *cBuf) int32
 	fnSnapshot         func(s unsafe.Pointer, out *cBuf) int32
 	fnBufFree          func(b *cBuf)
+	fnResyncClock      func(s unsafe.Pointer, out *uint64) int32
+	fnAdvanceClock     func(s unsafe.Pointer, byMs uint64) int32
 )
 
 // cLease mirrors struct cronoq_lease.
@@ -132,6 +134,8 @@ func bind(handle uintptr) (err error) {
 		"cronoq_task":               &fnTask,
 		"cronoq_snapshot":           &fnSnapshot,
 		"cronoq_buf_free":           &fnBufFree,
+		"cronoq_resync_clock":       &fnResyncClock,
+		"cronoq_advance_clock":      &fnAdvanceClock,
 	} {
 		purego.RegisterLibFunc(fn, handle, name)
 	}
@@ -376,4 +380,14 @@ func cSnapshot(h unsafe.Pointer) (string, int32, string) {
 		return "", status, msg
 	}
 	return takeBuf(&b), status, ""
+}
+
+func cResyncClock(h unsafe.Pointer) (uint64, int32, string) {
+	var moved uint64
+	status, msg := call(func() int32 { return fnResyncClock(h, &moved) })
+	return moved, status, msg
+}
+
+func cAdvanceClock(h unsafe.Pointer, byMs uint64) (int32, string) {
+	return call(func() int32 { return fnAdvanceClock(h, byMs) })
 }

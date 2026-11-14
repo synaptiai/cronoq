@@ -298,7 +298,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
         let pool_names: Arc<[Arc<str>]> = core.pools.iter().map(|p| p.name.clone()).collect();
         let mut driver = Driver::new(
             core,
-            clock,
+            clock.clone(),
             rts,
             store.clone(),
             epoch,
@@ -774,6 +774,35 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
     /// Names of the configured pools, in order.
     pub fn pools(&self) -> &[Arc<str>] {
         &self.inner.pool_names
+    }
+
+    /// Move engine time forward to the wall clock, if it is behind it, and return how far it
+    /// moved.
+    ///
+    /// Engine time follows the monotonic clock, which on some platforms (Apple's, by
+    /// default) stands still while the machine sleeps. After a sleep every timer is then
+    /// late by the time slept: retries after a backoff, delayed starts, timeouts. Call this
+    /// when the program becomes active again. Timers that became due in the meantime fire at
+    /// once; they are not spread out. An attempt that was running across the sleep and has
+    /// a timeout shorter than the sleep times out.
+    ///
+    /// Engine time never moves back: when it is not behind the wall clock (also after the
+    /// wall clock was set back) this does nothing and returns zero.
+    pub async fn resync_clock(&self) -> Result<Duration, Error> {
+        self.call(|reply| Cmd::ResyncClock { by: None, reply })
+            .await
+    }
+
+    /// Move engine time forward by `by`, as if that much time had passed: timers that are
+    /// due within it fire at once. For tests of backoff, delays and timeouts without
+    /// waiting.
+    pub async fn advance_clock(&self, by: Duration) -> Result<(), Error> {
+        self.call(|reply| Cmd::ResyncClock {
+            by: Some(by),
+            reply,
+        })
+        .await
+        .map(|_| ())
     }
 
     /// The scheduler's clock (engine time is Unix nanoseconds).

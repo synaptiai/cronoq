@@ -265,3 +265,13 @@ func cSnapshot(h unsafe.Pointer) (string, int32, string) {
 	}
 	return takeBuf(&b), status, ""
 }
+
+func cResyncClock(h unsafe.Pointer) (uint64, int32, string) {
+	var moved C.uint64_t
+	status, msg := call(func() int32 { return int32(C.cronoq_resync_clock(sched(h), &moved)) })
+	return uint64(moved), status, msg
+}
+
+func cAdvanceClock(h unsafe.Pointer, byMs uint64) (int32, string) {
+	return call(func() int32 { return int32(C.cronoq_advance_clock(sched(h), C.uint64_t(byMs))) })
+}

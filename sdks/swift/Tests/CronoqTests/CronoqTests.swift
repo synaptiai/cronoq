@@ -229,6 +229,25 @@ final class CronoqTests: XCTestCase {
         XCTAssertThrowsError(try events.next(timeout: 1)) { XCTAssertEqual($0 as? CronoqError, .shutdown) }
     }
 
+    func testClockAfterAGap() throws {
+        let s = try Scheduler(
+            Config(pools: [
+                Pool(
+                    name: "default",
+                    retry: Retry(maxAttempts: 2, initialBackoffMs: 3_600_000, maxBackoffMs: 3_600_000, jitter: false))
+            ]))
+        let id = try submit(s, "x")
+        try s.next(timeout: 5).fail("later")
+        XCTAssertThrowsError(try s.next(timeout: 0.05)) { XCTAssertEqual($0 as? CronoqError, .timeout) }
+        XCTAssertLessThan(try s.resyncClock(), 1)
+        try s.advanceClock(by: 3600)
+        let lease = try s.next(timeout: 2)
+        XCTAssertEqual(lease.task, id)
+        XCTAssertEqual(lease.attempt, 2)
+        try lease.complete()
+        XCTAssertEqual(try s.resyncClock(), 0)
+    }
+
     func testShutdownWakesWaiters() throws {
         let s = try Scheduler()
         let woken = expectation(description: "the waiting thread is woken")
