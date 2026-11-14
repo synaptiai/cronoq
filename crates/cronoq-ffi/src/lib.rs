@@ -813,8 +813,8 @@ pub unsafe extern "C" fn cronoq_heartbeat(s: *const cronoq_scheduler, lease: u64
 }
 
 /// Cancel a task: the one with `key` when `key` is not null, else the one with id `task`.
-/// A queued task is removed; the lease of a running one ends (`CRONOQ_LEASE_GONE` on its
-/// next heartbeat or report).
+/// A queued task is removed. The lease of a running one is over when this returns: its next
+/// heartbeat or report gets `CRONOQ_LEASE_GONE`.
 ///
 /// `*out_cancelled` (null allowed) is 1 if a live task was cancelled, 0 if there was none.
 ///
@@ -834,7 +834,23 @@ pub unsafe extern "C" fn cronoq_cancel(
         // SAFETY: caller, for every pointer below.
         let s = unsafe { scheduler(s) }?;
         let target = unsafe { task_ref(task, key) }?;
-        let cancelled = s.with(|b| Ok(b.cancel(target)?))?;
+        let cancelled = s.with(|b| {
+            // The id, to see the lease of a running attempt end below.
+            let id = match &target {
+                TaskRef::Id(id) => Some(*id),
+                TaskRef::Key(_) => b
+                    .block_on(b.scheduler().task(target.clone()))?
+                    .map(|t| t.id),
+            };
+            let cancelled = match id {
+                Some(id) => b.cancel(id)?,
+                None => false,
+            };
+            if let (true, Some(id)) = (cancelled, id) {
+                s.hub.wait_until_not_held(id.0, Duration::from_secs(1));
+            }
+            Ok(cancelled)
+        })?;
         if !out_cancelled.is_null() {
             unsafe { *out_cancelled = cancelled as i32 };
         }

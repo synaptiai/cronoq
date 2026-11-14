@@ -1,0 +1,42 @@
+# Generates include/cronoq.h:
+#   cbindgen --config cbindgen.toml --crate cronoq-ffi --output include/cronoq.h
+# CI fails when the committed header differs from what this generates.
+language = "C"
+include_guard = "CRONOQ_H"
+cpp_compat = true
+documentation = true
+documentation_style = "c99"
+usize_is_size_t = true
+sys_includes = ["stdint.h", "stddef.h"]
+no_includes = true
+header = """
+/*
+ * cronoq: a C API for embedding the scheduler. EXPERIMENTAL until 1.0.
+ *
+ * Generated from crates/cronoq-ffi/src/lib.rs. Do not edit.
+ *
+ * Rules of the boundary
+ * ---------------------
+ * Errors      Every function that can fail returns a cronoq_status. Nothing panics or
+ *             aborts across the boundary. cronoq_last_error() has the message of the last
+ *             failed call on the calling thread.
+ * Strings     Text is UTF-8 and zero-terminated. The library copies what it is given
+ *             before the call returns; the caller keeps ownership of its buffers.
+ * Ownership   What the library returns is released by the library: a cronoq_scheduler
+ *             with cronoq_free, a cronoq_lease with cronoq_lease_free, a cronoq_buf with
+ *             cronoq_buf_free. Never pass these to free().
+ * Threads     A scheduler may be used from any number of threads at once, with one
+ *             exception: cronoq_free needs every other thread to be out of the library
+ *             (call cronoq_shutdown first, which wakes waiting threads). The library
+ *             runs one thread of its own and never calls back into the host.
+ * Versions    cronoq_abi_version() == CRONOQ_ABI_VERSION must hold for the header a
+ *             program was built with. The number changes when an existing function,
+ *             structure or constant changes; additions do not change it.
+ */
+"""
+
+[export]
+include = ["cronoq_status", "cronoq_buf", "cronoq_lease"]
+
+[parse]
+parse_deps = false

@@ -225,6 +225,25 @@ impl Hub {
         }
     }
 
+    /// Wait, for a short time, until the host holds no lease of `task` any more. A cancel is
+    /// answered by the scheduler before it ends the lease of the cancelled attempt; this
+    /// closes the gap, so that the lease is over when the cancel returns.
+    pub(crate) fn wait_until_not_held(&self, task: u64, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.lock();
+        while s.held.values().any(|h| h.ctx.id.0 == task) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            s = self
+                .changed
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
     /// The scheduler ended the attempt itself (timeout, cancel, expiry, shutdown).
     fn forget(&self, pool: &str, lease: u64) {
         let mut s = self.lock();
@@ -240,6 +259,7 @@ impl Hub {
         }
         let changed = s.pools[pool].capacity() != before && !s.closed;
         drop(s);
+        self.changed.notify_all();
         // The scheduler ended a lease the host held: the pool has one slot too many.
         if changed
             && let Some(resync) = self.resync.get()
