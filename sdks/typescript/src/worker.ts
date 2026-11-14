@@ -2,7 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { createClient, type Transport } from "@connectrpc/connect";
 
 import { encode, priorityName, text, json, type Payload, type Priority } from "./client.js";
-import { CancelTask, CronoqError, Permanent, Reject, Retryable, wrap } from "./errors.js";
+import { CancelTask, CronoqError, Permanent, Reject, Release, Retryable, wrap } from "./errors.js";
 import * as pb from "./gen/cronoq/v1/cronoq_pb.js";
 
 /** Worker protocol version this package speaks. */
@@ -275,6 +275,7 @@ async function session(
   let slots = o.slots;
   let ttl = 0;
   let maxOutput = 0;
+  let canRelease = false;
   let idle: (() => void) | undefined;
 
   const drain = async () => {
@@ -328,6 +329,7 @@ async function session(
           ttl = r.leaseTtlS ?? 0;
           // Room for the message envelope; no check when the server reports no limit.
           maxOutput = r.maxMessageBytes > 1024n ? Number(r.maxMessageBytes) - 1024 : 0;
+          canRelease = r.releaseSupported;
           log.info(`cronoq: worker ${r.workerId} registered for pool '${o.pool}' with ${slots} slots`);
           if (r.poolPaused !== undefined) {
             // Connected and healthy, but nothing will be leased until the pool is resumed.
@@ -346,7 +348,7 @@ async function session(
           }
           const entry = { abort: new AbortController(), aborted: false, done: Promise.resolve() };
           running.set(l.lease, entry);
-          entry.done = run(l, entry.abort.signal, l.leaseTtlS ?? ttl, maxOutput, handler, outbox, log).then((out) => {
+          entry.done = run(l, entry.abort.signal, l.leaseTtlS ?? ttl, maxOutput, canRelease, handler, outbox, log).then((out) => {
             running.delete(l.lease);
             if (!entry.aborted && out) outbox.push(out);
             idle?.();
@@ -395,6 +397,7 @@ async function run(
   signal: AbortSignal,
   ttl: number,
   maxOutput: number,
+  canRelease: boolean,
   handler: Handler,
   outbox: Queue<pb.WorkerMessage>,
   log: Pick<Console, "error">,
@@ -444,6 +447,11 @@ async function run(
   } catch (e) {
     if (e instanceof CancelTask) return msg({ case: "cancelled", value: create(pb.CancelledSchema, { lease: id }) });
     if (e instanceof Reject) return msg({ case: "nack", value: create(pb.NackSchema, { lease: id, reason: e.message }) });
+    if (e instanceof Release) {
+      if (canRelease) return msg({ case: "release", value: create(pb.ReleaseSchema, { lease: id, delayS: e.delay }) });
+      // A server from before releases: a failure that is retried after the delay.
+      return fail("released (the server does not support releases)", false, e.delay);
+    }
     if (e instanceof Permanent) return fail(e.message, true);
     if (e instanceof Retryable) return fail(e.message, false, e.retryAfter);
     if (!(e instanceof Error)) log.error("cronoq: handler threw a non-error", e);

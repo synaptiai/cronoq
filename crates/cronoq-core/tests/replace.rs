@@ -307,6 +307,7 @@ fn a_key_with_dependencies_can_be_replaced_again_after_its_successor() {
                 arrival: *arrival,
                 spec: spec.clone(),
                 attempt: 0,
+                releases: 0,
             }),
             Mutation::Status { id, status, .. } if status.is_terminal() => {
                 tasks.retain(|t| t.id != *id)
@@ -355,6 +356,7 @@ fn a_stored_replacement_follows_a_task_that_ends_while_it_is_recovered() {
                 arrival: Time::ZERO,
                 spec: keyed(10.0),
                 attempt: 1,
+                releases: 0,
             }],
             pending: vec![RecoveredPending {
                 id: TaskId(1),
@@ -697,6 +699,7 @@ fn a_stored_replacement_survives_recovery() {
                 arrival: *arrival,
                 spec: spec.clone(),
                 attempt: u32::from(*id == first),
+                releases: 0,
             }),
             Mutation::Replaced {
                 id,

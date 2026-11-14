@@ -26,6 +26,7 @@ fn rec_task(id: u64, seq: u64, spec: TaskSpec<Job>) -> RecoveredTask<Job> {
         arrival: Time::ZERO,
         spec,
         attempt: 0,
+        releases: 0,
     }
 }
 

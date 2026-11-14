@@ -400,7 +400,7 @@ impl Scheduler {
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None,
         on_key_conflict=None, renew_position=false, fingerprint=None,
-        ordering_key=None, halt_on_failure=false
+        ordering_key=None, halt_on_failure=false, max_releases=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn submit<'py>(
@@ -431,6 +431,7 @@ impl Scheduler {
         fingerprint: Option<&Bound<'py, PyAny>>,
         ordering_key: Option<&str>,
         halt_on_failure: bool,
+        max_releases: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -453,7 +454,8 @@ impl Scheduler {
             labels,
             tenant,
         )?
-        .ordered(ordering_key, halt_on_failure)?;
+        .ordered(ordering_key, halt_on_failure)?
+        .releases(max_releases);
         let s = self.sched(py)?;
         let mut task = replacing(
             self.task(py, &opts, payload)?,
@@ -476,7 +478,7 @@ impl Scheduler {
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None,
         on_key_conflict=None, renew_position=false, fingerprint=None,
-        ordering_key=None, halt_on_failure=false
+        ordering_key=None, halt_on_failure=false, max_releases=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn enqueue<'py>(
@@ -507,6 +509,7 @@ impl Scheduler {
         fingerprint: Option<&Bound<'py, PyAny>>,
         ordering_key: Option<&str>,
         halt_on_failure: bool,
+        max_releases: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let opts = Opts::parse(
             priority,
@@ -529,7 +532,8 @@ impl Scheduler {
             labels,
             tenant,
         )?
-        .ordered(ordering_key, halt_on_failure)?;
+        .ordered(ordering_key, halt_on_failure)?
+        .releases(max_releases);
         let s = self.sched(py)?;
         let mut task = replacing(
             self.task(py, &opts, payload)?,

@@ -552,6 +552,7 @@ impl Store<u64, u64> for LogStore {
                             arrival: *arrival,
                             spec: spec.clone(),
                             attempt: 0,
+                            releases: 0,
                         },
                     );
                 }

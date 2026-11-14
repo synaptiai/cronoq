@@ -222,6 +222,17 @@ impl CodecStore {
                         persist: *persist,
                         halted: *halted,
                     },
+                    Mutation::Released {
+                        id,
+                        attempt,
+                        releases,
+                        at,
+                    } => Mutation::Released {
+                        id: *id,
+                        attempt: *attempt,
+                        releases: *releases,
+                        at: *at,
+                    },
                     Mutation::Paused {
                         pool,
                         target,
@@ -316,6 +327,7 @@ impl Store<PyObj, PyObj> for CodecStore {
                         seq: t.seq,
                         arrival: t.arrival,
                         attempt: t.attempt,
+                        releases: t.releases,
                         spec: t.spec.map_payload(Arc::new(p)),
                     }),
                     // Treated as failed so recovery can go on; the stored row is left for repair.

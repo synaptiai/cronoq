@@ -138,6 +138,11 @@ export interface Task {
   /** With `"replace_queued"`: take this submission's place in line. */
   renewPosition?: boolean;
   /**
+   * Replaces the pool's limit on how often an attempt of this task may be released by a
+   * handler ({@link Release}) without counting as a failure.
+   */
+  maxReleases?: number;
+  /**
    * Tasks of one pool that share an ordering key run one at a time, in the order they were
    * submitted, however many workers are free: use it for work that must not overlap or
    * overtake for one subject (an account, a document, a device). Tasks with different keys do
@@ -263,6 +268,7 @@ export function spec(t: Task): pb.TaskSpec {
     tags: t.tags ?? {},
     labels: t.labels ?? {},
     orderingKey: t.orderingKey ?? "",
+    maxReleases: t.maxReleases,
     onFailure: t.haltOnFailure ? pb.OrderFailure.HALT : pb.OrderFailure.UNSPECIFIED,
     retry: t.maxAttempts ? create(pb.RetryPolicySchema, { maxAttempts: t.maxAttempts, jitter: true }) : undefined,
   });

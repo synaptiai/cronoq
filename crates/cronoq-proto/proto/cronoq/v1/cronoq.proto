@@ -107,6 +107,9 @@ message TaskSpec {
   string ordering_key = 21;
   // With `ordering_key`: what a failure of this task does to the tasks behind it.
   OrderFailure on_failure = 22;
+  // How often an attempt of this task may be released by a worker (`Release`) without
+  // counting as a failure. Unset: the pool's `max_releases`.
+  optional uint32 max_releases = 23;
 }
 
 // What a task that ends as failed (or dead-lettered) does to its ordering key. A task that
@@ -375,6 +378,22 @@ message Cancelled {
   uint64 lease = 1;
 }
 
+// The handler gives the task back without a verdict: it cannot run it now, and nothing is
+// wrong with the task (a system it needs is down, the worker is shutting down). The task
+// keeps its place in line and is leased again, to any worker, once `delay_s` has passed. The
+// attempt number goes up, but the attempt does not count against the retry policy, up to the
+// pool's `max_releases` releases of one task (or the task's own limit); beyond that a
+// release counts as a retryable failure with `delay_s` as its minimum backoff.
+//
+// Unlike `Nack`, which hands the same attempt to another worker at once, a release ends the
+// attempt. Send it only to a server whose `Registered.release_supported` is set; an older
+// server ignores the message and the lease runs into its time limit. To such a server, send
+// `Fail` with `retry_after_s` instead, which uses up an attempt.
+message Release {
+  uint64 lease = 1;
+  double delay_s = 2;
+}
+
 message WorkerMessage {
   oneof msg {
     Register register = 1;
@@ -384,6 +403,7 @@ message WorkerMessage {
     SetSlots set_slots = 5;
     Nack nack = 6;
     Cancelled cancelled = 7;
+    Release release = 8;
   }
 }
 
@@ -396,6 +416,8 @@ message Registered {
   // Set when the worker's pool is paused as a whole: the reason. A worker of a paused pool
   // stays connected and gets no leases until the pool is resumed.
   optional string pool_paused = 6;
+  // The server understands `Release`.
+  bool release_supported = 7;
 }
 
 message Lease {

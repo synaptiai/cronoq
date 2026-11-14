@@ -405,6 +405,9 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
     if !spec.tenant.is_empty() {
         t = t.tenant(spec.tenant);
     }
+    if let Some(n) = spec.max_releases {
+        t = t.max_releases(n);
+    }
     check_str("ordering_key", &spec.ordering_key, limits.max_key_len)?;
     let halt = match pb::OrderFailure::try_from(spec.on_failure) {
         Ok(pb::OrderFailure::Unspecified | pb::OrderFailure::Continue) => false,

@@ -266,6 +266,7 @@ fn pauses_survive_recovery() {
         arrival: Time::ZERO,
         spec,
         attempt: 0,
+        releases: 0,
     };
     r.core.recover(
         r.now,

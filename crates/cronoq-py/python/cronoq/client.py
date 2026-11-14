@@ -54,7 +54,7 @@ except ImportError as e:  # pragma: no cover - exercised only without the extra
 
 from ._proto import cronoq_pb2 as pb
 from ._proto import cronoq_pb2_grpc as pb_grpc
-from .errors import CronoqError, Permanent, Retryable
+from .errors import CronoqError, Permanent, Release, Retryable
 
 __all__ = [
     "CancelTask",
@@ -666,6 +666,7 @@ def task(
     content_type: str | None = None,
     ordering_key: str | None = None,
     halt_on_failure: bool = False,
+    max_releases: int | None = None,
 ) -> pb.TaskSpec:
     """Build a wire task spec (for :meth:`Client.submit_batch` and :meth:`Client.add_recurring`).
 
@@ -702,6 +703,8 @@ def task(
     )
     if halt_on_failure:
         spec.on_failure = pb.ORDER_FAILURE_HALT
+    if max_releases is not None:
+        spec.max_releases = int(max_releases)
     if deadline_in is not None:
         spec.deadline_in_s = float(deadline_in)
     elif deadline_at is not None:
@@ -1489,6 +1492,8 @@ class Worker:
     ``handler(lease)`` returns the output (``bytes``, ``str``, JSON-serialisable values or
     ``None``). In the handler:
 
+    - raise :class:`cronoq.Release` to give the task back to be run again later, without
+      using up a retry;
     - raise :class:`cronoq.Retryable` / :class:`cronoq.Permanent` to control retries; any
       other exception is reported as a retryable failure (an output that cannot be JSON-encoded,
       or that exceeds the server's message limit, is a permanent failure);
@@ -1570,6 +1575,9 @@ class Worker:
         self.server_protocol: int | None = None
         #: Largest message the server accepts (outputs must fit), once registered.
         self.max_message_bytes: int | None = None
+        #: Whether the server takes back a task that the handler releases
+        #: (:class:`cronoq.Release`) without counting the attempt, once registered.
+        self.release_supported = False
         #: Why the pool was paused when the worker registered, or ``None``. A worker of a
         #: paused pool stays connected and gets no tasks until the pool is resumed.
         self.pool_paused: str | None = None
@@ -1765,6 +1773,7 @@ class Worker:
                         self.granted_slots = reg.slots or self.slots
                         self.server_protocol = reg.protocol_version or 1
                         self.max_message_bytes = reg.max_message_bytes or None
+                        self.release_supported = reg.release_supported
                         self.pool_paused = reg.pool_paused if reg.HasField("pool_paused") else None
                         if self.pool_paused is not None:
                             log.warning(
@@ -1872,6 +1881,19 @@ class Worker:
             else:
                 msg = pb.WorkerMessage(
                     fail=pb.Fail(lease=lease.id, message=str(e) or "cancelled by the handler", permanent=True)
+                )
+        except Release as e:
+            if self.release_supported:
+                msg = pb.WorkerMessage(release=pb.Release(lease=lease.id, delay_s=e.delay))
+            else:
+                # A server from before releases: a failure that is retried after the delay.
+                msg = pb.WorkerMessage(
+                    fail=pb.Fail(
+                        lease=lease.id,
+                        message="released (the server does not support releases)",
+                        permanent=False,
+                        retry_after_s=e.delay,
+                    )
                 )
         except Permanent as e:
             msg = pb.WorkerMessage(fail=pb.Fail(lease=lease.id, message=str(e) or "permanent failure", permanent=True))

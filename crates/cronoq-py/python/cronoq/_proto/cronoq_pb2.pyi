@@ -158,7 +158,7 @@ class RetryPolicy(_message.Message):
     def __init__(self, max_attempts: _Optional[int] = ..., initial_backoff_s: _Optional[float] = ..., multiplier: _Optional[float] = ..., max_backoff_s: _Optional[float] = ..., jitter: bool = ...) -> None: ...
 
 class TaskSpec(_message.Message):
-    __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags", "labels", "tenant", "ordering_key", "on_failure")
+    __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags", "labels", "tenant", "ordering_key", "on_failure", "max_releases")
     class ResourcesEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -202,6 +202,7 @@ class TaskSpec(_message.Message):
     TENANT_FIELD_NUMBER: _ClassVar[int]
     ORDERING_KEY_FIELD_NUMBER: _ClassVar[int]
     ON_FAILURE_FIELD_NUMBER: _ClassVar[int]
+    MAX_RELEASES_FIELD_NUMBER: _ClassVar[int]
     payload: bytes
     content_type: str
     kind: str
@@ -224,7 +225,8 @@ class TaskSpec(_message.Message):
     tenant: str
     ordering_key: str
     on_failure: OrderFailure
-    def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., tenant: _Optional[str] = ..., ordering_key: _Optional[str] = ..., on_failure: _Optional[_Union[OrderFailure, str]] = ...) -> None: ...
+    max_releases: int
+    def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., tenant: _Optional[str] = ..., ordering_key: _Optional[str] = ..., on_failure: _Optional[_Union[OrderFailure, str]] = ..., max_releases: _Optional[int] = ...) -> None: ...
 
 class SubmitRequest(_message.Message):
     __slots__ = ("task", "wait", "wait_timeout_s", "on_key_conflict", "renew_position")
@@ -500,8 +502,16 @@ class Cancelled(_message.Message):
     lease: int
     def __init__(self, lease: _Optional[int] = ...) -> None: ...
 
+class Release(_message.Message):
+    __slots__ = ("lease", "delay_s")
+    LEASE_FIELD_NUMBER: _ClassVar[int]
+    DELAY_S_FIELD_NUMBER: _ClassVar[int]
+    lease: int
+    delay_s: float
+    def __init__(self, lease: _Optional[int] = ..., delay_s: _Optional[float] = ...) -> None: ...
+
 class WorkerMessage(_message.Message):
-    __slots__ = ("register", "heartbeat", "complete", "fail", "set_slots", "nack", "cancelled")
+    __slots__ = ("register", "heartbeat", "complete", "fail", "set_slots", "nack", "cancelled", "release")
     REGISTER_FIELD_NUMBER: _ClassVar[int]
     HEARTBEAT_FIELD_NUMBER: _ClassVar[int]
     COMPLETE_FIELD_NUMBER: _ClassVar[int]
@@ -509,6 +519,7 @@ class WorkerMessage(_message.Message):
     SET_SLOTS_FIELD_NUMBER: _ClassVar[int]
     NACK_FIELD_NUMBER: _ClassVar[int]
     CANCELLED_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_FIELD_NUMBER: _ClassVar[int]
     register: Register
     heartbeat: Heartbeat
     complete: Complete
@@ -516,23 +527,26 @@ class WorkerMessage(_message.Message):
     set_slots: SetSlots
     nack: Nack
     cancelled: Cancelled
-    def __init__(self, register: _Optional[_Union[Register, _Mapping]] = ..., heartbeat: _Optional[_Union[Heartbeat, _Mapping]] = ..., complete: _Optional[_Union[Complete, _Mapping]] = ..., fail: _Optional[_Union[Fail, _Mapping]] = ..., set_slots: _Optional[_Union[SetSlots, _Mapping]] = ..., nack: _Optional[_Union[Nack, _Mapping]] = ..., cancelled: _Optional[_Union[Cancelled, _Mapping]] = ...) -> None: ...
+    release: Release
+    def __init__(self, register: _Optional[_Union[Register, _Mapping]] = ..., heartbeat: _Optional[_Union[Heartbeat, _Mapping]] = ..., complete: _Optional[_Union[Complete, _Mapping]] = ..., fail: _Optional[_Union[Fail, _Mapping]] = ..., set_slots: _Optional[_Union[SetSlots, _Mapping]] = ..., nack: _Optional[_Union[Nack, _Mapping]] = ..., cancelled: _Optional[_Union[Cancelled, _Mapping]] = ..., release: _Optional[_Union[Release, _Mapping]] = ...) -> None: ...
 
 class Registered(_message.Message):
-    __slots__ = ("worker_id", "lease_ttl_s", "slots", "protocol_version", "max_message_bytes", "pool_paused")
+    __slots__ = ("worker_id", "lease_ttl_s", "slots", "protocol_version", "max_message_bytes", "pool_paused", "release_supported")
     WORKER_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_TTL_S_FIELD_NUMBER: _ClassVar[int]
     SLOTS_FIELD_NUMBER: _ClassVar[int]
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
     MAX_MESSAGE_BYTES_FIELD_NUMBER: _ClassVar[int]
     POOL_PAUSED_FIELD_NUMBER: _ClassVar[int]
+    RELEASE_SUPPORTED_FIELD_NUMBER: _ClassVar[int]
     worker_id: int
     lease_ttl_s: float
     slots: int
     protocol_version: int
     max_message_bytes: int
     pool_paused: str
-    def __init__(self, worker_id: _Optional[int] = ..., lease_ttl_s: _Optional[float] = ..., slots: _Optional[int] = ..., protocol_version: _Optional[int] = ..., max_message_bytes: _Optional[int] = ..., pool_paused: _Optional[str] = ...) -> None: ...
+    release_supported: bool
+    def __init__(self, worker_id: _Optional[int] = ..., lease_ttl_s: _Optional[float] = ..., slots: _Optional[int] = ..., protocol_version: _Optional[int] = ..., max_message_bytes: _Optional[int] = ..., pool_paused: _Optional[str] = ..., release_supported: bool = ...) -> None: ...
 
 class Lease(_message.Message):
     __slots__ = ("lease", "task_id", "attempt", "payload", "content_type", "kind", "key", "tags", "timeout_s", "deadline_unix_ns", "pool", "priority", "lease_ttl_s")

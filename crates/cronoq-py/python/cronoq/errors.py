@@ -111,6 +111,26 @@ class Retryable(CronoqError):
         return (type(self), (str(self), self.retry_after))
 
 
+class Release(CronoqError):
+    """Raise from an executor or a worker handler to give the task back without a verdict.
+
+    The executor cannot run the task now, and nothing is wrong with the task: a system it
+    needs is down, the worker is shutting down. The task keeps its place in line and is
+    offered again after ``delay`` seconds. The attempt does not count against the task's retry
+    policy, up to the pool's ``max_releases`` (10 unless set) releases of one task, or the
+    task's own ``max_releases``; beyond that a release counts as a retryable failure.
+    """
+
+    _cronoq_kind = "release"
+
+    def __init__(self, delay: float = 0.0) -> None:
+        super().__init__("released")
+        self.delay = float(delay)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.delay,))
+
+
 class Permanent(CronoqError):
     """Raise from an executor to fail the task without retrying."""
 

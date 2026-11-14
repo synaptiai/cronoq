@@ -710,6 +710,7 @@ fn rebuild(log: &[Mutation<Job>]) -> Recovered<Job> {
                         arrival: *arrival,
                         spec: spec.clone(),
                         attempt: 0,
+                        releases: 0,
                     },
                 );
             }
@@ -801,6 +802,7 @@ fn recovered_running_task_respects_retry_budget() {
                 arrival: Time::ZERO,
                 spec: spec(2),
                 attempt: 2,
+                releases: 0,
             },
             RecoveredTask {
                 id: TaskId(2),
@@ -808,6 +810,7 @@ fn recovered_running_task_respects_retry_budget() {
                 arrival: Time::ZERO,
                 spec: spec(3),
                 attempt: 2,
+                releases: 0,
             },
         ],
         terminal: vec![],

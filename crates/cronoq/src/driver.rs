@@ -1153,6 +1153,13 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 };
                 let secs = r.started.elapsed().as_secs_f64();
                 let pool_name = self.pools[r.pool as usize].name.clone();
+                // A release is no verdict on the task: the engine takes it back as it is.
+                if let Err(TaskError::Release { after }) = result {
+                    self.metrics
+                        .attempt_finished(&pool_name, &r.kind, secs, true);
+                    self.core.release(now, lease, after);
+                    return;
+                }
                 self.metrics
                     .attempt_finished(&pool_name, &r.kind, secs, result.is_ok());
                 let outcome = match result {
@@ -1174,6 +1181,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                         message,
                     },
                     Err(TaskError::Cancelled) => Outcome::Cancelled,
+                    Err(TaskError::Release { .. }) => unreachable!("handled above"),
                 };
                 if !self.core.complete(now, lease, outcome) {
                     self.outputs.remove(&r.id);

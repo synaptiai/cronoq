@@ -640,6 +640,7 @@ where
                     tx.clone(),
                     ttl,
                     max_output,
+                    registered.release_supported,
                     stop,
                 );
             }
@@ -665,6 +666,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_lease<F, Fut>(
     l: pb::Lease,
     handler: Arc<F>,
@@ -672,6 +674,7 @@ fn start_lease<F, Fut>(
     tx: mpsc::Sender<pb::WorkerMessage>,
     ttl: Option<Duration>,
     max_output: usize,
+    can_release: bool,
     stop: &CancellationToken,
 ) where
     F: Fn(LeaseInfo) -> Fut + Send + Sync + 'static,
@@ -787,6 +790,20 @@ fn start_lease<F, Fut>(
                 retry_after_s: retry_after.map(|d| d.as_secs_f64()),
             }),
             Some(Ok(Err(TaskError::Cancelled))) => Msg::Cancelled(pb::Cancelled { lease }),
+            Some(Ok(Err(TaskError::Release { after }))) if can_release => {
+                Msg::Release(pb::Release {
+                    lease,
+                    delay_s: after.as_secs_f64(),
+                })
+            }
+            // A server from before releases: the closest it knows is a failure that is
+            // retried after the delay, which uses up an attempt.
+            Some(Ok(Err(TaskError::Release { after }))) => Msg::Fail(pb::Fail {
+                lease,
+                message: "released (the server does not support releases)".into(),
+                permanent: false,
+                retry_after_s: Some(after.as_secs_f64()),
+            }),
         };
         let _ = tx.send(pb::WorkerMessage { msg: Some(msg) }).await;
     });
