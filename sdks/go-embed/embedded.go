@@ -773,8 +773,8 @@ func (e *Events) Close() {
 // timeouts, deadlines, lease expiry. Call this when the program becomes active again. Timers
 // that became due in the meantime fire at once; a lease held across the sleep can time out
 // or expire. The sleep is measured with a monotonic clock that counts during sleep, so the
-// wall clock has no effect (on Windows the wall clock is used). The time never moves back,
-// and calling this more often than needed is harmless.
+// wall clock has no effect. The time never moves back, and calling this more often than
+// needed is harmless.
 func (s *Scheduler) ResyncClock() (time.Duration, error) {
 	h, err := s.enter()
 	if err != nil {

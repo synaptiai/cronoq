@@ -28,8 +28,8 @@ contain breaking changes; they are called out under **Changed**.
   every timer was late by the time slept. `Scheduler::resync_clock` (C
   `cronoq_resync_clock`, Go `ResyncClock`, Swift `resyncClock`) moves engine time forward by
   what was missed; timers that became due fire at once. The sleep is measured with a
-  monotonic clock that counts during sleep, so the wall clock has no effect (on Windows the
-  wall clock is used). Engine time never moves back. `Scheduler::advance_clock` (C
+  monotonic clock that counts during sleep, so the wall clock has no effect. Engine time
+  never moves back. `Scheduler::advance_clock` (C
   `cronoq_advance_clock`) moves it forward by a given time, for tests.
 - Apple builds of the embedded library: a nightly and release workflow builds it for iOS
   (device and Apple-silicon simulator) and macOS, runs the engine's simulation tests and the

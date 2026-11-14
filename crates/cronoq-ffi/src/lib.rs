@@ -1369,10 +1369,9 @@ fn bytes_buf_empty() -> cronoq_buf {
 /// suspended if you can.
 ///
 /// The sleep is measured with a monotonic clock of the operating system that counts during
-/// sleep, so a change of the wall clock has no effect. On Windows, where the library knows
-/// no such clock, the wall clock is used, and a wall clock that was set forward is followed.
-/// The scheduler's time never moves back, and when nothing was missed this does nothing:
-/// calling it more often than needed is harmless.
+/// sleep, so a change of the wall clock has no effect. The scheduler's time never moves
+/// back, and when nothing was missed this does nothing: calling it more often than needed
+/// is harmless.
 ///
 /// `*out_moved_ms` (null allowed) is how far the time moved, in milliseconds.
 ///

@@ -9,8 +9,8 @@
 //! slept, and timers are late by as much.
 //! [`Scheduler::resync_clock`](crate::Scheduler::resync_clock) moves engine time forward by
 //! what was missed. It measures the sleep with a monotonic clock of the operating system
-//! that keeps counting during sleep, so a change of the wall clock has no effect. Engine
-//! time never moves back.
+//! that keeps counting during sleep (on Linux, Android, Apple platforms and Windows), so a
+//! change of the wall clock has no effect. Engine time never moves back.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,8 +35,19 @@ pub struct Clock {
 }
 
 /// A monotonic clock that keeps counting while the machine sleeps: `CLOCK_BOOTTIME` on Linux
-/// and Android, `CLOCK_MONOTONIC` on Apple platforms. `None` where there is none we know of.
+/// and Android, `CLOCK_MONOTONIC` on Apple platforms, the tick count (`GetTickCount64`) on
+/// Windows. `None` where there is none we know of.
 fn continuous_now() -> Option<Duration> {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            /// Milliseconds since the system started, including the time it slept.
+            fn GetTickCount64() -> u64;
+        }
+        // SAFETY: the function takes no arguments and cannot fail.
+        Some(Duration::from_millis(unsafe { GetTickCount64() }))
+    }
     #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     {
         #[cfg(target_vendor = "apple")]
@@ -57,7 +68,12 @@ fn continuous_now() -> Option<Duration> {
             ts.tv_nsec.clamp(0, 999_999_999) as u32,
         ))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        windows
+    )))]
     {
         None
     }
@@ -238,11 +254,17 @@ mod tests {
         assert!(c.now() >= at);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        windows
+    ))]
     #[test]
     fn the_platform_has_a_sleep_inclusive_clock() {
         let a = continuous_now().expect("a sleep-inclusive monotonic clock");
-        std::thread::sleep(Duration::from_millis(5));
+        // The Windows tick count moves in steps of up to 16 ms.
+        std::thread::sleep(Duration::from_millis(40));
         let b = continuous_now().unwrap();
         assert!(b > a && b - a < Duration::from_secs(5));
     }
