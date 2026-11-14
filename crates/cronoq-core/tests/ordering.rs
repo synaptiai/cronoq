@@ -765,3 +765,113 @@ fn a_retry_with_another_ordering_key_is_a_key_conflict() {
     ));
     let _ = busy;
 }
+
+#[test]
+fn a_head_that_ends_during_recovery_leaves_the_key_as_it_was_stored() {
+    let cfg = || CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 4)],
+        persist: true,
+        ..Default::default()
+    };
+    let one = RetryPolicy {
+        max_attempts: 1,
+        ..Default::default()
+    };
+    // The head had started its only attempt before the failover: it ends while it is
+    // recovered, before the tasks behind it are in. It halts the key; the floor stays.
+    let mut r = Sim::new(cfg());
+    let head = TaskSpec::new(Job::broken(1.0))
+        .ordering_key("k")
+        .halt_on_failure()
+        .retry(one);
+    r.core.recover(
+        r.now,
+        Recovered {
+            tasks: vec![
+                RecoveredTask {
+                    attempt: 1,
+                    ..rec_task(1, 10, head.clone())
+                },
+                rec_task(2, 20, keyed(1.0, "k").priority(Priority::Low)),
+                rec_task(3, 30, keyed(1.0, "k").priority(Priority::Low)),
+            ],
+            // Named twice, as a store should not: it counts once.
+            ordering: vec![
+                RecoveredOrdering {
+                    pool: "default".into(),
+                    key: "k".into(),
+                    floor: Some(Priority::High),
+                    persist: true,
+                    halted: false,
+                };
+                2
+            ],
+            next_id: 4,
+            ..Default::default()
+        },
+    );
+    r.drain();
+    let i = info(&r, "k").unwrap();
+    assert!(i.halted);
+    assert_eq!(
+        (i.tasks, i.head, i.floor),
+        (2, Some(TaskId(2)), Some(Priority::High))
+    );
+    r.run_until(t(5.0));
+    assert!(r.started.is_empty());
+    assert!(matches!(
+        r.persisted
+            .iter()
+            .rev()
+            .find(|m| matches!(m, Mutation::Ordering { .. })),
+        Some(Mutation::Ordering {
+            halted: true,
+            floor: Some(Priority::High),
+            ..
+        })
+    ));
+
+    // The same with a submission stored behind the head: its successor waits in the
+    // halted key instead of starting a new one.
+    let mut r = Sim::new(cfg());
+    r.core.recover(
+        r.now,
+        Recovered {
+            tasks: vec![RecoveredTask {
+                attempt: 1,
+                ..rec_task(1, 10, head.clone().key("d"))
+            }],
+            pending: vec![RecoveredPending {
+                id: TaskId(1),
+                seq: 11,
+                arrival: Time::ZERO,
+                renew: false,
+                spec: keyed(1.0, "k").key("d"),
+            }],
+            // The state of a pool that is gone is dropped from the store.
+            ordering: vec![RecoveredOrdering {
+                pool: "gone".into(),
+                key: "x".into(),
+                floor: None,
+                persist: false,
+                halted: true,
+            }],
+            next_id: 2,
+            ..Default::default()
+        },
+    );
+    r.drain();
+    let i = info(&r, "k").unwrap();
+    assert!(i.halted && i.tasks == 1);
+    r.run_until(t(5.0));
+    assert!(r.started.is_empty());
+    assert!(r.persisted.iter().any(|m| matches!(
+        m,
+        Mutation::Ordering { pool, floor: None, halted: false, .. } if &**pool == "gone"
+    )));
+    let p = default_pool(&r);
+    assert!(r.core.resume_ordering(r.now, p, "k"));
+    r.run_to_completion(20.0);
+    assert_eq!(r.started.len(), 1);
+    assert_eq!(info(&r, "k"), None);
+}

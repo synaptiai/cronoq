@@ -474,6 +474,9 @@ pub struct Core<P> {
     empty_tags: Tags,
     /// Keys of tasks being recovered (only set while `recover` runs).
     recovering_keys: Option<StrSet>,
+    /// Recovery is still putting tasks and successors into their ordering keys: a key that
+    /// has no tasks yet keeps its stored state.
+    recovering: bool,
     /// Overlap guard and materialization state of removed recurring schedules, so re-adding
     /// one does not duplicate an occurrence that already exists.
     recurring_history: StrMap<(Option<TaskId>, Option<Time>)>,
@@ -624,6 +627,7 @@ impl<P> Core<P> {
             totals: Totals::default(),
             empty_tags: Arc::from(Vec::new()),
             recovering_keys: None,
+            recovering: false,
             recurring_history: StrMap::default(),
             started: false,
             awaited_by: FxHashMap::default(),
@@ -3141,18 +3145,33 @@ impl<P> Core<P> {
         // Keys that will exist once recovery completes; dependencies on any other unknown key
         // belong to parents that finished outside the retention window.
         self.recovering_keys = Some(tasks.iter().filter_map(|t| t.spec.key.clone()).collect());
+        self.recovering = true;
         // Stored state of ordering keys, before their tasks join them.
         for o in rec.ordering {
             let Some(&pool) = self.pool_index.get(&o.pool) else {
+                // The pool is gone from the configuration, and its tasks are closed out
+                // below: the stored state of its keys goes too.
+                if self.cfg.persist {
+                    self.actions
+                        .push_back(Action::Persist(Box::new(Mutation::Ordering {
+                            pool: o.pool,
+                            key: o.key,
+                            floor: None,
+                            persist: false,
+                            halted: false,
+                        })));
+                }
                 continue;
             };
             let sidx = self.strand(pool, &o.key);
             let p = &mut self.pools[pool as usize];
             let st = p.strands[sidx as usize].as_mut().expect("live strand");
+            // A key named twice counts once.
+            let was_kept = st.persist && st.floor.is_some();
             st.floor = o.floor.map(|f| f as u8);
             st.persist = o.persist && o.floor.is_some();
             st.halted = o.halted;
-            p.strand_settings += st.persist as usize;
+            p.strand_settings = p.strand_settings + st.persist as usize - was_kept as usize;
         }
         // Where each task with a stored submission stood, in case it ends during recovery.
         let waited_for: FxHashSet<TaskId> = rec.pending.iter().map(|p| p.id).collect();
@@ -3211,12 +3230,6 @@ impl<P> Core<P> {
             );
         }
         self.recovering_keys = None;
-        // Every task is in: each ordering key offers its oldest task.
-        for pool in 0..self.pools.len() {
-            for sidx in 0..self.pools[pool].strands.len() {
-                self.settle(pool as u16, sidx as u32);
-            }
-        }
         for p in rec.pending {
             self.next_seq = self.next_seq.max(p.seq + 1);
             let next = Next {
@@ -3245,6 +3258,15 @@ impl<P> Core<P> {
                         self.spawn_successor(p.id, pool, seq, arrival, next);
                     }
                 }
+            }
+        }
+        // Every task is in, and so is every successor of a task that ended while it was
+        // recovered: each ordering key offers its oldest task, and one left without tasks
+        // is forgotten.
+        self.recovering = false;
+        for pool in 0..self.pools.len() {
+            for sidx in 0..self.pools[pool].strands.len() {
+                self.settle(pool as u16, sidx as u32);
             }
         }
         // The latest live occurrence of each schedule restores its overlap guard.
@@ -3658,11 +3680,16 @@ impl<P> Core<P> {
             return;
         };
         if st.members.is_empty() {
+            // In recovery the key's other tasks may not be in yet: a task that ends while
+            // it is recovered must not take the key's halt and floor with it.
+            if self.recovering {
+                return;
+            }
             // A halt ends with the key's tasks; a floor stays only if it was set to.
-            let was_stored = st.stored();
+            let (was_stored, was_halted) = (st.stored(), st.halted);
             st.halted = false;
             if st.persist && st.floor.is_some() {
-                if was_stored {
+                if was_halted {
                     self.persist_ordering(pool, sidx);
                 }
                 return;
