@@ -626,7 +626,10 @@ pub async fn get_ordering(
         };
         return answer(sh, c.admin.get_ordering(bounded(app, req)).await);
     }
-    grpc::get_ordering(app, pool, key).await
+    // As the caller names it; stored under the tenant's prefix for pinned credentials.
+    let mut info = grpc::get_ordering(app, pool, &grpc::tenant_key(p, key)).await?;
+    info.key = key.to_string();
+    Ok(info)
 }
 
 /// The halted ordering keys of a pool, from its shard.
@@ -645,7 +648,22 @@ pub async fn list_halted_orderings(
         let r = answer(sh, c.admin.list_halted_orderings(bounded(app, req)).await)?;
         return Ok(r.keys);
     }
-    grpc::list_halted_orderings(app, pool, limit).await
+    let Some(tenant) = &p.tenant else {
+        return grpc::list_halted_orderings(app, pool, limit).await;
+    };
+    // Pinned credentials see the halted keys of their own namespace, by their own names.
+    let prefix = grpc::tenant_prefix(tenant);
+    let wanted = match limit {
+        0 => 100,
+        n => n.min(grpc::MAX_HALTED_LIST),
+    } as usize;
+    let all = grpc::list_all_halted_orderings(app, pool).await?;
+    Ok(all
+        .iter()
+        .filter_map(|k| k.strip_prefix(&prefix))
+        .take(wanted)
+        .map(str::to_string)
+        .collect())
 }
 
 /// Set or remove the floor of an ordering key, on the shard of its pool.
@@ -668,7 +686,7 @@ pub async fn set_ordering_floor(
         answer(sh, c.admin.set_ordering_floor(bounded(app, req)).await)?;
         return Ok(());
     }
-    grpc::set_ordering_floor(app, pool, key, floor, persist).await
+    grpc::set_ordering_floor(app, pool, &grpc::tenant_key(p, key), floor, persist).await
 }
 
 /// Resume a halted ordering key, on the shard of its pool.
@@ -687,7 +705,7 @@ pub async fn resume_ordering(
         let r = answer(sh, c.admin.resume(bounded(app, req)).await)?;
         return Ok(r.resumed);
     }
-    grpc::resume_ordering(app, pool, key).await
+    grpc::resume_ordering(app, pool, &grpc::tenant_key(p, key)).await
 }
 
 /// Remove a schedule from whichever shard has it.

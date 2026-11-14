@@ -248,8 +248,8 @@ as `credentials` for a private CA or mTLS. Use it as `async with Client(...) as 
 | `await snapshot()` | `Snapshot` | Requires a metrics or admin token. |
 | `await ordering(key, *, pool=None)` | `OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool). A key with no tasks and no kept floor has `tasks == 0`. Requires a metrics or admin token. |
 | `await halted_orderings(*, pool=None, limit=100)` | `list[str]` | The halted ordering keys of a pool, in name order. Requires a metrics or admin token. |
-| `await set_ordering_floor(key, floor, *, pool=None, persist=False)` | | Set the class floor of an ordering key; `floor=None` removes it. With `persist=True` the floor stays when the key has no tasks left; the server limits how many keys keep one (`ClientError` `resource_exhausted`). Requires an admin token that is not pinned to a tenant. |
-| `await resume(*, ordering_key, pool=None)` | `bool` | Resume a halted ordering key. `False` if the key was not halted, which is not an error. Requires an admin token that is not pinned to a tenant. |
+| `await set_ordering_floor(key, floor, *, pool=None, persist=False)` | | Set the class floor of an ordering key; `floor=None` removes it. With `persist=True` the floor stays when the key has no tasks left; the server limits how many keys keep one (`ClientError` `resource_exhausted`). Requires an admin token. |
+| `await resume(*, ordering_key, pool=None)` | `bool` | Resume a halted ordering key. `False` if the key was not halted, which is not an error. Requires an admin token. |
 | `await add_recurring(name, cron, payload=None, *, tz=None, overlap="skip", **options)` | | Requires an admin token. `payload` may also be a prebuilt `task(...)` spec. `overlap`, `key` and `deadline_in` work as for the native scheduler. |
 | `await remove_recurring(name)` | `bool` | Requires an admin token. |
 | `await list_workers()` | `list[WorkerInfo]` | Connected remote workers. Requires a metrics or admin token. |

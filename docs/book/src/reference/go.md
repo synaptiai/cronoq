@@ -57,8 +57,8 @@ opened on the first call.
 | `Snapshot(ctx)` | `*cronoqpb.SnapshotResponse` | Pools, queues and totals (metrics role). |
 | `Ordering(ctx, pool, key)` | `*OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (empty: the default pool). A key with no tasks and no kept floor has `Tasks` 0 (metrics role). |
 | `HaltedOrderings(ctx, pool, limit)` | `[]string` | The halted ordering keys of `pool`, in name order. A `limit` of 0 takes the server's default (metrics role). |
-| `SetOrderingFloor(ctx, pool, key, floor, persist)` | `error` | Set the class floor of an ordering key; an empty `floor` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`ResourceExhausted`). Admin role, not pinned to a tenant. |
-| `Resume(ctx, pool, orderingKey)` | `bool` | Resume a halted ordering key. False if the key was not halted, which is not an error. Admin role, not pinned to a tenant. |
+| `SetOrderingFloor(ctx, pool, key, floor, persist)` | `error` | Set the class floor of an ordering key; an empty `floor` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`ResourceExhausted`). Admin role. |
+| `Resume(ctx, pool, orderingKey)` | `bool` | Resume a halted ordering key. False if the key was not halted, which is not an error. Admin role. |
 
 `Ref` names a task: `cronoq.ID(id)` or `cronoq.Key(key)`.
 

@@ -306,9 +306,8 @@ otherwise); an unknown pool is `NOT_FOUND`.
 - `Resume` resumes a halted key. `resumed` is false when the key was not halted, which is not
   an error.
 
-`SetOrderingFloor` and `Resume` need a key (`INVALID_ARGUMENT` without one) and are refused
-with `PERMISSION_DENIED` for credentials pinned to a tenant, because a key may hold tasks of
-other tenants. With a durable store, both return after the change is stored.
+`SetOrderingFloor` and `Resume` need a key (`INVALID_ARGUMENT` without one). Credentials pinned to a tenant have their own ordering keys: their key `k` is stored, and seen by other credentials, as `<tenant>:k`. They submit to, read and change those keys only.
+With a durable store, both return after the change is stored.
 
 `AddRecurring` registers (or replaces) a cron schedule named `name`. `cron` has six fields
 (seconds first) or five (seconds = 0); `tz` is an IANA time zone (default UTC). The template is
@@ -367,7 +366,7 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `FAILED_PRECONDITION` | A key that belongs to a task submitted with other content, for a submission with `KEY_CONFLICT_REJECT` (told apart by the `cronoq-conflict-task` metadata); fixed-start reservation conflict; an `Update` of a task with a fixed start; a `KEY_CONFLICT_REPLACE_QUEUED` submission that does not match the task it would replace; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
 | `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. For `SetOrderingFloor` with `persist`: too many ordering keys keep a floor (`limits.max_ordering_settings`); retrying does not help until one is removed. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; credentials pinned to a tenant call `SetOrderingFloor` or `Resume`; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
+| `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
 | `DEADLINE_EXCEEDED` | A wait timed out while the task is still running, or no `Register` within 10 s. |
 | `CANCELLED` | The call ran longer than `limits.max_wait_s + limits.request_timeout_s`, or the client cancelled it. |
 | `UNAVAILABLE` | Not the leader, shutting down, or the store is unavailable. Retry with backoff. |

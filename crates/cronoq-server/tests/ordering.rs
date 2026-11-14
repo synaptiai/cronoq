@@ -195,12 +195,12 @@ async fn a_failed_task_halts_its_key_until_an_admin_resumes_it() {
         .into_inner()
         .id;
 
-    // Who may resume: the admin role, for a pool it may use, not pinned to a tenant.
+    // Who may resume: the admin role, for a pool it may use.
     let resume = || pb::ResumeRequest {
         pool: String::new(),
         ordering_key: "acct".into(),
     };
-    for token in [METRICS, CLIENT, ACME_ADMIN, BATCH_ADMIN] {
+    for token in [METRICS, CLIENT, BATCH_ADMIN] {
         let e = s.admin(token).await.resume(resume()).await.unwrap_err();
         assert_eq!(e.code(), tonic::Code::PermissionDenied, "{token}: {e}");
     }
@@ -213,6 +213,9 @@ async fn a_failed_task_halts_its_key_until_an_admin_resumes_it() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), tonic::Code::PermissionDenied);
+    // An admin pinned to a tenant names keys of its own namespace: this is another key.
+    let pinned = s.admin(ACME_ADMIN).await.resume(resume()).await.unwrap();
+    assert!(!pinned.into_inner().resumed);
     no_lease(&mut w).await;
 
     let mut admin = s.admin(ADMIN).await;
@@ -616,4 +619,98 @@ async fn ordering_keys_survive_a_restart() {
     }
     s.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Credentials pinned to a tenant have their own ordering keys: they cannot join, block or
+/// halt a key of anyone else, and they read and change their own by their own names.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_tenant_has_its_own_ordering_keys() {
+    const ACME: &str = "acme-client-token-0123456789abcdef";
+    const ODD: &str = "odd-client-token-0123456789abcdef0";
+    let tokens = format!(
+        "[[auth.tokens]]\ntoken = \"{ACME}\"\nrole = \"client\"\ntenant = \"acme\"\n\
+         [[auth.tokens]]\ntoken = \"{ODD}\"\nrole = \"client\"\ntenant = \"a:b%\"\n\
+         [[auth.tokens]]\ntoken = \"{ACME_ADMIN}\"\nrole = \"admin\"\ntenant = \"acme\"\n"
+    );
+    let s = TestServer::start(&tokens).await;
+    let mut shared = s.tasks(CLIENT).await;
+    let mut acme = s.tasks(ACME).await;
+    // Another caller's task in key "shared"; acme's failing task names the same key.
+    let mut id_of = async |c: &mut pb::tasks_client::TasksClient<Intercepted>, t: pb::TaskSpec| {
+        c.submit(submit(t, false)).await.unwrap().into_inner().id
+    };
+    let theirs = id_of(&mut shared, ordered(b"theirs", "shared")).await;
+    let bad = id_of(&mut acme, halting(b"bad", "shared")).await;
+    let behind = id_of(&mut acme, ordered(b"behind", "shared")).await;
+    let mut admin = s.admin(ADMIN).await;
+    let mut acme_admin = s.admin(ACME_ADMIN).await;
+    // Two keys: the unpinned view names acme's with its prefix.
+    let get = async |c: &mut pb::admin_client::AdminClient<Intercepted>, key: &str| {
+        c.get_ordering(target(key)).await.unwrap().into_inner()
+    };
+    let plain = get(&mut admin, "shared").await;
+    assert_eq!((plain.tasks, plain.head), (1, Some(theirs)));
+    let stored = get(&mut admin, "acme:shared").await;
+    assert_eq!((stored.tasks, stored.head), (2, Some(bad)));
+    let own = get(&mut acme_admin, "shared").await;
+    assert_eq!(
+        (own.tasks, own.head, own.key.as_str()),
+        (2, Some(bad), "shared")
+    );
+
+    // Both heads are leased at once; acme's failure halts acme's key only.
+    let mut w = raw_worker(&s, WORKER, register("default", 4))
+        .await
+        .unwrap();
+    let (a, b) = (next_lease(&mut w).await, next_lease(&mut w).await);
+    let mut leased = vec![a.task_id, b.task_id];
+    leased.sort();
+    assert_eq!(leased, vec![theirs, bad]);
+    let (ok, fail) = if a.task_id == bad { (b, a) } else { (a, b) };
+    finish(&w, fail.lease, false).await;
+    finish(&w, ok.lease, true).await;
+    no_lease(&mut w).await;
+    let halted = async |c: &mut pb::admin_client::AdminClient<Intercepted>| {
+        c.list_halted_orderings(pb::ListHaltedOrderingsRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .keys
+    };
+    assert_eq!(halted(&mut admin).await, ["acme:shared"]);
+    assert_eq!(halted(&mut acme_admin).await, ["shared"]);
+    assert!(!get(&mut admin, "shared").await.halted);
+
+    // The pinned admin sets a floor on and resumes its own key, by its own name.
+    acme_admin
+        .set_ordering_floor(pb::SetOrderingFloorRequest {
+            key: "shared".into(),
+            floor: Some(pb::Priority::High as i32),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let stored = get(&mut admin, "acme:shared").await;
+    assert_eq!(stored.floor, Some(pb::Priority::High as i32));
+    let resume = pb::ResumeRequest {
+        pool: String::new(),
+        ordering_key: "shared".into(),
+    };
+    assert!(
+        acme_admin
+            .resume(resume)
+            .await
+            .unwrap()
+            .into_inner()
+            .resumed
+    );
+    let lease = next_lease(&mut w).await;
+    assert_eq!(lease.task_id, behind);
+    finish(&w, lease.lease, true).await;
+
+    // No two tenants share a prefix, whatever their names: "a:b%" + "c" is not "a" + "b%:c".
+    let mut odd_client = s.tasks(ODD).await;
+    let odd = id_of(&mut odd_client, ordered(b"x", "c")).await;
+    assert_eq!(get(&mut admin, "a%3Ab%25:c").await.head, Some(odd));
+    s.stop().await;
 }

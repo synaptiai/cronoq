@@ -314,8 +314,8 @@ floor and takes no body. Both return the key, as `GET` does.
 Resumes a halted key. `resumed` is `false` when the key was not halted, which is not an error.
 The route takes no body.
 
-The floor and resume routes return 403 for credentials pinned to a tenant, because a key may
-hold tasks of other tenants. With a durable store, the change is stored before the response
+Credentials pinned to a tenant have their own ordering keys: their key `k` is stored, and seen by other credentials, as `<tenant>:k`. They submit to, read and change those keys only.
+With a durable store, the change is stored before the response
 is sent.
 
 ## `PATCH /v1/tasks/{id}` and `PATCH /v1/tasks/by-key/{key}`
@@ -459,7 +459,7 @@ lower-case HTTP reason phrase (for example `too_many_requests`). 401 responses c
 |---|---|---|
 | 400 | `INVALID_ARGUMENT` | Malformed JSON, unknown field or enum value, invalid duration, oversize string, dependency cycle (including a dependency on a task behind the task in its own ordering key), an `ordering_key` with a start time, `on_failure` without an `ordering_key`, invalid id. |
 | 401 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
-| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, credentials pinned to a tenant change an ordering key, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
+| 403 | `PERMISSION_DENIED` | The credentials lack the route's role, the pool or tenant is outside their scope, or authentication is off without `--insecure-no-auth` and the `Host` is not a loopback name or address. |
 | 404 | `NOT_FOUND` | Unknown task, pool, resource or dependency, or unknown route. |
 | 405 | – | Method not allowed on this route. |
 | 409 | `FAILED_PRECONDITION`, `ALREADY_EXISTS` | Fixed-start reservation conflict; an update of a task with a fixed start; a `replace_queued` submission that does not match the task it would replace; a key already used by a task in a pool outside the credentials' scope; a key that names tasks in several shards (use the id); a task or pool served by another shard that this server cannot forward to. |

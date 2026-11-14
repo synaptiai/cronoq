@@ -647,7 +647,7 @@ export class Client {
    * Set the class the front of an ordering key never runs below, whatever the classes of the
    * key's tasks; `floor: undefined` removes it. No task's own class changes. The floor goes
    * when the key has no tasks left unless `persist` is set; the server limits how many keys
-   * keep one (`resource_exhausted` beyond it). Admin role, not pinned to a tenant.
+   * keep one (`resource_exhausted` beyond it). Admin role.
    */
   setOrderingFloor(
     key: string,
@@ -671,7 +671,7 @@ export class Client {
   /**
    * Resume an ordering key that a failed task halted (`haltOnFailure`): its oldest task is
    * offered again. Resolves to whether the key was halted; resuming one that is not is not an
-   * error. Admin role, not pinned to a tenant.
+   * error. Admin role.
    */
   resume(target: { orderingKey: string; pool?: string }, opts: CallOptions = {}): Promise<boolean> {
     return this.call(

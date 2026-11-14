@@ -149,12 +149,19 @@ with it, and a key's floor and halt are stored when they are set. A new leader r
 key from the stored submission order: the same task is at the front, a halted key is still
 halted, and a kept floor is still there.
 
-## Who may change a key
+## Roles and tenants
 
 Over the network, reading a key needs the `metrics` role and changing one (floor, resume) the
-`admin` role, both for a pool the credentials allow. Credentials pinned to a
-[tenant](fairness.md) cannot change an ordering key, because a key may hold tasks of other
-tenants.
+`admin` role, both for a pool the credentials allow.
+
+A key is shared by everyone who may submit to its pool: any of them can add a task to it, and
+so make the others' tasks wait. Credentials pinned to a [tenant](fairness.md) are kept apart.
+They have their own ordering keys: key `k` submitted with credentials pinned to tenant `acme`
+is stored as `acme:k`, and is a different key from `k` and from every other tenant's. Such
+credentials submit to, read, list and change the keys of their own tenant only, under their
+own names; they cannot join, block or halt anyone else's. Credentials that are not pinned see
+and name those keys with the prefix (`cronoq ordering get acme:k`). In the prefix, `%` and `:`
+in a tenant's name are written `%25` and `%3A`.
 
 ## Metrics
 

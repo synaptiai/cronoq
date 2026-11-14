@@ -74,8 +74,8 @@ browsers their own token, limited to the pools and role they need.
 | `snapshot()` | `pb.SnapshotResponse` | Pools, queues and totals (metrics role). |
 | `ordering(key, pool?)` | `OrderingInfo` | An [ordering key](../concepts/ordering-keys.md) of `pool` (default: the default pool). A key with no tasks and no kept floor has `tasks` `0n` (metrics role). |
 | `haltedOrderings({ pool, limit })` | `string[]` | The halted ordering keys of a pool, in name order (metrics role). |
-| `setOrderingFloor(key, floor, { pool, persist })` | `void` | Set the class floor of an ordering key; `floor: undefined` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`resource_exhausted`). Admin role, not pinned to a tenant. |
-| `resume({ orderingKey, pool })` | `boolean` | Resume a halted ordering key. `false` if the key was not halted, which is not an error. Admin role, not pinned to a tenant. |
+| `setOrderingFloor(key, floor, { pool, persist })` | `void` | Set the class floor of an ordering key; `floor: undefined` removes it. With `persist`, the floor stays when the key has no tasks left; the server limits how many keys keep one (`resource_exhausted`). Admin role. |
+| `resume({ orderingKey, pool })` | `boolean` | Resume a halted ordering key. `false` if the key was not halted, which is not an error. Admin role. |
 
 | `listTasks` filter | Default | Description |
 |---|---|---|

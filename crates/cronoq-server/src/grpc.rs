@@ -377,14 +377,31 @@ fn pin_tenant(principal: &Principal, spec: &mut pb::TaskSpec) -> Result<(), Stat
     };
     if spec.tenant.is_empty() {
         spec.tenant = t.to_string();
-        Ok(())
-    } else if spec.tenant == **t {
-        Ok(())
-    } else {
-        Err(Status::permission_denied(format!(
+    } else if spec.tenant != **t {
+        return Err(Status::permission_denied(format!(
             "credentials do not allow tenant '{}'",
             spec.tenant
-        )))
+        )));
+    }
+    // Its ordering keys are its own: it cannot join, block or halt a key of anyone else.
+    if !spec.ordering_key.is_empty() {
+        spec.ordering_key = tenant_key(principal, &spec.ordering_key);
+    }
+    Ok(())
+}
+
+/// What precedes the ordering keys of tenant `t` in their stored names: the tenant, with `%`
+/// and `:` escaped so that no two tenants share a prefix, and a colon.
+pub fn tenant_prefix(t: &str) -> String {
+    format!("{}:", t.replace('%', "%25").replace(':', "%3A"))
+}
+
+/// The stored name of ordering key `key` for these credentials. Credentials pinned to a
+/// tenant have their own namespace: `<tenant>:<key>`. Others name keys as they are stored.
+pub fn tenant_key(p: &Principal, key: &str) -> String {
+    match &p.tenant {
+        Some(t) => format!("{}{key}", tenant_prefix(t)),
+        None => key.to_string(),
     }
 }
 
@@ -1324,8 +1341,9 @@ pub fn ordering_target(
     Ok(pool.to_string())
 }
 
-/// Like [`ordering_target`] for a call that changes the key. Credentials pinned to a tenant
-/// reach that tenant's tasks only, and a key may hold tasks of others: they are refused.
+/// Like [`ordering_target`] for a call that changes the key, which must be named.
+/// (Credentials pinned to a tenant reach the keys of their own namespace only: see
+/// [`tenant_key`].)
 pub fn ordering_change(
     p: &Principal,
     limits: &LimitsConfig,
@@ -1335,11 +1353,6 @@ pub fn ordering_change(
     let pool = ordering_target(p, limits, pool, key)?;
     if key.is_empty() {
         return Err(Status::invalid_argument("an ordering key is required"));
-    }
-    if p.tenant.is_some() {
-        return Err(Status::permission_denied(
-            "credentials pinned to a tenant cannot change an ordering key",
-        ));
     }
     Ok(pool)
 }
@@ -1393,6 +1406,17 @@ pub async fn list_halted_orderings(
     let keys = app
         .sched
         .halted_orderings(pool, limit as usize)
+        .await
+        .map_err(convert::error)?;
+    Ok(keys.iter().map(|k| k.to_string()).collect())
+}
+
+/// Every halted ordering key of a pool of this shard (for callers that filter them).
+pub async fn list_all_halted_orderings(app: &AppState, pool: &str) -> Result<Vec<String>, Status> {
+    check_pool_shard(app, pool)?;
+    let keys = app
+        .sched
+        .halted_orderings(pool, usize::MAX)
         .await
         .map_err(convert::error)?;
     Ok(keys.iter().map(|k| k.to_string()).collect())

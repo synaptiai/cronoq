@@ -569,7 +569,7 @@ func (c *Client) HaltedOrderings(ctx context.Context, pool string, limit uint32)
 // SetOrderingFloor sets the class the front of an ordering key never runs below, whatever
 // the classes of the key's tasks; an empty floor removes it. No task's own class changes.
 // The floor goes when the key has no tasks left unless persist is set; the server limits how
-// many keys keep one (ResourceExhausted beyond it). Admin role, not pinned to a tenant.
+// many keys keep one (ResourceExhausted beyond it). Admin role.
 func (c *Client) SetOrderingFloor(ctx context.Context, pool, key string, floor Priority, persist bool) error {
 	req := &pb.SetOrderingFloorRequest{Pool: pool, Key: key, Persist: persist}
 	if floor != "" {
@@ -585,7 +585,7 @@ func (c *Client) SetOrderingFloor(ctx context.Context, pool, key string, floor P
 
 // Resume resumes an ordering key that a failed task halted ([Task.HaltOnFailure]): its
 // oldest task is offered again. It reports whether the key was halted; resuming one that is
-// not is not an error. Admin role, not pinned to a tenant.
+// not is not an error. Admin role.
 func (c *Client) Resume(ctx context.Context, pool, orderingKey string) (bool, error) {
 	r, err := c.admin.Resume(ctx, &pb.ResumeRequest{Pool: pool, OrderingKey: orderingKey})
 	if err != nil {

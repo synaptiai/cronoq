@@ -101,7 +101,7 @@ return database messages to clients.
 |---|---|---|---|
 | `INVALID_ARGUMENT` | 400 | no | Malformed request or spec. |
 | `UNAUTHENTICATED` | 401 | no | Missing or unknown credentials. |
-| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, credentials pinned to a tenant try to change an ordering key (floor, resume), or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
+| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
 | `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; an update of a task with a fixed start; a replacement that does not match its task; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |

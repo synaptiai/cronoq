@@ -26,6 +26,12 @@ contain breaking changes; they are called out under **Changed**.
   tool (`cronoq submit --ordering-key`, `cronoq ordering`, `cronoq resume`). An ordering key
   cannot be combined with a fixed start or used in a schedule. See
   [Ordering keys](docs/book/src/concepts/ordering-keys.md).
+- Credentials pinned to a tenant have their own ordering keys: key `k` of tenant `acme` is
+  stored, and seen by other credentials, as `acme:k`. They submit to, read and change those
+  keys only, so one tenant cannot block or halt a key that holds another's tasks.
+- With `on_key_conflict = reject`, a key held by an unfinished task of another ordering key is
+  a conflict. Clients, the command-line tool and shard forwarding fail with `UNIMPLEMENTED`
+  when a server from before ordering keys admitted a task without its key.
 - Snapshot and metrics: per pool, the number of ordering keys with tasks, of tasks waiting
   behind another task of their key, and of halted keys (`cronoq_pool_ordering_keys`,
   `cronoq_pool_ordering_waiting`, `cronoq_pool_ordering_halted`).

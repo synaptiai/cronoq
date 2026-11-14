@@ -1209,8 +1209,7 @@ class Client:
         front never runs below that class, whatever the classes of the key's tasks. No task's
         own class changes. The floor goes when the key has no tasks left unless
         ``persist=True``; the number of keys that keep one is limited on the server
-        (``resource_exhausted`` beyond it). Requires an admin token that is not pinned to a
-        tenant."""
+        (``resource_exhausted`` beyond it). Requires an admin token."""
         if persist and floor is None:
             raise ValueError("persist=True needs a floor")
         req = pb.SetOrderingFloorRequest(pool=pool or "", key=key, persist=bool(persist))
@@ -1221,7 +1220,7 @@ class Client:
     async def resume(self, *, ordering_key: str, pool: str | None = None) -> bool:
         """Resume an ordering key that a failed task halted (``halt_on_failure=True``): its
         oldest task is offered again. Returns whether the key was halted; resuming one that is
-        not is not an error. Requires an admin token that is not pinned to a tenant."""
+        not is not an error. Requires an admin token."""
         req = pb.ResumeRequest(pool=pool or "", ordering_key=ordering_key)
         r = await self._call(self._admin.Resume, req)
         return bool(r.resumed)
