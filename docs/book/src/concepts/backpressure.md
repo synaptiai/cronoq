@@ -6,7 +6,8 @@ of unbounded memory growth.
 ## Bounds
 
 A task counts as **pending** from submission until it starts running (and again while it waits
-for a retry). Bounds limit pending tasks:
+for a retry). Tasks held by a [pause](pausing.md) are pending too: a paused pool fills up, and
+then applies its overflow policy. Bounds limit pending tasks:
 
 | Bound | Rust | Python | Server |
 |---|---|---|---|

@@ -699,7 +699,7 @@ export class Client {
             {
               pool: target.pool ?? "",
               priorityClass: target.class === undefined ? undefined : priorityValue(target.class),
-              orderingKey: target.orderingKey ?? "",
+              orderingKey: pauseKey(target),
               reason,
             },
             rpc(opts),
@@ -721,7 +721,7 @@ export class Client {
             {
               pool: target.pool ?? "",
               priorityClass: target.class === undefined ? undefined : priorityValue(target.class),
-              orderingKey: target.orderingKey ?? "",
+              orderingKey: pauseKey(target),
             },
             rpc(opts),
           )
@@ -740,6 +740,17 @@ export class Client {
       ).keys.map((k) => ({ key: k.key, reason: k.reason })),
     );
   }
+}
+
+/** The ordering key a pause or resume names, checked. */
+function pauseKey(target: PauseTarget): string | undefined {
+  if (target.orderingKey === undefined) return undefined;
+  if (target.class !== undefined) throw new CronoqError("invalid_argument", "name a class or an orderingKey, not both");
+  // Not a way to name the pool: an empty key is a mistake in the caller.
+  if (target.orderingKey === "") {
+    throw new CronoqError("invalid_argument", "orderingKey must not be empty; leave it out to name the pool");
+  }
+  return target.orderingKey;
 }
 
 function rpc(opts: CallOptions) {

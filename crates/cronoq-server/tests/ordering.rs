@@ -198,7 +198,7 @@ async fn a_failed_task_halts_its_key_until_an_admin_resumes_it() {
     // Who may resume: the admin role, for a pool it may use.
     let resume = || pb::ResumeRequest {
         pool: String::new(),
-        ordering_key: "acct".into(),
+        ordering_key: Some("acct".into()),
         priority_class: None,
     };
     for token in [METRICS, CLIENT, BATCH_ADMIN] {
@@ -226,7 +226,7 @@ async fn a_failed_task_halts_its_key_until_an_admin_resumes_it() {
     let e = admin
         .resume(pb::ResumeRequest {
             pool: "nope".into(),
-            ordering_key: "acct".into(),
+            ordering_key: Some("acct".into()),
             priority_class: None,
         })
         .await
@@ -603,7 +603,7 @@ async fn ordering_keys_survive_a_restart() {
         admin
             .resume(pb::ResumeRequest {
                 pool: String::new(),
-                ordering_key: "acct".into(),
+                ordering_key: Some("acct".into()),
                 priority_class: None,
             })
             .await
@@ -695,7 +695,7 @@ async fn a_pinned_tenant_has_its_own_ordering_keys() {
     assert_eq!(stored.floor, Some(pb::Priority::High as i32));
     let resume = pb::ResumeRequest {
         pool: String::new(),
-        ordering_key: "shared".into(),
+        ordering_key: Some("shared".into()),
         priority_class: None,
     };
     assert!(

@@ -42,7 +42,8 @@ never changed by a [replacement](concepts/replacing.md), only followed.
 
 **Halted (ordering key)**: said of an ordering key after a task submitted with halt on failure
 ended as failed or dead-lettered; its tasks stay queued, in order, and none runs until the key
-is resumed ([Ordering keys](concepts/ordering-keys.md#when-a-task-fails)).
+is resumed ([Ordering keys](concepts/ordering-keys.md#when-a-task-fails)). A halt comes from a
+failure, a [pause](concepts/pausing.md) from an operator; resuming the key ends both.
 
 **Hold**: a worker slot kept free for a fixed-start task about to begin.
 
@@ -61,6 +62,10 @@ they were submitted; it does not deduplicate ([Ordering keys](concepts/ordering-
 
 **Parked**: a ready task waiting for a resource, outside the dispatch queue.
 
+**Pause**: a hold on a pool, on one class of a pool or on one ordering key, set with a reason;
+what is paused stays queued, in place, and none of it is handed to a worker until it is
+resumed ([Pausing and resuming](concepts/pausing.md)).
+
 **Pending**: submitted but not running (counted against queue bounds).
 
 **Pool**: a group of worker slots with one executor, one autoscaling policy and its own bounds.
@@ -68,6 +73,9 @@ they were submitted; it does not deduplicate ([Ordering keys](concepts/ordering-
 **Reservation**: a booked interval of pool capacity for a fixed-start task.
 
 **Resource**: a shared limit (semaphore or token bucket) that tasks request units of.
+
+**Resume**: to end a pause; for an ordering key, also a halt
+([Pausing and resuming](concepts/pausing.md)).
 
 **Retention window**: how long terminal statuses are remembered.
 

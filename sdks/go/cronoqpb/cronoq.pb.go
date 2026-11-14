@@ -4766,8 +4766,10 @@ type PauseRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pool          string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"` // default "default"
 	PriorityClass *Priority              `protobuf:"varint,2,opt,name=priority_class,json=priorityClass,proto3,enum=cronoq.v1.Priority,oneof" json:"priority_class,omitempty"`
-	OrderingKey   string                 `protobuf:"bytes,3,opt,name=ordering_key,json=orderingKey,proto3" json:"ordering_key,omitempty"`
+	// Set to name an ordering key; a key that is set must not be empty.
+	OrderingKey *string `protobuf:"bytes,3,opt,name=ordering_key,json=orderingKey,proto3,oneof" json:"ordering_key,omitempty"`
 	// Why, for whoever looks at it later: shown in snapshots, to workers and by the tools.
+	// Required: not empty, one line, without control characters.
 	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4818,8 +4820,8 @@ func (x *PauseRequest) GetPriorityClass() Priority {
 }
 
 func (x *PauseRequest) GetOrderingKey() string {
-	if x != nil {
-		return x.OrderingKey
+	if x != nil && x.OrderingKey != nil {
+		return *x.OrderingKey
 	}
 	return ""
 }
@@ -4879,10 +4881,11 @@ func (x *PauseResponse) GetPaused() bool {
 // What to resume, named like in `PauseRequest`. For an ordering key, this also resumes a
 // key that a failed task halted.
 type ResumeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pool          string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"` // default "default"
-	OrderingKey   string                 `protobuf:"bytes,2,opt,name=ordering_key,json=orderingKey,proto3" json:"ordering_key,omitempty"`
-	PriorityClass *Priority              `protobuf:"varint,3,opt,name=priority_class,json=priorityClass,proto3,enum=cronoq.v1.Priority,oneof" json:"priority_class,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Pool  string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"` // default "default"
+	// Set to name an ordering key; a key that is set must not be empty.
+	OrderingKey   *string   `protobuf:"bytes,2,opt,name=ordering_key,json=orderingKey,proto3,oneof" json:"ordering_key,omitempty"`
+	PriorityClass *Priority `protobuf:"varint,3,opt,name=priority_class,json=priorityClass,proto3,enum=cronoq.v1.Priority,oneof" json:"priority_class,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4925,8 +4928,8 @@ func (x *ResumeRequest) GetPool() string {
 }
 
 func (x *ResumeRequest) GetOrderingKey() string {
-	if x != nil {
-		return x.OrderingKey
+	if x != nil && x.OrderingKey != nil {
+		return *x.OrderingKey
 	}
 	return ""
 }
@@ -5487,19 +5490,21 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\rR\x05limit\"1\n" +
 	"\x1bListHaltedOrderingsResponse\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\tR\x04keys\"\xb1\x01\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"\xc7\x01\n" +
 	"\fPauseRequest\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x12?\n" +
-	"\x0epriority_class\x18\x02 \x01(\x0e2\x13.cronoq.v1.PriorityH\x00R\rpriorityClass\x88\x01\x01\x12!\n" +
-	"\fordering_key\x18\x03 \x01(\tR\vorderingKey\x12\x16\n" +
+	"\x0epriority_class\x18\x02 \x01(\x0e2\x13.cronoq.v1.PriorityH\x00R\rpriorityClass\x88\x01\x01\x12&\n" +
+	"\fordering_key\x18\x03 \x01(\tH\x01R\vorderingKey\x88\x01\x01\x12\x16\n" +
 	"\x06reason\x18\x04 \x01(\tR\x06reasonB\x11\n" +
-	"\x0f_priority_class\"'\n" +
+	"\x0f_priority_classB\x0f\n" +
+	"\r_ordering_key\"'\n" +
 	"\rPauseResponse\x12\x16\n" +
-	"\x06paused\x18\x01 \x01(\bR\x06paused\"\x9a\x01\n" +
+	"\x06paused\x18\x01 \x01(\bR\x06paused\"\xb0\x01\n" +
 	"\rResumeRequest\x12\x12\n" +
-	"\x04pool\x18\x01 \x01(\tR\x04pool\x12!\n" +
-	"\fordering_key\x18\x02 \x01(\tR\vorderingKey\x12?\n" +
-	"\x0epriority_class\x18\x03 \x01(\x0e2\x13.cronoq.v1.PriorityH\x00R\rpriorityClass\x88\x01\x01B\x11\n" +
+	"\x04pool\x18\x01 \x01(\tR\x04pool\x12&\n" +
+	"\fordering_key\x18\x02 \x01(\tH\x00R\vorderingKey\x88\x01\x01\x12?\n" +
+	"\x0epriority_class\x18\x03 \x01(\x0e2\x13.cronoq.v1.PriorityH\x01R\rpriorityClass\x88\x01\x01B\x0f\n" +
+	"\r_ordering_keyB\x11\n" +
 	"\x0f_priority_class\":\n" +
 	"\x0ePausedOrdering\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +

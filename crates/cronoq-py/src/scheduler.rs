@@ -776,6 +776,9 @@ impl Scheduler {
         let s = self.sched(py)?;
         let pool = pool.unwrap_or_else(|| self.default_pool.to_string());
         let target = pause_target(priority_class, ordering_key)?;
+        if reason.trim().is_empty() {
+            return Err(PyValueError::new_err("a pause needs a reason"));
+        }
         spawn_py(py, async move {
             s.pause(&pool, target, &reason).await.map_err(to_pyerr)
         })
@@ -1178,6 +1181,9 @@ fn pause_target(
     match (priority_class, ordering_key) {
         (Some(_), Some(_)) => Err(PyValueError::new_err(
             "name a priority_class or an ordering_key, not both",
+        )),
+        (None, Some(k)) if k.is_empty() => Err(PyValueError::new_err(
+            "ordering_key must not be empty; leave it out to name the pool",
         )),
         (Some(c), None) => Ok(cronoq::PauseTarget::Class(extract_priority(c)?)),
         (None, Some(k)) => Ok(cronoq::PauseTarget::Ordering(k.into())),

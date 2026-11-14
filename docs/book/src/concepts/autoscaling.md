@@ -53,6 +53,9 @@ reserved = peak concurrent reservations in [now, now + reservation_horizon]   ho
 desired  = clamp(max(base + drain, slo, busy) + reserved, min_workers, max_workers)
 ```
 
+Tasks held by a [pause](pausing.md) are left out of the backlog: held work is no reason to add
+workers.
+
 Then:
 
 - **Scale up** immediately, by at most `max(ceil(current × max_step_up_ratio), max_step_up_abs)`

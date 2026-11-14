@@ -107,6 +107,11 @@ The worker:
 - on `stop()`, stops taking leases, lets running ones finish for up to `grace` seconds, then
   cancels the rest.
 
+A worker of a [paused](../concepts/pausing.md) pool stays connected and gets no tasks until
+the pool is resumed. If the pool is paused when the worker registers, the server tells it the
+reason: the worker libraries log it as a warning, and the Python worker has it in
+`worker.pool_paused`.
+
 Pass `labels={"gpu": "a100"}` to register the worker with labels: tasks submitted with
 `labels=` run only on workers that have them ([Worker labels](../concepts/labels.md)).
 
@@ -194,7 +199,8 @@ tooling.
    stream fails with `FAILED_PRECONDITION` and `cronoq-shard-endpoint` metadata, another shard
    serves the pool: connect there instead, without moving from `https://` to `http://`.
 3. Receive `registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes}`; run
-   at most the granted `slots` leases at once.
+   at most the granted `slots` leases at once. `pool_paused`, when set, is the reason the pool
+   is paused: stay connected; leases come when it is resumed.
 4. For each `lease`:
    - run the task (`payload`, `content_type`, `kind`, `key`, `tags`, `timeout_s`,
      `deadline_unix_ns`);

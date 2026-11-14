@@ -16,7 +16,7 @@ fn pause(class: Option<pb::Priority>, key: &str, reason: &str) -> pb::PauseReque
     pb::PauseRequest {
         pool: String::new(),
         priority_class: class.map(|c| c as i32),
-        ordering_key: key.into(),
+        ordering_key: (!key.is_empty()).then(|| key.into()),
         reason: reason.into(),
     }
 }
@@ -24,7 +24,7 @@ fn pause(class: Option<pb::Priority>, key: &str, reason: &str) -> pb::PauseReque
 fn resume(class: Option<pb::Priority>, key: &str) -> pb::ResumeRequest {
     pb::ResumeRequest {
         pool: String::new(),
-        ordering_key: key.into(),
+        ordering_key: (!key.is_empty()).then(|| key.into()),
         priority_class: class.map(|c| c as i32),
     }
 }
@@ -254,10 +254,27 @@ async fn who_may_pause_and_what_is_refused() {
             ..pause(None, "", "x")
         },
         pause(None, "", &"r".repeat(5000)),
+        // A reason is required, on one line.
+        pause(None, "", ""),
+        pause(None, "", "  "),
+        pause(None, "", "two\nlines"),
+        // A key that is set but empty is not a way to name the pool.
+        pb::PauseRequest {
+            ordering_key: Some(String::new()),
+            ..pause(None, "", "x")
+        },
     ] {
         let e = admin.pause(bad).await.unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e}");
     }
+    let e = admin
+        .resume(pb::ResumeRequest {
+            ordering_key: Some(String::new()),
+            ..resume(None, "")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e}");
     let e = admin
         .pause(pb::PauseRequest {
             pool: "nope".into(),
@@ -336,6 +353,13 @@ async fn http_pauses_and_resumes() {
     }
     let (code, e) = call(M::POST, ADMIN, "/v1/pools/nope/pause", reason("x")).await;
     assert_eq!(code, 404, "{e}");
+    // An empty pool segment is not the default pool, and an empty reason is not one.
+    for path in ["/v1/pools//pause", "/v1/pools//resume"] {
+        let (code, e) = call(M::POST, ADMIN, path, reason("x")).await;
+        assert!(code == 400 || code == 404, "{path}: {code} {e}");
+    }
+    let (code, e) = call(M::POST, ADMIN, "/v1/pools/default/pause", reason(" ")).await;
+    assert_eq!(code, 400, "{e}");
 
     let snap = s.snapshot().await;
     let pool = &snap["pools"][0];
@@ -360,6 +384,21 @@ async fn http_pauses_and_resumes() {
     assert_eq!(code, 403);
     let (code, r) = call(M::POST, ADMIN, "/v1/pools/default/resume", None).await;
     assert_eq!((code, &r["resumed"]), (200, &json!(true)));
+    // The class may be named in the body, as for a pause; it is not ignored.
+    let low = Some(json!({"class": "low"}));
+    let (code, r) = call(M::POST, ADMIN, "/v1/pools/default/resume", low.clone()).await;
+    assert_eq!((code, &r["resumed"]), (200, &json!(true)));
+    let (code, e) = call(M::POST, ADMIN, "/v1/pools/default/resume?class=high", low).await;
+    assert_eq!(code, 400, "{e}");
+    let (_, r) = call(M::POST, ADMIN, "/v1/pools/default/resume?class=low", None).await;
+    assert_eq!(r["resumed"], false);
+    call(
+        M::POST,
+        ADMIN,
+        "/v1/pools/default/pause",
+        Some(json!({"reason": "again", "class": "low"})),
+    )
+    .await;
     let (_, r) = call(M::POST, ADMIN, "/v1/pools/default/resume?class=low", None).await;
     assert_eq!(r["resumed"], true);
     let (_, r) = call(M::POST, ADMIN, "/v1/pools/default/resume?class=low", None).await;

@@ -779,6 +779,18 @@ _WAIT_DEADLINE_MARGIN = 5.0
 _MESSAGE_OVERHEAD = 1024
 
 
+def _pause_key(req: Any, priority_class: Any, ordering_key: str | None) -> None:
+    """Name the ordering key of a pause or resume request, if one is given."""
+    if ordering_key is None:
+        return
+    if priority_class is not None:
+        raise ValueError("name a priority_class or an ordering_key, not both")
+    if ordering_key == "":
+        # Not a way to name the pool: an empty key is a mistake in the caller.
+        raise ValueError("ordering_key must not be empty; leave it out to name the pool")
+    req.ordering_key = ordering_key
+
+
 def _priority_name(value: int) -> str | None:
     if value == pb.PRIORITY_UNSPECIFIED:
         return None
@@ -1250,9 +1262,8 @@ class Client:
         Returns whether this paused something that was not paused; pausing again replaces the
         reason. Requires an admin token; one pinned to a tenant pauses its own ordering keys
         only."""
-        if priority_class is not None and ordering_key:
-            raise ValueError("name a priority_class or an ordering_key, not both")
-        req = pb.PauseRequest(pool=pool or "", ordering_key=ordering_key or "", reason=reason)
+        req = pb.PauseRequest(pool=pool or "", reason=reason)
+        _pause_key(req, priority_class, ordering_key)
         if priority_class is not None:
             req.priority_class = cast(Any, _priority(priority_class))
         r = await self._call(self._admin.Pause, req)
@@ -1269,9 +1280,8 @@ class Client:
         key that a failed task halted (``halt_on_failure=True``). Returns whether there was
         anything to resume; resuming what is not paused is not an error. Requires an admin
         token."""
-        if priority_class is not None and ordering_key:
-            raise ValueError("name a priority_class or an ordering_key, not both")
-        req = pb.ResumeRequest(pool=pool or "", ordering_key=ordering_key or "")
+        req = pb.ResumeRequest(pool=pool or "")
+        _pause_key(req, priority_class, ordering_key)
         if priority_class is not None:
             req.priority_class = cast(Any, _priority(priority_class))
         r = await self._call(self._admin.Resume, req)

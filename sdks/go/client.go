@@ -550,7 +550,18 @@ type PauseTarget struct {
 	OrderingKey string
 }
 
+// key is the ordering key the target names, if any: an empty OrderingKey names none.
+func (t PauseTarget) key() *string {
+	if t.OrderingKey == "" {
+		return nil
+	}
+	return &t.OrderingKey
+}
+
 func (t PauseTarget) class() (*pb.Priority, error) {
+	if t.Class != "" && t.OrderingKey != "" {
+		return nil, &Error{Code: codes.InvalidArgument, Message: "name a Class or an OrderingKey, not both", BatchIndex: -1}
+	}
 	if t.Class == "" {
 		return nil, nil
 	}
@@ -625,7 +636,7 @@ func (c *Client) Pause(ctx context.Context, t PauseTarget, reason string) (bool,
 	if err != nil {
 		return false, err
 	}
-	r, err := c.admin.Pause(ctx, &pb.PauseRequest{Pool: t.Pool, PriorityClass: class, OrderingKey: t.OrderingKey, Reason: reason})
+	r, err := c.admin.Pause(ctx, &pb.PauseRequest{Pool: t.Pool, PriorityClass: class, OrderingKey: t.key(), Reason: reason})
 	if err != nil {
 		return false, wrap(err)
 	}
@@ -640,7 +651,7 @@ func (c *Client) Resume(ctx context.Context, t PauseTarget) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	r, err := c.admin.Resume(ctx, &pb.ResumeRequest{Pool: t.Pool, PriorityClass: class, OrderingKey: t.OrderingKey})
+	r, err := c.admin.Resume(ctx, &pb.ResumeRequest{Pool: t.Pool, PriorityClass: class, OrderingKey: t.key()})
 	if err != nil {
 		return false, wrap(err)
 	}

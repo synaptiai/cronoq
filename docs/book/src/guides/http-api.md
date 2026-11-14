@@ -100,7 +100,7 @@ returns 504 while the task keeps running: ask again.
 export ADMIN="authorization: Bearer $CRONOQ_ADMIN_TOKEN"
 
 curl -s $CRONOQ/v1/pools/default/ordering/account:8842 -H "$ADMIN"
-# {"effective":"normal","floor":null,"halted":false,"head":"17","key":"account:8842","persist":false,"pool":"default","tasks":3}
+# {"effective":"normal","floor":null,"halted":false,"head":"17","key":"account:8842","paused":null,"persist":false,"pool":"default","tasks":3}
 
 curl -s "$CRONOQ/v1/pools/default/ordering?halted=true" -H "$ADMIN"
 # {"keys":["import:42"],"pool":"default"}
@@ -115,9 +115,35 @@ curl -s -X DELETE $CRONOQ/v1/pools/default/ordering/account:8842/floor -H "$ADMI
 ```
 
 The two `GET` routes need the `metrics` role; resuming a key and changing its floor need the
-`admin` role, with credentials that are not pinned to a tenant. `"persist": true` keeps a
-floor while the key has no tasks. Resuming a key that is not halted returns
+`admin` role. `"persist": true` keeps a
+floor while the key has no tasks. Resuming a key that is neither halted nor paused returns
 `{"resumed":false}`. See [Ordering keys](../concepts/ordering-keys.md).
+
+## Pausing
+
+```sh
+# Pause the pool, one class of it, or one ordering key. The reason is required.
+curl -s -X POST $CRONOQ/v1/pools/default/pause -H "$ADMIN" -H "$JSON" \
+    -d '{"reason": "billing API deploy until 14:00"}'
+# {"paused":true}
+curl -s -X POST $CRONOQ/v1/pools/default/pause -H "$ADMIN" -H "$JSON" \
+    -d '{"reason": "backfill off", "class": "low"}'
+curl -s -X POST $CRONOQ/v1/pools/default/ordering/account:8842/pause -H "$ADMIN" -H "$JSON" \
+    -d '{"reason": "repairing this account"}'
+
+curl -s "$CRONOQ/v1/pools/default/ordering?paused=true" -H "$ADMIN"
+# {"paused":[{"key":"account:8842","reason":"repairing this account"}],"pool":"default"}
+
+curl -s -X POST $CRONOQ/v1/pools/default/resume -H "$ADMIN"
+# {"resumed":true}
+curl -s -X POST "$CRONOQ/v1/pools/default/resume?class=low" -H "$ADMIN"
+curl -s -X POST $CRONOQ/v1/pools/default/ordering/account:8842/resume -H "$ADMIN"
+```
+
+Pausing and resuming need the `admin` role. What is paused stays queued and is not handed to
+workers until it is resumed; the snapshot shows `paused`, `paused_classes` and `paused_tasks`
+per pool. Pausing what is already paused returns `{"paused":false}` and replaces the reason.
+See [Pausing and resuming](../concepts/pausing.md).
 
 ## Scheduled work
 

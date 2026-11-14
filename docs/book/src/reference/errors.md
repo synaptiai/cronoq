@@ -68,7 +68,7 @@ failures too.
 | `Submit(SubmitError)` | `SubmitError` | See above. |
 | `Batch { index, error }` | `SubmitError` with `.index` | A batch was refused because of the task at `index`; nothing of it was admitted. |
 | `Update(UpdateError)` | `UpdateError` (`.code`) | An [update](../concepts/updating.md) was refused: `NotFound` / `not_found` (no task with this id or key that has not finished), `FixedStart` / `fixed_start` (tasks with a fixed start cannot be updated), `Invalid` / `invalid` (for example a tag name starting with `cronoq.`). The server answers `NOT_FOUND`, `FAILED_PRECONDITION` and `INVALID_ARGUMENT`. |
-| `Ordering(OrderingError)` | `SchedulerError` | A setting of an [ordering key](../concepts/ordering-keys.md) was refused: `TooManySettings` (the limit on keys that keep a class floor while they have no tasks is reached; remove a kept floor or raise `max_ordering_settings`), `UnknownPool` (from the engine; `Scheduler` reports an unknown pool as `Submit(UnknownPool)`). The server answers `RESOURCE_EXHAUSTED` / 429 and `NOT_FOUND` / 404. Submissions are never refused for this limit. |
+| `Ordering(OrderingError)` | `SchedulerError` | A setting of an [ordering key](../concepts/ordering-keys.md) was refused: `TooManySettings` (the limit on keys that keep a class floor while they have no tasks is reached; remove a kept floor or raise `max_ordering_settings`), `UnknownPool` (from the engine, also for `Core::pause` and `Core::resume`; `Scheduler` reports an unknown pool as `Submit(UnknownPool)`). The server answers `RESOURCE_EXHAUSTED` / 429 and `NOT_FOUND` / 404. Submissions are never refused for this limit. |
 | `Shutdown` | `SchedulerError` | The scheduler has stopped or is stopping. |
 | `Config(String)` | `ValueError` (at construction) or `SchedulerError` | Invalid configuration: no pools, missing executor, duplicate pool, `min > max`, bad cron or time zone, recurring template with one-shot fields. |
 | `Store(StoreError)` | `SchedulerError` | Persistence failed fatally (see below). |
@@ -101,7 +101,7 @@ return database messages to clients.
 |---|---|---|---|
 | `INVALID_ARGUMENT` | 400 | no | Malformed request or spec. |
 | `UNAUTHENTICATED` | 401 | no | Missing or unknown credentials. |
-| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it, or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
+| `PERMISSION_DENIED` | 403 | no | Role, pool scope, tenant or worker labels do not allow it; credentials pinned to a tenant [pause or resume](../concepts/pausing.md#who-may-pause) a pool or a class; or authentication is off (without `--insecure-no-auth`) and the request does not name a loopback host. |
 | `NOT_FOUND` | 404 | no | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | 409 | no | The key is already used by a task in a pool outside the credentials' scope. |
 | `FAILED_PRECONDITION` | 409 | after changing the request | Fixed-start reservation conflict; an update of a task with a fixed start; a replacement that does not match its task; a task or pool served by another shard that this server cannot forward to (the response names the shard); a key that names tasks in several shards (use the id); a worker with an older protocol version. |

@@ -331,3 +331,78 @@ fn a_paused_pool_does_not_ask_for_workers() {
     s.run_to_completion(120.0);
     assert_eq!(s.core.live_tasks(), 0);
 }
+
+#[test]
+fn a_held_task_does_not_keep_a_resource_or_a_labelled_slot_from_others() {
+    // A resource: the high task is first in line for it and is held; the normal task
+    // behind it gets the resource when it is free.
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 4)],
+        resources: vec![ResourceConfig::semaphore("gpu", 1)],
+        ..Default::default()
+    });
+    let first = s.submit(job(2.0).resource("gpu", 1).priority(Priority::Critical));
+    let held = s.submit(job(1.0).resource("gpu", 1).priority(Priority::High));
+    let free = s.submit(job(1.0).resource("gpu", 1));
+    s.run_until(t(1.0));
+    assert!(pause(&mut s, PauseTarget::Class(Priority::High), "x"));
+    s.run_until(t(50.0));
+    assert_eq!(s.start_of(free), Some(t(2.0)));
+    assert_eq!(s.start_of(held), None);
+    assert!(resume(&mut s, PauseTarget::Class(Priority::High)));
+    s.run_to_completion(20.0);
+    assert_eq!(s.order(), vec![first, free, held]);
+
+    // Worker labels: the same with the only labelled slot.
+    let mut s = sim(2);
+    let gpu: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = vec![("gpu".into(), "a100".into())];
+    s.core.set_group_capacity(s.now, P, &gpu, 1);
+    s.drain();
+    let labelled = |d: f64| job(d).label("gpu", "a100");
+    let first = s.submit(labelled(2.0).priority(Priority::Critical));
+    let held = s.submit(labelled(1.0).priority(Priority::High));
+    let free = s.submit(labelled(1.0));
+    s.run_until(t(1.0));
+    assert!(pause(&mut s, PauseTarget::Class(Priority::High), "x"));
+    s.run_until(t(50.0));
+    assert_eq!(s.start_of(free), Some(t(2.0)));
+    assert!(resume(&mut s, PauseTarget::Class(Priority::High)));
+    s.run_to_completion(20.0);
+    assert_eq!(s.order(), vec![first, free, held]);
+
+    // An ordering key paused while its head is first in line for a resource: the task
+    // behind the head goes ahead.
+    let mut s = Sim::new(CoreConfig {
+        pools: vec![PoolConfig::fixed("default", 4)],
+        resources: vec![ResourceConfig::semaphore("r", 2)],
+        ..Default::default()
+    });
+    let _long = s.submit(job(100.0).resource("r", 1));
+    let _short = s.submit(job(2.0).resource("r", 1));
+    let head = s.submit(job(1.0).resource("r", 2).ordering_key("k"));
+    let behind = s.submit(job(1.0).resource("r", 1));
+    s.run_until(t(3.0));
+    assert_eq!(
+        s.start_of(behind),
+        None,
+        "the head needs both units and is first in line"
+    );
+    assert!(pause(&mut s, PauseTarget::Ordering("k".into()), "x"));
+    s.run_until(t(50.0));
+    assert_eq!(s.start_of(behind), Some(t(3.0)));
+    assert_eq!(s.start_of(head), None);
+}
+
+#[test]
+fn held_tasks_are_not_priority_inversions() {
+    let mut s = sim(1);
+    assert!(pause(&mut s, PauseTarget::Class(Priority::Critical), "x"));
+    s.submit(job(1.0).priority(Priority::Critical));
+    for _ in 0..4 {
+        s.submit(job(1.0));
+    }
+    s.run_until(t(10.0));
+    let snap = s.core.snapshot(s.now);
+    assert_eq!(snap.pools[0].dispatched, 4);
+    assert_eq!(snap.pools[0].priority_adherence, 1.0);
+}

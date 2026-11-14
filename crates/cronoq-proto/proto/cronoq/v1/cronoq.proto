@@ -668,8 +668,10 @@ message ListHaltedOrderingsResponse {
 message PauseRequest {
   string pool = 1; // default "default"
   optional Priority priority_class = 2;
-  string ordering_key = 3;
+  // Set to name an ordering key; a key that is set must not be empty.
+  optional string ordering_key = 3;
   // Why, for whoever looks at it later: shown in snapshots, to workers and by the tools.
+  // Required: not empty, one line, without control characters.
   string reason = 4;
 }
 
@@ -682,7 +684,8 @@ message PauseResponse {
 // key that a failed task halted.
 message ResumeRequest {
   string pool = 1; // default "default"
-  string ordering_key = 2;
+  // Set to name an ordering key; a key that is set must not be empty.
+  optional string ordering_key = 2;
   optional Priority priority_class = 3;
 }
 

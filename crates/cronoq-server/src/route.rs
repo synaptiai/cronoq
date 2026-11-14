@@ -700,11 +700,9 @@ pub async fn pause(
     if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
         let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
         let (class, ordering_key) = match &target {
-            cronoq::PauseTarget::Pool => (None, String::new()),
-            cronoq::PauseTarget::Class(c) => {
-                (Some(convert::priority_to_pb(*c) as i32), String::new())
-            }
-            cronoq::PauseTarget::Ordering(key) => (None, key.to_string()),
+            cronoq::PauseTarget::Pool => (None, None),
+            cronoq::PauseTarget::Class(c) => (Some(convert::priority_to_pb(*c) as i32), None),
+            cronoq::PauseTarget::Ordering(key) => (None, Some(key.to_string())),
         };
         let pool = pool.to_string();
         return match reason {

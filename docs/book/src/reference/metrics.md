@@ -36,6 +36,10 @@ Label values are escaped per the exposition format (`\\`, `\"`, `\n`).
 | `cronoq_pool_ordering_keys` | gauge | [Ordering keys](../concepts/ordering-keys.md) that have tasks. |
 | `cronoq_pool_ordering_waiting` | gauge | Ready tasks waiting for an older task of their ordering key, or for a halted key. |
 | `cronoq_pool_ordering_halted` | gauge | Ordering keys halted by a failed task. Nothing of a halted key runs until it is resumed. |
+| `cronoq_pool_ordering_paused` | gauge | Ordering keys that are [paused](../concepts/pausing.md). |
+| `cronoq_pool_paused` | gauge | 1 while the whole pool is paused, 0 otherwise. |
+| `cronoq_pool_paused_classes` | gauge | Classes of the pool that are paused on their own. |
+| `cronoq_pool_paused_tasks` | gauge | Ready tasks held by a pause of the pool, of their class or of their ordering key. |
 | `cronoq_pool_priority_adherence` | gauge | Windowed fraction of dispatches with no strictly higher class waiting (0–1). |
 | `cronoq_pool_fixed_start_hit_rate` | gauge | Windowed fraction of fixed starts that began within tolerance (0–1). |
 | `cronoq_pool_utilization` | gauge | Windowed busy slot-seconds ÷ capacity slot-seconds (0–1). |

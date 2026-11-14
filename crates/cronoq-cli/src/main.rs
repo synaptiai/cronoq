@@ -81,10 +81,10 @@ enum Command {
         #[arg(long, value_enum, conflicts_with = "ordering_key")]
         class: Option<PriorityArg>,
         /// Pause only this ordering key of the pool.
-        #[arg(long, value_name = "KEY")]
+        #[arg(long, value_name = "KEY", value_parser = clap::builder::NonEmptyStringValueParser::new())]
         ordering_key: Option<String>,
         /// Why, for whoever looks at it later.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         reason: String,
     },
     /// Resume a pool, a class or an ordering key that was paused; for an ordering key, also
@@ -94,7 +94,7 @@ enum Command {
         pool: String,
         #[arg(long, value_enum, conflicts_with = "ordering_key")]
         class: Option<PriorityArg>,
-        #[arg(long, value_name = "KEY")]
+        #[arg(long, value_name = "KEY", value_parser = clap::builder::NonEmptyStringValueParser::new())]
         ordering_key: Option<String>,
     },
     /// Show pools, quality signals and totals (metrics role).
@@ -876,7 +876,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 .pause(pb::PauseRequest {
                     pool,
                     priority_class: class.map(|c| c.to_pb() as i32),
-                    ordering_key: ordering_key.unwrap_or_default(),
+                    ordering_key,
                     reason,
                 })
                 .await)?;
@@ -894,7 +894,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let r = rpc(admin
                 .resume(pb::ResumeRequest {
                     pool,
-                    ordering_key: ordering_key.unwrap_or_default(),
+                    ordering_key,
                     priority_class: class.map(|c| c.to_pb() as i32),
                 })
                 .await)?;

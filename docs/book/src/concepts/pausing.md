@@ -55,8 +55,13 @@ await admin.resume();
 ```
 
 Every pause carries a **reason**. It is shown wherever the pause is: in the snapshot, in
-`cronoq ordering get`, and to workers. Write it for the person who finds the queue standing
-still at three in the morning.
+`cronoq snapshot` and `cronoq top`, in `cronoq ordering get`, and to workers. Write it for the
+person who finds the queue standing still at three in the morning. Over the network a reason
+is required: not empty, and one line.
+
+Leaving out the class and the ordering key names the **pool**. An ordering key that is given
+but empty is refused rather than read as "the pool", so a script with an unset variable does
+not pause or resume more than it meant to.
 
 ## What a pause does and does not do
 
@@ -69,7 +74,9 @@ still at three in the morning.
 | [Retries](reliability.md) | A task that fails and is retried waits like any other task once its backoff has passed. |
 | [Dependencies](dependencies.md) | A task that is held does not finish, so what depends on it waits. |
 | [Fixed starts](fixed-starts.md) and [schedules](recurring.md) | **Not held.** A start time is a promise of its own: a task with one, and so every occurrence of a schedule, starts when it is due. Remove the schedule, or cancel the task, to stop it. |
-| [Autoscaling](autoscaling.md) | Held work is no reason to add workers: it is left out of the queue pressure. |
+| [Autoscaling](autoscaling.md) | Work held by a pause of its pool or class is no reason to add workers: it is left out of the backlog and of the arrival rate. |
+| [Resources](resources.md) and [labels](labels.md) | A held task does not keep a resource, or a labelled worker, from the tasks behind it. It asks again when it is resumed. |
+| [Priority adherence](metrics.md) | A held task is not counted as waiting ahead of the work that runs. |
 | Cancel, update, replace | Work as usual on held tasks. |
 
 Pausing does not cancel anything, and it is not a way to stop an attempt that is running.

@@ -20,8 +20,8 @@ than silently ignored, and a token sent over plain `http://` to a host other tha
 prints a warning.
 
 Each command needs a role ([Security hardening](security.md)): task commands need `client`,
-`workers`, `schedules`, `snapshot`, `ordering get` and `ordering halted` need `metrics`, and
-`schedule add` / `schedule remove`, `ordering floor` and `resume` need `admin`. An admin token works everywhere.
+`workers`, `schedules`, `snapshot`, `ordering get`, `ordering halted` and `ordering paused` need `metrics`, and
+`schedule add` / `schedule remove`, `ordering floor`, `pause` and `resume` need `admin`. An admin token works everywhere.
 
 ## Commands
 
@@ -48,12 +48,18 @@ cronoq schedules
 cronoq schedule add nightly "0 0 3 * * *" '{"report": "daily"}' --json \
     --tz Europe/Berlin --overlap queue --pool reports --key nightly
 cronoq schedule remove nightly
-cronoq ordering get import:42               # tasks, the one at the front, floor, halted; --pool (default: default)
+cronoq ordering get import:42               # tasks, the one at the front, floor, halted, paused; --pool (default: default)
 cronoq ordering halted --pool llm --limit 50   # the halted keys of a pool
+cronoq ordering paused --pool llm --limit 50   # the paused keys of a pool, with reasons
 cronoq ordering floor account:8842 high     # the front task never runs below high, until the key has no tasks left
 cronoq ordering floor account:8842 high --persist   # kept while the key has no tasks too
 cronoq ordering floor account:8842 --clear
-cronoq resume --ordering-key import:42      # prints "resumed" or "was not halted"
+cronoq pause --reason "billing API deploy until 14:00"   # the pool; prints "paused" or "was already paused"
+cronoq pause --pool llm --class low --reason "backfill off"   # the tasks of the pool that run at one class
+cronoq pause --ordering-key account:8842 --reason "repair"    # one ordering key
+cronoq resume                               # the pool; prints "resumed" or "was not paused or halted"
+cronoq resume --class low
+cronoq resume --ordering-key import:42      # a paused or halted key
 cronoq snapshot
 cronoq watch --pool llm --all               # every transition, until Ctrl-C
 ```
@@ -63,9 +69,14 @@ cronoq watch --pool llm --all               # every transition, until Ctrl-C
 `--after TASK` (repeatable, an id or a key) makes the task wait for another to succeed.
 
 `--ordering-key KEY` puts the task in an [ordering key](../concepts/ordering-keys.md);
-`--halt-on-failure` needs it. The `ordering` commands and `resume` act on the pool named by
-`--pool` (`default` if left out). `ordering floor` and `resume` are refused for a token
-pinned to a tenant.
+`--halt-on-failure` needs it. The `ordering` commands, `pause` and `resume` act on the pool
+named by `--pool` (`default` if left out).
+
+`pause` and `resume` [pause and resume](../concepts/pausing.md) the pool, or with `--class`
+(`critical`, `high`, `normal`, `low`) one class of it, or with `--ordering-key` one ordering
+key; the two flags exclude each other. `pause` needs `--reason`. `resume --ordering-key` also
+resumes a halted key. A token pinned to a tenant pauses and resumes its own ordering keys
+only. `cronoq -o json snapshot` shows `paused`, `paused_classes` and `paused_tasks` per pool.
 
 `wait` and `submit --wait` write the task's output to standard output unchanged when it is
 redirected to a file or a pipe. Keys, messages and other text come from other clients of the

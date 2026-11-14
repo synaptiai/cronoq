@@ -1900,8 +1900,11 @@ impl<P> Core<P> {
             if q.is_empty() {
                 self.pools[pool as usize].label_waiters.remove(&c);
             }
+            // A task that a pause holds takes no slot from the waiters behind it.
+            if !self.class_held(k) {
+                budget -= 1;
+            }
             self.requeue_ready(k);
-            budget -= 1;
         }
         for c in matching {
             if self.pools[pool as usize]
@@ -3617,7 +3620,10 @@ impl<P> Core<P> {
             self.entry_mut(k).loc = Loc::Lane;
             self.pools[pool as usize].lanes[class].insert(seq, k);
         }
-        self.pools[pool as usize].arrivals += 1;
+        // Work that a pause holds is no arrival for the autoscaler: workers could not run it.
+        if !self.class_held(k) {
+            self.pools[pool as usize].arrivals += 1;
+        }
         self.mark_dirty(pool);
     }
 
@@ -3766,6 +3772,7 @@ impl<P> Core<P> {
             .take(Strand::RUN)
             .copied()
             .collect();
+        let mut freed: Vec<u16> = Vec::new();
         for k in pushed {
             let (loc, eff, deadline, tenant) = {
                 let e = self.entry(k);
@@ -3784,6 +3791,13 @@ impl<P> Core<P> {
             let e = self.entry_mut(k);
             e.eff = e.class;
             e.loc = Loc::Ordered;
+            if let Loc::Parked(r) = loc {
+                freed.push(r.0);
+            }
+        }
+        // It no longer waits for the resource: the tasks behind it may go ahead.
+        for r in freed {
+            self.wake_waiters(r);
         }
         for k in run {
             let want = self.effective(k);
@@ -4607,9 +4621,21 @@ impl<P> Core<P> {
                 break;
             }
             self.resources[r as usize].waiters.pop_front();
-            budget -= need as f64;
+            // A task that a pause holds goes back to its queue without a claim on the
+            // resource: it will not run, and must not keep the tasks behind it waiting. It
+            // asks for the resource again when it is dispatched.
+            if !self.class_held(k) {
+                budget -= need as f64;
+            }
             self.requeue_ready(k);
         }
+    }
+
+    /// Whether the class `k` is queued at is paused, by its pool or on its own.
+    fn class_held(&self, k: Key) -> bool {
+        let e = self.entry(k);
+        let pauses = &self.pools[e.pool as usize].pauses;
+        pauses.pool.is_some() || pauses.classes[e.eff as usize].is_some()
     }
 
     fn dispatch(&mut self, now: Time, pool: u16, k: Key, group: u16) {
@@ -4620,10 +4646,12 @@ impl<P> Core<P> {
             let p = &self.pools[pool as usize];
             // Measured against the class the task runs at.
             let c = self.entry(k).eff as usize;
+            // What a pause holds is not waiting to be run before this task.
             (0..c).any(|h| {
-                !p.lanes[h].is_empty()
-                    || !p.edf[h].is_empty()
-                    || p.fair.as_ref().is_some_and(|f| !f.queues[h].is_empty())
+                p.pauses.classes[h].is_none()
+                    && (!p.lanes[h].is_empty()
+                        || !p.edf[h].is_empty()
+                        || p.fair.as_ref().is_some_and(|f| !f.queues[h].is_empty()))
             })
         };
         let (vtag, class) = {

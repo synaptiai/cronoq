@@ -1455,8 +1455,15 @@ pub fn pause_target(
     limits: &LimitsConfig,
     pool: &str,
     class: Option<i32>,
-    key: &str,
+    key: Option<&str>,
 ) -> Result<(String, cronoq::PauseTarget), Status> {
+    // A key that is named but empty is a mistake, not a way to name the pool.
+    if key == Some("") {
+        return Err(Status::invalid_argument(
+            "an ordering key that is set must not be empty; leave it unset to name the pool",
+        ));
+    }
+    let key = key.unwrap_or_default();
     let pool = ordering_target(p, limits, pool, key)?;
     let target = match (class, key.is_empty()) {
         (Some(_), false) => {
@@ -1479,6 +1486,21 @@ pub fn pause_target(
         ));
     }
     Ok((pool, target))
+}
+
+/// The reason of a pause: people read it in snapshots, tools and worker logs, so it is
+/// required, one line, and free of control characters.
+pub fn check_reason(reason: &str, limits: &LimitsConfig) -> Result<(), Status> {
+    convert::check_str("reason", reason, limits.max_tag_len)?;
+    if reason.trim().is_empty() {
+        return Err(Status::invalid_argument("a pause needs a reason"));
+    }
+    if reason.chars().any(char::is_control) {
+        return Err(Status::invalid_argument(
+            "reason must be one line without control characters",
+        ));
+    }
+    Ok(())
 }
 
 /// `target` as it is stored: an ordering key of pinned credentials has their tenant's prefix.
@@ -1596,9 +1618,14 @@ impl pb::admin_server::Admin for AdminService {
         let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
         let app = self.shared.app_or_unavailable()?;
         let r = req.into_inner();
-        convert::check_str("reason", &r.reason, app.limits.max_tag_len)?;
-        let (pool, target) =
-            pause_target(&p, &app.limits, &r.pool, r.priority_class, &r.ordering_key)?;
+        check_reason(&r.reason, &app.limits)?;
+        let (pool, target) = pause_target(
+            &p,
+            &app.limits,
+            &r.pool,
+            r.priority_class,
+            r.ordering_key.as_deref(),
+        )?;
         let paused = crate::route::pause(app, &p, &pool, target, Some(&r.reason)).await?;
         Ok(Response::new(pb::PauseResponse { paused }))
     }
@@ -1610,8 +1637,13 @@ impl pb::admin_server::Admin for AdminService {
         let p = check_grpc(&self.shared.auth, &req, Role::Admin)?;
         let app = self.shared.app_or_unavailable()?;
         let r = req.into_inner();
-        let (pool, target) =
-            pause_target(&p, &app.limits, &r.pool, r.priority_class, &r.ordering_key)?;
+        let (pool, target) = pause_target(
+            &p,
+            &app.limits,
+            &r.pool,
+            r.priority_class,
+            r.ordering_key.as_deref(),
+        )?;
         let resumed = crate::route::pause(app, &p, &pool, target, None).await?;
         Ok(Response::new(pb::ResumeResponse { resumed }))
     }

@@ -571,6 +571,15 @@ async fn a_pool_a_class_and_an_ordering_key_are_paused_and_resumed() {
         .await;
     assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
 
+    // An empty key is not the pool, and an empty reason is not a reason.
+    for args in [
+        &["pause", "--reason", "x", "--ordering-key", ""][..],
+        &["resume", "--ordering-key", ""],
+        &["pause", "--reason", ""],
+    ] {
+        let o = s.cli(ADMIN, args).await;
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", stderr(&o));
+    }
     let o = s.cli(ADMIN, &["pause", "--reason", "deploy 14:00"]).await;
     assert_eq!(stdout(&o).trim(), "paused", "{}", stderr(&o));
     let o = s.cli(ADMIN, &["pause", "--reason", "deploy 14:00"]).await;
@@ -599,6 +608,14 @@ async fn a_pool_a_class_and_an_ordering_key_are_paused_and_resumed() {
     let v = json(&s.cli(METRICS, &["-o", "json", "snapshot"]).await);
     assert_eq!(v["pools"][0]["paused"], "deploy 14:00");
     assert_eq!(v["pools"][0]["paused_classes"][0]["class"], "low");
+    // The text view says what stands still, and why.
+    let text = stdout(&s.cli(METRICS, &["snapshot"]).await);
+    assert!(
+        text.contains("pool default is PAUSED: deploy 14:00")
+            && text.contains("class low is PAUSED: backfill off")
+            && text.contains("1 ordering key(s) paused"),
+        "{text}"
+    );
     let text = stdout(&s.cli(METRICS, &["ordering", "paused"]).await);
     assert!(
         text.contains("acct") && text.contains("customer asked"),
