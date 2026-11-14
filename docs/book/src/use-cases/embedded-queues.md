@@ -156,8 +156,8 @@ a SQLite file (`Store: &embedded.Store{SQLite: path}` in the Go `Config`). After
 queue is as it was, and an attempt that was running is tried again. One program at a time may
 have the file open.
 
-The libraries in the release archives and the binary framework are built without the `sqlite`
-feature. For a queue that survives restarts, build the library yourself:
+Each release after 0.2.2 has the library and the binary framework in a second variant with
+the store (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`). To build it yourself:
 `cargo build --release -p cronoq-ffi --features sqlite`.
 
 ## What you get
@@ -182,8 +182,8 @@ feature. For a queue that survives restarts, build the library yourself:
 - **How you get it today.** Release 0.2.2 does not contain the library. Releases after 0.2.2
   carry an archive per platform with the dynamic library, the static library and the header,
   and a binary framework for Swift. Until then, build it yourself
-  (`cargo build --release -p cronoq-ffi`). These prebuilt libraries are built without the
-  `sqlite` feature. The Go package loads the dynamic library at run time, or links the static
+  (`cargo build --release -p cronoq-ffi`). Each comes in two variants, without a store and
+  with the SQLite store. The Go package loads the dynamic library at run time, or links the static
   one with the build tag `cronoq_static`. The Swift package links the static library
   ([details](../guides/embedding.md#getting-the-library)).
 - **It does not run in the background.** While the app is suspended, no task is handed out and

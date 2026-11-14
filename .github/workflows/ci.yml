@@ -237,6 +237,8 @@ jobs:
           cache-dependency-path: sdks/go-embed/go.sum
       - name: Tests of the C API
         run: cargo test -p cronoq-ffi --target ${{ matrix.target }}
+      - name: The variant with the SQLite store builds and passes its tests
+        run: cargo test -p cronoq-ffi --features sqlite --target ${{ matrix.target }}
       - name: Build the libraries
         run: |
           cargo build --release -p cronoq-ffi --target ${{ matrix.target }}

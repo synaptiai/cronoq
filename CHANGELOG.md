@@ -35,7 +35,9 @@ contain breaking changes; they are called out under **Changed**.
   (device and Apple-silicon simulator) and macOS, runs the engine's simulation tests and the
   C API tests in the iOS simulator, and publishes a size report
   (`cronoq-embed-apple-sizes.md`) and a binary framework for the Swift package
-  (`CCronoq.xcframework.zip`) with each release.
+  (`CCronoq.xcframework.zip`) with each release. The release archives of the embedded
+  library and the framework come in two variants: without a store, and with the SQLite store
+  (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`).
 - Cargo features `cron` and `tz` on `cronoq-core` and `cronoq`, and `rt-multi-thread` on
   `cronoq`, all on by default. Without `cron` a schedule is refused; without `tz` schedules
   run in UTC only and the time-zone database, most of the compiled size, is left out;
