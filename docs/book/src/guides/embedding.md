@@ -49,9 +49,12 @@ library, the static library and the header:
 | Linux x86-64, ARM64 | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | `libcronoq_ffi.so` |
 | macOS x86-64, ARM64 | `x86_64-apple-darwin`, `aarch64-apple-darwin` | `libcronoq_ffi.dylib` |
 | Windows x86-64 | `x86_64-pc-windows-gnu` | `cronoq_ffi.dll` |
+| Windows ARM64 | `aarch64-pc-windows-msvc` | `cronoq_ffi.dll` |
 
-The Windows library is built with the GNU toolchain, because that is what Go's cgo links
-with. There is no prebuilt library for Windows on ARM64 yet.
+The Windows x86-64 library is built with the GNU toolchain, because that is what Go's cgo
+links with. The Windows ARM64 library is built with MSVC: its dynamic library works with the
+Go wrapper's default mode, and its static library (`cronoq_ffi.lib`) is for MSVC, not for
+cgo.
 
 To build it yourself you need a Rust toolchain:
 

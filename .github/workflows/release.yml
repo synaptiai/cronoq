@@ -200,12 +200,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, dylib: libcronoq_ffi.so }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, dylib: libcronoq_ffi.so }
-          - { os: macos-15-intel, target: x86_64-apple-darwin, dylib: libcronoq_ffi.dylib }
-          - { os: macos-15, target: aarch64-apple-darwin, dylib: libcronoq_ffi.dylib }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, dylib: libcronoq_ffi.so, static: libcronoq_ffi.a }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, dylib: libcronoq_ffi.so, static: libcronoq_ffi.a }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, dylib: libcronoq_ffi.dylib, static: libcronoq_ffi.a }
+          - { os: macos-15, target: aarch64-apple-darwin, dylib: libcronoq_ffi.dylib, static: libcronoq_ffi.a }
           # The GNU target: cgo links with the GNU toolchain on Windows.
-          - { os: windows-2022, target: x86_64-pc-windows-gnu, dylib: cronoq_ffi.dll }
+          - { os: windows-2022, target: x86_64-pc-windows-gnu, dylib: cronoq_ffi.dll, static: libcronoq_ffi.a }
+          # Windows on ARM64 has no GNU toolchain on the runners: the MSVC build. Its
+          # dynamic library is what the Go wrapper loads without cgo.
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc, dylib: cronoq_ffi.dll, static: cronoq_ffi.lib }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,7 +225,7 @@ jobs:
           mkdir -p "$name/static"
           cp LICENSE-MIT LICENSE-APACHE crates/cronoq-ffi/README.md crates/cronoq-ffi/include/cronoq.h "$name/"
           cp "target/${{ matrix.target }}/release/${{ matrix.dylib }}" "$name/"
-          cp "target/${{ matrix.target }}/release/libcronoq_ffi.a" "$name/static/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.static }}" "$name/static/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "$name.zip" "$name" > /dev/null
           else

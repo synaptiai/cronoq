@@ -19,7 +19,7 @@ contain breaking changes; they are called out under **Changed**.
   no panic crosses the boundary. Two wrappers are maintained with it: Go
   (`sdks/go-embed`: loads the dynamic library without cgo, or links the static one with the
   build tag `cronoq_static`) and Swift (`sdks/swift`). Releases carry the libraries for
-  Linux and macOS (x86-64, ARM64) and Windows (x86-64). See
+  Linux, macOS and Windows (x86-64 and ARM64). See
   [Embedding from other languages](docs/book/src/guides/embedding.md).
 - Cargo features `cron` and `tz` on `cronoq-core` and `cronoq`, and `rt-multi-thread` on
   `cronoq`, all on by default. Without `cron` a schedule is refused; without `tz` schedules
