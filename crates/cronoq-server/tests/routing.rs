@@ -573,3 +573,107 @@ async fn workers_follow_their_pool_to_its_shard() {
     cpu.stop().await;
     gpu.stop().await;
 }
+
+/// What a 0.2.2 shard does with a submission: it does not know `on_key_conflict`, returns the
+/// task that holds a key as a duplicate, and sets no outcome.
+struct OldShard;
+
+type Answer<T> = Result<tonic::Response<T>, tonic::Status>;
+
+fn old<T>() -> Answer<T> {
+    Err(tonic::Status::unimplemented("not part of this test"))
+}
+
+#[tonic::async_trait]
+impl pb::tasks_server::Tasks for OldShard {
+    async fn submit(&self, req: tonic::Request<pb::SubmitRequest>) -> Answer<pb::SubmitResponse> {
+        // Key `taken` belongs to task 7; any other key is free.
+        let taken = req.into_inner().task.is_some_and(|t| t.key == "taken");
+        Ok(tonic::Response::new(pb::SubmitResponse {
+            id: if taken { 7 } else { 8 },
+            duplicate: taken,
+            ..Default::default()
+        }))
+    }
+    async fn submit_batch(
+        &self,
+        _: tonic::Request<pb::SubmitBatchRequest>,
+    ) -> Answer<pb::SubmitBatchResponse> {
+        old()
+    }
+    async fn cancel(&self, _: tonic::Request<pb::CancelRequest>) -> Answer<pb::CancelResponse> {
+        old()
+    }
+    async fn update(&self, _: tonic::Request<pb::UpdateRequest>) -> Answer<pb::UpdateResponse> {
+        old()
+    }
+    async fn get(&self, _: tonic::Request<pb::GetRequest>) -> Answer<pb::TaskInfo> {
+        old()
+    }
+    async fn list_tasks(
+        &self,
+        _: tonic::Request<pb::ListTasksRequest>,
+    ) -> Answer<pb::ListTasksResponse> {
+        old()
+    }
+    async fn wait(&self, _: tonic::Request<pb::WaitRequest>) -> Answer<pb::TaskResult> {
+        old()
+    }
+    type WatchStream = futures_util::stream::Empty<Result<pb::StatusEvent, tonic::Status>>;
+    async fn watch(&self, _: tonic::Request<pb::WatchRequest>) -> Answer<Self::WatchStream> {
+        old()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reject_is_not_silently_ignored_by_an_older_shard() {
+    let old_shard = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gpu_endpoint = format!("http://{}", old_shard.local_addr().unwrap());
+    let serve = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(pb::tasks_server::TasksServer::new(OldShard))
+            .serve_with_incoming(tonic::transport::server::TcpIncoming::from(old_shard)),
+    );
+    let l = listeners();
+    let port = l.grpc.local_addr().unwrap().port();
+    let cpu = TestServer::start_on(config("cpu", port, &gpu_endpoint), Some(l)).await;
+    let mut tasks = cpu.tasks(CLIENT).await;
+    let reject = |key: &str| {
+        let mut req = submit(in_pool("llm", key), false);
+        req.on_key_conflict = pb::KeyConflict::Reject as i32;
+        req
+    };
+
+    // The key is in use, or free and now taken by this submission: either way the old shard
+    // did not compare anything, and the caller is told.
+    for key in ["taken", "free"] {
+        let e = tasks.submit(reject(key)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::Unimplemented, "{key}: {e}");
+        assert!(
+            e.message()
+                .contains("shard 'gpu' does not support on_key_conflict = reject"),
+            "{e}"
+        );
+    }
+    // A replacement that the old shard ignored is reported too, with or without a task to
+    // replace.
+    for key in ["taken", "free"] {
+        let mut req = submit(in_pool("llm", key), false);
+        req.on_key_conflict = pb::KeyConflict::ReplaceQueued as i32;
+        let e = tasks.submit(req).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::Unimplemented, "{key}: {e}");
+        assert!(e.message().contains("replace_queued"), "{e}");
+    }
+    // Without a key there is nothing to compare, and without the option the answer stands.
+    let r = tasks.submit(reject("")).await.unwrap().into_inner();
+    assert_eq!((r.id, r.duplicate), (8, false));
+    let r = tasks
+        .submit(submit(in_pool("llm", "taken"), false))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!((r.id, r.duplicate), (7, true));
+
+    cpu.stop().await;
+    serve.abort();
+}

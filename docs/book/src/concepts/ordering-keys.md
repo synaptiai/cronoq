@@ -143,10 +143,11 @@ submission is never refused because of it.
 
 ## Older servers
 
-A server from before ordering keys ignores the key and runs the task unordered. The clients
-and the command-line tool detect this from the response and fail with `unimplemented`; the
-task has then been admitted without a key. Upgrade every server before relying on ordering
-keys.
+Over gRPC a 0.2.2 server ignores the key and runs the task unordered. The Python, Go and
+TypeScript clients detect this from the response and fail with `unimplemented`, and the
+command-line tool exits with an error; the task has then been admitted without an ordering
+key. Over HTTP a 0.2.2 server refuses the unknown field (status 400) and admits nothing.
+Upgrade every server before relying on ordering keys.
 
 ## Durability
 

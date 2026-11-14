@@ -22,6 +22,12 @@
   - [High-throughput microtasks](use-cases/microtasks.md)
   - [Polyglot worker fleets](use-cases/worker-fleets.md)
   - [Cost-aware autoscaling](use-cases/autoscaling.md)
+  - [Ordered work per entity](use-cases/ordered-work.md)
+  - [Latest-wins updates](use-cases/latest-wins.md)
+  - [Idempotent producers](use-cases/idempotent-producers.md)
+  - [Reprioritising live work](use-cases/reprioritising.md)
+  - [Holding work without losing it](use-cases/holding-work.md)
+  - [Offline-first clients and embedded queues](use-cases/embedded-queues.md)
   - [Migrating from ElasticPriorityScheduler](use-cases/migrating.md)
 
 # Concepts
@@ -58,6 +64,7 @@
 - [Security hardening](guides/security.md)
 - [Performance tuning](guides/performance.md)
 - [Testing your executors](guides/testing.md)
+- [Upgrading](guides/upgrading.md)
 
 # Reference
 

@@ -939,6 +939,13 @@ class Client:
             # A server older than the option ignored it: with the key in use, this submission
             # was dropped, not stored.
             raise ClientError("unimplemented", "the server does not support on_key_conflict")
+        if on_key_conflict == "reject" and r.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED:
+            # A server older than the option ignored it and did not compare the submissions:
+            # with the key in use, it returned the existing task; with the key free, it
+            # created this one.
+            raise ClientError(
+                "unimplemented", "the server does not support on_key_conflict; the conflict check did not happen"
+            )
         result = Result._from_pb(r.result) if r.HasField("result") else None
         return Submitted(r.id, r.duplicate, result, _outcome(r))
 

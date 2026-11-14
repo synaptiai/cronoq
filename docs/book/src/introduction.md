@@ -20,7 +20,10 @@ any language and connected over gRPC.
 | **Deadlines** | Tasks with a deadline gain urgency smoothly as their latest start time approaches, and are ordered earliest-deadline-first within their class. |
 | **Fixed starts and cron** | Work that must start at a given time reserves capacity in advance and gets a worker *held* for it, with a policy for what to do if it still misses its slot. |
 | **Dependencies** | DAGs by task id or key, with `on_success`, `on_failure` and `on_complete` edges. Batches are admitted atomically. |
-| **Reliability** | Leases with heartbeats, per-attempt timeouts, retries with exponential backoff and `retry_after`, dead-lettering, cancellation, idempotent keys. |
+| **Reliability** | Leases with heartbeats, per-attempt timeouts, retries with exponential backoff and `retry_after`, dead-lettering, cancellation, idempotent keys. A worker can [release](concepts/reliability.md#releasing-an-attempt) an attempt it cannot run now, without using a retry. |
+| **Order per entity** | Tasks that share an [ordering key](concepts/ordering-keys.md) run one at a time, in submission order. Tasks with different keys run in parallel. |
+| **Changing queued work** | [Update](concepts/updating.md) the priority, deadline or tags of a task that has not finished (not of a task with a fixed start). [Replace](concepts/replacing.md) a queued task by key, so that only the newest value runs. [Detect](concepts/key-conflicts.md) a key that is reused for different work. |
+| **Pause and resume** | [Hold](concepts/pausing.md) a pool, one class or one ordering key, with a reason. What is held stays queued and keeps its place. |
 | **Shared resources** | Semaphores and token buckets shared across pools: API rate limits, GPU slots, database connections. |
 | **Elasticity** | Each pool computes how many workers it needs from arrival rate, backlog, wait-time SLOs and upcoming reservations, and asks a pluggable scaler for them. |
 | **Backpressure** | Bounded queues that make submitters wait, reject, or shed lower-priority work. |
@@ -38,7 +41,9 @@ any language and connected over gRPC.
    [Go](reference/go.md) and [TypeScript](reference/typescript.md). See the [Server quickstart](guides/server-quickstart.md).
 
 There is also an experimental fourth: a **C library** that embeds the scheduler in a Go,
-Swift or C program without a server. See [Embedding from other languages](guides/embedding.md).
+Swift or C program without a server, for example as the send queue of a desktop or mobile
+app. See [Embedding from other languages](guides/embedding.md) and
+[Offline-first clients and embedded queues](use-cases/embedded-queues.md).
 
 All of them share one engine, so the scheduling rules and metrics are the same everywhere. The
 Rust library exposes a few engine settings, such as the priority and urgency parameters, that the
@@ -54,3 +59,4 @@ Python package and the server leave at their defaults.
   rule precisely, including formulas and defaults.
 - Operating the server? See [deployment](guides/deployment.md),
   [observability](guides/observability.md) and the [configuration reference](reference/configuration.md).
+- Moving to a new release? See [Upgrading](guides/upgrading.md).

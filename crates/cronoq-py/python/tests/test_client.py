@@ -409,6 +409,38 @@ async def test_key_conflict_is_reported(client: Client) -> None:
     assert await client.cancel("op-7") and await client.cancel("op-8")
 
 
+async def test_reject_is_not_silently_ignored_by_an_older_server() -> None:
+    from cronoq._proto import cronoq_pb2 as pb
+    from cronoq._proto import cronoq_pb2_grpc as pb_grpc
+
+    class OldTasks(pb_grpc.TasksServicer):
+        """A 0.2.2 server: it does not know ``on_key_conflict``, returns the task that holds a
+        key as a duplicate, and sets no outcome. Key ``taken`` belongs to task 7; any other
+        key is free."""
+
+        async def Submit(self, request: Any, context: Any) -> Any:
+            taken = request.task.key == "taken"
+            return pb.SubmitResponse(id=7 if taken else 8, duplicate=taken)
+
+    old = grpc.aio.server()
+    pb_grpc.add_TasksServicer_to_server(OldTasks(), old)
+    port = old.add_insecure_port("127.0.0.1:0")
+    await old.start()
+    try:
+        async with Client(f"127.0.0.1:{port}") as c:
+            # The key is in use, or free and now taken by this submission: either way the old
+            # server did not compare anything, and the caller is told.
+            for key in ("taken", "free"):
+                with pytest.raises(ClientError) as e:
+                    await c.submit("edit-2", key=key, on_key_conflict="reject")
+                assert e.value.code == "unimplemented" and not e.value.key_conflict
+            # Without the option the same answer is fine.
+            plain = await c.submit("edit-2", key="taken")
+            assert (plain.id, plain.duplicate) == (7, True)
+    finally:
+        await old.stop(None)
+
+
 async def test_cancel_queued_task(client: Client) -> None:
     # No workers are connected, so the task stays queued.
     sub = await client.submit("never", key="cancel-me")

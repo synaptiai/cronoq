@@ -2,7 +2,8 @@
 
 <p align="center">
   <strong>An elastic, priority-aware task scheduler for Rust, Python and any language over gRPC.</strong><br>
-  Priorities with aging · deadlines · cron with reserved capacity · DAGs · rate limits · queue-pressure autoscaling · Postgres or SQLite HA
+  Priorities with aging · deadlines · cron with reserved capacity · DAGs · rate limits · queue-pressure autoscaling · Postgres or SQLite HA<br>
+  Ordering keys · replace and update of queued work · pause and resume · embeddable in Go, Swift and C (experimental)
 </p>
 
 <p align="center">
@@ -53,6 +54,18 @@ Plain queues treat every job the same. Real workloads do not:
   tenant's share.
 - 🎛️ **GPU jobs landing on CPU-only workers** → worker labels: a task that requires
   `gpu=a100` runs only on workers that have it, without blocking the rest of the pool.
+- 🧾 **Work for one account, document or device running out of order** → ordering keys: tasks
+  that share a key run one at a time, in submission order, while other keys run in parallel.
+- ♻️ **Stale updates wasting capacity** → replace by key: the newest submission of a key wins,
+  and a task that already runs is followed by the newest value instead of being aborted. A
+  queued task's priority, deadline and tags can be updated in place, and a key reused for
+  different work is reported as a conflict.
+- ⏸️ **No way to hold a queue** → pause a pool, one class or one ordering key, with a reason;
+  held work keeps its place. A worker that cannot run a task now releases it without using a
+  retry.
+- 📱 **No engine for a client app** → an experimental C library runs the same engine inside a
+  Go, Swift or C program, without a server, for example as the send queue of a desktop or
+  mobile app.
 - 💥 **Lost jobs when a worker dies** → leases, heartbeats, timeouts, retries with backoff,
   dead letters, and failover backed by Postgres or a local SQLite file. Attempt numbers never
   repeat, so workers can use them as fencing tokens for effectively-once side effects.
@@ -76,6 +89,9 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 | Command-line tool | `cargo install cronoq-cli` |
 | Go | `go get github.com/synaptiai/cronoq/sdks/go@v0.2.2` (Go 1.26+) |
 | TypeScript | `@synaptiai/cronoq` on GitHub Packages, or the tarball on the release page (Node 22+; [how to install](https://synaptiai.github.io/cronoq/reference/typescript.html)) |
+| Embedded C library (experimental) | Not in 0.2.2. Build it from this repository: `cargo build --release -p cronoq-ffi` gives `libcronoq_ffi` (static and dynamic) and the header `crates/cronoq-ffi/include/cronoq.h`. The release workflow attaches an archive per platform, `cronoq-embed-<version>-<target>`, to later releases. |
+| Go, embedded (experimental) | The package `github.com/synaptiai/cronoq/sdks/go-embed`, in [`sdks/go-embed`](sdks/go-embed). It needs the C library: by default it loads the dynamic library at run time without cgo; with the build tag `cronoq_static` it links the static library. It has no version tag of its own yet. |
+| Swift, embedded (experimental) | The package `Cronoq`, in [`sdks/swift`](sdks/swift) (macOS 12+, iOS 15+). It is not in a package registry. It links the static C library: build the library and pass `-Xlinker -L<dir with libcronoq_ffi.a>`, or use the binary framework `CCronoq.xcframework.zip` that the release workflow builds ([how](https://synaptiai.github.io/cronoq/guides/embedding.html)). |
 
 Wheels, binaries, images and the TypeScript package carry build provenance attestations:
 `gh attestation verify <file> --repo synaptiai/cronoq`, or `oci://ghcr.io/synaptiai/cronoq:0.2.2`
@@ -178,6 +194,42 @@ The HTTP response carries the worker's answer in `result.output`, and the CLI pr
 [server quickstart](https://synaptiai.github.io/cronoq/guides/server-quickstart.html) explains
 each step, and leads on to deployment with Postgres, Kubernetes and TLS.
 
+### Embedded in a Go, Swift or C program (experimental)
+
+No server: the scheduler runs inside your program. Build the C library first
+(`cargo build --release -p cronoq-ffi`). In Go:
+
+```go
+import embedded "github.com/synaptiai/cronoq/sdks/go-embed"
+
+s, err := embedded.Open(embedded.Config{})
+if err != nil { log.Fatal(err) }
+defer s.Close()
+
+// Messages of one chat are sent in order; a newer title replaces the one that waits.
+s.Submit([]byte("send event 17"), &embedded.Task{Priority: embedded.High, OrderingKey: "chat-1"})
+s.Submit([]byte("title v2"), &embedded.Task{Key: "title", OnKeyConflict: "replace_queued"})
+
+lease, err := s.Next("", 5*time.Second) // waits up to 5 s for a task
+if err != nil { log.Fatal(err) }        // embedded.ErrTimeout, ErrPaused, ErrShutdown, ...
+if err := send(lease.Payload); err != nil {
+    lease.Fail(err.Error(), true, 0)    // retryable
+} else {
+    lease.Complete()
+}
+```
+
+Run the full example from inside the Go module (on macOS the library is
+`libcronoq_ffi.dylib`):
+
+```sh
+cargo build --release -p cronoq-ffi
+(cd sdks/go-embed && CRONOQ_LIBRARY="$PWD/../../target/release/libcronoq_ffi.so" go run ./example)
+```
+
+The same from Swift and C, the options, and what to do when a phone sleeps:
+[Embedding from other languages](https://synaptiai.github.io/cronoq/guides/embedding.html).
+
 ## Use cases
 
 | | |
@@ -191,12 +243,21 @@ each step, and leads on to deployment with Postgres, Kubernetes and TLS.
 | [High-throughput microtasks](https://synaptiai.github.io/cronoq/use-cases/microtasks.html) | A few microseconds of scheduling overhead per task |
 | [Polyglot worker fleets](https://synaptiai.github.io/cronoq/use-cases/worker-fleets.html) | gRPC workers in any language, HA |
 | [Cost-aware autoscaling](https://synaptiai.github.io/cronoq/use-cases/autoscaling.html) | Queue-pressure scaling, a desired-capacity metric for KEDA or HPA |
+| [Ordered work per entity](https://synaptiai.github.io/cronoq/use-cases/ordered-work.html) | One task per account, document or device at a time, in order; entities in parallel |
+| [Latest-wins updates](https://synaptiai.github.io/cronoq/use-cases/latest-wins.html) | State sync, cache refresh, index rebuilds: only the newest value runs |
+| [Idempotent producers](https://synaptiai.github.io/cronoq/use-cases/idempotent-producers.html) | Safe retries by key; a key reused for different work is reported |
+| [Reprioritising live work](https://synaptiai.github.io/cronoq/use-cases/reprioritising.html) | Promote queued work a user is now waiting for |
+| [Holding work without losing it](https://synaptiai.github.io/cronoq/use-cases/holding-work.html) | Pause for maintenance windows; release when a downstream service is unreachable |
+| [Offline-first clients and embedded queues](https://synaptiai.github.io/cronoq/use-cases/embedded-queues.html) | A send queue inside a desktop or mobile app, in Swift or Go (experimental) |
 
 ## Features
 
 | Area | Highlights |
 |---|---|
 | Ordering | 4 priority classes, bounded aging, FIFO within a class (or weighted fair sharing between tenants), deadline urgency, earliest deadline first (by latest start time) |
+| Order per key | Ordering keys: tasks that share one run one at a time, in submission order; optional halt on failure; a class floor per key |
+| Changing queued work | Update priority, deadline or tags in place; replace by key (latest wins); conflict detection for reused keys, by fingerprint |
+| Holding work | Pause and resume a pool, a class or an ordering key, with a reason; durable; workers release attempts without using a retry |
 | Placement | Worker labels with required labels per task; tasks without requirements prefer the least specialized workers |
 | Time | Fixed starts with reservations and worker holds, miss policies, cron with time zones |
 | Dependencies | DAG edges by id or key, `on_success` / `on_failure` / `on_complete`, atomic batches, dedup keys |
@@ -206,6 +267,7 @@ each step, and leads on to deployment with Postgres, Kubernetes and TLS.
 | Durability | A Postgres store, or SQLite with standbys on the same host; leader election, epoch fencing, recovery, at-least-once execution, attempt numbers for fencing side effects |
 | Scale-out | Pools split between shards, each with its own leader and store; client calls to any server reach the right shard, and workers are redirected to it |
 | Interfaces | Rust (async + blocking), Python (asyncio), Go, TypeScript (Node and browsers), gRPC, gRPC-Web, HTTP/JSON, the `cronoq` CLI with a live `top` view |
+| Embedding | Experimental: a C library with Go and Swift wrappers runs the engine inside a program without a server; optional SQLite file; clock resynchronisation after sleep |
 | Operations | Helm charts, a Kubernetes operator that scales worker Deployments, a webhook scaler and a desired-capacity metric for KEDA, token roles limited to pools and pinned to tenants, TLS and mTLS |
 | Observability | Prometheus metrics, windowed quality metrics, and in the Rust library OpenTelemetry metrics and trace propagation |
 
@@ -240,7 +302,8 @@ flowchart LR
 ```
 
 The engine is a deterministic state machine with no clock or I/O, tested by randomized
-simulation under virtual time. Details: [Architecture](https://synaptiai.github.io/cronoq/architecture.html).
+simulation under virtual time. The embedded C library runs the same engine and driver inside
+a host program, whose threads take the place of the workers. Details: [Architecture](https://synaptiai.github.io/cronoq/architecture.html).
 
 ## Documentation
 
@@ -254,6 +317,9 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 - 🐍 **Python**: [`crates/cronoq-py`](crates/cronoq-py/README.md)
 - 🐹 **Go**: [`sdks/go`](sdks/go/README.md)
 - 🟦 **TypeScript**: [`sdks/typescript`](sdks/typescript/README.md)
+- 📦 **Embedded (Go, Swift, C)**: [Embedding from other languages](https://synaptiai.github.io/cronoq/guides/embedding.html),
+  [`sdks/go-embed`](sdks/go-embed/README.md), [`sdks/swift`](sdks/swift/README.md)
+- ⬆️ **Upgrading**: [upgrade notes](https://synaptiai.github.io/cronoq/guides/upgrading.html)
 - 🔌 **gRPC API**: [`cronoq.proto`](crates/cronoq-proto/proto/cronoq/v1/cronoq.proto)
 - 📐 **Design document**: [`docs/SPEC.md`](docs/SPEC.md)
 
@@ -271,7 +337,10 @@ simulation under virtual time. Details: [Architecture](https://synaptiai.github.
 | [`crates/cronoq-cli`](crates/cronoq-cli) | `cronoq` command-line client with a live `top` view |
 | [`crates/cronoq-py`](crates/cronoq-py) | Python bindings and gRPC client (`cronoq` on PyPI) |
 | [`crates/cronoq-operator`](crates/cronoq-operator) | Kubernetes operator that scales worker Deployments (published as an image) |
+| [`crates/cronoq-ffi`](crates/cronoq-ffi) | C library and header that embed the scheduler in other languages (experimental) |
 | [`sdks/go`](sdks/go) | Go client and worker (module `github.com/synaptiai/cronoq/sdks/go`) |
+| [`sdks/go-embed`](sdks/go-embed) | Go wrapper of the embedded library (module `github.com/synaptiai/cronoq/sdks/go-embed`) |
+| [`sdks/swift`](sdks/swift) | Swift wrapper of the embedded library (package `Cronoq`) |
 | [`sdks/typescript`](sdks/typescript) | TypeScript client (Node and browsers) and Node worker (package `@synaptiai/cronoq`) |
 | [`deploy`](deploy) | Example server configuration, and the Helm charts for the server and the operator with their end-to-end tests |
 | [`docs`](docs) | The book's source, the design document and the original Python prototype |

@@ -73,9 +73,33 @@ pub async fn submit(
             renew_position: opts.renew_position,
         };
         let ordered = !req.task.as_ref().is_some_and(|t| t.ordering_key.is_empty());
+        // Without a key there is no conflict to check, so nothing to miss.
+        let checked = req.on_key_conflict == pb::KeyConflict::Reject as i32
+            && !req.task.as_ref().is_some_and(|t| t.key.is_empty());
+        // The same for a replacement: without a key nothing is replaced.
+        let replaces = req.on_key_conflict == pb::KeyConflict::ReplaceQueued as i32
+            && !req.task.as_ref().is_some_and(|t| t.key.is_empty());
         let r = answer(sh, c.tasks.submit(bounded(app, req)).await)?;
         if ordered && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
             return Err(unordered(sh));
+        }
+        if replaces && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+            // A shard older than the option ignored it: with the key in use, the submission
+            // was dropped and the queued task kept; with the key free, the task was created.
+            return Err(Status::unimplemented(format!(
+                "shard '{}' does not support on_key_conflict = replace_queued;                  nothing was replaced",
+                sh.name
+            )));
+        }
+        if checked && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+            // A shard older than the option ignored it and did not compare the submissions:
+            // with the key in use, it returned the existing task; with the key free, it
+            // created this one. It also sends no outcome, which is how to tell.
+            return Err(Status::unimplemented(format!(
+                "shard '{}' does not support on_key_conflict = reject; \
+                 the conflict check did not happen",
+                sh.name
+            )));
         }
         return Ok(r);
     }
@@ -123,6 +147,8 @@ pub async fn submit_batch(
                 let mut c = clients(app, p, sh, "this batch")?;
                 let mode = configured(app, mode);
                 let ordered = specs.iter().any(|s| !s.ordering_key.is_empty());
+                // Without a key in the batch there is no conflict to check.
+                let keyed = specs.iter().any(|s| !s.key.is_empty());
                 let req = pb::SubmitBatchRequest {
                     tasks: specs,
                     on_key_conflict: convert::key_conflict_to_pb(mode) as i32,
@@ -135,6 +161,7 @@ pub async fn submit_batch(
                     return Err(unordered(sh));
                 }
                 if mode == cronoq::KeyConflict::Reject
+                    && keyed
                     && r.tasks.iter().any(|t| t.outcome == unspecified)
                 {
                     return Err(Status::unimplemented(format!(

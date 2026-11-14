@@ -14,6 +14,12 @@ workload stops being uniform. Then the same problems appear again and again:
 | A crashed worker loses its job. | No leases or heartbeats. | [Leases, heartbeats and retries](concepts/reliability.md) give at-least-once execution. |
 | A downstream step runs although its input failed. | Dependencies managed by hand. | [DAG edges](concepts/dependencies.md) with success/failure/completion conditions. |
 | Memory grows without bound during an incident. | Unbounded queues. | [Bounded queues](concepts/backpressure.md) with wait, reject or shed policies. |
+| Two events of one account run at the same time, or in the wrong order. | Several workers take from one queue. | [Ordering keys](concepts/ordering-keys.md): tasks with one key run one at a time, in submission order. |
+| Five updates of the same title run, and four of them are already out of date. | The queue cannot tell that a newer value exists. | [Replace by key](concepts/replacing.md): the newest submission of a key wins. |
+| A key is reused for different work, and the second submission disappears. | Deduplication by key treats every reuse as a retry. | [Conflict detection](concepts/key-conflicts.md) with fingerprints. |
+| A user now waits for a task that was queued as background work. | Priority is fixed at submission. | [Updating a queued task](concepts/updating.md), and a class floor for an ordering key. |
+| A downstream service is down, and every task fails its retries. | The queue can only run work or drop it. | [Pause and resume](concepts/pausing.md) with a reason; workers [release](concepts/reliability.md#releasing-an-attempt) attempts without using a retry. |
+| A desktop or mobile app writes its own send queue. | A scheduler that needs a server cannot run inside an app. | An experimental [embedded library](guides/embedding.md) for Go, Swift and C. |
 
 cronoq puts all of these rules in one place, the scheduling engine, so that individual workers
 stay simple: they receive a task, run it, and report the outcome.
@@ -37,7 +43,10 @@ stay simple: they receive a task, run it, and report the outcome.
 - **Speed.** The engine handles over a million scheduling decisions per second on one core, so
   it can sit in the hot path of microtask systems as well as hours-long batch jobs.
 - **One engine, three surfaces.** The same scheduling rules apply whether you embed the Rust
-  library, use the Python package, or run the server for a polyglot fleet.
+  library, use the Python package, or run the server for a polyglot fleet. The experimental
+  embedded library for Go, Swift and C uses the same engine.
+- **Queued work can change.** A task that waits can get a new priority or deadline, a newer
+  payload can replace it, and a pool can be paused, all without cancelling and resubmitting.
 
 ## How it compares
 
@@ -54,7 +63,7 @@ each of these tools is excellent at what it was built for.
 | Queue-pressure autoscaling | ✅ built in | External | External | HPA/KEDA | External | External |
 | DAGs | ✅ simple edges | ❌ | Canvas primitives | ❌ | ✅ rich | ✅ code-defined |
 | Durable workflow state / replay | ❌ | ❌ | ❌ | ❌ | Task-level | ✅ |
-| Embeddable as a library | ✅ Rust, Python | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Embeddable as a library | ✅ Rust, Python; Go, Swift and C (experimental) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Scheduling throughput | ~1M decisions/s per core | Broker-bound | Broker-bound | Slow (pods) | Slow (DB-polling) | Moderate |
 
 ### When to use cronoq
@@ -64,12 +73,18 @@ each of these tools is excellent at what it was built for.
 - Jobs that must start at specific times without being starved by everything else.
 - Systems that want autoscaling driven by the queue rather than by CPU.
 - An embedded scheduler inside a Rust or Python service, without running extra infrastructure.
+- Event streams per entity (account, document, device) that must keep their order while
+  different entities run in parallel.
+- State that is updated often, where only the newest value is worth running.
+- A send queue inside a desktop or mobile app (experimental).
 
 ### When not to use cronoq
 
 - **Long-running business workflows with durable state** (sagas, human-in-the-loop steps, days of
   waiting). Use a workflow engine such as Temporal; cronoq can still schedule its activities.
 - **Pure message passing / pub-sub.** Use a broker such as Kafka or NATS.
+- **One entity that needs more than one worker.** An ordering key runs one task of the key at
+  a time.
 - **Complex data-pipeline orchestration** with backfills, lineage and a UI for analysts. Use
   Airflow or Dagster; cronoq's DAGs are deliberately simple.
 - **Exactly-once side effects.** cronoq executes tasks *at least once*. Make handlers idempotent,

@@ -16,6 +16,11 @@ return.
 | **Right-sized fleets** | Pools grow on queue pressure and wait-time objectives, pre-warm for scheduled work, and shrink without flapping. | `desired` vs `capacity`; `utilization` in the 0.5–0.85 band; `cost` per pool. | [Autoscaling](concepts/autoscaling.md) |
 | **Pipelines without glue code** | Dependencies by key with success, failure and completion edges; atomic batches; failure handlers that run only when needed. | Downstream steps never run on failed input; no hand-written state tables. | [Dependencies](concepts/dependencies.md) |
 | **Safe retries end to end** | Retries with backoff and jitter, timeouts, leases and heartbeats; idempotent submissions by key. | Dead letters are rare and visible (`cronoq_tasks_total{status="dead_lettered"}`). | [Reliability](concepts/reliability.md) |
+| **Order per entity** | Tasks of one account, document or device run one at a time, in submission order, while other entities use the remaining workers. A failed step can halt its entity until someone resumes it. | `ordering.waiting` and `ordering.halted` per pool; alert on `cronoq_pool_ordering_halted`. | [Ordering keys](concepts/ordering-keys.md) |
+| **No capacity spent on stale updates** | The newest submission of a key replaces the one that waits. A task that already runs is followed by the newest value, not aborted. | `superseded` against `submitted`; `cronoq_tasks_superseded_total`. | [Replace by key](concepts/replacing.md) |
+| **Key reuse is reported** | A retry of a submission returns the existing task. The same key with other content is refused with the id and status of the task that holds it. | Key conflicts (HTTP 422) instead of silently dropped submissions. | [Conflict detection](concepts/key-conflicts.md) |
+| **Priorities that follow events** | The priority, deadline or tags of a queued task can change. The task keeps its id, its dependents and its place by submission order. | The task's wait time after a promotion; `Updated` events. | [Updating](concepts/updating.md) |
+| **Work can be held** | A pool, a class or an ordering key is paused with a reason. Held tasks keep their place and age. A worker that cannot run a task now releases it without using a retry. | `cronoq_pool_paused`, `cronoq_pool_paused_tasks`, `cronoq_releases_total`; the reason in the snapshot. | [Pausing](concepts/pausing.md), [releasing](concepts/reliability.md#releasing-an-attempt) |
 | **Graceful overload** | Bounded queues turn overload into backpressure (wait, reject or shed the least important work) instead of memory growth. | `shed` and `429` counts instead of out-of-memory incidents. | [Backpressure](concepts/backpressure.md) |
 | **Survives restarts and failover** | With a SQLite or Postgres store, accepted work, cancellations and schedules are durable; a standby takes over in seconds. | Kill the leader: work continues on the standby. | [Durability](concepts/durability.md) |
 | **Scheduling quality you can measure** | Every pool reports utilization, wait percentiles, priority adherence, fixed-start hit rate and cost, in OpenTelemetry and Prometheus. | Dashboards and alerts from day one. | [Metrics](concepts/metrics.md) |
@@ -29,9 +34,11 @@ Where does the work run?
 ├─ Inside one Rust service ───────────────▶ cronoq crate (Rust quickstart)
 ├─ Inside one Python asyncio service ─────▶ pip install cronoq (Python quickstart)
 ├─ Code written for ElasticPriorityScheduler ▶ cronoq.compat, then the native API (Migrating)
-└─ In other processes, machines or languages ▶ cronoq-server + workers (Server quickstart)
-                                                 │
-     Must queued work survive restarts? ── yes ─▶ add a SQLite or Postgres store (and a standby for HA)
+├─ In other processes, machines or languages ▶ cronoq-server + workers (Server quickstart)
+│                                                │
+│    Must queued work survive restarts? ── yes ─▶ add a SQLite or Postgres store (and a standby for HA)
+│
+└─ Inside a Go, Swift or C program, without a server ▶ the embedded library, experimental (Embedding)
 ```
 
 | If you have... | Start with | Then add |
@@ -42,6 +49,10 @@ Where does the work run?
 | Cron jobs that start late | [Fixed starts and cron](use-cases/scheduled-jobs.md) | Miss policies and `fixed_start_hit_rate` alerts |
 | A hand-rolled DAG runner | [Keys and dependencies](use-cases/pipelines.md) | Atomic batches and failure handlers |
 | A queue that falls over during incidents | [Bounded pools](concepts/backpressure.md) with `shed_lowest` | Alerts on `shed` and wait percentiles |
+| Event streams per account, document or device | [An ordering key per entity](use-cases/ordered-work.md) | Halt on failure for steps that must not be skipped; an alert on halted keys |
+| State sync, cache refresh or index rebuilds | [Replace by key](use-cases/latest-wins.md) | The `superseded` count on a dashboard |
+| Producers that retry after timeouts | [A key on every submission](use-cases/idempotent-producers.md) | `on_key_conflict = reject`, set explicitly |
+| A desktop or mobile app with a send queue | [The embedded library](use-cases/embedded-queues.md) (experimental) | Pause while offline, release on a network error, clock resynchronisation after sleep |
 
 ## Match your symptom
 
@@ -56,6 +67,12 @@ Where does the work run?
 | "The scheduler is slower than the tasks." | [High-throughput microtasks](use-cases/microtasks.md) |
 | "Workers are written in three languages." | [Polyglot worker fleets](use-cases/worker-fleets.md) |
 | "We pay for idle workers at night." | [Cost-aware autoscaling](use-cases/autoscaling.md) |
+| "Two events of one account ran at the same time." | [Ordered work per entity](use-cases/ordered-work.md) |
+| "We run five updates of the same title, and four are stale." | [Latest-wins updates](use-cases/latest-wins.md) |
+| "A producer reused an id, and the second job disappeared." | [Idempotent producers](use-cases/idempotent-producers.md) |
+| "A user is waiting for a job that we queued at low priority." | [Reprioritising live work](use-cases/reprioritising.md) |
+| "The downstream service was down, and the tasks used up their retries." | [Holding work without losing it](use-cases/holding-work.md) |
+| "Our app needs a send queue, and it cannot run a server." | [Offline-first clients and embedded queues](use-cases/embedded-queues.md) |
 
 ## What it asks of you
 
@@ -71,6 +88,17 @@ cronoq is deliberately small. Adopting it means accepting a few rules:
 - **A scheduler, not a workflow engine.** It orders, admits and sizes work. Long-running
   workflows with durable step state, human approvals or replays belong in a workflow engine;
   cronoq can schedule their activities.
+- **Order per key costs parallelism.** Tasks that share an
+  [ordering key](concepts/ordering-keys.md) run one at a time, and inside a key the order is
+  submission order, not priority.
+- **Latest wins drops values on purpose.** With [replace by key](concepts/replacing.md), a
+  submission that is replaced before it starts never runs.
+- **A pause has no timer.** [Paused](concepts/pausing.md) work waits until someone resumes it,
+  and it counts toward the queue bounds while it waits.
+- **The embedded library is experimental.** Its C API will change before cronoq 1.0, and it
+  does not have every feature of the server ([what is missing](guides/embedding.md#what-to-know)).
+- **Upgrades of a durable store roll forward only.** An older build refuses a database that a
+  newer build has migrated ([Upgrading](guides/upgrading.md)).
 - **Payloads are plain Rust values in the library, Python objects in the Python package, and
   opaque bytes on the server.** Large blobs belong in object storage, with a
   reference in the payload (the server limits messages to 16 MiB by default).
@@ -83,7 +111,8 @@ workflow engines.
 1. **Embed** the library (Rust or Python) in the service that already runs the work, with one
    pool per kind of worker and the defaults everywhere else.
 2. **Classify** work: priorities for user-facing versus background tasks, deadlines where an
-   SLA exists, keys on everything that may be retried.
+   SLA exists, keys on everything that may be retried, an ordering key on work that must keep
+   its order per entity.
 3. **Protect dependencies**: a token bucket per external API, a semaphore per scarce resource.
 4. **Observe**: export metrics and alert on wait percentiles, dead letters and fixed-start hit
    rate.

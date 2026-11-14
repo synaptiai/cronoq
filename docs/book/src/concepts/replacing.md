@@ -110,8 +110,13 @@ A replaced task keeps its place in its ordering key (or goes to the back with
 Neither the task nor the replacement may have a [fixed start](fixed-starts.md): a fixed start
 holds a capacity reservation made at admission. `replace_queued` needs a key, and is refused in
 batch submissions and recurring schedules, which admit tasks as written. The clients refuse it
-there too, and report a server too old to know the option (`unimplemented`) instead of letting
-the submission be dropped silently.
+there too.
+
+Over gRPC a 0.2.2 server ignores the option: if the key is free, the task is created; if the
+key is in use, the submission is dropped. The clients and the command-line tool detect such a
+server from its answer and report an error (`unimplemented`) in both cases, so that a dropped
+submission does not pass unnoticed. Over HTTP a 0.2.2 server refuses the unknown field and
+admits nothing. See [Upgrading](../guides/upgrading.md#order-of-upgrading).
 
 ## Queue bounds
 

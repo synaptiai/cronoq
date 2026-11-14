@@ -148,11 +148,21 @@ aside. Retrying cannot succeed while the key is held.
 
 ## Upgrading
 
-A server from before this release does not know `reject`. It refuses a single submission that
-asks for it (`INVALID_ARGUMENT`), but it ignores the option on a batch and admits the tasks.
-The clients, and a server forwarding a batch to an older [shard](sharding.md), notice that from
-the response and fail the call with `UNIMPLEMENTED`; the batch has then been admitted without
-the check. Upgrade every server before relying on `reject` for batches.
+A 0.2.2 server does not know `reject`.
+
+Over gRPC it ignores the option and compares nothing, for a single submission and for a batch.
+If the key is free, the task is created. If the key is in use, the existing task is returned,
+whatever it was submitted with. An answer from such a server carries no `outcome`. The Python,
+Go and TypeScript clients check that and fail the call with `unimplemented`; the `cronoq`
+command-line tool exits with an error. A server that forwards the submission to a 0.2.2
+[shard](sharding.md) makes the same check and answers `UNIMPLEMENTED`. The error arrives in
+both cases: when the key was free, the call has created the task; when the key was in use,
+the call has created nothing.
+
+Over HTTP a 0.2.2 server refuses a request that contains `on_key_conflict` (status 400,
+unknown field). Nothing is admitted.
+
+Upgrade every server before relying on `reject`.
 
 A server that forwards a submission to another shard sends its own default along, so the
 answer does not depend on which server received the call.

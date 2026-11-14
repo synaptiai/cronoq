@@ -164,6 +164,11 @@ contain breaking changes; they are called out under **Changed**.
   `urgency` in `GET /v1/snapshot`, in `PoolSnapshot` over gRPC, and on the Rust and Python
   snapshot types (`cronoq.client.PrioritySettings` and `UrgencySettings` in the Python client).
 
+- Documentation: six use-case pages (ordered work per entity, latest-wins updates, idempotent
+  producers, reprioritising live work, holding work without losing it, offline-first clients
+  and embedded queues) and upgrade notes for this release, in
+  [Upgrading](docs/book/src/guides/upgrading.md).
+
 ### Changed
 
 - **Breaking (Rust):** `cronoq::Clock` is `Clone` and no longer `Copy`; its clones share one
@@ -256,6 +261,13 @@ contain breaking changes; they are called out under **Changed**.
   worker could take one, the attempt failed and counted against the task's retry budget, so a
   task could be dead-lettered during a drain without running. The Go, TypeScript and Python
   clients already did this.
+- A single submission with `on_key_conflict = reject`, sent over gRPC to a 0.2.2 server, was
+  answered like a plain submission: the old server ignores the option, so a key in use
+  returned the existing task without any comparison. The Python, Go and TypeScript clients
+  and the command-line tool now detect such a server from the missing `outcome`, as they
+  already did for batches, and fail with `unimplemented`. A server that forwards the
+  submission to a 0.2.2 shard does the same. The error does not undo what the old server
+  did: if the key was free, the task has been created.
 
 ## [0.2.2] - 2026-11-03
 
