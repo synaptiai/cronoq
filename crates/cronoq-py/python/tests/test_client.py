@@ -1102,3 +1102,41 @@ async def test_ordering_keys(server: Server, client: Client) -> None:
             assert (await client.wait(last.id, timeout=10)).text() == "last"
         gone = await metrics.ordering("acct")
         assert (gone.tasks, gone.head, gone.effective) == (0, None, None)
+
+
+async def test_pause_and_resume(server: Server, client: Client) -> None:
+    async with Client(server.target, token=ADMIN) as admin, Client(server.target, token=METRICS) as metrics:
+        with pytest.raises(ClientError) as denied:
+            await client.pause("x")
+        assert denied.value.code == "permission_denied"
+        with pytest.raises(ValueError):
+            await admin.pause("x", priority_class="low", ordering_key="k")
+        assert await admin.pause("deploy 14:00") is True
+        assert await admin.pause("deploy 14:00") is False
+        await admin.pause("backfill off", priority_class="low")
+        await admin.pause("customer asked", ordering_key="acct")
+        normal = await client.submit("normal")
+        low = await client.submit("low", priority="low")
+        keyed = await client.submit("keyed", ordering_key="acct")
+
+        async with Running() as r:
+            # The worker is told that its pool is paused, and why.
+            w = await r.add(server, upper, slots=4)
+            assert w.pool_paused == "deploy 14:00"
+            await asyncio.sleep(0.3)
+            snap = (await metrics.snapshot()).pool("default")
+            assert (snap.paused, snap.paused_tasks) == ("deploy 14:00", 3)
+            assert (dict(snap.paused_classes), snap.ordering_paused) == ({"low": "backfill off"}, 1)
+            assert (await metrics.ordering("acct")).paused == "customer asked"
+            assert await metrics.paused_orderings() == [("acct", "customer asked")]
+            assert (await client.get(normal.id)).status == "ready"
+
+            # Resumed one by one, each lets its own tasks run.
+            assert await admin.resume() is True
+            assert (await client.wait(normal.id, timeout=10)).text() == "NORMAL"
+            assert (await client.get(low.id)).status == "ready"
+            assert await admin.resume(priority_class="low") is True
+            assert (await client.wait(low.id, timeout=10)).ok
+            assert await admin.resume(ordering_key="acct") is True
+            assert (await client.wait(keyed.id, timeout=10)).ok
+            assert await admin.resume() is False

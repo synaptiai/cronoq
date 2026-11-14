@@ -329,6 +329,10 @@ async function session(
           // Room for the message envelope; no check when the server reports no limit.
           maxOutput = r.maxMessageBytes > 1024n ? Number(r.maxMessageBytes) - 1024 : 0;
           log.info(`cronoq: worker ${r.workerId} registered for pool '${o.pool}' with ${slots} slots`);
+          if (r.poolPaused !== undefined) {
+            // Connected and healthy, but nothing will be leased until the pool is resumed.
+            log.warn(`cronoq: pool '${o.pool}' is paused (${r.poolPaused}); no tasks until it is resumed`);
+          }
           o.onRegistered?.({ workerId: r.workerId, slots, endpoint });
           if (o.signal?.aborted) onStop();
           break;

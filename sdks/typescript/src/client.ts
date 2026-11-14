@@ -170,6 +170,19 @@ export interface OrderingInfo {
   persist: boolean;
   /** A failed task halted the key: nothing of it runs until it is resumed. */
   halted: boolean;
+  /** The reason the key is paused, if it is. */
+  paused?: string;
+}
+
+/**
+ * What {@link Client.pause} and {@link Client.resume} act on: a pool (the default pool if
+ * `pool` is left out); with `class`, the tasks of the pool that run at that class; with
+ * `orderingKey`, that ordering key of the pool. `class` and `orderingKey` exclude each other.
+ */
+export interface PauseTarget {
+  pool?: string;
+  class?: Priority;
+  orderingKey?: string;
 }
 
 /** The options of a single submission of `t`. */
@@ -631,6 +644,7 @@ export class Client {
         floor: r.floor === undefined ? undefined : priorityName(r.floor),
         persist: r.persist,
         halted: r.halted,
+        paused: r.paused,
       };
     });
   }
@@ -669,14 +683,61 @@ export class Client {
   }
 
   /**
-   * Resume an ordering key that a failed task halted (`haltOnFailure`): its oldest task is
-   * offered again. Resolves to whether the key was halted; resuming one that is not is not an
-   * error. Admin role.
+   * Pause a pool, one of its classes or one of its ordering keys. What is paused stays
+   * queued: tasks keep their place and their age and count toward the bounds, and submissions
+   * are still accepted. Nothing of it is leased until {@link Client.resume}. Running attempts
+   * are not interrupted; a task that retries waits; tasks with a start time are not held.
+   * `reason` is shown in snapshots and to workers. Resolves to whether this paused something
+   * that was not paused; pausing again replaces the reason. Admin role; credentials pinned to
+   * a tenant pause their own ordering keys only.
    */
-  resume(target: { orderingKey: string; pool?: string }, opts: CallOptions = {}): Promise<boolean> {
+  pause(target: PauseTarget, reason: string, opts: CallOptions = {}): Promise<boolean> {
     return this.call(
       async () =>
-        (await this.admin.resume({ pool: target.pool ?? "", orderingKey: target.orderingKey }, rpc(opts))).resumed,
+        (
+          await this.admin.pause(
+            {
+              pool: target.pool ?? "",
+              priorityClass: target.class === undefined ? undefined : priorityValue(target.class),
+              orderingKey: target.orderingKey ?? "",
+              reason,
+            },
+            rpc(opts),
+          )
+        ).paused,
+    );
+  }
+
+  /**
+   * Resume what {@link Client.pause} paused; for an ordering key, also a key that a failed
+   * task halted (`haltOnFailure`). Resolves to whether there was anything to resume; resuming
+   * what is not paused is not an error. Admin role.
+   */
+  resume(target: PauseTarget = {}, opts: CallOptions = {}): Promise<boolean> {
+    return this.call(
+      async () =>
+        (
+          await this.admin.resume(
+            {
+              pool: target.pool ?? "",
+              priorityClass: target.class === undefined ? undefined : priorityValue(target.class),
+              orderingKey: target.orderingKey ?? "",
+            },
+            rpc(opts),
+          )
+        ).resumed,
+    );
+  }
+
+  /** The paused ordering keys of `pool` with their reasons, in name order (metrics role). */
+  pausedOrderings(
+    filter: { pool?: string; limit?: number } = {},
+    opts: CallOptions = {},
+  ): Promise<Array<{ key: string; reason: string }>> {
+    return this.call(async () =>
+      (
+        await this.admin.listPausedOrderings({ pool: filter.pool ?? "", limit: filter.limit ?? 0 }, rpc(opts))
+      ).keys.map((k) => ({ key: k.key, reason: k.reason })),
     );
   }
 }

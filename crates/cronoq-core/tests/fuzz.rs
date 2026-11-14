@@ -120,8 +120,22 @@ fn run(seed: u64) {
                         .set_ordering_floor(sim.now, pool, &key, floor, keep)
                         .unwrap();
                     sim.drain();
-                } else {
+                } else if r.n(3) == 0 {
                     sim.resume_halted();
+                } else {
+                    // Pause or resume a pool, a class or an ordering key.
+                    let pool = PoolId(r.n(2) as u16);
+                    let target = match r.n(4) {
+                        0 => PauseTarget::Pool,
+                        1 => PauseTarget::Ordering(format!("o{}", r.n(4)).into()),
+                        _ => PauseTarget::Class(Priority::from_index(r.n(4) as usize).unwrap()),
+                    };
+                    if r.n(2) == 0 {
+                        sim.core.pause(sim.now, pool, &target, "fuzz").unwrap();
+                    } else {
+                        sim.core.resume(sim.now, pool, &target).unwrap();
+                    }
+                    sim.drain();
                 }
             }
             8 => {

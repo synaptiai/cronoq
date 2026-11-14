@@ -609,6 +609,19 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             ordering_keys: p.ordering.keys as u64,
             ordering_waiting: p.ordering.waiting as u64,
             ordering_halted: p.ordering.halted as u64,
+            ordering_paused: p.ordering.paused as u64,
+            paused: p.pauses.pool.as_ref().map(|r| r.to_string()),
+            paused_classes: cronoq::Priority::ALL
+                .into_iter()
+                .filter_map(|c| {
+                    let reason = p.pauses.classes[c.index()].as_ref()?;
+                    Some(pb::ClassPause {
+                        priority_class: priority_to_pb(c) as i32,
+                        reason: reason.to_string(),
+                    })
+                })
+                .collect(),
+            paused_tasks: p.paused_tasks as u64,
             priority: Some(pb::PriorityConfig {
                 base: p.priority.base.to_vec(),
                 aging_rate: p.priority.aging_rate.to_vec(),

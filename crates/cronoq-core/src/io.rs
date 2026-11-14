@@ -574,6 +574,16 @@ pub enum Mutation<P> {
         /// The key is halted.
         halted: bool,
     },
+    /// A pool, one of its classes or one of its ordering keys was paused (`reason` is set)
+    /// or resumed (`reason` is `None`: a store drops its record).
+    Paused {
+        /// The pool.
+        pool: Arc<str>,
+        /// What of the pool.
+        target: PauseTarget,
+        /// Why it is paused; `None` when it was resumed.
+        reason: Option<Arc<str>>,
+    },
     /// A recurring schedule was added or replaced.
     RecurringUpsert {
         /// The schedule.
@@ -672,6 +682,15 @@ impl<P> Clone for Mutation<P> {
                 persist: *persist,
                 halted: *halted,
             },
+            Mutation::Paused {
+                pool,
+                target,
+                reason,
+            } => Mutation::Paused {
+                pool: pool.clone(),
+                target: target.clone(),
+                reason: reason.clone(),
+            },
             Mutation::RecurringUpsert { spec } => Mutation::RecurringUpsert { spec: spec.clone() },
             Mutation::RecurringRemove { name } => Mutation::RecurringRemove { name: name.clone() },
             Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
@@ -742,6 +761,51 @@ pub struct RecoveredPending<P> {
     pub spec: TaskSpec<P>,
 }
 
+/// What a pause holds back ([`Core::pause`](crate::Core::pause)).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PauseTarget {
+    /// Every class of the pool.
+    Pool,
+    /// The tasks of the pool that run at this class.
+    Class(Priority),
+    /// The tasks of one ordering key of the pool.
+    Ordering(Arc<str>),
+}
+
+/// A stored pause (see [`Mutation::Paused`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveredPause {
+    /// The pool.
+    pub pool: Arc<str>,
+    /// What of the pool is paused.
+    pub target: PauseTarget,
+    /// Why.
+    pub reason: Arc<str>,
+}
+
+/// The pauses of a pool and its classes ([`Core::pauses`](crate::Core::pauses)): the reason
+/// of each, where one is in place.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PoolPauses {
+    /// The whole pool.
+    pub pool: Option<Arc<str>>,
+    /// Single classes, most important first.
+    pub classes: [Option<Arc<str>>; Priority::COUNT],
+}
+
+impl PoolPauses {
+    /// Why tasks that run at `class` are held, if they are: the pool's pause, else the
+    /// class's.
+    pub fn holds(&self, class: Priority) -> Option<&Arc<str>> {
+        self.pool.as_ref().or(self.classes[class.index()].as_ref())
+    }
+
+    /// Whether nothing is paused.
+    pub fn is_empty(&self) -> bool {
+        self.pool.is_none() && self.classes.iter().all(Option::is_none)
+    }
+}
+
 /// Stored state of an ordering key (see [`Mutation::Ordering`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveredOrdering {
@@ -772,6 +836,8 @@ pub struct OrderingInfo {
     pub persist: bool,
     /// The key is halted: nothing of it runs until it is resumed.
     pub halted: bool,
+    /// The key is paused, and why.
+    pub paused: Option<Arc<str>>,
 }
 
 /// Why a setting of an ordering key was refused.
@@ -836,6 +902,8 @@ pub struct Recovered<P> {
     pub pending: Vec<RecoveredPending<P>>,
     /// Stored state of ordering keys.
     pub ordering: Vec<RecoveredOrdering>,
+    /// Pauses in place.
+    pub paused: Vec<RecoveredPause>,
     /// Lowest task id the engine may hand out next.
     pub next_id: u64,
 }
@@ -861,6 +929,7 @@ impl<P> Default for Recovered<P> {
             recurring: Vec::new(),
             pending: Vec::new(),
             ordering: Vec::new(),
+            paused: Vec::new(),
             next_id: 0,
         }
     }

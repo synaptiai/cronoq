@@ -393,6 +393,9 @@ message Registered {
   uint32 slots = 3;                 // slots granted (may be lower than requested)
   uint32 protocol_version = 4;
   uint64 max_message_bytes = 5;     // largest message the server accepts
+  // Set when the worker's pool is paused as a whole: the reason. A worker of a paused pool
+  // stays connected and gets no leases until the pool is resumed.
+  optional string pool_paused = 6;
 }
 
 message Lease {
@@ -472,6 +475,20 @@ message PoolSnapshot {
   uint64 ordering_waiting = 24;
   // Ordering keys halted by a failed task.
   uint64 ordering_halted = 25;
+  // Set while the whole pool is paused: the reason.
+  optional string paused = 26;
+  // Classes of the pool that are paused on their own.
+  repeated ClassPause paused_classes = 27;
+  // Tasks that are ready but held by a pause of the pool, of their class or of their
+  // ordering key.
+  uint64 paused_tasks = 28;
+  // Ordering keys that are paused.
+  uint64 ordering_paused = 29;
+}
+
+message ClassPause {
+  Priority priority_class = 1;
+  string reason = 2;
 }
 
 // Score of a waiting task: base + min(aging_rate * seconds waited, age_cap) + urgency. Each
@@ -619,6 +636,8 @@ message OrderingInfo {
   bool persist = 7;
   // A failed task halted the key: nothing of it runs until it is resumed.
   bool halted = 8;
+  // Set while the key is paused: the reason.
+  optional string paused = 9;
 }
 
 message SetOrderingFloorRequest {
@@ -643,10 +662,38 @@ message ListHaltedOrderingsResponse {
   repeated string keys = 1;
 }
 
-// What to resume: a halted ordering key of a pool.
+// What to pause: a pool; with `priority_class`, the tasks of the pool that run at that class; with
+// `ordering_key`, that ordering key of the pool. `priority_class` and `ordering_key` exclude each
+// other.
+message PauseRequest {
+  string pool = 1; // default "default"
+  optional Priority priority_class = 2;
+  string ordering_key = 3;
+  // Why, for whoever looks at it later: shown in snapshots, to workers and by the tools.
+  string reason = 4;
+}
+
+message PauseResponse {
+  // Whether this paused something that was not paused. Pausing again replaces the reason.
+  bool paused = 1;
+}
+
+// What to resume, named like in `PauseRequest`. For an ordering key, this also resumes a
+// key that a failed task halted.
 message ResumeRequest {
   string pool = 1; // default "default"
   string ordering_key = 2;
+  optional Priority priority_class = 3;
+}
+
+message PausedOrdering {
+  string key = 1;
+  string reason = 2;
+}
+
+message ListPausedOrderingsResponse {
+  // Paused ordering keys of the pool, in name order.
+  repeated PausedOrdering keys = 1;
 }
 
 message ResumeResponse {
@@ -663,6 +710,14 @@ service Admin {
   rpc GetOrdering(OrderingRequest) returns (OrderingInfo);
   rpc ListHaltedOrderings(ListHaltedOrderingsRequest) returns (ListHaltedOrderingsResponse);
   rpc SetOrderingFloor(SetOrderingFloorRequest) returns (Empty);
+  rpc ListPausedOrderings(ListHaltedOrderingsRequest) returns (ListPausedOrderingsResponse);
+  // Pause and resume (admin role, for a pool the credentials allow). What is paused stays
+  // queued: tasks keep their place and their age and count toward the bounds, and
+  // submissions are still accepted. Nothing of it is leased until it is resumed. Attempts
+  // that are running are not interrupted; a task that retries waits. Tasks with a start
+  // time, and so the occurrences of schedules, are not held. Credentials pinned to a tenant
+  // pause and resume their own ordering keys only.
+  rpc Pause(PauseRequest) returns (PauseResponse);
   rpc Resume(ResumeRequest) returns (ResumeResponse);
   rpc AddRecurring(RecurringRequest) returns (Empty);
   rpc RemoveRecurring(RemoveRecurringRequest) returns (RemoveRecurringResponse);

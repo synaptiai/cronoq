@@ -321,8 +321,13 @@ pub fn snapshot_json(s: &pb::SnapshotResponse) -> Value {
                 "workers_connected": p.workers_connected,
                 "ordering": {
                     "keys": p.ordering_keys, "waiting": p.ordering_waiting,
-                    "halted": p.ordering_halted,
+                    "halted": p.ordering_halted, "paused": p.ordering_paused,
                 },
+                "paused": p.paused,
+                "paused_classes": p.paused_classes.iter().map(|c| json!({
+                    "class": priority(c.priority_class), "reason": c.reason,
+                })).collect::<Vec<_>>(),
+                "paused_tasks": p.paused_tasks,
             })
         })
         .collect();

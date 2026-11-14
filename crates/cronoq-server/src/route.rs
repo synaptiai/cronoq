@@ -689,23 +689,95 @@ pub async fn set_ordering_floor(
     grpc::set_ordering_floor(app, pool, &grpc::tenant_key(p, key), floor, persist).await
 }
 
-/// Resume a halted ordering key, on the shard of its pool.
+/// Pause (`reason` set) or resume a pool, a class or an ordering key, on the pool's shard.
+pub async fn pause(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    target: cronoq::PauseTarget,
+    reason: Option<&str>,
+) -> Result<bool, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let (class, ordering_key) = match &target {
+            cronoq::PauseTarget::Pool => (None, String::new()),
+            cronoq::PauseTarget::Class(c) => {
+                (Some(convert::priority_to_pb(*c) as i32), String::new())
+            }
+            cronoq::PauseTarget::Ordering(key) => (None, key.to_string()),
+        };
+        let pool = pool.to_string();
+        return match reason {
+            Some(reason) => {
+                let req = pb::PauseRequest {
+                    pool,
+                    priority_class: class,
+                    ordering_key,
+                    reason: reason.to_string(),
+                };
+                Ok(answer(sh, c.admin.pause(bounded(app, req)).await)?.paused)
+            }
+            None => {
+                let req = pb::ResumeRequest {
+                    pool,
+                    ordering_key,
+                    priority_class: class,
+                };
+                Ok(answer(sh, c.admin.resume(bounded(app, req)).await)?.resumed)
+            }
+        };
+    }
+    grpc::pause(app, pool, grpc::tenant_target(p, target), reason).await
+}
+
+/// The paused ordering keys of a pool with their reasons, from its shard.
+pub async fn list_paused_orderings(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    limit: u32,
+) -> Result<Vec<(String, String)>, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::ListHaltedOrderingsRequest {
+            pool: pool.to_string(),
+            limit,
+        };
+        let r = answer(sh, c.admin.list_paused_orderings(bounded(app, req)).await)?;
+        return Ok(r.keys.into_iter().map(|k| (k.key, k.reason)).collect());
+    }
+    let wanted = match limit {
+        0 => 100,
+        n => n.min(grpc::MAX_HALTED_LIST),
+    } as usize;
+    let Some(tenant) = &p.tenant else {
+        return grpc::list_paused_orderings(app, pool, wanted).await;
+    };
+    // Pinned credentials see the paused keys of their own namespace, by their own names.
+    let prefix = grpc::tenant_prefix(tenant);
+    let all = grpc::list_paused_orderings(app, pool, usize::MAX).await?;
+    Ok(all
+        .into_iter()
+        .filter_map(|(k, r)| Some((k.strip_prefix(&prefix)?.to_string(), r)))
+        .take(wanted)
+        .collect())
+}
+
+/// Resume a halted or paused ordering key, on the shard of its pool.
 pub async fn resume_ordering(
     app: &AppState,
     p: &Principal,
     pool: &str,
     key: &str,
 ) -> Result<bool, Status> {
-    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
-        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
-        let req = pb::ResumeRequest {
-            pool: pool.to_string(),
-            ordering_key: key.to_string(),
-        };
-        let r = answer(sh, c.admin.resume(bounded(app, req)).await)?;
-        return Ok(r.resumed);
-    }
-    grpc::resume_ordering(app, pool, &grpc::tenant_key(p, key)).await
+    pause(
+        app,
+        p,
+        pool,
+        cronoq::PauseTarget::Ordering(key.into()),
+        None,
+    )
+    .await
 }
 
 /// Remove a schedule from whichever shard has it.

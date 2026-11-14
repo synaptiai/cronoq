@@ -677,3 +677,47 @@ async def test_ordering_key_halts_on_failure_and_is_resumed():
             await s.submit("x", ordering_key="k", start_in=60)
         with pytest.raises(cronoq.SubmitError):
             await s.ordering("k", pool="missing")
+
+
+async def test_pause_and_resume_a_pool_a_class_and_an_ordering_key():
+    ran = []
+
+    async def run(ctx, payload):
+        ran.append(payload)
+        return payload
+
+    async with Scheduler([pool(run)]) as s:
+        assert await s.pause("deploy") is True
+        assert await s.pause("deploy") is False
+        held = await s.submit("held")
+        await asyncio.sleep(0.1)
+        assert ran == [] and await s.status(held.id) == "ready"
+        snap = (await s.snapshot()).pool("default")
+        assert (snap.paused, snap.paused_tasks, snap.paused_classes) == ("deploy", 1, {})
+        assert await s.resume() is True
+        assert await s.resume() is False
+        assert await held == "held"
+
+        # A class and an ordering key, each on its own.
+        await s.pause("backfill off", priority_class="low")
+        await s.pause("customer asked", ordering_key="acct")
+        low = await s.submit("low", priority=Priority.LOW)
+        keyed = await s.submit("keyed", ordering_key="acct")
+        assert await (await s.submit("normal")) == "normal"
+        await asyncio.sleep(0.1)
+        assert ran == ["held", "normal"]
+        snap = (await s.snapshot()).pool("default")
+        assert snap.paused is None and snap.paused_classes == {"low": "backfill off"}
+        assert (snap.paused_tasks, snap.ordering_paused) == (2, 1)
+        assert (await s.ordering("acct")).paused == "customer asked"
+        assert await s.paused_orderings() == [("acct", "customer asked")]
+        assert await s.resume(priority_class=Priority.LOW) is True
+        assert await low == "low"
+        # An ordering key is resumed by either call.
+        assert await s.resume_ordering("acct") is True
+        assert await keyed == "keyed"
+
+        with pytest.raises(ValueError, match="not both"):
+            await s.pause("x", priority_class="low", ordering_key="k")
+        with pytest.raises(cronoq.SubmitError):
+            await s.pause("x", pool="missing")

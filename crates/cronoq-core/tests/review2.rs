@@ -667,6 +667,7 @@ fn recovered_recurring_keeps_overlap_guard() {
         Recovered {
             pending: Vec::new(),
             ordering: Vec::new(),
+            paused: Vec::new(),
             tasks: vec![rec_task(7, 7, running)],
             terminal: vec![],
             recurring: vec![RecoveredRecurring {

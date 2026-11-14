@@ -536,6 +536,35 @@ type OrderingInfo struct {
 	Persist bool
 	// Halted says a failed task halted the key: nothing of it runs until [Client.Resume].
 	Halted bool
+	// Paused says the key is paused; PausedReason is why.
+	Paused       bool
+	PausedReason string
+}
+
+// PauseTarget names what [Client.Pause] and [Client.Resume] act on: a pool (the default
+// pool if Pool is empty); with Class, the tasks of the pool that run at that class; with
+// OrderingKey, that ordering key of the pool. Class and OrderingKey exclude each other.
+type PauseTarget struct {
+	Pool        string
+	Class       Priority
+	OrderingKey string
+}
+
+func (t PauseTarget) class() (*pb.Priority, error) {
+	if t.Class == "" {
+		return nil, nil
+	}
+	p := t.Class.pb()
+	if p == pb.Priority_PRIORITY_UNSPECIFIED {
+		return nil, &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("unknown priority %q", string(t.Class)), BatchIndex: -1}
+	}
+	return &p, nil
+}
+
+// PausedOrdering is a paused ordering key and the reason it was paused with.
+type PausedOrdering struct {
+	Key    string
+	Reason string
 }
 
 // Ordering returns an ordering key of pool (the default pool if empty): its tasks, the one
@@ -549,6 +578,7 @@ func (c *Client) Ordering(ctx context.Context, pool, key string) (*OrderingInfo,
 	info := &OrderingInfo{
 		Pool: r.GetPool(), Key: r.GetKey(), Tasks: r.GetTasks(), Head: r.GetHead(),
 		Effective: priority(r.GetEffective()), Persist: r.GetPersist(), Halted: r.GetHalted(),
+		Paused: r.Paused != nil, PausedReason: r.GetPaused(),
 	}
 	if r.Floor != nil {
 		info.Floor = priority(r.GetFloor())
@@ -583,15 +613,52 @@ func (c *Client) SetOrderingFloor(ctx context.Context, pool, key string, floor P
 	return wrap(err)
 }
 
-// Resume resumes an ordering key that a failed task halted ([Task.HaltOnFailure]): its
-// oldest task is offered again. It reports whether the key was halted; resuming one that is
-// not is not an error. Admin role.
-func (c *Client) Resume(ctx context.Context, pool, orderingKey string) (bool, error) {
-	r, err := c.admin.Resume(ctx, &pb.ResumeRequest{Pool: pool, OrderingKey: orderingKey})
+// Pause pauses a pool, one of its classes or one of its ordering keys. What is paused stays
+// queued: tasks keep their place and their age and count toward the bounds, and submissions
+// are still accepted. Nothing of it is leased until [Client.Resume]. Running attempts are not
+// interrupted; a task that retries waits; tasks with a start time are not held. The reason is
+// shown in snapshots and to workers. Pause reports whether this paused something that was
+// not paused; pausing again replaces the reason. Admin role; credentials pinned to a tenant
+// pause their own ordering keys only.
+func (c *Client) Pause(ctx context.Context, t PauseTarget, reason string) (bool, error) {
+	class, err := t.class()
+	if err != nil {
+		return false, err
+	}
+	r, err := c.admin.Pause(ctx, &pb.PauseRequest{Pool: t.Pool, PriorityClass: class, OrderingKey: t.OrderingKey, Reason: reason})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return r.GetPaused(), nil
+}
+
+// Resume resumes what [Client.Pause] paused; for an ordering key, also a key that a failed
+// task halted ([Task.HaltOnFailure]). It reports whether there was anything to resume;
+// resuming what is not paused is not an error. Admin role.
+func (c *Client) Resume(ctx context.Context, t PauseTarget) (bool, error) {
+	class, err := t.class()
+	if err != nil {
+		return false, err
+	}
+	r, err := c.admin.Resume(ctx, &pb.ResumeRequest{Pool: t.Pool, PriorityClass: class, OrderingKey: t.OrderingKey})
 	if err != nil {
 		return false, wrap(err)
 	}
 	return r.GetResumed(), nil
+}
+
+// PausedOrderings lists the paused ordering keys of pool with their reasons, in name order
+// (metrics role). A limit of 0 takes the server's default.
+func (c *Client) PausedOrderings(ctx context.Context, pool string, limit uint32) ([]PausedOrdering, error) {
+	r, err := c.admin.ListPausedOrderings(ctx, &pb.ListHaltedOrderingsRequest{Pool: pool, Limit: limit})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	out := make([]PausedOrdering, len(r.GetKeys()))
+	for i, k := range r.GetKeys() {
+		out[i] = PausedOrdering{Key: k.GetKey(), Reason: k.GetReason()}
+	}
+	return out, nil
 }
 
 // Ref names a task by id or by key.

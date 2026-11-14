@@ -490,6 +490,14 @@ class PoolSnapshot:
     ordering_waiting: int = 0
     #: Ordering keys halted by a failed task.
     ordering_halted: int = 0
+    #: Ordering keys that are paused.
+    ordering_paused: int = 0
+    #: The reason the whole pool is paused, or ``None``.
+    paused: str | None = None
+    #: Classes of the pool that are paused on their own: class name to reason.
+    paused_classes: Mapping[str, str] = field(default_factory=dict)
+    #: Ready tasks held by a pause of the pool, of their class or of their ordering key.
+    paused_tasks: int = 0
 
     @property
     def pending(self) -> int:
@@ -514,6 +522,8 @@ class OrderingInfo:
     persist: bool
     #: A failed task halted the key: nothing of it runs until it is resumed.
     halted: bool
+    #: The reason the key is paused, or ``None``.
+    paused: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1127,6 +1137,10 @@ class Client:
                     ordering_keys=p.ordering_keys,
                     ordering_waiting=p.ordering_waiting,
                     ordering_halted=p.ordering_halted,
+                    ordering_paused=p.ordering_paused,
+                    paused=p.paused if p.HasField("paused") else None,
+                    paused_classes={_priority_name(c.priority_class) or "": c.reason for c in p.paused_classes},
+                    paused_tasks=p.paused_tasks,
                     groups=tuple(
                         WorkerGroup(labels=dict(g.labels), capacity=g.capacity, busy=g.busy)
                         for g in p.groups
@@ -1188,6 +1202,7 @@ class Client:
             floor=_priority_name(r.floor) if r.HasField("floor") else None,
             persist=r.persist,
             halted=r.halted,
+            paused=r.paused if r.HasField("paused") else None,
         )
 
     async def halted_orderings(self, *, pool: str | None = None, limit: int = 100) -> list[str]:
@@ -1217,13 +1232,57 @@ class Client:
             req.floor = cast(Any, _priority(floor))
         await self._call(self._admin.SetOrderingFloor, req)
 
-    async def resume(self, *, ordering_key: str, pool: str | None = None) -> bool:
-        """Resume an ordering key that a failed task halted (``halt_on_failure=True``): its
-        oldest task is offered again. Returns whether the key was halted; resuming one that is
-        not is not an error. Requires an admin token."""
-        req = pb.ResumeRequest(pool=pool or "", ordering_key=ordering_key)
+    async def pause(
+        self,
+        reason: str,
+        *,
+        pool: str | None = None,
+        priority_class: Any = None,
+        ordering_key: str | None = None,
+    ) -> bool:
+        """Pause a pool (the default pool if ``pool`` is left out), or with ``priority_class``
+        the tasks of the pool that run at that class, or with ``ordering_key`` that ordering
+        key. What is paused stays queued: tasks keep their place and their age and count
+        toward the bounds, and submissions are still accepted. Nothing of it is leased until
+        :meth:`resume`. Running attempts are not interrupted; a task that retries waits; tasks
+        with a start time are not held. ``reason`` is shown in snapshots and to workers.
+
+        Returns whether this paused something that was not paused; pausing again replaces the
+        reason. Requires an admin token; one pinned to a tenant pauses its own ordering keys
+        only."""
+        if priority_class is not None and ordering_key:
+            raise ValueError("name a priority_class or an ordering_key, not both")
+        req = pb.PauseRequest(pool=pool or "", ordering_key=ordering_key or "", reason=reason)
+        if priority_class is not None:
+            req.priority_class = cast(Any, _priority(priority_class))
+        r = await self._call(self._admin.Pause, req)
+        return bool(r.paused)
+
+    async def resume(
+        self,
+        *,
+        pool: str | None = None,
+        priority_class: Any = None,
+        ordering_key: str | None = None,
+    ) -> bool:
+        """Resume what :meth:`pause` paused, named the same way; for an ordering key, also a
+        key that a failed task halted (``halt_on_failure=True``). Returns whether there was
+        anything to resume; resuming what is not paused is not an error. Requires an admin
+        token."""
+        if priority_class is not None and ordering_key:
+            raise ValueError("name a priority_class or an ordering_key, not both")
+        req = pb.ResumeRequest(pool=pool or "", ordering_key=ordering_key or "")
+        if priority_class is not None:
+            req.priority_class = cast(Any, _priority(priority_class))
         r = await self._call(self._admin.Resume, req)
         return bool(r.resumed)
+
+    async def paused_orderings(self, *, pool: str | None = None, limit: int = 100) -> list[tuple[str, str]]:
+        """The paused ordering keys of ``pool`` as ``(key, reason)`` pairs, in name order
+        (requires a ``metrics`` or ``admin`` token)."""
+        req = pb.ListHaltedOrderingsRequest(pool=pool or "", limit=int(limit))
+        r = await self._call(self._admin.ListPausedOrderings, req)
+        return [(k.key, k.reason) for k in r.keys]
 
     async def add_recurring(
         self,
@@ -1501,6 +1560,9 @@ class Worker:
         self.server_protocol: int | None = None
         #: Largest message the server accepts (outputs must fit), once registered.
         self.max_message_bytes: int | None = None
+        #: Why the pool was paused when the worker registered, or ``None``. A worker of a
+        #: paused pool stays connected and gets no tasks until the pool is resumed.
+        self.pool_paused: str | None = None
         #: Reason given by the server in its last ``Shutdown`` message, if any.
         self.last_shutdown: str | None = None
         self._reconnect_now = False
@@ -1693,6 +1755,11 @@ class Worker:
                         self.granted_slots = reg.slots or self.slots
                         self.server_protocol = reg.protocol_version or 1
                         self.max_message_bytes = reg.max_message_bytes or None
+                        self.pool_paused = reg.pool_paused if reg.HasField("pool_paused") else None
+                        if self.pool_paused is not None:
+                            log.warning(
+                                "pool %r is paused (%s); no tasks until it is resumed", self.pool, self.pool_paused
+                            )
                         if self.granted_slots < self.slots:
                             log.info("server granted %d of %d slots", self.granted_slots, self.slots)
                         self._registered.set()

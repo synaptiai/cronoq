@@ -290,6 +290,39 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     await stop();
   });
 
+  test("pause and resume a pool, a class and an ordering key", async () => {
+    const c = connect(s.target, { token: CLIENT });
+    const admin = connect(s.target, { token: ADMIN });
+    await assert.rejects(c.pause({}, "x"), (e: unknown) => e instanceof CronoqError && e.code === "permission_denied");
+    assert.equal(await admin.pause({}, "deploy"), true);
+    assert.equal(await admin.pause({}, "deploy"), false);
+    await admin.pause({ class: "low" }, "backfill off");
+    await admin.pause({ orderingKey: "pause-key" }, "customer asked");
+    const normal = await c.submit({ payload: "pz-normal" });
+    const low = await c.submit({ payload: "pz-low", priority: "low" });
+    const keyed = await c.submit({ payload: "pz-keyed", orderingKey: "pause-key" });
+    const stop = worker(s.target, (l) => l.text(), { slots: 4 });
+    await new Promise((r) => setTimeout(r, 300));
+    const pool = (await admin.snapshot()).pools.find((p) => p.name === "default")!;
+    assert.equal(pool.paused, "deploy");
+    assert.deepEqual(pool.pausedClasses.map((p) => p.reason), ["backfill off"]);
+    assert.ok(pool.pausedTasks >= 3n);
+    assert.equal((await admin.ordering("pause-key")).paused, "customer asked");
+    assert.deepEqual(await admin.pausedOrderings(), [{ key: "pause-key", reason: "customer asked" }]);
+    assert.equal((await c.get(normal.id)).status, "ready");
+
+    // Resumed one by one, each lets its own tasks run.
+    assert.equal(await admin.resume(), true);
+    assert.equal((await c.wait(normal.id, 10)).status, "succeeded");
+    assert.equal((await c.get(low.id)).status, "ready");
+    assert.equal(await admin.resume({ class: "low" }), true);
+    assert.equal((await c.wait(low.id, 10)).status, "succeeded");
+    assert.equal(await admin.resume({ orderingKey: "pause-key" }), true);
+    assert.equal((await c.wait(keyed.id, 10)).status, "succeeded");
+    assert.equal(await admin.resume(), false);
+    await stop();
+  });
+
   test("handler outcomes and fencing tokens", async () => {
     const attempts = new Map<bigint, number[]>();
     const stop = worker(

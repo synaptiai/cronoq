@@ -365,6 +365,10 @@ func (w *worker) session(ctx context.Context, target string, backoff *time.Durat
 	}
 	maxOutput := int(reg.GetMaxMessageBytes()) - 1024
 	w.log.Info("cronoq: worker registered", "worker", reg.GetWorkerId(), "pool", opts.Pool, "slots", slots)
+	if reg.PoolPaused != nil {
+		// Connected and healthy, but nothing will be leased until the pool is resumed.
+		w.log.Warn("cronoq: the pool is paused; no tasks until it is resumed", "pool", opts.Pool, "reason", reg.GetPoolPaused())
+	}
 
 	var mu sync.Mutex
 	leases := map[uint64]*running{}

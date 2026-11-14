@@ -584,9 +584,77 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         .await?
     }
 
-    /// Resume an ordering key that a failed task halted ([`Task::halt_on_failure`]): its
-    /// oldest task is offered again. Returns whether the key was halted; resuming a key
-    /// that is not is not an error.
+    /// Pause a pool, one of its classes or one of its ordering keys
+    /// ([`PauseTarget`](cronoq_core::PauseTarget)), with a reason for whoever looks at it
+    /// later. What is paused stays queued: tasks keep their place and their age and count
+    /// toward the bounds, and submissions are still accepted. Nothing of it is offered to
+    /// workers until [`Scheduler::resume`]. Attempts that are running are not interrupted; a
+    /// task that retries waits. Tasks with a fixed start, and so the occurrences of
+    /// schedules, are not held.
+    ///
+    /// A class pause holds the tasks that *run at* that class: the task at the front of an
+    /// ordering key that is lifted to it is held too.
+    ///
+    /// Returns whether this paused something that was not paused; pausing again replaces
+    /// the reason. With a persistent store, returns once the pause is durable: it is in
+    /// place after a restart or a failover.
+    pub async fn pause(
+        &self,
+        pool: &str,
+        target: cronoq_core::PauseTarget,
+        reason: &str,
+    ) -> Result<bool, Error> {
+        let pool = self.pool_id(pool)?;
+        let reason = Some(reason.into());
+        self.call(|reply| Cmd::Pause {
+            pool,
+            target,
+            reason,
+            reply,
+        })
+        .await?
+    }
+
+    /// Resume what [`Scheduler::pause`] paused; for an ordering key, also what a failed
+    /// task halted. Returns whether there was anything to resume; resuming what is not
+    /// paused is not an error.
+    pub async fn resume(
+        &self,
+        pool: &str,
+        target: cronoq_core::PauseTarget,
+    ) -> Result<bool, Error> {
+        let pool = self.pool_id(pool)?;
+        self.call(|reply| Cmd::Pause {
+            pool,
+            target,
+            reason: None,
+            reply,
+        })
+        .await?
+    }
+
+    /// The pauses of `pool` and of its classes, with their reasons.
+    pub async fn pauses(&self, pool: &str) -> Result<cronoq_core::PoolPauses, Error> {
+        let pool = self.pool_id(pool)?;
+        self.call(|reply| Cmd::Pauses { pool, reply }).await
+    }
+
+    /// The paused ordering keys of `pool` with their reasons, in name order, at most
+    /// `limit`. The pauses of the pool and of its classes are in
+    /// [`PoolSnapshot::pauses`](cronoq_core::PoolSnapshot::pauses).
+    pub async fn paused_orderings(
+        &self,
+        pool: &str,
+        limit: usize,
+    ) -> Result<Vec<(Arc<str>, Arc<str>)>, Error> {
+        let pool = self.pool_id(pool)?;
+        self.call(|reply| Cmd::PausedOrderings { pool, limit, reply })
+            .await
+    }
+
+    /// Resume an ordering key that a failed task halted ([`Task::halt_on_failure`]) or that
+    /// was paused: its oldest task is offered again. Returns whether there was anything to
+    /// resume; resuming a key that is neither is not an error.
     pub async fn resume_ordering(&self, pool: &str, key: &str) -> Result<bool, Error> {
         let pool = self.pool_id(pool)?;
         let key = key.into();

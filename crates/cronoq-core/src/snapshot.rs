@@ -67,6 +67,11 @@ pub struct PoolSnapshot {
     pub groups: Vec<GroupSnapshot>,
     /// Ordering keys of the pool.
     pub ordering: OrderingSnapshot,
+    /// Pauses of the pool and of its classes, with their reasons.
+    pub pauses: crate::io::PoolPauses,
+    /// Tasks that are ready but held by a pause of the pool, of their class or of their
+    /// ordering key.
+    pub paused_tasks: usize,
     /// Class scores and aging in effect for this pool.
     pub priority: crate::config::PriorityConfig,
     /// Deadline urgency curve in effect for this pool.
@@ -85,6 +90,8 @@ pub struct OrderingSnapshot {
     pub halted: usize,
     /// Ordering keys with a class floor that is kept while they have no tasks.
     pub settings: usize,
+    /// Ordering keys that are paused.
+    pub paused: usize,
 }
 
 impl PoolSnapshot {

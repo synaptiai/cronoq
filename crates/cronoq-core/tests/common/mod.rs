@@ -260,13 +260,24 @@ impl Sim {
             .map(|s| s.group.clone())
     }
 
-    /// Resume every halted ordering key. Returns how many there were.
+    /// Resume everything that is halted or paused. Returns how many there were.
     pub fn resume_halted(&mut self) -> usize {
         let mut n = 0;
         for p in 0..self.core.snapshot(self.now).pools.len() {
             let pool = PoolId(p as u16);
             for key in self.core.halted_orderings(pool, usize::MAX) {
                 n += self.core.resume_ordering(self.now, pool, &key) as usize;
+            }
+            // Pauses too: of ordering keys, of classes and of the pool.
+            for (key, _) in self.core.paused_orderings(pool, usize::MAX) {
+                n += self.core.resume_ordering(self.now, pool, &key) as usize;
+            }
+            let targets = Priority::ALL
+                .into_iter()
+                .map(PauseTarget::Class)
+                .chain([PauseTarget::Pool]);
+            for target in targets {
+                n += self.core.resume(self.now, pool, &target).unwrap() as usize;
             }
         }
         self.drain();
