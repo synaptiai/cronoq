@@ -87,6 +87,7 @@ Accepted by `submit`, `enqueue` and `Task(...)`.
 | `tenant` | `str` | Tenant, for pools with `tenant_weights` or `fair_share` ([Fair sharing](../concepts/fairness.md)). |
 | `ordering_key` | `str` | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). Not with `start_in` / `start_at`, and not in `add_recurring`. |
 | `halt_on_failure` | `bool` | With `ordering_key`: if this task ends as failed, halt its key until `resume_ordering`. Default `False`. |
+| `max_releases` | `int` | How often an attempt of this task may be [released](../concepts/reliability.md#releasing-an-attempt) without counting as a failure. Default: the pool's `max_releases`. |
 
 `submit`, `enqueue` and `Task(...)` accept `fingerprint` (an `int` below 2**128, or 16 bytes
 such as a digest) and `on_key_conflict="reject"`: a submission whose key belongs to a task with
@@ -164,7 +165,8 @@ With a store, payloads and results are encoded by the scheduler's codec:
 Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=None,
      max_pending=None, overflow="wait", retry=None, unknown_dependency="reject",
      await_timeout=None, default_duration=1.0, reservable_fraction=0.5,
-     tenant_weights=None, fair_share=False, priority=None, urgency=None)
+     tenant_weights=None, fair_share=False, priority=None, urgency=None,
+     max_releases=10)
 ```
 
 | Argument | Description |
@@ -180,6 +182,7 @@ Pool(name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=N
 | `default_duration` | Duration assumed for tasks without `duration_hint`. |
 | `reservable_fraction` | Share of `max` that fixed-start reservations may use, in `[0, 1]`; `0` is treated as the default `0.5`. |
 | `priority`, `urgency` | A `PriorityConfig` and an `UrgencyConfig` for this pool only. Default: the scheduler's. |
+| `max_releases` | How often an attempt of one task may be [released](../concepts/reliability.md#releasing-an-attempt) without counting as a failure (default 10). A release beyond it is a retryable failure. A task may set its own. |
 
 A sync executor cannot be interrupted: on timeout or cancellation the attempt is aborted, but
 the function keeps running until it returns. Check `ctx.is_cancelled()` in long-running sync
@@ -216,6 +219,7 @@ All live in `cronoq` (and `cronoq.errors`), derive from `CronoqError` and can be
 |---|---|
 | `Retryable(message="", retry_after=None)` | By executors and worker handlers: retry, not before `retry_after` seconds. |
 | `Permanent(message="")` | By executors and worker handlers: fail without retrying. |
+| `Release(delay=0.0)` | By executors and worker handlers: give the task back without a verdict. It keeps its place and is offered again after `delay` seconds; the attempt does not use up a retry, up to `max_releases` ([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)). `.delay`. |
 | `TaskFailed` | Awaiting a task that did not succeed. `.status` (terminal status, `"shutdown"`, or `"succeeded"` when the output is no longer available), `.message`, `.task_id`. |
 | `SubmitError` | Submission rejected. For `key_conflict`, `.task_id` and `.task_status` name the task holding the key; for a refused batch, `.index` is the position of the task that caused it. `.code`: `unknown_pool`, `unknown_resource`, `resource_exceeds_capacity`, `reservation_conflict`, `cycle`, `unknown_dependency`, `full`, `overloaded`, `duplicate_key_in_batch`, `replace_mismatch`, `key_conflict`, `invalid`. |
 | `UpdateError` | `update` refused. `.code`: `not_found` (unknown or already finished), `fixed_start`, `invalid` (for example a reserved tag name). |
@@ -294,7 +298,9 @@ Builds a `TaskSpec` for `submit_batch` and `add_recurring`. Options: `pool`, `ki
 (`(ref, "on_success")` tuples or dicts), `resources`, `tags`, `labels` (worker labels the
 task requires), `tenant`, `content_type`, `ordering_key` and `halt_on_failure`
 ([Ordering keys](../concepts/ordering-keys.md); `halt_on_failure=True` without an
-`ordering_key` raises `ValueError`).
+`ordering_key` raises `ValueError`), and `max_releases` (how often an attempt of the task may be
+[released](../concepts/reliability.md#releasing-an-attempt) instead of the pool's limit).
+`Client.submit` takes the same options.
 
 Payloads are encoded by type:
 
@@ -317,6 +323,7 @@ an override). `Result.json()` returns `None` for an empty output.
 | `await wait_registered(timeout=None)` | Wait until registered. |
 | `running` | Leases running now. |
 | `worker_id`, `lease_ttl`, `granted_slots`, `server_protocol`, `max_message_bytes` | From the server's `Registered` message. |
+| `release_supported` | Whether the server takes `Release` messages, from `Registered`; `False` until registered. When it is `False`, the worker reports a `cronoq.Release` as a retryable failure with the delay, which uses a retry. |
 | `pool_paused` | The reason the pool was [paused](../concepts/pausing.md) when the worker registered, or `None`; also logged as a warning. The worker stays connected and gets no tasks until the pool is resumed. |
 | `last_shutdown`, `connections` | Reason of the last server `Shutdown`; number of connections made. |
 
@@ -329,6 +336,7 @@ output, or raises:
 |---|---|
 | `cronoq.Retryable(msg, retry_after=s)` or any other exception | Retryable failure. |
 | `cronoq.Permanent(msg)` | Permanent failure. |
+| `cronoq.Release(delay)` | [Release the attempt](../concepts/reliability.md#releasing-an-attempt): the task is leased again, to any worker, after `delay` seconds, and the attempt does not use up a retry, up to `max_releases`. |
 | `cronoq.client.Reject(reason)` | Hand the lease back unrun (`Nack`); the server offers it to another worker of the pool with the same labels that has a free slot and has not already refused it. If there is none, the attempt fails as retryable and counts against the task's retries. |
 | `cronoq.client.CancelTask(msg)` | End the task as `cancelled`. |
 

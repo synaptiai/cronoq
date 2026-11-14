@@ -70,6 +70,7 @@ This page describes **worker protocol version 3**.
 | `tenant` | string | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
 | `ordering_key` | string | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). Not a deduplication key. At most `max_key_len`. With `start_in_s` or `start_unix_ns`, or in a schedule template, it is `INVALID_ARGUMENT`. |
 | `on_failure` | `OrderFailure` | With `ordering_key`: what a failure of this task does to its key. `ORDER_FAILURE_UNSPECIFIED` and `ORDER_FAILURE_CONTINUE`: the next task runs. `ORDER_FAILURE_HALT`: the key is halted until `Admin.Resume`. `ORDER_FAILURE_HALT` without an `ordering_key` is `INVALID_ARGUMENT`. |
+| `max_releases` | optional uint32 | How often an attempt of this task may be [released](../concepts/reliability.md#releasing-an-attempt) by a worker without counting as a failure; unset = the pool's `max_releases`. |
 
 The fields match the [HTTP task object](http.md#task-object), which documents them in detail.
 `TaskRef` is a `oneof` of `id` (uint64) and `key` (string).
@@ -208,12 +209,13 @@ use `Get` / `Wait` to reconcile anything that happened while disconnected.
 | Direction | Message | Meaning |
 |---|---|---|
 | worker → server | `Register{pool, slots, worker_name, protocol_version, labels}` | Must be the first message, within 10 s. Send `protocol_version` 3; older versions are refused with `FAILED_PRECONDITION`. `labels` place the worker in a [group](../concepts/labels.md); a credential with `labels = [...]` may claim only those (`PERMISSION_DENIED` otherwise). |
-| server → worker | `Registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes, pool_paused}` | Registration accepted. `slots` is what was granted: at most the pool's `max_slots_per_worker`. `pool_paused` is set when the pool is [paused](../concepts/pausing.md) as a whole and carries the reason; the worker stays connected and gets no leases until the pool is resumed. |
+| server → worker | `Registered{worker_id, lease_ttl_s, slots, protocol_version, max_message_bytes, pool_paused, release_supported}` | Registration accepted. `slots` is what was granted: at most the pool's `max_slots_per_worker`. `pool_paused` is set when the pool is [paused](../concepts/pausing.md) as a whole and carries the reason; the worker stays connected and gets no leases until the pool is resumed. `release_supported` is true when the server understands `Release`. |
 | server → worker | `Lease{lease, task_id, attempt, payload, content_type, kind, key, tags, timeout_s, deadline_unix_ns, pool, priority, lease_ttl_s}` | Run this attempt. `priority` is currently always `UNSPECIFIED`. |
 | worker → server | `Heartbeat{lease}` | Keep a lease alive. |
 | worker → server | `Complete{lease, output, content_type}` | Success; `output` becomes the task's result. |
 | worker → server | `Fail{lease, message, permanent, retry_after_s}` | Failure: permanent, or retryable with an optional minimum delay. |
 | worker → server | `Nack{lease, reason}` | The worker cannot take this lease (for example it is draining). |
+| worker → server | `Release{lease, delay_s}` | The handler cannot run the task now and nothing is wrong with the task: end the attempt without a verdict and lease the task again after `delay_s` ([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)). |
 | worker → server | `Cancelled{lease}` | The handler stopped because the lease was aborted or cancelled. |
 | worker → server | `SetSlots{slots}` | Change concurrency; `0` drains (no new leases). Capped like `Register.slots`. |
 | server → worker | `Abort{lease, reason}` | Stop this attempt (timeout, cancellation, lease expiry). |
@@ -230,26 +232,36 @@ use `Get` / `Wait` to reconcile anything that happened while disconnected.
 3. **Heartbeat each running lease** more often than `lease_ttl_s` (every `lease_ttl_s / 3` is a
    good rule). A lease without a heartbeat for `lease_ttl_s` expires: the attempt fails as
    retryable and the worker receives `Abort`.
-4. **Report exactly one outcome** per lease: `Complete`, `Fail`, `Nack` or `Cancelled`.
+4. **Report exactly one outcome** per lease: `Complete`, `Fail`, `Nack`, `Release` or `Cancelled`.
    Reports for leases the worker does not hold (already aborted, or unknown) are ignored.
 5. **`Nack`** hands the lease to another worker of the pool as the same attempt: same lease id
    and attempt number, and no further attempt is counted. If no other worker has a free slot,
    the attempt fails as retryable and counts against the task's retry budget like any other
    failure. A worker that is shutting down should send `SetSlots` with `0` first, so the
    server stops leasing to it.
-6. **`Abort`** means the server has already given up the attempt and freed the slot. Stop the
+6. **`Release`** ends the attempt without a verdict. The task keeps its place in line and is
+   leased again not before `delay_s` has passed, to any worker that may run it, with a new
+   lease id and the next attempt number. The released attempt does not count against the
+   retry policy, up to the pool's `max_releases` releases of one task (or
+   `TaskSpec.max_releases`); a release beyond that is a retryable failure with `delay_s` as its
+   minimum backoff. A `delay_s` that is not a valid duration is taken as 0. Send `Release`
+   only when `Registered.release_supported` is set: an older server ignores the message and
+   the lease expires. To such a server send `Fail` with `retry_after_s`, which uses a retry.
+   Unlike `Nack`, which hands the same attempt on at once, a release is for a handler that
+   cannot run the task now.
+7. **`Abort`** means the server has already given up the attempt and freed the slot. Stop the
    handler; sending `Cancelled` afterwards is allowed and ignored.
-7. **Read the stream promptly.** Each worker has a bounded outbound queue (about one lease and
+8. **Read the stream promptly.** Each worker has a bounded outbound queue (about one lease and
    one abort per slot). A worker that stops reading is disconnected rather than allowed to hold
    leases it cannot see.
-8. **Disconnects fail running leases** as retryable (`worker disconnected`); they are retried
+9. **Disconnects fail running leases** as retryable (`worker disconnected`); they are retried
    according to the task's retry policy.
-9. **Shutdown.** On a graceful stop the server first gives running attempts
+10. **Shutdown.** On a graceful stop the server first gives running attempts
    `server.shutdown_grace_s` to finish (workers keep reporting outcomes), then sends
    `Shutdown{not_leader: false}`. When it loses leadership it sends `Shutdown{not_leader: true}`
    immediately. Either way, leases still running are failed as retryable and the stream ends
    about a second later: stop running work and reconnect with backoff.
-10. **Messages** in both directions are limited to `max_message_bytes` from `Registered`.
+11. **Messages** in both directions are limited to `max_message_bytes` from `Registered`.
 
 The Rust (`cronoq_server::worker::run_worker`) and Python (`cronoq.client.Worker`) workers
 implement these rules; see [Writing executors and workers](../guides/workers.md).
@@ -417,4 +429,5 @@ Status meanings: [HTTP statuses](http.md#statuses).
 ## Protocol version
 
 Workers send `protocol_version` 3; a server refuses older versions with `FAILED_PRECONDITION`
-and a message naming the version it needs.
+and a message naming the version it needs. `Release` did not change the version: a worker
+learns from `Registered.release_supported` whether the server takes it.

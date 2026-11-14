@@ -89,6 +89,22 @@ export class Retryable extends Error {
   }
 }
 
+/**
+ * Thrown by a worker handler: give the task back without a verdict. The handler cannot run it
+ * now, and nothing is wrong with the task (a system it needs is down, the worker is shutting
+ * down). The task keeps its place in line and is leased again, to any worker, after `delay`
+ * seconds. The attempt does not count against the task's retry policy, up to the pool's
+ * `max_releases` releases of one task; beyond that a release counts as a retryable failure.
+ * Against a server from before releases it is sent as a failure that is retried after the
+ * delay, which uses up an attempt.
+ */
+export class Release extends Error {
+  override name = "Release";
+  constructor(readonly delay = 0) {
+    super("released by its handler");
+  }
+}
+
 /** Thrown by a worker handler: hand the lease back unrun; the server offers it to another worker. */
 export class Reject extends Error {
   override name = "Reject";

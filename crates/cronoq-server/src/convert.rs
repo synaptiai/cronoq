@@ -38,6 +38,16 @@ pub fn secs(s: f64) -> Result<Duration, Status> {
     Ok(Duration::from_secs_f64(s))
 }
 
+/// The delay a worker asks for when it releases an attempt. A worker cannot be answered with
+/// an error here, so a value out of range is brought into range: no delay for one that is
+/// negative or not a number, the longest delay for one that is too long.
+pub fn release_delay(s: f64) -> Duration {
+    if s.is_nan() {
+        return Duration::ZERO;
+    }
+    Duration::from_secs_f64(s.clamp(0.0, MAX_SECS))
+}
+
 /// Validate a client-supplied Unix timestamp in nanoseconds.
 pub fn unix(field: &str, ns: i64) -> Result<SystemTime, Status> {
     if ns < 0 {
@@ -405,6 +415,15 @@ pub fn task(spec: pb::TaskSpec, limits: &LimitsConfig) -> Result<Task<Bytes>, St
     if !spec.tenant.is_empty() {
         t = t.tenant(spec.tenant);
     }
+    if let Some(n) = spec.max_releases {
+        if n > limits.max_task_releases {
+            return Err(Status::invalid_argument(format!(
+                "max_releases is {n}; the server allows at most {}",
+                limits.max_task_releases
+            )));
+        }
+        t = t.max_releases(n);
+    }
     check_str("ordering_key", &spec.ordering_key, limits.max_key_len)?;
     let halt = match pb::OrderFailure::try_from(spec.on_failure) {
         Ok(pb::OrderFailure::Unspecified | pb::OrderFailure::Continue) => false,
@@ -670,6 +689,7 @@ pub fn snapshot(s: &Snapshot, workers: &dyn Fn(&str) -> usize) -> pb::SnapshotRe
             lease_expiries: t.lease_expiries,
             stale_completions: t.stale_completions,
             superseded: t.superseded,
+            releases: t.releases,
         }),
         unavailable_shards: Vec::new(),
     }
@@ -793,6 +813,17 @@ mod tests {
 
     fn lim() -> LimitsConfig {
         LimitsConfig::default()
+    }
+
+    #[test]
+    fn a_release_delay_out_of_range_is_brought_into_range() {
+        let max = Duration::from_secs_f64(MAX_SECS);
+        assert_eq!(release_delay(f64::NAN), Duration::ZERO);
+        assert_eq!(release_delay(-5.0), Duration::ZERO);
+        assert_eq!(release_delay(f64::NEG_INFINITY), Duration::ZERO);
+        assert_eq!(release_delay(30.0), Duration::from_secs(30));
+        assert_eq!(release_delay(f64::INFINITY), max);
+        assert_eq!(release_delay(3.2e9), max);
     }
 
     const GOLDEN_SAMPLE: u128 = 205_463_613_675_420_669_576_048_596_842_996_947_764;

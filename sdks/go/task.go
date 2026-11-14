@@ -58,6 +58,9 @@ type Task struct {
 	// when the server's default is to report conflicts. Without any of the three options the
 	// server's default applies.
 	ReturnExisting bool
+	// MaxReleases, when set, replaces the pool's limit on how often an attempt of this task
+	// may be released by a handler ([Release]) without counting as a failure.
+	MaxReleases *uint32
 	// OrderingKey makes tasks of one pool run one at a time, in the order they were
 	// submitted, however many workers are free: use it for work that must not overlap or
 	// overtake for one subject (an account, a document, a device). Tasks with different keys
@@ -98,7 +101,7 @@ func (t Task) Spec() *pb.TaskSpec {
 	s := &pb.TaskSpec{
 		Payload: t.Payload, ContentType: t.ContentType, Kind: t.Kind, Pool: t.Pool, Key: t.Key,
 		Tenant: t.Tenant, Priority: t.Priority.pb(), Resources: t.Resources, Tags: t.Tags,
-		Labels: t.Labels, OrderingKey: t.OrderingKey,
+		Labels: t.Labels, OrderingKey: t.OrderingKey, MaxReleases: t.MaxReleases,
 	}
 	if t.HaltOnFailure {
 		s.OnFailure = pb.OrderFailure_ORDER_FAILURE_HALT

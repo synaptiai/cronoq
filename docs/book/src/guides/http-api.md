@@ -47,6 +47,9 @@ curl -s $CRONOQ/v1/tasks -H "$AUTH" -H "$JSON" -d '{
   were submitted. It does not deduplicate, and it cannot be combined with a start time. With
   `"on_failure": "halt"`, a failure of the task halts its key until it is resumed
   ([Ordering keys](../concepts/ordering-keys.md)).
+- Add `"max_releases": 3` to set how often a worker may give this task back without it
+  counting as a failure, instead of the pool's limit
+  ([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 - Add `"wait": true` (and optionally `"wait_timeout_s"`) to block until the task finishes and
   include its result.
 - Unknown fields are rejected, so typos fail loudly instead of being ignored.

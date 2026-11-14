@@ -120,7 +120,9 @@ curl -s $CRONOQ/v1/pools/default/ordering?paused=true -H "$AUTH"
 A worker that connects to a pool that is paused as a whole is told so, with the reason, when
 it registers; the worker libraries log it as a warning. The worker stays connected and gets
 tasks again when the pool is resumed. A worker that was already connected when the pool was
-paused is not told: it simply gets no tasks.
+paused is not told: it simply gets no tasks. A worker that
+[releases](reliability.md#releasing-an-attempt) tasks of a paused pool does not use up their
+release limit.
 
 ## Durability
 

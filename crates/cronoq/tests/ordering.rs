@@ -251,3 +251,57 @@ async fn a_pool_a_class_and_a_key_are_paused_and_resumed() {
     assert!(s.pause("nope", PauseTarget::Pool, "x").await.is_err());
     s.shutdown(Duration::from_secs(1)).await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_executor_releases_a_task_without_using_a_retry() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let calls = Arc::new(AtomicU32::new(0));
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let (c, a) = (calls.clone(), attempts.clone());
+    let s: Scheduler<u32, u32> = Scheduler::builder()
+        .pool(
+            Pool::fixed("default", 2)
+                .configure(|p| p.max_releases = 3)
+                .executor_fn(move |ctx, x: Arc<u32>| {
+                    let (c, a) = (c.clone(), a.clone());
+                    async move {
+                        a.lock().unwrap().push(ctx.attempt);
+                        // The first three attempts are given back, the fourth fails once,
+                        // the fifth succeeds.
+                        match c.fetch_add(1, Ordering::SeqCst) {
+                            0..=2 => Err(TaskError::release(Duration::from_secs(2))),
+                            3 => Err(TaskError::retryable("flaky")),
+                            _ => Ok(*x * 2),
+                        }
+                    }
+                }),
+        )
+        .build()
+        .await
+        .unwrap();
+    // Two attempts are allowed: the three released ones do not count.
+    let policy = RetryPolicy {
+        max_attempts: 2,
+        initial_backoff: Duration::from_millis(100),
+        ..Default::default()
+    };
+    let start = Instant::now();
+    let h = s.submit(Task::new(21).retry(policy)).await.unwrap();
+    assert_eq!(*h.await.unwrap(), 42);
+    assert_eq!(*attempts.lock().unwrap(), [1, 2, 3, 4, 5]);
+    assert!(
+        start.elapsed() >= Duration::from_secs(6),
+        "three delays of two seconds"
+    );
+    let snap = s.snapshot().await.unwrap();
+    assert_eq!((snap.totals.releases, snap.totals.retries), (3, 1));
+    // With the task's own limit of one, the second release is a failure.
+    calls.store(0, Ordering::SeqCst);
+    let h = s
+        .submit(Task::new(1).retry(RetryPolicy::none()).max_releases(1))
+        .await
+        .unwrap();
+    let e = h.await.unwrap_err();
+    assert_eq!(e.status(), Some(TaskStatus::DeadLettered), "{e}");
+    s.shutdown(Duration::from_secs(1)).await.unwrap();
+}

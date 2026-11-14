@@ -170,6 +170,7 @@ class Pool:
         fair_share: bool = False,
         priority: PriorityConfig | None = None,
         urgency: UrgencyConfig | None = None,
+        max_releases: int = 10,
     ) -> Self: ...
 
 @final
@@ -203,6 +204,7 @@ class Task:
         on_key_conflict: Literal["return_existing", "reject"] | None = None,
         ordering_key: str | None = None,
         halt_on_failure: bool = False,
+        max_releases: int | None = None,
     ) -> Self: ...
 
 @final
@@ -383,6 +385,7 @@ class Scheduler:
         fingerprint: int | bytes | None = None,
         ordering_key: str | None = None,
         halt_on_failure: bool = False,
+        max_releases: int | None = None,
     ) -> Awaitable[TaskHandle]: ...
     def enqueue(
         self,
@@ -412,6 +415,7 @@ class Scheduler:
         fingerprint: int | bytes | None = None,
         ordering_key: str | None = None,
         halt_on_failure: bool = False,
+        max_releases: int | None = None,
     ) -> Awaitable[int]: ...
     def submit_batch(self, tasks: Sequence[Task]) -> Awaitable[list[TaskHandle]]: ...
     def cancel(self, target: _TaskRefLike) -> Awaitable[bool]: ...

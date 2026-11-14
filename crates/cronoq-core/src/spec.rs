@@ -303,6 +303,10 @@ pub struct TaskSpec<P> {
     pub timeout: Option<Duration>,
     /// `None` uses the pool default.
     pub retry: Option<RetryPolicy>,
+    /// How often an attempt of this task may be released
+    /// ([`Core::release`](crate::Core::release)) without counting as a failure; `None` uses
+    /// the pool's [`PoolConfig::max_releases`](crate::PoolConfig::max_releases).
+    pub max_releases: Option<u32>,
     /// Tasks that must finish first (see [`Dep`]).
     pub deps: Vec<Dep>,
     /// Shared resources needed while running: `(resource name, amount)`.
@@ -344,6 +348,7 @@ impl<P> Clone for TaskSpec<P> {
             duration_hint: self.duration_hint,
             timeout: self.timeout,
             retry: self.retry,
+            max_releases: self.max_releases,
             deps: self.deps.clone(),
             resources: self.resources.clone(),
             tags: self.tags.clone(),
@@ -370,6 +375,7 @@ impl<P> TaskSpec<P> {
             duration_hint: self.duration_hint,
             timeout: self.timeout,
             retry: self.retry,
+            max_releases: self.max_releases,
             deps: self.deps,
             resources: self.resources,
             tags: self.tags,
@@ -398,6 +404,7 @@ impl<P> TaskSpec<P> {
             duration_hint: None,
             timeout: None,
             retry: None,
+            max_releases: None,
             deps: Vec::new(),
             resources: SmallVec::new(),
             tags: Vec::new(),
@@ -451,6 +458,12 @@ impl<P> TaskSpec<P> {
     /// Set the retry policy.
     pub fn retry(mut self, r: RetryPolicy) -> Self {
         self.retry = Some(r);
+        self
+    }
+    /// How often an attempt of this task may be released without counting as a failure,
+    /// instead of the pool's default.
+    pub fn max_releases(mut self, n: u32) -> Self {
+        self.max_releases = Some(n);
         self
     }
     /// Add a dependency.

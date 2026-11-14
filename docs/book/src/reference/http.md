@@ -103,6 +103,7 @@ The body of `POST /v1/tasks` and each element of a batch's `tasks`. Every field 
 | `labels` | object | `{}` | Worker labels the task requires: it runs only on workers that registered with all of them ([Worker labels](../concepts/labels.md)). Same limits as `tags`. |
 | `ordering_key` | string | – | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). It does not deduplicate: two submissions with the same ordering key are two tasks. At most `max_key_len`. Rejected with 400 together with `start_in_s` or `start_unix_ns`. |
 | `on_failure` | `"continue"`, `"halt"` | `"continue"` | With `ordering_key`: `halt` halts the key if this task ends as failed, until the key is resumed. `halt` without an `ordering_key` is rejected with 400. |
+| `max_releases` | integer | pool's `max_releases` | How often a worker may [release](../concepts/reliability.md#releasing-an-attempt) an attempt of this task without it counting as a failure. |
 | `wait` | bool | `false` | `POST /v1/tasks` only: respond when the task has finished. Rejected in batches. |
 | `wait_timeout_s` | number | `limits.max_wait_s` | Upper bound for `wait`, capped at `limits.max_wait_s`. |
 

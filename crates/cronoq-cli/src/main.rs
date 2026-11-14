@@ -228,6 +228,10 @@ struct SubmitArgs {
     /// were submitted. Not a deduplication key (--key).
     #[arg(long, value_name = "KEY", conflicts_with = "start_in")]
     ordering_key: Option<String>,
+    /// How often a worker may release an attempt of this task without it counting as a
+    /// failure (default: the pool's max_releases).
+    #[arg(long, value_name = "N")]
+    max_releases: Option<u32>,
     /// With --ordering-key: if this task fails, halt the key until `cronoq resume`.
     #[arg(long, requires = "ordering_key")]
     halt_on_failure: bool,
@@ -537,6 +541,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     cond: pb::EdgeCond::OnSuccess as i32,
                 });
             }
+            spec.max_releases = a.max_releases;
             spec.ordering_key = a.ordering_key.clone().unwrap_or_default();
             if a.halt_on_failure {
                 spec.on_failure = pb::OrderFailure::Halt as i32;

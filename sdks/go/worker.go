@@ -91,7 +91,8 @@ type Lease struct {
 //   - [Permanent] errors fail the task without retrying;
 //   - [RetryAfter] errors retry no earlier than the given delay;
 //   - [Reject] hands the lease back unrun, to another worker if one has a free slot;
-//   - [ErrCancelTask] ends the task as cancelled.
+//   - [ErrCancelTask] ends the task as cancelled;
+//   - [Release] gives the task back to be run again later, without using up a retry.
 //
 // A panicking handler fails its attempt as retryable.
 type Handler func(ctx context.Context, lease *Lease) ([]byte, error)
@@ -117,6 +118,20 @@ func (e retryAfterError) Unwrap() error { return e.err }
 
 // RetryAfter marks a handler error as retryable no earlier than after.
 func RetryAfter(err error, after time.Duration) error { return retryAfterError{err, after} }
+
+type releaseError struct{ after time.Duration }
+
+func (e releaseError) Error() string { return "cronoq: released by its handler" }
+
+// Release, returned by a handler, gives the task back without a verdict: the handler cannot
+// run it now, and nothing is wrong with the task (a system it needs is down, the worker is
+// shutting down). The task keeps its place in line and is leased again, to any worker, once
+// after has passed. The attempt does not count against the task's retry policy, up to the
+// pool's max_releases releases of one task; beyond that a release counts as a retryable
+// failure. Against a server from before releases it is sent as a failure that is retried
+// after the delay, which uses up an attempt. A Release wrapped in another error, also in
+// Permanent, is still a release.
+func Release(after time.Duration) error { return releaseError{after} }
 
 type rejectError struct{ reason string }
 
@@ -482,7 +497,7 @@ func (w *worker) session(ctx context.Context, target string, backoff *time.Durat
 					default:
 					}
 				}()
-				out := w.run(hctx, l, ttl, maxOutput, send)
+				out := w.run(hctx, l, ttl, maxOutput, reg.GetReleaseSupported(), send)
 				mu.Lock()
 				aborted := r.aborted
 				mu.Unlock()
@@ -507,7 +522,7 @@ func (w *worker) session(ctx context.Context, target string, backoff *time.Durat
 }
 
 // run runs the handler for one lease, heartbeating it, and returns the outcome to report.
-func (w *worker) run(ctx context.Context, l *pb.Lease, ttl time.Duration, maxOutput int, send func(*pb.WorkerMessage) error) *pb.WorkerMessage {
+func (w *worker) run(ctx context.Context, l *pb.Lease, ttl time.Duration, maxOutput int, canRelease bool, send func(*pb.WorkerMessage) error) *pb.WorkerMessage {
 	id := l.GetLease()
 	if l.LeaseTtlS != nil {
 		ttl = time.Duration(l.GetLeaseTtlS() * float64(time.Second))
@@ -549,6 +564,7 @@ func (w *worker) run(ctx context.Context, l *pb.Lease, ttl time.Duration, maxOut
 	var perm permanentError
 	var later retryAfterError
 	var rej rejectError
+	var rel releaseError
 	switch {
 	case err == nil && maxOutput > 0 && len(out) > maxOutput:
 		return fail(fmt.Sprintf("output of %d bytes exceeds the server's message limit", len(out)), true, nil)
@@ -558,6 +574,11 @@ func (w *worker) run(ctx context.Context, l *pb.Lease, ttl time.Duration, maxOut
 		return &pb.WorkerMessage{Msg: &pb.WorkerMessage_Cancelled{Cancelled: &pb.Cancelled{Lease: id}}}
 	case errors.As(err, &rej):
 		return &pb.WorkerMessage{Msg: &pb.WorkerMessage_Nack{Nack: &pb.Nack{Lease: id, Reason: rej.reason}}}
+	case errors.As(err, &rel) && canRelease:
+		return &pb.WorkerMessage{Msg: &pb.WorkerMessage_Release{Release: &pb.Release{Lease: id, DelayS: rel.after.Seconds()}}}
+	case errors.As(err, &rel):
+		// A server from before releases: a failure that is retried after the delay.
+		return fail("released (the server does not support releases)", false, seconds(rel.after))
 	case errors.As(err, &perm):
 		return fail(err.Error(), true, nil)
 	case errors.As(err, &later):

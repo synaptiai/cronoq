@@ -183,6 +183,8 @@ async fn an_older_database_is_upgraded_in_place() {
         "ALTER TABLE cronoq_tasks DROP COLUMN halt_on_failure",
         "DROP TABLE cronoq_ordering",
         "DROP TABLE cronoq_paused",
+        "ALTER TABLE cronoq_tasks DROP COLUMN releases",
+        "ALTER TABLE cronoq_tasks DROP COLUMN max_releases",
         "UPDATE cronoq_schema_version SET version = 1",
     ] {
         sqlx::query(sql).execute(store.pool()).await.unwrap();
@@ -195,7 +197,7 @@ async fn an_older_database_is_upgraded_in_place() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let epoch = store.acquire_leadership().await.unwrap();
     let stored = Mutation::PendingReplacement {
         id: TaskId(1),

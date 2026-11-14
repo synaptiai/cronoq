@@ -63,6 +63,7 @@ Label values are escaped per the exposition format (`\\`, `\"`, `\n`).
 | `cronoq_timeouts_total` | counter | | Attempts that hit their timeout. |
 | `cronoq_lease_expiries_total` | counter | | Leases that expired without a heartbeat. |
 | `cronoq_tasks_superseded_total` | counter | | Submissions dropped without running because a newer one with their key [replaced them](../concepts/replacing.md). |
+| `cronoq_releases_total` | counter | | Attempts given back by their worker to be run again later ([released](../concepts/reliability.md#releasing-an-attempt)); they do not count as failures or retries. |
 | `cronoq_stale_completions_total` | counter | | Completions and failures reported for leases that were no longer valid (late, duplicate, or from a previous leader); ignored. |
 
 Counters start at zero when a server becomes leader; `rate()` and `increase()` handle the reset

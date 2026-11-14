@@ -550,6 +550,7 @@ fn rec_task(id: u64, seq: u64, spec: TaskSpec<Job>) -> RecoveredTask<Job> {
         arrival: Time::ZERO,
         spec,
         attempt: 0,
+        releases: 0,
     }
 }
 
@@ -578,6 +579,7 @@ fn keys_are_rebuilt_from_the_stored_order_after_recovery() {
                 rec_task(3, 30, keyed(1.0, "k")),
                 RecoveredTask {
                     attempt: 1,
+                    releases: 0,
                     ..rec_task(1, 10, keyed(1.0, "k"))
                 },
                 rec_task(2, 20, keyed(1.0, "k")),
@@ -812,6 +814,7 @@ fn a_head_that_ends_during_recovery_leaves_the_key_as_it_was_stored() {
             tasks: vec![
                 RecoveredTask {
                     attempt: 1,
+                    releases: 0,
                     ..rec_task(1, 10, head.clone())
                 },
                 rec_task(2, 20, keyed(1.0, "k").priority(Priority::Low)),
@@ -861,6 +864,7 @@ fn a_head_that_ends_during_recovery_leaves_the_key_as_it_was_stored() {
         Recovered {
             tasks: vec![RecoveredTask {
                 attempt: 1,
+                releases: 0,
                 ..rec_task(1, 10, head.clone().key("d"))
             }],
             pending: vec![RecoveredPending {

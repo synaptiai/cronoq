@@ -229,6 +229,11 @@ pub struct PoolConfig {
     pub max_hold: Duration,
     /// Lease time-to-live; `Some` for remote workers that must heartbeat.
     pub lease_ttl: Option<Duration>,
+    /// How often an attempt of one task may be released
+    /// ([`Core::release`](crate::Core::release)) without counting as a failure. A release
+    /// beyond it is a retryable failure and uses the task's retry policy. A task may set its
+    /// own ([`TaskSpec::max_releases`](crate::TaskSpec::max_releases)).
+    pub max_releases: u32,
     /// Handling of dependencies on unknown keys.
     pub unknown_dependency: UnknownDependency,
     /// Weighted fair sharing between tenants (`None`: tasks of a class run in submission
@@ -289,6 +294,7 @@ impl PoolConfig {
             default_duration: Duration::from_secs(1),
             max_hold: Duration::from_secs(300),
             lease_ttl: None,
+            max_releases: 10,
             unknown_dependency: UnknownDependency::Reject,
             fairness: None,
             priority: None,

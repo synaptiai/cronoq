@@ -29,7 +29,7 @@ export {
   type Update,
   type Updated,
 } from "./client.js";
-export { CancelTask, CronoqError, Permanent, Reject, Retryable } from "./errors.js";
+export { CancelTask, CronoqError, Permanent, Reject, Release, Retryable } from "./errors.js";
 export { MAX_REDIRECTS, PROTOCOL_VERSION, type Handler, type Lease, type WorkerOptions } from "./worker.js";
 /** The generated protobuf messages and service descriptors. */
 export * as pb from "./gen/cronoq/v1/cronoq_pb.js";

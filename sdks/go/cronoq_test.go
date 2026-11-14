@@ -549,6 +549,43 @@ func TestPauseAndResume(t *testing.T) {
 	}
 }
 
+func TestReleaseDoesNotUseARetry(t *testing.T) {
+	s := startServer(t)
+	c := client(t, s)
+	ctx := ctxFor(t)
+	var mu sync.Mutex
+	attempts := map[string][]uint32{}
+	worker(t, s.target(), cronoq.WorkerOptions{Slots: 2}, func(_ context.Context, l *cronoq.Lease) ([]byte, error) {
+		mu.Lock()
+		attempts[string(l.Payload)] = append(attempts[string(l.Payload)], l.Attempt)
+		n := len(attempts[string(l.Payload)])
+		mu.Unlock()
+		// The first two attempts are given back.
+		if n <= 2 {
+			return nil, cronoq.Release(100 * time.Millisecond)
+		}
+		return bytes.ToUpper(l.Payload), nil
+	})
+	start := time.Now()
+	// One attempt is allowed: the two that are given back do not count.
+	r, err := c.SubmitAndWait(ctx, cronoq.Task{Payload: []byte("x"), MaxAttempts: 1}, 10*time.Second)
+	if err != nil || r.Result == nil || string(r.Result.Output) != "X" {
+		t.Fatalf("result = %+v, %v", r, err)
+	}
+	mu.Lock()
+	got := fmt.Sprint(attempts["x"])
+	mu.Unlock()
+	if got != "[1 2 3]" || time.Since(start) < 200*time.Millisecond {
+		t.Fatalf("attempts %s in %s", got, time.Since(start))
+	}
+	// A task's own limit: with none allowed, a release is a failure.
+	none := uint32(0)
+	r, err = c.SubmitAndWait(ctx, cronoq.Task{Payload: []byte("y"), MaxAttempts: 1, MaxReleases: &none}, 10*time.Second)
+	if err != nil || r.Result == nil || r.Result.Status != cronoq.DeadLettered {
+		t.Fatalf("limited = %+v, %v", r, err)
+	}
+}
+
 func TestHandlerOutcomes(t *testing.T) {
 	s := startServer(t)
 	c := client(t, s)

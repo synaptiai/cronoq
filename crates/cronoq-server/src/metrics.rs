@@ -293,6 +293,11 @@ pub fn render(s: &pb::SnapshotResponse) -> String {
             t.superseded,
         ),
         (
+            "cronoq_releases_total",
+            "Attempts given back by their worker to be run again later",
+            t.releases,
+        ),
+        (
             "cronoq_stale_completions_total",
             "Completions for leases that were no longer valid, ignored",
             t.stale_completions,

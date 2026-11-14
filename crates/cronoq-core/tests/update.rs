@@ -596,6 +596,7 @@ fn an_updated_task_recovers_with_its_new_values() {
                 arrival: *arrival,
                 spec: spec.clone(),
                 attempt: 0,
+                releases: 0,
             }),
             Mutation::Updated {
                 id,

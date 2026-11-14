@@ -45,7 +45,10 @@ Guidelines:
 - **Be idempotent.** Execution is at-least-once; record `(ctx.id, ctx.attempt)` with side
   effects that must happen once ([fencing tokens](../concepts/reliability.md#exactly-once-side-effects)).
 - **Classify errors.** Use `permanent` for errors a retry cannot fix (validation, 4xx), and
-  `retry_after` when the remote side says when to come back.
+  `retry_after` when the remote side says when to come back. Return
+  `TaskError::release(after)` when the executor cannot run the task now and nothing is wrong
+  with the task: the attempt does not use up a retry
+  ([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 - **Do not block the runtime.** Use `tokio::task::spawn_blocking` for CPU-heavy or blocking work.
 - **Check `ctx.deadline`** to pick a faster path when time is short.
 - **Panics are contained.** A panicking executor fails its task permanently; the scheduler
@@ -118,6 +121,9 @@ Pass `labels={"gpu": "a100"}` to register the worker with labels: tasks submitte
 Raise `Reject` to give a lease back unrun: the server hands it to another worker of the pool
 with the same labels as the same attempt, or, if no such worker can take it, fails the attempt
 as retryable, which counts against the task's retry budget.
+Raise `cronoq.Release(delay)` when the handler cannot run the task now and nothing is wrong
+with the task: it is leased again after the delay, and the attempt does not use up a retry
+([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 Raise `CancelTask` to end the task as `cancelled`. For mTLS, pass
 `credentials=grpc.ssl_channel_credentials(root, key, cert)`.
 
@@ -153,6 +159,9 @@ mTLS. TLS settings need an `https://` endpoint: with `http://` the worker return
 rather than connecting in plaintext. `.label("gpu", "a100")` registers the worker with a label.
 When another shard serves the pool, the worker connects to that shard's endpoint
 (`.insecure_redirect_http(true)` allows plain `http://` to other hosts).
+A handler that returns `Err(TaskError::release(after))` gives the task back to be leased again
+after the delay, without using up a retry
+([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 
 ## Go workers
 
@@ -169,6 +178,9 @@ err := cronoq.RunWorker(ctx, cronoq.WorkerOptions{
 It enforces the granted slots, heartbeats each lease, ends the handler's context on `Abort`,
 turns a panic into a retryable failure, reconnects with backoff, follows its pool to the right
 shard, and when `ctx` ends drains running handlers for up to `DrainTimeout` (30 s).
+A handler that returns `cronoq.Release(after)` gives the task back to be leased again after
+the delay, without using up a retry
+([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 
 ## TypeScript workers
 
@@ -185,6 +197,9 @@ await runWorker(
 It enforces the granted slots, heartbeats each lease, aborts `lease.signal` on `Abort`, reconnects
 with backoff, follows its pool to the right shard, and when `signal` aborts drains running
 handlers for up to `drainTimeout` (30 s).
+A handler that throws `new Release(seconds)` gives the task back to be leased again after the
+delay, without using up a retry
+([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 
 ## Any language over gRPC
 
@@ -206,12 +221,15 @@ tooling.
      `deadline_unix_ns`);
    - send `heartbeat{lease}` well within `lease_ttl_s` while it runs;
    - finish with exactly one of `complete{lease, output}`,
-     `fail{lease, message, permanent, retry_after_s}`, `nack{lease, reason}` (give it back) or
-     `cancelled{lease}`.
+     `fail{lease, message, permanent, retry_after_s}`, `nack{lease, reason}` (hand the same
+     attempt to another worker), `release{lease, delay_s}` (end the attempt without a verdict;
+     only if `registered.release_supported` is set) or `cancelled{lease}`.
 5. On `abort{lease, reason}`, stop that attempt; its slot is already free.
 6. Send `set_slots{slots}` to change concurrency; `0` drains the worker. Do this before
-   shutting down, instead of answering new leases with `nack`: a refused lease that no other
-   worker can take fails the attempt.
+   shutting down, instead of answering new leases with `nack`: a `nack` hands the same attempt
+   to another worker, and if no other worker can take it the attempt fails as retryable and
+   uses one of the task's retries. To give a task back for later without that cost, send
+   `release`.
 7. On `shutdown{reason, not_leader}`, or when the stream ends, reconnect with backoff.
 
 In-flight leases of a dropped stream are failed as retryable and retried elsewhere. The full

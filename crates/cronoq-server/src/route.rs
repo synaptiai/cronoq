@@ -586,6 +586,7 @@ pub async fn snapshot(app: &AppState, p: &Principal) -> Result<pb::SnapshotRespo
             t.lease_expiries += o.lease_expiries;
             t.stale_completions += o.stale_completions;
             t.superseded += o.superseded;
+            t.releases += o.releases;
         }
         r.unavailable_shards = missing;
     }

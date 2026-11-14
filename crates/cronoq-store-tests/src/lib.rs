@@ -177,6 +177,7 @@ fn full_spec() -> TaskSpec<Bytes> {
         .label("zone", "eu")
         .tenant("acme")
         .fingerprint(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10)
+        .max_releases(4)
 }
 
 /// Every mutation kind and spec field survives a commit and recovery; lookups by id and key
@@ -274,10 +275,18 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             target: PauseTarget::Class(Priority::Low),
             reason: Some("backfill off".into()),
         },
+        // Task 11 started a second attempt and gave it back: one of its two attempts counts.
+        st(11, TaskStatus::Running, 4 * S),
+        Mutation::Released {
+            id: TaskId(11),
+            attempt: 2,
+            releases: 1,
+            at: Time(5 * S),
+        },
     ];
     // Exhaustive on purpose (no `_`): a new mutation kind fails to compile here until this
     // batch commits one and the checks below cover its effect after recovery.
-    let mut kinds = [false; 10];
+    let mut kinds = [false; 11];
     for m in &batch {
         let kind = match m {
             Mutation::Submitted { .. } => 0,
@@ -290,10 +299,11 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
             Mutation::PendingReplacement { .. } => 7,
             Mutation::Ordering { .. } => 8,
             Mutation::Paused { .. } => 9,
+            Mutation::Released { .. } => 10,
         };
         kinds[kind] = true;
     }
-    assert_eq!(kinds, [true; 10], "the batch must hold every mutation kind");
+    assert_eq!(kinds, [true; 11], "the batch must hold every mutation kind");
     let out = Bytes::from_static(b"result");
     store
         .commit(epoch, base, &batch, &[(TaskId(12), &out)])
@@ -344,8 +354,12 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(a.labels, b.labels);
     assert_eq!(a.tenant, b.tenant);
     assert_eq!(a.fingerprint, b.fingerprint);
+    assert_eq!((a.max_releases, t.releases), (Some(4), 0));
     let retrying = &rec.tasks[1];
-    assert_eq!((retrying.id, retrying.attempt), (TaskId(11), 1));
+    assert_eq!(
+        (retrying.id, retrying.attempt, retrying.releases),
+        (TaskId(11), 2, 1)
+    );
     // The change made in the batch that inserted the task is in its row.
     let changed = &retrying.spec;
     assert_eq!(

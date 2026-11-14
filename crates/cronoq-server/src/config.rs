@@ -973,6 +973,9 @@ pub struct LimitsConfig {
     /// Most ordering keys that keep a class floor while they have no tasks (bounds memory
     /// and the stored state). Beyond it a new kept floor is refused; submissions never are.
     pub max_ordering_settings: usize,
+    /// Highest `max_releases` a submitted task may ask for. A pool's own `max_releases` is
+    /// the operator's choice and is not limited by this.
+    pub max_task_releases: u32,
     /// Most tasks one `ListTasks` page returns.
     pub max_list: usize,
 }
@@ -1001,6 +1004,7 @@ impl Default for LimitsConfig {
             key_retention_s: 3600.0,
             key_retention_max: 1_000_000,
             max_ordering_settings: 100_000,
+            max_task_releases: 1000,
             max_list: 1000,
         }
     }
@@ -1162,6 +1166,10 @@ pub struct PoolSection {
     /// Remote workers must heartbeat each lease within this many seconds.
     #[serde(default = "default_lease_ttl")]
     pub lease_ttl_s: f64,
+    /// How often a worker may release an attempt of one task without it counting as a
+    /// failure; a release beyond it is a retryable failure. A task may set its own.
+    #[serde(default = "default_max_releases")]
+    pub max_releases: u32,
     /// Pending-task bound (default `limits.max_pending_per_pool`).
     pub max_pending: Option<usize>,
     /// Behaviour when the bound is reached.
@@ -1209,6 +1217,9 @@ fn default_true() -> bool {
 fn default_lease_ttl() -> f64 {
     30.0
 }
+fn default_max_releases() -> u32 {
+    10
+}
 fn default_overflow() -> Overflow {
     Overflow::Reject
 }
@@ -1223,6 +1234,7 @@ impl PoolSection {
             autoscale: true,
             scaler: ScalerSection::External,
             lease_ttl_s: default_lease_ttl(),
+            max_releases: default_max_releases(),
             max_pending: None,
             overflow: Overflow::Reject,
             retry: None,
@@ -1255,6 +1267,7 @@ impl PoolSection {
         // Capacity comes from connected workers; `min` bounds only the desired capacity.
         let mut c = PoolConfig::new(self.name.as_str()).workers(self.min, 0, self.max);
         c.lease_ttl = Some(Duration::from_secs_f64(self.lease_ttl_s));
+        c.max_releases = self.max_releases;
         c.bounds.max_pending = Some(self.max_pending.unwrap_or(limits.max_pending_per_pool));
         c.overflow = self.overflow.into();
         if let Some(r) = &self.retry {

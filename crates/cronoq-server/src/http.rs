@@ -462,6 +462,9 @@ pub struct TaskJson {
     labels: HashMap<String, String>,
     /// Tenant, for pools that share capacity fairly between tenants.
     tenant: Option<String>,
+    /// How often a worker may release an attempt of this task without it counting as a
+    /// failure, instead of the pool's `max_releases`.
+    max_releases: Option<u32>,
     /// Ordering key: tasks of one pool that share it run one at a time, in submission order.
     ordering_key: Option<String>,
     /// With `ordering_key`: `continue` (default) or `halt` the key when this task fails.
@@ -646,6 +649,7 @@ impl TaskJson {
             tenant: self.tenant.unwrap_or_default(),
             ordering_key: self.ordering_key.unwrap_or_default(),
             on_failure: on_failure as i32,
+            max_releases: self.max_releases,
         };
         Ok((spec, self.wait, self.wait_timeout_s))
     }
@@ -1398,7 +1402,7 @@ async fn snapshot(
             "failed": t.failed, "dead_lettered": t.dead_lettered, "cancelled": t.cancelled,
             "skipped": t.skipped, "missed": t.missed, "shed": t.shed, "retries": t.retries,
             "timeouts": t.timeouts, "lease_expiries": t.lease_expiries,
-            "stale_completions": t.stale_completions, "superseded": t.superseded,
+            "stale_completions": t.stale_completions, "superseded": t.superseded, "releases": t.releases,
         },
     })))
 }

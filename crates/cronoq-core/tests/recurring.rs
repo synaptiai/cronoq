@@ -110,6 +110,7 @@ fn recovered_queued_schedule_waits_for_its_predecessor() {
             arrival: Time::ZERO,
             spec: TaskSpec::new(Job::ok(100.0)),
             attempt: 0,
+            releases: 0,
         }],
         terminal: vec![],
         recurring: vec![RecoveredRecurring {
@@ -154,6 +155,7 @@ fn keyed_occurrences_are_not_duplicated_after_recovery() {
             arrival: Time::ZERO,
             spec: existing,
             attempt: 0,
+            releases: 0,
         }],
         terminal: vec![],
         recurring: vec![RecoveredRecurring {

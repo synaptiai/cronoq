@@ -129,6 +129,19 @@ pub(crate) fn classify(e: PyErr, engine_cancelled: bool) -> TaskError {
         let kind: Option<String> = value.getattr("_cronoq_kind").and_then(|k| k.extract()).ok();
         match kind.as_deref() {
             Some("permanent") => TaskError::permanent(message),
+            Some("release") => {
+                let delay: f64 = value
+                    .getattr("delay")
+                    .and_then(|v| v.extract())
+                    .unwrap_or(0.0);
+                // Negative or not a number: no delay. Too long to represent: the longest.
+                let delay = if delay.is_nan() || delay <= 0.0 {
+                    Duration::ZERO
+                } else {
+                    Duration::try_from_secs_f64(delay).unwrap_or(Duration::MAX)
+                };
+                TaskError::release(delay)
+            }
             Some("retryable") => {
                 let after: Option<f64> = value
                     .getattr("retry_after")

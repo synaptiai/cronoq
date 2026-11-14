@@ -83,6 +83,13 @@ struct Entry<P> {
     hint_ns: u64,
     timeout_ns: u64,
     retry: Option<Box<RetryPolicy>>,
+    /// Attempts that were released: they do not count against the retry policy.
+    releases: u32,
+    /// Releases that count toward `max_releases` (those made while the task was paused do
+    /// not). Not stored: it starts again after a failover.
+    release_count: u32,
+    /// The task's own `max_releases`, if it set one.
+    max_releases: Option<u32>,
     attempt: u32,
     unmet: u32,
     awaiting: u32,
@@ -102,6 +109,9 @@ struct Entry<P> {
     tenant: u32,
     /// Start tag in the class's fair queue (pools with fairness).
     vtag: u64,
+    /// Set by a release: the class (plus one) whose fair tag in `vtag` the task keeps when it
+    /// is offered again. Zero: none.
+    keep_tag: u8,
     /// The class the task is queued and scored at. Its own class, except for the head of an
     /// ordering key, which runs at the highest class among the key's tasks and its floor.
     eff: u8,
@@ -424,6 +434,8 @@ pub struct Totals {
     pub lease_expiries: u64,
     /// Submissions dropped without running because a newer one with their key replaced them.
     pub superseded: u64,
+    /// Attempts released by their executor to be run again later.
+    pub releases: u64,
     /// Recurring occurrences not created because the reservation limit was reached.
     pub recurring_conflicts: u64,
     /// Recovered recurring schedules not armed because the configuration no longer supports
@@ -486,6 +498,8 @@ pub struct Core<P> {
     /// Recovery is still putting tasks and successors into their ordering keys: a key that
     /// has no tasks yet keeps its stored state.
     recovering: bool,
+    /// Releases of the task that recovery inserts next.
+    recovered_releases: u32,
     /// Overlap guard and materialization state of removed recurring schedules, so re-adding
     /// one does not duplicate an occurrence that already exists.
     recurring_history: StrMap<(Option<TaskId>, Option<Time>)>,
@@ -638,6 +652,7 @@ impl<P> Core<P> {
             empty_tags: Arc::from(Vec::new()),
             recovering_keys: None,
             recovering: false,
+            recovered_releases: 0,
             recurring_history: StrMap::default(),
             started: false,
             awaited_by: FxHashMap::default(),
@@ -1052,6 +1067,7 @@ impl<P> Core<P> {
             e.hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
             e.timeout_ns = spec.timeout.map(nanos).unwrap_or(0);
             e.retry = spec.retry.map(Box::new);
+            e.max_releases = spec.max_releases;
         }
         self.reposition(
             k,
@@ -2128,6 +2144,9 @@ impl<P> Core<P> {
             hint_ns,
             timeout_ns: spec.timeout.map(nanos).unwrap_or(0),
             retry: spec.retry.map(Box::new),
+            releases: core::mem::take(&mut self.recovered_releases).min(attempt),
+            release_count: 0,
+            max_releases: spec.max_releases,
             attempt,
             unmet: 0,
             awaiting: 0,
@@ -2146,6 +2165,7 @@ impl<P> Core<P> {
             constraint,
             tenant,
             vtag: 0,
+            keep_tag: 0,
             eff: spec.priority as u8,
             strand: 0,
             halt: spec.on_failure == OrderFailure::Halt,
@@ -2255,7 +2275,7 @@ impl<P> Core<P> {
                     .unwrap_or(self.pools[pool as usize].cfg.retry)
                     .max_attempts
             };
-            if attempt >= max {
+            if attempt - self.entry(key).releases >= max {
                 self.finish(
                     key,
                     TaskStatus::DeadLettered,
@@ -2318,6 +2338,85 @@ impl<P> Core<P> {
                 self.fail_attempt(now, l.key, retryable, retry_after, message);
             }
         }
+        self.pump();
+        true
+    }
+
+    /// Give an attempt back without a verdict: the executor cannot run the task now (a
+    /// dependency it needs is down, it is shutting down, the task is not for it), and nothing
+    /// is wrong with the task. The task keeps its place in line and is offered again once
+    /// `delay` has passed.
+    ///
+    /// The attempt number still goes up, so every attempt has its own number, but a released
+    /// attempt does not count against the retry policy: a task with `max_attempts = 3` that
+    /// was released twice may still fail three times. A task may be released
+    /// `max_releases` times ([`PoolConfig::max_releases`], or the task's own); a release
+    /// beyond that is a retryable failure with `delay` as its minimum backoff. Releases made
+    /// while a pause holds the task do not count toward that limit.
+    ///
+    /// Returns `false` for a lease that is unknown (ended, expired, or of an earlier
+    /// leader), like [`Core::complete`].
+    pub fn release(&mut self, now: Time, lease: LeaseId, delay: Duration) -> bool {
+        self.advance(now);
+        let Some(l) = self.leases.remove(&lease) else {
+            self.totals.stale_completions += 1;
+            return false;
+        };
+        self.end_attempt(&l);
+        let k = l.key;
+        // A task with a fixed start is not held by a pause: its releases count.
+        let held = (self.entry(k).fixed.is_none() && self.class_held(k))
+            || self.strand_of(k).is_some_and(Strand::held);
+        let (count, cap, pool) = {
+            let e = self.entry(k);
+            let cap = e
+                .max_releases
+                .unwrap_or(self.pools[e.pool as usize].cfg.max_releases);
+            (e.release_count, cap, e.pool)
+        };
+        if !held && count >= cap {
+            let message = format!("released more than {cap} times").into();
+            self.fail_attempt(now, k, true, Some(delay), message);
+            self.pump();
+            return true;
+        }
+        self.totals.releases += 1;
+        let at = now + delay;
+        let (id, class, key, attempt, releases) = {
+            let e = self.entry_mut(k);
+            e.releases += 1;
+            e.release_count += !held as u32;
+            // It keeps its place among the tenants of a fair pool, and is not charged again.
+            e.keep_tag = e.eff + 1;
+            e.status = TaskStatus::Retrying;
+            e.retry_at = at;
+            (e.id, e.class, e.key.clone(), e.attempt, e.releases)
+        };
+        self.pools[pool as usize].retrying[class as usize] += 1;
+        self.add_pending(k, pool, class as usize);
+        self.schedule(at, Timer::Retry(id));
+        if self.cfg.persist {
+            let m = Mutation::Released {
+                id,
+                attempt,
+                releases,
+                at: now,
+            };
+            self.actions.push_back(Action::Persist(Box::new(m)));
+        }
+        self.actions.push_back(Action::Status(StatusEvent {
+            id,
+            pool: PoolId(pool),
+            key,
+            status: TaskStatus::Retrying,
+            attempt,
+            at: now,
+            message: Some("released".into()),
+            priority: Priority::from_index(class as usize).unwrap_or_default(),
+            kind: EventKind::Transition,
+        }));
+        // Without a delay the task is back in its place before anything else is offered.
+        self.advance(now);
         self.pump();
         true
     }
@@ -2387,7 +2486,8 @@ impl<P> Core<P> {
                 .as_deref()
                 .copied()
                 .unwrap_or(self.pools[e.pool as usize].cfg.retry);
-            (e.attempt, policy.max_attempts)
+            // Released attempts do not use up the retry policy.
+            (e.attempt - e.releases, policy.max_attempts)
         };
         let pool = self.entry(key).pool;
         self.pools[pool as usize].window.at(now).failed += 1;
@@ -3258,6 +3358,7 @@ impl<P> Core<P> {
             if waited_for.contains(&t.id) {
                 placed.insert(t.id, (pool.unwrap(), t.seq, t.arrival));
             }
+            self.recovered_releases = t.releases;
             self.insert(
                 now,
                 t.id,
@@ -3609,8 +3710,16 @@ impl<P> Core<P> {
             e.loc = Loc::Edf;
             self.pools[pool as usize].edf[class].insert((lst, seq), k);
         } else if self.pools[pool as usize].fair.is_some() {
-            let tenant = self.entry(k).tenant;
-            let tag = self.fair_tag(pool, class, tenant);
+            let (tenant, kept) = {
+                let e = self.entry_mut(k);
+                (e.tenant, std::mem::take(&mut e.keep_tag))
+            };
+            // A released task comes back with the tag it had, if it still runs at that class.
+            let tag = if kept as usize == class + 1 {
+                self.entry(k).vtag
+            } else {
+                self.fair_tag(pool, class, tenant)
+            };
             let e = self.entry_mut(k);
             e.vtag = tag;
             e.loc = Loc::Fair;

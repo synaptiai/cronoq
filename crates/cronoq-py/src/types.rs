@@ -541,7 +541,7 @@ impl Pool {
         name, executor, *, min=1, max=10, initial=None, autoscale=None, lease_ttl=None,
         max_pending=None, overflow="wait", retry=None, unknown_dependency="reject",
         await_timeout=None, default_duration=1.0, reservable_fraction=0.5,
-        tenant_weights=None, fair_share=false, priority=None, urgency=None
+        tenant_weights=None, fair_share=false, priority=None, urgency=None, max_releases=10
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -564,6 +564,7 @@ impl Pool {
         fair_share: bool,
         priority: Option<PriorityConfig>,
         urgency: Option<UrgencyConfig>,
+        max_releases: u32,
     ) -> PyResult<Self> {
         if !executor.is_callable() {
             return Err(PyTypeError::new_err("executor must be callable"));
@@ -611,6 +612,7 @@ impl Pool {
         if let Some(r) = retry {
             cfg.retry = r.to_core();
         }
+        cfg.max_releases = max_releases;
         if fair_share || tenant_weights.as_ref().is_some_and(|w| !w.is_empty()) {
             let weights = tenant_weights.unwrap_or_default();
             if weights.values().any(|w| !(w.is_finite() && *w > 0.0)) {
@@ -716,6 +718,7 @@ pub(crate) struct Opts {
     pub(crate) on_key_conflict: cronoq::KeyConflict,
     ordering_key: Option<Arc<str>>,
     halt_on_failure: bool,
+    max_releases: Option<u32>,
 }
 
 impl Opts {
@@ -729,6 +732,12 @@ impl Opts {
         self.ordering_key = key.map(Into::into);
         self.halt_on_failure = halt_on_failure;
         Ok(self)
+    }
+
+    /// Set the task's own limit on releases (`max_releases=`).
+    pub(crate) fn releases(mut self, max_releases: Option<u32>) -> Self {
+        self.max_releases = max_releases;
+        self
     }
 }
 
@@ -922,6 +931,9 @@ impl Opts {
         if let Some(f) = self.fingerprint {
             t = t.fingerprint(f);
         }
+        if let Some(n) = self.max_releases {
+            t = t.max_releases(n);
+        }
         if let Some(k) = &self.ordering_key {
             t = t.ordering_key(k.clone());
             if self.halt_on_failure {
@@ -951,7 +963,7 @@ impl Task {
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
         tags=None, labels=None, tenant=None, fingerprint=None, on_key_conflict=None,
-        ordering_key=None, halt_on_failure=false
+        ordering_key=None, halt_on_failure=false, max_releases=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -979,6 +991,7 @@ impl Task {
         on_key_conflict: Option<&str>,
         ordering_key: Option<&str>,
         halt_on_failure: bool,
+        max_releases: Option<u32>,
     ) -> PyResult<Self> {
         let mode = parse_key_conflict(on_key_conflict)?;
         if mode == cronoq::KeyConflict::ReplaceQueued {
@@ -1008,7 +1021,8 @@ impl Task {
             labels,
             tenant,
         )?
-        .ordered(ordering_key, halt_on_failure)?;
+        .ordered(ordering_key, halt_on_failure)?
+        .releases(max_releases);
         opts.fingerprint = fingerprint;
         opts.on_key_conflict = mode;
         Ok(Task { payload, opts })

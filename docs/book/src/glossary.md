@@ -2,7 +2,8 @@
 
 **Aging**: the increase of a waiting task's score over time, preventing starvation.
 
-**Attempt**: one execution of a task. A task has one or more attempts.
+**Attempt**: one execution of a task. A task has one or more attempts, each with its own
+number.
 
 **Backlog**: tasks ready to run but waiting for a slot.
 
@@ -69,6 +70,11 @@ resumed ([Pausing and resuming](concepts/pausing.md)).
 **Pending**: submitted but not running (counted against queue bounds).
 
 **Pool**: a group of worker slots with one executor, one autoscaling policy and its own bounds.
+
+**Release**: to give an attempt back without a verdict, because the executor cannot run the
+task now; the task keeps its place, is offered again after a delay, and the attempt does not
+count against the retry policy, up to `max_releases`
+([Releasing an attempt](concepts/reliability.md#releasing-an-attempt)).
 
 **Reservation**: a booked interval of pool capacity for a fixed-start task.
 

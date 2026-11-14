@@ -1140,3 +1140,28 @@ async def test_pause_and_resume(server: Server, client: Client) -> None:
             assert await admin.resume(ordering_key="acct") is True
             assert (await client.wait(keyed.id, timeout=10)).ok
             assert await admin.resume() is False
+
+
+async def test_a_worker_releases_a_task_without_using_a_retry(server: Server, client: Client) -> None:
+    attempts: list[int] = []
+
+    async def handler(lease: Lease) -> Any:
+        attempts.append(lease.attempt)
+        if len(attempts) <= 2:
+            raise cronoq.Release(0.1)
+        return lease.text().upper()
+
+    async with Running() as r:
+        w = await r.add(server, handler)
+        assert w.release_supported
+        await wait_capacity(client, 1)
+        t0 = time.monotonic()
+        # One attempt is allowed: the two that are given back do not count.
+        sub = await client.submit("x", retry={"max_attempts": 1}, wait=True)
+        assert sub.result is not None and sub.result.text() == "X"
+        assert attempts == [1, 2, 3]
+        assert time.monotonic() - t0 >= 0.2
+        # A task's own limit: with none allowed, a release is a failure.
+        attempts.clear()
+        sub = await client.submit("y", retry={"max_attempts": 1}, max_releases=0, wait=True)
+        assert sub.result is not None and sub.result.status == "dead_lettered"

@@ -1201,6 +1201,7 @@ impl pb::workers_server::Workers for WorkersService {
                 protocol_version: cronoq_proto::PROTOCOL_VERSION,
                 max_message_bytes: app.limits.max_message_bytes as u64,
                 pool_paused,
+                release_supported: true,
             })),
         }));
         let cut = CancellationToken::new();
@@ -1259,6 +1260,10 @@ impl pb::workers_server::Workers for WorkersService {
                     }
                     Some(Msg::Cancelled(c)) => {
                         registry.finish(worker, c.lease, Err(TaskError::Cancelled));
+                    }
+                    Some(Msg::Release(r)) => {
+                        let after = convert::release_delay(r.delay_s);
+                        registry.finish(worker, r.lease, Err(TaskError::release(after)));
                     }
                     Some(Msg::Register(_)) => {
                         registry.reject(

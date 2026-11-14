@@ -37,6 +37,8 @@ static STORED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// behind another task of their key.
 static RESUMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static ORDERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Attempts given back by their executor.
+static RELEASED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone)]
 struct Planned {
@@ -230,6 +232,17 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
                 .set_ordering_floor(s.now, pool, &key, floor, r.chance(0.3))
                 .unwrap();
             s.drain();
+        }
+        // An executor gives a running task back now and then.
+        if r.chance(0.03) {
+            let leases = s.running_leases();
+            if !leases.is_empty() {
+                let lease = leases[r.below(leases.len() as u64) as usize];
+                RELEASED.fetch_add(
+                    s.release(lease, secs(r.f())) as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
         }
         // Pauses of a pool, a class or an ordering key; all are resumed with the halts.
         if r.chance(0.02) {
@@ -491,6 +504,7 @@ fn randomized_workloads() {
     assert!(STORED.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(RESUMED.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(ORDERED.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(RELEASED.load(std::sync::atomic::Ordering::Relaxed) > 0);
 }
 
 #[test]

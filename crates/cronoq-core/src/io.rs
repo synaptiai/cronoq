@@ -574,6 +574,19 @@ pub enum Mutation<P> {
         /// The key is halted.
         halted: bool,
     },
+    /// An attempt was released ([`Core::release`](crate::Core::release)): the task waits to
+    /// be offered again, as after a failure that is retried, and has one more attempt that
+    /// does not count against its retry policy.
+    Released {
+        /// The task.
+        id: TaskId,
+        /// Attempts made so far, the released ones included.
+        attempt: u32,
+        /// Attempts of those that were released.
+        releases: u32,
+        /// Engine time of the release.
+        at: Time,
+    },
     /// A pool, one of its classes or one of its ordering keys was paused (`reason` is set)
     /// or resumed (`reason` is `None`: a store drops its record).
     Paused {
@@ -682,6 +695,17 @@ impl<P> Clone for Mutation<P> {
                 persist: *persist,
                 halted: *halted,
             },
+            Mutation::Released {
+                id,
+                attempt,
+                releases,
+                at,
+            } => Mutation::Released {
+                id: *id,
+                attempt: *attempt,
+                releases: *releases,
+                at: *at,
+            },
             Mutation::Paused {
                 pool,
                 target,
@@ -744,6 +768,8 @@ pub struct RecoveredTask<P> {
     pub spec: TaskSpec<P>,
     /// Attempts already made (a task that was running counts its lost attempt).
     pub attempt: u32,
+    /// Attempts of those that were released: they do not count against the retry policy.
+    pub releases: u32,
 }
 
 /// A replacement stored for a live task (see [`Mutation::PendingReplacement`]).

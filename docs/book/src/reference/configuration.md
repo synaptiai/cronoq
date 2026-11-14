@@ -182,6 +182,7 @@ optional.
 | `keepalive_timeout_s` | float ≥ 0.1 | `20` | HTTP/2 keepalive ping timeout. |
 | `key_retention_s` | float ≥ 0 | `3600` | How long the key of a finished task keeps deduplicating submissions (a resubmission returns the finished task and its output), and how far back a new leader loads finished tasks from the store. |
 | `key_retention_max` | int | `1000000` | Most finished tasks kept for key deduplication (bounds memory). |
+| `max_task_releases` | int | `1000` | Highest `max_releases` a submitted task may ask for; a higher value is refused (`INVALID_ARGUMENT` / HTTP 400). A pool's own `max_releases` is not limited by this. |
 | `max_ordering_settings` | int | `100000` | Most [ordering keys](../concepts/ordering-keys.md#a-floor-for-a-key) that keep a class floor while they have no tasks. Beyond it a new kept floor is refused (`RESOURCE_EXHAUSTED` / HTTP 429); submissions never are. |
 | `max_list` | int, 1–100000 | `1000` | Most tasks one `ListTasks` or `GET /v1/tasks` page returns; larger requested limits are capped. |
 
@@ -211,6 +212,7 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `autoscale` | bool | `true` | Compute a desired capacity from queue pressure (exported as `cronoq_pool_desired_workers` and sent to the scaler). |
 | `scaler` | table | `{ kind = "external" }` | How the desired capacity is communicated, see below. |
 | `lease_ttl_s` | float ≥ 0.1 | `30` | Workers must heartbeat each lease within this many seconds, or the attempt is treated as lost and retried. |
+| `max_releases` | int ≥ 0 | `10` | How often a worker may [release](../concepts/reliability.md#releasing-an-attempt) an attempt of one task without it counting as a failure. A release beyond it is a retryable failure. A task may set its own. |
 | `max_pending` | int ≥ 1 | `limits.max_pending_per_pool` | Pending-task bound for this pool. |
 | `overflow` | `wait` \| `reject` \| `shed_lowest` \| `shed_oldest` | `reject` | Behaviour when the bound is reached (see [Backpressure](../concepts/backpressure.md)). `reject` answers `RESOURCE_EXHAUSTED` / HTTP 429. |
 | `retry` | table | engine default (3 attempts, 1 s ×2 up to 60 s, jitter) | Default retry policy for the pool, see below. |

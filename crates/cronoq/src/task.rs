@@ -201,6 +201,13 @@ impl<P> Task<P> {
         self.opts.on_key_conflict = mode;
         self
     }
+    /// How often an attempt of this task may be released
+    /// ([`TaskError::Release`](crate::TaskError::Release)) without counting as a failure,
+    /// instead of the pool's `max_releases`.
+    pub fn max_releases(mut self, n: u32) -> Self {
+        self.spec.max_releases = Some(n);
+        self
+    }
     /// An ordering key: tasks of one pool that share it run one at a time, in the order
     /// they were submitted, however many workers are free. Use it for work that must not
     /// overlap or overtake for one subject: one account, one document, one device. Tasks

@@ -73,6 +73,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migration_3.sql"),
     include_str!("migration_4.sql"),
     include_str!("migration_5.sql"),
+    include_str!("migration_6.sql"),
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -552,6 +553,7 @@ impl SqliteStore {
         let mut updated: HashMap<TaskId, usize> = HashMap::new();
         // Latest priority, deadline and tags of tasks changed in this batch (inserted earlier).
         let mut patches: HashMap<TaskId, (i64, Option<i64>, String)> = HashMap::new();
+        let mut released: HashMap<TaskId, u32> = HashMap::new();
         // Tasks inserted earlier whose whole description was replaced in this batch.
         let mut replaced: HashMap<TaskId, InsertRow> = HashMap::new();
         // Submissions stored to run after a live task (latest per task), and tasks that ended
@@ -559,6 +561,27 @@ impl SqliteStore {
         let mut pending: HashMap<TaskId, (InsertRow, bool)> = HashMap::new();
         let mut ended: Vec<TaskId> = Vec::new();
         for m in batch {
+            // A release is a transition to retrying, with one more number to store.
+            let as_status;
+            let m = match m {
+                Mutation::Released {
+                    id,
+                    attempt,
+                    releases,
+                    at,
+                } => {
+                    released.insert(*id, *releases);
+                    as_status = Mutation::Status {
+                        id: *id,
+                        status: TaskStatus::Retrying,
+                        attempt: *attempt,
+                        at: *at,
+                        message: Some("released".into()),
+                    };
+                    &as_status
+                }
+                m => m,
+            };
             match m {
                 Mutation::Submitted {
                     id,
@@ -662,6 +685,8 @@ impl SqliteStore {
                 | Mutation::RecurringNext { .. }
                 | Mutation::Ordering { .. }
                 | Mutation::Paused { .. } => {}
+                // Rewritten above.
+                Mutation::Released { .. } => {}
             }
         }
 
@@ -731,6 +756,14 @@ impl SqliteStore {
         }
         for (r, renew) in pending.values() {
             r.execute_pending(&mut tx, *renew).await?;
+        }
+        for (id, releases) in &released {
+            sqlx::query("UPDATE cronoq_tasks SET releases = ?2 WHERE id = ?1")
+                .bind(id.0 as i64)
+                .bind((*releases).min(i32::MAX as u32) as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
         }
         for (id, (priority, deadline, tags)) in &patches {
             sqlx::query(
@@ -856,6 +889,7 @@ impl SqliteStore {
                 // Listed, not `_`: tasks were applied in the first pass.
                 Mutation::Submitted { .. }
                 | Mutation::Status { .. }
+                | Mutation::Released { .. }
                 | Mutation::Updated { .. }
                 | Mutation::Replaced { .. }
                 | Mutation::PendingReplacement { .. } => {}
@@ -904,6 +938,7 @@ struct InsertRow {
     fingerprint: Option<Vec<u8>>,
     ordering_key: Option<String>,
     halt: bool,
+    max_releases: Option<i64>,
     created: i64,
     /// The latest transition within the batch; `None` while the task has not moved.
     status: Option<StatusRow>,
@@ -940,6 +975,7 @@ impl InsertRow {
             fingerprint: s.fingerprint.map(|f| f.to_be_bytes().to_vec()),
             ordering_key: s.ordering_key.as_deref().map(cleaned),
             halt: s.on_failure == OrderFailure::Halt,
+            max_releases: s.max_releases.map(i64::from),
             created: now,
             status: None,
         }
@@ -960,9 +996,9 @@ impl InsertRow {
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, \
              timeout_ns, retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, \
-             labels, tenant, fingerprint, ordering_key, halt_on_failure) VALUES (?1, ?2, ?3, ?4, \
-             ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
-             ?23, ?24, ?25, ?26, ?27, ?28) \
+             labels, tenant, fingerprint, ordering_key, halt_on_failure, max_releases) VALUES \
+             (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, \
+             ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
@@ -993,6 +1029,7 @@ impl InsertRow {
         .bind(self.fingerprint.as_deref())
         .bind(self.ordering_key.as_deref())
         .bind(self.halt)
+        .bind(self.max_releases)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1010,7 +1047,8 @@ impl InsertRow {
         sqlx::query(
             "UPDATE cronoq_tasks SET seq = ?2, arrival_unix_ns = ?3, kind = ?4, priority = ?5, \
              payload = ?6, deadline_unix_ns = ?7, duration_hint_ns = ?8, timeout_ns = ?9, \
-             retry = ?10, tags = ?11, tenant = ?12, fingerprint = ?13, halt_on_failure = ?14 \
+             retry = ?10, tags = ?11, tenant = ?12, fingerprint = ?13, halt_on_failure = ?14, \
+             max_releases = ?15 \
              WHERE id = ?1 AND terminal = 0",
         )
         .bind(self.id)
@@ -1027,6 +1065,7 @@ impl InsertRow {
         .bind(self.tenant.as_deref())
         .bind(self.fingerprint.as_deref())
         .bind(self.halt)
+        .bind(self.max_releases)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1043,9 +1082,10 @@ impl InsertRow {
         sqlx::query(
             "INSERT OR REPLACE INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool, \
              kind, priority, key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry, \
-             deps, resources, tags, labels, tenant, fingerprint, ordering_key, halt_on_failure) \
+             deps, resources, tags, labels, tenant, fingerprint, ordering_key, halt_on_failure, \
+             max_releases) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-             ?18, ?19, ?20, ?21)",
+             ?18, ?19, ?20, ?21, ?22)",
         )
         .bind(self.id)
         .bind(self.seq)
@@ -1068,6 +1108,7 @@ impl InsertRow {
         .bind(self.fingerprint.as_deref())
         .bind(self.ordering_key.as_deref())
         .bind(self.halt)
+        .bind(self.max_releases)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1130,12 +1171,16 @@ fn decode_task(base: TimeBase, r: &SqliteRow) -> Result<RecoveredTask<Bytes>, St
     if r.get::<bool, _>("halt_on_failure") {
         spec.on_failure = OrderFailure::Halt;
     }
+    spec.max_releases = r
+        .get::<Option<i64>, _>("max_releases")
+        .map(|n| n.clamp(0, u32::MAX as i64) as u32);
     Ok(RecoveredTask {
         id: TaskId(r.get::<i64, _>("id") as u64),
         seq: r.get::<i64, _>("seq") as u64,
         arrival: from_unix(base, r.get("arrival_unix_ns")),
         spec,
         attempt: r.get::<i64, _>("attempt").clamp(0, u32::MAX as i64) as u32,
+        releases: r.get::<i64, _>("releases").clamp(0, u32::MAX as i64) as u32,
     })
 }
 
@@ -1281,7 +1326,7 @@ impl Store<Bytes, Bytes> for SqliteStore {
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
              fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
              retry, deps, resources, tags, labels, tenant, fingerprint, ordering_key, \
-             halt_on_failure, attempt FROM cronoq_tasks \
+             halt_on_failure, max_releases, releases, attempt FROM cronoq_tasks \
              WHERE terminal = 0 \
              ORDER BY id",
         )
@@ -1313,7 +1358,8 @@ impl Store<Bytes, Bytes> for SqliteStore {
             "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload, \
              deadline_unix_ns, NULL AS fixed_at_unix_ns, NULL AS fixed_tolerance_ns, \
              NULL AS fixed_on_miss, duration_hint_ns, timeout_ns, retry, deps, resources, tags, \
-             labels, tenant, fingerprint, ordering_key, halt_on_failure, 0 AS attempt \
+             labels, tenant, fingerprint, ordering_key, halt_on_failure, max_releases, \
+             0 AS releases, 0 AS attempt \
              FROM cronoq_pending \
              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE terminal = 0) ORDER BY task_id",
         )

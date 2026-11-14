@@ -25,6 +25,16 @@ pub enum TaskError {
     /// The executor observed cancellation.
     #[error("cancelled")]
     Cancelled,
+    /// The executor gives the task back without a verdict: it cannot run it now, and nothing
+    /// is wrong with the task (a system it needs is down, the worker is shutting down). The
+    /// task keeps its place and is offered again after `after`. The attempt does not count
+    /// against the retry policy, up to the pool's `max_releases` (10 unless set) releases
+    /// of one task; beyond that a release counts as a retryable failure.
+    #[error("released")]
+    Release {
+        /// Do not offer the task again before this much time has passed.
+        after: Duration,
+    },
 }
 
 impl TaskError {
@@ -47,6 +57,11 @@ impl TaskError {
         TaskError::Permanent {
             message: message.into(),
         }
+    }
+    /// Give the task back to be offered again after `after`, without using up a retry
+    /// ([`TaskError::Release`]).
+    pub fn release(after: Duration) -> Self {
+        TaskError::Release { after }
     }
     /// Wrap any error as retryable.
     pub fn from_err(e: impl std::fmt::Display) -> Self {

@@ -288,6 +288,7 @@ fn conflicts_are_still_detected_after_recovery() {
                 arrival: Time::ZERO,
                 spec: spec.clone(),
                 attempt: 0,
+                releases: 0,
             }],
             terminal: vec![RecoveredTerminal {
                 id: TaskId(500),
