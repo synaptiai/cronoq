@@ -14,6 +14,7 @@ use cronoq::{BoxFuture, Executor, LeaseId, TaskContext, TaskError};
 use tokio::sync::oneshot;
 
 type Done = oneshot::Sender<Result<Bytes, TaskError>>;
+type Resync = Box<dyn Fn(Arc<str>) -> BoxFuture<()> + Send + Sync>;
 
 /// An attempt the scheduler has started and a host thread may take.
 struct Offer {
@@ -45,8 +46,10 @@ struct PoolQueue {
 }
 
 impl PoolQueue {
+    /// One slot per lease the host holds and one per thread that waits for a lease. An
+    /// attempt in `ready` is on its way to a waiting thread, which is already counted.
     fn capacity(&self) -> u32 {
-        self.held + self.ready.len() as u32 + self.waiting
+        self.held + self.waiting
     }
 }
 
@@ -62,9 +65,9 @@ struct State {
 pub(crate) struct Hub {
     state: Mutex<State>,
     changed: Condvar,
-    /// Called, on the scheduler's thread, when the scheduler ended a held lease itself: the
-    /// capacity of that pool has to be brought in line without blocking.
-    on_forget: OnceLock<Box<dyn Fn(Arc<str>) + Send + Sync>>,
+    /// Brings the scheduler's capacity of a pool in line with [`Hub::capacity`], from the
+    /// scheduler's own thread, where blocking is not possible.
+    resync: OnceLock<Resync>,
 }
 
 /// What a wait for a lease ended with.
@@ -96,13 +99,16 @@ impl Hub {
         self.lock().pools.contains_key(pool)
     }
 
-    /// Set what runs when the scheduler ends a held lease itself.
-    pub(crate) fn on_forget(&self, f: impl Fn(Arc<str>) + Send + Sync + 'static) {
-        let _ = self.on_forget.set(Box::new(f));
+    /// Set how the capacity of a pool is brought in line from the scheduler's thread.
+    pub(crate) fn resync_with(
+        &self,
+        f: impl Fn(Arc<str>) -> BoxFuture<()> + Send + Sync + 'static,
+    ) {
+        let _ = self.resync.set(Box::new(f));
     }
 
-    /// The capacity `pool` should have now: the leases the host holds or is about to take,
-    /// plus the threads waiting for one.
+    /// The capacity `pool` should have now: the leases the host holds plus the threads
+    /// waiting for one.
     pub(crate) fn capacity(&self, pool: &str) -> u32 {
         self.lock().pools.get(pool).map_or(0, PoolQueue::capacity)
     }
@@ -155,8 +161,8 @@ impl Hub {
             return Next::Closed;
         }
         sync();
-        // The scheduler starts attempts synchronously, so one that it started before the
-        // capacity went down is in the queue by now. Take it rather than leave it waiting.
+        // An attempt may have been started for this thread in the meantime: take it. One
+        // that arrives later still finds no waiting thread and is given back (`execute`).
         let mut s = self.lock();
         match Self::take(&mut s, pool) {
             Some(o) => Next::Lease(o),
@@ -234,8 +240,12 @@ impl Hub {
         }
         let changed = s.pools[pool].capacity() != before && !s.closed;
         drop(s);
-        if changed && let Some(f) = self.on_forget.get() {
-            f(name);
+        // The scheduler ended a lease the host held: the pool has one slot too many.
+        if changed
+            && let Some(resync) = self.resync.get()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            rt.spawn(resync(name));
         }
     }
 
@@ -292,9 +302,25 @@ impl Executor<Bytes, Bytes> for PullExecutor {
             if s.closed {
                 return Box::pin(async { Err(TaskError::retryable("the scheduler is closed")) });
             }
-            if let Some(q) = s.pools.get_mut(&self.pool) {
-                q.ready.push_back(Offer { ctx, payload, done });
+            let Some(q) = s.pools.get_mut(&self.pool) else {
+                return Box::pin(async { Err(TaskError::permanent("unknown pool")) });
+            };
+            if q.ready.len() as u32 >= q.waiting {
+                // No thread waits for this attempt: it was started for a slot that has gone
+                // since (the capacity is lowered by a message, and the scheduler may start
+                // an attempt before it arrives). Lower the capacity first, then give the
+                // task back, so that it keeps its place and is not started again at once.
+                drop(s);
+                let resync = self.hub.resync.get().map(|f| f(self.pool.clone()));
+                return Box::pin(async move {
+                    drop(guard);
+                    if let Some(r) = resync {
+                        r.await;
+                    }
+                    Err(TaskError::release(Duration::ZERO))
+                });
             }
+            q.ready.push_back(Offer { ctx, payload, done });
         }
         self.hub.changed.notify_all();
         Box::pin(async move {

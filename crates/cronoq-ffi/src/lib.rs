@@ -332,12 +332,9 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
     })?;
     {
         let (sched, hub2) = (sched.scheduler().clone(), Arc::downgrade(&hub));
-        hub.on_forget(move |pool| {
-            let (Some(hub), Ok(rt)) = (hub2.upgrade(), tokio::runtime::Handle::try_current())
-            else {
-                return;
-            };
-            rt.spawn(sync_capacity_async(sched.clone(), hub, pool));
+        hub.resync_with(move |pool| match hub2.upgrade() {
+            Some(hub) => Box::pin(sync_capacity_async(sched.clone(), hub, pool)),
+            None => Box::pin(async {}),
         });
     }
     Ok(cronoq_scheduler {
