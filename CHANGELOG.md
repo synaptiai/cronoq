@@ -16,7 +16,8 @@ contain breaking changes; they are called out under **Changed**.
   the task at the front runs at the highest class among the key's tasks, so a critical task
   is not stuck behind unrelated work. A task submitted with halt on failure
   (`Task::halt_on_failure`, `halt_on_failure=True`, `"on_failure": "halt"`) halts its key if it
-  fails: the tasks behind it stay queued until the key is resumed. A key can be given a class
+  fails: the tasks behind it, and tasks submitted for the key afterwards, stay queued until
+  the key is resumed. A key can be given a class
   floor, optionally kept while it has no tasks (`limits.max_ordering_settings` bounds how many
   keys keep one). Ordering keys are durable: order, halt and floor survive a restart and a
   failover. Available in Rust (`Task::ordering_key`, `Scheduler::ordering`,

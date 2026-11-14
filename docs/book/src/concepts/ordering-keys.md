@@ -83,8 +83,12 @@ await sched.submit(step, ordering_key="import:42", halt_on_failure=True)
 
 If that task ends as failed (or dead-lettered, once its retries are used up), the key is
 **halted**. The tasks behind it stay queued, in place and in order. New submissions for the
-key are still accepted and wait behind them. Nothing of the key runs until someone resumes it,
-or cancels what waits (a key with no tasks left is no longer halted).
+key are still accepted and wait behind them. Nothing of the key runs until someone resumes it.
+
+The halt belongs to the key, not to the tasks that happened to be waiting: it stays while the
+key has no tasks at all, so a step submitted after the failure waits as well. Cancelling what
+waits does not end it. A halted key is listed, and counted in the `ordering.halted` figure,
+until it is resumed.
 
 The policy belongs to each task, so one key can hold steps that must not be skipped over and
 steps that may be. A task that is cancelled, skipped or shed never halts its key.

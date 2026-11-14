@@ -334,7 +334,7 @@ map from `seq` to task, per pool. Rules:
   finds them by the class they are.
 - **Failure policy** per task (`OrderFailure::Continue` default, `Halt`). A `Halt` task that
   ends `Failed` or `DeadLettered` sets the strand's `halted`: nothing of it is offered until
-  `resume_ordering`, or until it has no members (an empty strand is not halted). Other
+  `resume_ordering`. A halted strand exists, and stays halted, also with no members. Other
   terminal statuses never halt.
 - **Floor** per strand (`set_ordering_floor(pool, key, floor, persist)`): removed when the
   strand empties unless `persist`. At most `CoreConfig::max_ordering_settings` strands keep one

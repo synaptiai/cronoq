@@ -3685,11 +3685,15 @@ impl<P> Core<P> {
             if self.recovering {
                 return;
             }
-            // A halt ends with the key's tasks; a floor stays only if it was set to.
-            let (was_stored, was_halted) = (st.stored(), st.halted);
-            st.halted = false;
-            if st.persist && st.floor.is_some() {
-                if was_halted {
+            // A floor stays only if it was set to. A halt stays until the key is resumed:
+            // what is submitted after the failure waits as well.
+            let was_stored = st.stored();
+            let dropped_floor = st.floor.is_some() && !st.persist;
+            if dropped_floor {
+                st.floor = None;
+            }
+            if st.halted || st.floor.is_some() {
+                if dropped_floor {
                     self.persist_ordering(pool, sidx);
                 }
                 return;
@@ -5013,7 +5017,7 @@ impl<P> Core<P> {
                     st.key
                 );
                 assert!(
-                    !st.members.is_empty() || (st.persist && st.floor.is_some()),
+                    !st.members.is_empty() || st.halted || (st.persist && st.floor.is_some()),
                     "ordering key '{}' kept without tasks or a setting",
                     st.key
                 );

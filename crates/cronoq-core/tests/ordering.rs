@@ -358,7 +358,7 @@ fn halt_on_failure_stops_the_key_until_it_is_resumed() {
 }
 
 #[test]
-fn only_a_failure_halts_and_cancelling_the_rest_ends_the_halt() {
+fn only_a_failure_halts_and_only_a_resume_ends_the_halt() {
     let mut s = pool(1);
     let busy = s.submit(job(5.0));
     // A cancelled task with the halt policy does not halt.
@@ -388,13 +388,35 @@ fn only_a_failure_halts_and_cancelling_the_rest_ends_the_halt() {
     assert!(s.status(bad).unwrap().is_terminal());
     assert_ne!(s.status(bad), Some(TaskStatus::Succeeded));
     assert!(info(&s, "k").unwrap().halted);
-    // Cancelling what waits empties the key, and the halt goes with it.
+    // Cancelling what waits empties the key; the halt stays, and so what is submitted
+    // after the failure waits too.
     assert!(s.core.cancel(s.now, &TaskRef::Id(c)));
     s.drain();
-    assert_eq!(info(&s, "k"), None);
+    let i = info(&s, "k").unwrap();
+    assert!(i.halted);
+    assert_eq!((i.tasks, i.head), (0, None));
     let d = s.submit(keyed(1.0, "k"));
+    s.run_until(s.now + secs(5.0));
+    assert_eq!(s.status(d), Some(TaskStatus::Ready));
+    let p = default_pool(&s);
+    assert!(s.core.resume_ordering(s.now, p, "k"));
     s.run_to_completion(20.0);
     assert_eq!(s.status(d), Some(TaskStatus::Succeeded));
+    assert_eq!(info(&s, "k"), None);
+    // A task that fails with nothing behind it halts its key all the same; resuming the
+    // empty key forgets it.
+    let alone = s.submit(
+        TaskSpec::new(Job::broken(1.0))
+            .ordering_key("solo")
+            .retry(RetryPolicy::none())
+            .halt_on_failure(),
+    );
+    s.run_until(s.now + secs(5.0));
+    assert_eq!(s.status(alone), Some(TaskStatus::Failed));
+    assert_eq!(s.core.halted_orderings(p, 10), vec!["solo".into()]);
+    assert!(s.core.resume_ordering(s.now, p, "solo"));
+    assert_eq!(info(&s, "solo"), None);
+    s.drain();
 }
 
 #[test]
