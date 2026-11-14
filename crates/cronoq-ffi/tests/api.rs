@@ -119,7 +119,10 @@ fn next(s: &Sched) -> Taken {
 }
 
 fn complete(s: &Sched, t: &Taken) {
-    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_OK);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, t.lease, null(), 0) },
+        CRONOQ_OK
+    );
 }
 
 /// Take and complete leases until the queue is empty; their payloads in order.
@@ -216,7 +219,10 @@ fn a_lease_carries_the_task() {
     assert_eq!(task(&s, id).unwrap()["status"], "running");
     complete(&s, &t);
     // A second report for the same lease is ignored.
-    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_LEASE_GONE);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, t.lease, null(), 0) },
+        CRONOQ_LEASE_GONE
+    );
 
     // An empty payload is a null pointer with length 0.
     assert_eq!(
@@ -431,7 +437,10 @@ fn cancelling_a_running_task_ends_its_lease() {
         CRONOQ_OK
     );
     assert_eq!(unsafe { cronoq_heartbeat(s.0, t.lease) }, CRONOQ_LEASE_GONE);
-    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_LEASE_GONE);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, t.lease, null(), 0) },
+        CRONOQ_LEASE_GONE
+    );
     // The next task may or may not have been started for the slot of the ended lease; either
     // way it goes to the next thread that asks, without a release or a retry.
     submit(&s, "y", "");
@@ -453,7 +462,7 @@ fn an_attempt_that_times_out_is_taken_back() {
     let second = next(&s);
     assert_eq!((second.task, second.attempt), (id, 2));
     assert_eq!(
-        unsafe { cronoq_complete(s.0, first.lease) },
+        unsafe { cronoq_complete(s.0, first.lease, null(), 0) },
         CRONOQ_LEASE_GONE
     );
     complete(&s, &second);
@@ -535,7 +544,10 @@ fn shutdown_wakes_waiting_threads_and_ends_every_call() {
     let (status, ..) = submit_full(&s, "x", "");
     assert_eq!(status, CRONOQ_SHUTDOWN);
     assert_eq!(next_in(&s, None, 0).unwrap_err(), CRONOQ_SHUTDOWN);
-    assert_eq!(unsafe { cronoq_complete(s.0, 1) }, CRONOQ_SHUTDOWN);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, 1, null(), 0) },
+        CRONOQ_SHUTDOWN
+    );
     // Twice is allowed.
     assert_eq!(unsafe { cronoq_shutdown(s.0, 0) }, CRONOQ_OK);
 }
@@ -605,7 +617,10 @@ fn wrong_arguments_are_errors_not_crashes() {
         unsafe { cronoq_next_lease(s.0, null(), 0, null_mut()) },
         CRONOQ_INVALID_ARGUMENT
     );
-    assert_eq!(unsafe { cronoq_complete(s.0, 12345) }, CRONOQ_LEASE_GONE);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, 12345, null(), 0) },
+        CRONOQ_LEASE_GONE
+    );
     assert_eq!(
         unsafe { cronoq_snapshot(s.0, null_mut()) },
         CRONOQ_INVALID_ARGUMENT
@@ -616,6 +631,214 @@ fn wrong_arguments_are_errors_not_crashes() {
         cronoq_buf_free(null_mut());
         cronoq_lease_free(null_mut());
     }
+}
+
+/// Wait for a task to end: whether it succeeded, and its output or its message.
+fn wait(s: &Sched, id: u64, timeout_ms: u64) -> Result<(bool, String), cronoq_status> {
+    let mut b = cronoq_buf {
+        ptr: null_mut(),
+        len: 0,
+    };
+    let mut ok = -1;
+    match unsafe { cronoq_wait(s.0, id, null(), timeout_ms, &mut ok, &mut b) } {
+        CRONOQ_OK => {
+            let bytes = if b.ptr.is_null() {
+                Vec::new()
+            } else {
+                unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+            };
+            unsafe { cronoq_buf_free(&mut b) };
+            Ok((ok == 1, String::from_utf8(bytes).unwrap()))
+        }
+        other => {
+            unsafe { cronoq_buf_free(&mut b) };
+            Err(other)
+        }
+    }
+}
+
+#[test]
+fn a_task_has_an_output_that_waiters_get() {
+    let s = std::sync::Arc::new(new(
+        r#"{"pools": [{"name": "default", "retry": {"max_attempts": 1}}]}"#,
+    ));
+    let id = submit(&s, "2+2", r#"{"key": "sum"}"#);
+    // Not ended yet.
+    assert_eq!(wait(&s, id, 20).unwrap_err(), CRONOQ_TIMEOUT);
+    // A thread that waits is woken by the result.
+    let waiter = {
+        let s = s.clone();
+        std::thread::spawn(move || wait(&s, id, 5000))
+    };
+    let t = next(&s);
+    let out = b"4\0binary";
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, t.lease, out.as_ptr(), out.len()) },
+        CRONOQ_OK
+    );
+    assert_eq!(waiter.join().unwrap(), Ok((true, "4\0binary".to_string())));
+    // Later callers get it too, also by key.
+    assert_eq!(wait(&s, id, 0), Ok((true, "4\0binary".to_string())));
+    let mut b = cronoq_buf {
+        ptr: null_mut(),
+        len: 0,
+    };
+    let mut ok = -1;
+    let key = c("sum");
+    assert_eq!(
+        unsafe { cronoq_wait(s.0, 0, key.as_ptr(), 0, &mut ok, &mut b) },
+        CRONOQ_OK
+    );
+    assert_eq!((ok, b.len), (1, 8));
+    unsafe { cronoq_buf_free(&mut b) };
+
+    // No output is an empty one.
+    let empty = submit(&s, "x", "");
+    complete(&s, &next(&s));
+    assert_eq!(wait(&s, empty, 5000), Ok((true, String::new())));
+
+    // A task that did not succeed: the status and the message.
+    let bad = submit(&s, "y", "");
+    let msg = c("relay refused");
+    let t = next(&s);
+    assert_eq!(
+        unsafe { cronoq_fail(s.0, t.lease, msg.as_ptr(), 1, -1) },
+        CRONOQ_OK
+    );
+    assert_eq!(
+        wait(&s, bad, 5000),
+        Ok((false, "dead_lettered: relay refused".to_string()))
+    );
+    let gone = submit(&s, "z", "");
+    unsafe { cronoq_cancel(s.0, gone, null(), null_mut()) };
+    let (ok, text) = wait(&s, gone, 5000).unwrap();
+    assert!(!ok && text.starts_with("cancelled"), "{text}");
+
+    assert_eq!(wait(&s, 999_999, 0).unwrap_err(), CRONOQ_NOT_FOUND);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, 1, null(), 3) },
+        CRONOQ_INVALID_ARGUMENT
+    );
+    // A waiter does not keep a shutdown waiting, and learns of it.
+    let live = submit(&s, "w", "");
+    let waiter = {
+        let s = s.clone();
+        std::thread::spawn(move || wait(&s, live, 60_000))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let start = std::time::Instant::now();
+    assert_eq!(unsafe { cronoq_shutdown(s.0, 0) }, CRONOQ_OK);
+    assert_eq!(waiter.join().unwrap().unwrap_err(), CRONOQ_SHUTDOWN);
+    assert!(start.elapsed().as_secs() < 5);
+}
+
+/// An open subscription, closed when dropped.
+struct Events(*mut cronoq_events);
+unsafe impl Send for Events {}
+
+impl Events {
+    fn open(s: &Sched) -> Events {
+        let mut e = null_mut();
+        assert_eq!(unsafe { cronoq_events_open(s.0, &mut e) }, CRONOQ_OK);
+        Events(e)
+    }
+    fn next(&self, timeout_ms: u64) -> Result<serde_json::Value, cronoq_status> {
+        let mut b = cronoq_buf {
+            ptr: null_mut(),
+            len: 0,
+        };
+        match unsafe { cronoq_events_next(self.0, timeout_ms, &mut b) } {
+            CRONOQ_OK => Ok(json(&mut b)),
+            other => {
+                unsafe { cronoq_buf_free(&mut b) };
+                Err(other)
+            }
+        }
+    }
+}
+
+impl Drop for Events {
+    fn drop(&mut self) {
+        unsafe { cronoq_events_close(self.0) };
+    }
+}
+
+#[test]
+fn a_subscription_gets_an_event_when_a_task_ends() {
+    let s = new(r#"{"pools": [{"name": "default", "retry": {"max_attempts": 1}}]}"#);
+    let first = Events::open(&s);
+    let second = Events::open(&s);
+    assert_eq!(first.next(20).unwrap_err(), CRONOQ_TIMEOUT);
+    let id = submit(&s, "x", r#"{"key": "k", "priority": "high"}"#);
+    complete(&s, &next(&s));
+    // By default only the end of a task is an event; every subscription gets it.
+    for sub in [&first, &second] {
+        let e = sub.next(5000).unwrap();
+        assert_eq!(e["task"], id);
+        assert_eq!(e["key"], "k");
+        assert_eq!(e["pool"], "default");
+        assert_eq!(e["status"], "succeeded");
+        assert_eq!(e["attempt"], 1);
+        assert_eq!(e["priority"], "high");
+        assert_eq!(e["event"], "transition");
+        assert!(e["at_unix_ms"].as_u64().unwrap() > 1_600_000_000_000);
+    }
+    let bad = submit(&s, "y", "");
+    let msg = c("no");
+    let t = next(&s);
+    unsafe { cronoq_fail(s.0, t.lease, msg.as_ptr(), 0, -1) };
+    let e = first.next(5000).unwrap();
+    assert_eq!(
+        (&e["task"], &e["status"], &e["message"]),
+        (
+            &serde_json::json!(bad),
+            &serde_json::json!("failed"),
+            &serde_json::json!("no")
+        )
+    );
+    assert_eq!(first.next(20).unwrap_err(), CRONOQ_TIMEOUT);
+
+    // A waiting reader is woken by a shutdown, and a subscription outlives its scheduler.
+    let reader = std::thread::spawn(move || first.next(60_000).unwrap_err());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(unsafe { cronoq_shutdown(s.0, 0) }, CRONOQ_OK);
+    assert_eq!(reader.join().unwrap(), CRONOQ_SHUTDOWN);
+    drop(s);
+    // The event of the failed task is still in the second subscription; then it is over.
+    assert_eq!(second.next(100).unwrap()["status"], "failed");
+    assert_eq!(second.next(100).unwrap_err(), CRONOQ_SHUTDOWN);
+    unsafe { cronoq_events_close(null_mut()) };
+}
+
+#[test]
+fn with_all_events_every_change_of_status_is_sent() {
+    let s = new(r#"{"events": "all"}"#);
+    let sub = Events::open(&s);
+    let id = submit(&s, "x", r#"{"key": "k"}"#);
+    let up = c(r#"{"priority": "high"}"#);
+    assert_eq!(
+        unsafe { cronoq_update(s.0, id, null(), up.as_ptr(), null_mut()) },
+        CRONOQ_OK
+    );
+    complete(&s, &next(&s));
+    let mut seen = Vec::new();
+    while let Ok(e) = sub.next(200) {
+        assert_eq!(e["task"], id);
+        seen.push(format!(
+            "{}:{}",
+            e["event"].as_str().unwrap(),
+            e["status"].as_str().unwrap()
+        ));
+    }
+    assert!(seen.contains(&"updated:ready".to_string()), "{seen:?}");
+    assert!(seen.contains(&"transition:running".to_string()), "{seen:?}");
+    assert_eq!(seen.last().unwrap(), "transition:succeeded", "{seen:?}");
+    let bad = c(r#"{"events": "some"}"#);
+    let mut out = null_mut();
+    assert_eq!(
+        unsafe { cronoq_new(bad.as_ptr(), &mut out) },
+        CRONOQ_INVALID_ARGUMENT
+    );
 }
 
 #[test]
@@ -725,10 +948,16 @@ fn a_lease_can_be_reported_during_the_grace_of_a_shutdown() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     // No new lease, but the held one is still good.
     assert_eq!(next_in(&s, None, 0).unwrap_err(), CRONOQ_SHUTDOWN);
-    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_OK);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, t.lease, null(), 0) },
+        CRONOQ_OK
+    );
     // The shutdown does not wait out its grace once everything is reported.
     assert!(stopper.join().unwrap().as_millis() < 5000);
-    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_SHUTDOWN);
+    assert_eq!(
+        unsafe { cronoq_complete(s.0, t.lease, null(), 0) },
+        CRONOQ_SHUTDOWN
+    );
 }
 
 #[test]

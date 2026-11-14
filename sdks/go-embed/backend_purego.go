@@ -24,7 +24,11 @@ var (
 	fnSubmit           func(s unsafe.Pointer, payload *byte, n uintptr, options *byte, outTask *uint64, outOutcome *int32) int32
 	fnNextLease        func(s unsafe.Pointer, pool *byte, timeoutMs uint64, out *cLease) int32
 	fnLeaseFree        func(l *cLease)
-	fnComplete         func(s unsafe.Pointer, lease uint64) int32
+	fnComplete         func(s unsafe.Pointer, lease uint64, output *byte, n uintptr) int32
+	fnWait             func(s unsafe.Pointer, task uint64, key *byte, timeoutMs uint64, ok *int32, out *cBuf) int32
+	fnEventsOpen       func(s unsafe.Pointer, out *unsafe.Pointer) int32
+	fnEventsNext       func(e unsafe.Pointer, timeoutMs uint64, out *cBuf) int32
+	fnEventsClose      func(e unsafe.Pointer)
 	fnFail             func(s unsafe.Pointer, lease uint64, message *byte, retryable int32, retryAfterMs int64) int32
 	fnRelease          func(s unsafe.Pointer, lease uint64, delayMs uint64) int32
 	fnHeartbeat        func(s unsafe.Pointer, lease uint64) int32
@@ -113,6 +117,10 @@ func bind(handle uintptr) (err error) {
 		"cronoq_next_lease":         &fnNextLease,
 		"cronoq_lease_free":         &fnLeaseFree,
 		"cronoq_complete":           &fnComplete,
+		"cronoq_wait":               &fnWait,
+		"cronoq_events_open":        &fnEventsOpen,
+		"cronoq_events_next":        &fnEventsNext,
+		"cronoq_events_close":       &fnEventsClose,
 		"cronoq_fail":               &fnFail,
 		"cronoq_release":            &fnRelease,
 		"cronoq_heartbeat":          &fnHeartbeat,
@@ -246,9 +254,51 @@ func cNextLease(h unsafe.Pointer, pool string, timeoutMs uint64) (rawLease, int3
 	return raw, status, ""
 }
 
-func cComplete(h unsafe.Pointer, lease uint64) (int32, string) {
-	return call(func() int32 { return fnComplete(h, lease) })
+func cComplete(h unsafe.Pointer, lease uint64, output []byte) (int32, string) {
+	var p *byte
+	if len(output) > 0 {
+		p = &output[0]
+	}
+	status, msg := call(func() int32 { return fnComplete(h, lease, p, uintptr(len(output))) })
+	runtime.KeepAlive(output)
+	return status, msg
 }
+
+func cWait(h unsafe.Pointer, id uint64, key string, timeoutMs uint64) (bool, []byte, int32, string) {
+	var (
+		ok int32
+		b  cBuf
+	)
+	status, msg := call(func() int32 { return fnWait(h, id, cstr(key, true), timeoutMs, &ok, &b) })
+	if status != statusOK {
+		fnBufFree(&b)
+		return false, nil, status, msg
+	}
+	var data []byte
+	if b.ptr != nil {
+		data = append([]byte(nil), unsafe.Slice(b.ptr, int(b.len))...)
+	}
+	fnBufFree(&b)
+	return ok == 1, data, status, ""
+}
+
+func cEventsOpen(h unsafe.Pointer) (unsafe.Pointer, int32, string) {
+	var e unsafe.Pointer
+	status, msg := call(func() int32 { return fnEventsOpen(h, &e) })
+	return e, status, msg
+}
+
+func cEventsNext(e unsafe.Pointer, timeoutMs uint64) (string, int32, string) {
+	var b cBuf
+	status, msg := call(func() int32 { return fnEventsNext(e, timeoutMs, &b) })
+	if status != statusOK {
+		fnBufFree(&b)
+		return "", status, msg
+	}
+	return takeBuf(&b), status, ""
+}
+
+func cEventsClose(e unsafe.Pointer) { fnEventsClose(e) }
 
 func b2i(b bool) int32 {
 	if b {

@@ -52,7 +52,7 @@ static uint64_t take(const char *expected) {
 }
 
 static void run(const char *expected) {
-  CHECK(cronoq_complete(sched, take(expected)) == CRONOQ_OK);
+  CHECK(cronoq_complete(sched, take(expected), NULL, 0) == CRONOQ_OK);
 }
 
 int main(void) {
@@ -106,6 +106,35 @@ int main(void) {
   /* max_attempts is 1: a failure would end the task. A release does not. */
   CHECK(cronoq_release(sched, take("released"), 0) == CRONOQ_OK);
   run("released");
+
+  printf("output and events:\n");
+  cronoq_events *events;
+  CHECK(cronoq_events_open(sched, &events) == CRONOQ_OK);
+  uint64_t sum = submit("2+2", NULL);
+  /* The task's result is bytes of the program's own; here, text. */
+  CHECK(cronoq_complete(sched, take("2+2"), (const uint8_t *)"4", 1) == CRONOQ_OK);
+  int succeeded = 0;
+  cronoq_buf output;
+  CHECK(cronoq_wait(sched, sum, NULL, 5000, &succeeded, &output) == CRONOQ_OK);
+  CHECK(succeeded == 1 && output.len == 1 && output.ptr[0] == '4');
+  printf("  2+2 = %.*s\n", (int)output.len, (const char *)output.ptr);
+  cronoq_buf_free(&output);
+  /* By default there is one event per task, when it ends. Results are applied a moment
+     after they are reported, so the event of an earlier task may still come first. */
+  char wanted[64];
+  snprintf(wanted, sizeof wanted, "\"task\":%llu}", (unsigned long long)sum);
+  for (;;) {
+    cronoq_buf event;
+    CHECK(cronoq_events_next(events, 5000, &event) == CRONOQ_OK);
+    int mine = strstr((const char *)event.ptr, wanted) != NULL;
+    if (mine) {
+      CHECK(strstr((const char *)event.ptr, "\"status\":\"succeeded\"") != NULL);
+      printf("  event: %s\n", (const char *)event.ptr);
+    }
+    cronoq_buf_free(&event);
+    if (mine) break;
+  }
+  cronoq_events_close(events);
 
   cronoq_buf snapshot;
   CHECK(cronoq_snapshot(sched, &snapshot) == CRONOQ_OK);

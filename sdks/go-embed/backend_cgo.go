@@ -119,9 +119,56 @@ func cNextLease(h unsafe.Pointer, pool string, timeoutMs uint64) (rawLease, int3
 	return raw, status, ""
 }
 
-func cComplete(h unsafe.Pointer, lease uint64) (int32, string) {
-	return call(func() int32 { return int32(C.cronoq_complete(sched(h), C.uint64_t(lease))) })
+func cComplete(h unsafe.Pointer, lease uint64, output []byte) (int32, string) {
+	var p *C.uint8_t
+	if len(output) > 0 {
+		p = (*C.uint8_t)(unsafe.Pointer(&output[0]))
+	}
+	return call(func() int32 {
+		return int32(C.cronoq_complete(sched(h), C.uint64_t(lease), p, C.size_t(len(output))))
+	})
 }
+
+func cWait(h unsafe.Pointer, id uint64, key string, timeoutMs uint64) (bool, []byte, int32, string) {
+	k := cstr(key, true)
+	defer free(k)
+	var (
+		ok C.int32_t
+		b  C.cronoq_buf
+	)
+	status, msg := call(func() int32 {
+		return int32(C.cronoq_wait(sched(h), C.uint64_t(id), k, C.uint64_t(timeoutMs), &ok, &b))
+	})
+	defer C.cronoq_buf_free(&b)
+	if status != statusOK {
+		return false, nil, status, msg
+	}
+	var data []byte
+	if b.ptr != nil {
+		data = C.GoBytes(unsafe.Pointer(b.ptr), C.int(b.len))
+	}
+	return ok == 1, data, status, ""
+}
+
+func cEventsOpen(h unsafe.Pointer) (unsafe.Pointer, int32, string) {
+	var e *C.cronoq_events
+	status, msg := call(func() int32 { return int32(C.cronoq_events_open(sched(h), &e)) })
+	return unsafe.Pointer(e), status, msg
+}
+
+func cEventsNext(e unsafe.Pointer, timeoutMs uint64) (string, int32, string) {
+	var b C.cronoq_buf
+	status, msg := call(func() int32 {
+		return int32(C.cronoq_events_next((*C.cronoq_events)(e), C.uint64_t(timeoutMs), &b))
+	})
+	if status != statusOK {
+		C.cronoq_buf_free(&b)
+		return "", status, msg
+	}
+	return takeBuf(&b), status, ""
+}
+
+func cEventsClose(e unsafe.Pointer) { C.cronoq_events_close((*C.cronoq_events)(e)) }
 
 func b2i(b bool) C.int32_t {
 	if b {

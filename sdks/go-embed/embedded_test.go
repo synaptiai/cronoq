@@ -400,3 +400,86 @@ func TestShutdownWakesWaiters(t *testing.T) {
 		t.Fatalf("snapshot after close: %v", err)
 	}
 }
+
+func TestOutputAndWait(t *testing.T) {
+	s := open(t, Config{Pools: []Pool{{Name: "default", Retry: &Retry{MaxAttempts: 1}}}})
+	id := submit(t, s, "2+2", &Task{Key: "sum"})
+	if _, err := s.Wait(TaskRef{ID: id}, 20*time.Millisecond); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("wait for a live task: %v", err)
+	}
+	got := make(chan *Result, 1)
+	go func() {
+		r, err := s.Wait(TaskRef{Key: "sum"}, 5*time.Second)
+		if err != nil {
+			t.Errorf("wait: %v", err)
+		}
+		got <- r
+	}()
+	if err := next(t, s).CompleteWithOutput([]byte("4\x00binary")); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-got; r == nil || !r.Succeeded || string(r.Output) != "4\x00binary" {
+		t.Fatalf("result %+v", r)
+	}
+	bad := submit(t, s, "y", nil)
+	if err := next(t, s).Fail("relay refused", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Wait(TaskRef{ID: bad}, 5*time.Second)
+	if err != nil || r.Succeeded || r.Message != "dead_lettered: relay refused" {
+		t.Fatalf("result %+v: %v", r, err)
+	}
+	if _, err := s.Wait(TaskRef{ID: 999999}, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wait for nothing: %v", err)
+	}
+}
+
+func TestEvents(t *testing.T) {
+	s := open(t, Config{Events: "all"})
+	ev, err := s.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ev.Close()
+	if _, err := ev.Next(20 * time.Millisecond); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("no event yet: %v", err)
+	}
+	id := submit(t, s, "x", &Task{Key: "k", Priority: High})
+	if err := next(t, s).Complete(); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for {
+		e, err := ev.Next(300 * time.Millisecond)
+		if errors.Is(err, ErrTimeout) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Task != id || e.Key != "k" || e.Pool != "default" || e.Priority != High || e.AtUnixMs == 0 {
+			t.Fatalf("event %+v", e)
+		}
+		seen = append(seen, e.Kind+":"+e.Status)
+	}
+	if len(seen) < 2 || seen[len(seen)-1] != "transition:succeeded" {
+		t.Fatalf("events %v", seen)
+	}
+	// A reader is woken when the subscription is closed.
+	done := make(chan error, 1)
+	go func() {
+		_, err := ev.Next(time.Minute)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	ev.Close()
+	ev.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrShutdown) {
+			t.Fatalf("reader: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader was not woken")
+	}
+}

@@ -65,6 +65,10 @@ typedef enum cronoq_status {
   CRONOQ_INTERNAL = 10,
 } cronoq_status;
 
+// A subscription to the status events of a scheduler. Made by [`cronoq_events_open`],
+// released by [`cronoq_events_close`].
+typedef struct cronoq_events cronoq_events;
+
 // A scheduler. Made by [`cronoq_new`], released by [`cronoq_free`].
 typedef struct cronoq_scheduler cronoq_scheduler;
 
@@ -93,8 +97,9 @@ typedef struct cronoq_lease {
   void *owner;
 } cronoq_lease;
 
-// Bytes the library allocated: JSON text in UTF-8. `ptr[len]` is a zero byte, so `ptr` is
-// also a C string. Free it with [`cronoq_buf_free`]; never with `free`.
+// Bytes the library allocated: JSON text in UTF-8, or the output of a task. `ptr[len]` is
+// a zero byte, so text is also a C string. Free it with [`cronoq_buf_free`]; never with
+// `free`.
 typedef struct cronoq_buf {
   // The bytes, or null when empty.
   uint8_t *ptr;
@@ -147,13 +152,15 @@ const char *cronoq_last_error(void);
 //                 {"kind": "rate", "name": "relay", "rate": 5.0, "burst": 10}],
 //   "priority": {"base": {"critical": 1000}, "allow_overtaking_high": false},
 //   "urgency": {"max": 100, "window_s": 300},
-//   "store": {"sqlite": "/path/to/queue.db"}
+//   "store": {"sqlite": "/path/to/queue.db"},
+//   "events": "final"
 // }
 // ```
 //
 // Every field is optional; an unknown field is an error. `overflow` is `reject` (the
 // default), `shed_lowest` or `shed_oldest`. `store.sqlite` needs a library built with the
-// SQLite store; without `store`, tasks are kept in memory.
+// SQLite store; without `store`, tasks are kept in memory. `events` is `final` (the default:
+// subscriptions get one event when a task ends) or `all` (every change of status).
 //
 // On `CRONOQ_OK`, `*out` is the scheduler. Release it with `cronoq_free`.
 //
@@ -283,14 +290,22 @@ void cronoq_lease_free(struct cronoq_lease *lease);
 
 // Report that the attempt succeeded. The task is done.
 //
+// `output` is the task's result: bytes that only the host understands, copied by the call.
+// It may be null when `output_len` is 0. `cronoq_wait` hands it to whoever waits for the
+// task.
+//
 // Returns `CRONOQ_LEASE_GONE` if the lease is over (timed out, cancelled, already ended):
 // the report is ignored.
 //
 // Thread safety: may be called from any thread, not only the one that took the lease.
 //
 // # Safety
-// `s` is a live scheduler.
-enum cronoq_status cronoq_complete(const struct cronoq_scheduler *s, uint64_t lease);
+// `s` is a live scheduler. `output` points to `output_len` readable bytes (or is null with
+// length 0).
+enum cronoq_status cronoq_complete(const struct cronoq_scheduler *s,
+                                   uint64_t lease,
+                                   const uint8_t *output,
+                                   size_t output_len);
 
 // Report that the attempt failed. `message` (null allowed) is kept with the task.
 //
@@ -431,6 +446,92 @@ enum cronoq_status cronoq_resume(const struct cronoq_scheduler *s,
                                  int32_t priority_class,
                                  const char *ordering_key,
                                  int32_t *out_changed);
+
+// Wait up to `timeout_ms` for a task to end, and get its result. The task is the one with
+// `key` when `key` is not null, else the one with id `task`.
+//
+// - `CRONOQ_OK`: the task ended. `*out_succeeded` is 1 if it succeeded, and `*out` is then
+//   the output that was reported with `cronoq_complete` (empty if there was none).
+//   Otherwise `*out_succeeded` is 0 and `*out` is text: the final status and the message,
+//   for example `dead_lettered: relay refused`.
+// - `CRONOQ_TIMEOUT`: the task has not ended yet. Call again.
+// - `CRONOQ_NOT_FOUND`: the scheduler does not know the task, or it ended so long ago that
+//   its result is no longer kept. The results of the last 1024 tasks that ended are kept in
+//   memory; with a store, older ones are read from it.
+// - `CRONOQ_SHUTDOWN`: the scheduler was shut down.
+//
+// Any number of threads may wait for one task; each gets the result.
+//
+// Ownership: on `CRONOQ_OK` the host owns `*out` and frees it with `cronoq_buf_free`.
+// Whatever the result, `*out` may be passed to `cronoq_buf_free` afterwards.
+//
+// Thread safety: may be called from any number of threads at once; each call blocks its
+// thread.
+//
+// # Safety
+// `s` is a live scheduler. `key` is null or a zero-terminated string. `out_succeeded` is
+// null or writable. `out` points to writable memory for one `cronoq_buf`.
+enum cronoq_status cronoq_wait(const struct cronoq_scheduler *s,
+                               uint64_t task,
+                               const char *key,
+                               uint64_t timeout_ms,
+                               int32_t *out_succeeded,
+                               struct cronoq_buf *out);
+
+// Subscribe to the status events of the scheduler: what happens to its tasks from now on.
+//
+// By default an event is sent when a task ends (`succeeded`, `failed`, `dead_lettered`,
+// `cancelled`, ...). With `"events": "all"` in the configuration, every change of status is
+// sent (`ready`, `running`, `retrying`, ...), and also updates and replacements.
+//
+// On `CRONOQ_OK`, `*out` is the subscription. Read it with `cronoq_events_next` and release
+// it with `cronoq_events_close`. Each subscription gets every event; several may be open.
+//
+// Thread safety: may be called from any number of threads at once.
+//
+// # Safety
+// `s` is a live scheduler. `out` points to writable memory for one pointer.
+enum cronoq_status cronoq_events_open(const struct cronoq_scheduler *s, struct cronoq_events **out);
+
+// Wait up to `timeout_ms` for the next event of a subscription.
+//
+// - `CRONOQ_OK`: `*out` is the event as JSON:
+//
+//   ```json
+//   {"task": 7, "key": "k", "pool": "default", "status": "succeeded", "attempt": 1,
+//    "priority": "normal", "at_unix_ms": 1767225600000, "message": null,
+//    "event": "transition"}
+//   ```
+//
+//   `event` is `transition` (the status changed), `updated`, `replaced` or `successor`.
+//   If the host read too slowly and events were dropped, the next call returns
+//   `{"lagged": 12}` with the number of events that were lost, and reading goes on with
+//   the oldest event that is still kept (the last 4096 are).
+// - `CRONOQ_TIMEOUT`: no event in time. Call again.
+// - `CRONOQ_SHUTDOWN`: the scheduler was shut down; no more events will come.
+//
+// Ownership: on `CRONOQ_OK` the host owns `*out` and frees it with `cronoq_buf_free`.
+// Whatever the result, `*out` may be passed to `cronoq_buf_free` afterwards.
+//
+// Thread safety: one thread at a time per subscription (a second caller waits); different
+// subscriptions may be read at the same time. Each call blocks its thread.
+//
+// # Safety
+// `events` is null or a subscription from `cronoq_events_open` that was not closed. `out`
+// points to writable memory for one `cronoq_buf`.
+enum cronoq_status cronoq_events_next(const struct cronoq_events *events,
+                                      uint64_t timeout_ms,
+                                      struct cronoq_buf *out);
+
+// Release a subscription. Null is allowed and does nothing. A subscription may be closed
+// before or after its scheduler is freed.
+//
+// Thread safety: no other thread may be inside `cronoq_events_next` with this subscription.
+//
+// # Safety
+// `events` is null or a subscription from `cronoq_events_open` that was not closed, and no
+// other thread uses it.
+void cronoq_events_close(struct cronoq_events *events);
 
 // Describe a live task (by `key` when not null, else by id `task`) as JSON:
 //

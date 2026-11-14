@@ -195,6 +195,40 @@ final class CronoqTests: XCTestCase {
         }
     }
 
+    func testOutputAndWait() throws {
+        let s = try Scheduler(Config(pools: [Pool(name: "default", retry: Retry(maxAttempts: 1))]))
+        let id = try submit(s, "2+2", TaskOptions(key: "sum"))
+        XCTAssertThrowsError(try s.wait(.id(id), timeout: 0.02)) { XCTAssertEqual($0 as? CronoqError, .timeout) }
+        try s.next(timeout: 5).complete(output: Data("4".utf8))
+        XCTAssertEqual(try s.wait(.key("sum"), timeout: 5), .succeeded(output: Data("4".utf8)))
+        let bad = try submit(s, "y")
+        try s.next(timeout: 5).fail("relay refused")
+        XCTAssertEqual(try s.wait(.id(bad), timeout: 5), .ended("dead_lettered: relay refused"))
+        XCTAssertThrowsError(try s.wait(.id(999_999), timeout: 0)) { error in
+            guard case .notFound = error as? CronoqError else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testEvents() throws {
+        let s = try Scheduler(Config(events: "all"))
+        let events = try s.events()
+        XCTAssertThrowsError(try events.next(timeout: 0.02)) { XCTAssertEqual($0 as? CronoqError, .timeout) }
+        let id = try submit(s, "x", TaskOptions(key: "k", priority: .high))
+        try s.next(timeout: 5).complete()
+        var seen: [String] = []
+        while let event = try? events.next(timeout: 0.3) {
+            XCTAssertEqual(event.task, id)
+            XCTAssertEqual(event.key, "k")
+            XCTAssertEqual(event.pool, "default")
+            XCTAssertEqual(event.priority, .high)
+            seen.append("\(event.kind ?? ""):\(event.status ?? "")")
+        }
+        XCTAssertEqual(seen.last, "transition:succeeded")
+        XCTAssertGreaterThanOrEqual(seen.count, 2)
+        try s.shutdown()
+        XCTAssertThrowsError(try events.next(timeout: 1)) { XCTAssertEqual($0 as? CronoqError, .shutdown) }
+    }
+
     func testShutdownWakesWaiters() throws {
         let s = try Scheduler()
         let woken = expectation(description: "the waiting thread is woken")

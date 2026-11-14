@@ -229,16 +229,20 @@ public struct Config: Codable, Sendable {
     public var priority: PrioritySettings?
     public var urgency: UrgencySettings?
     public var store: Store?
+    /// Which status events subscriptions get: "final" (default), one event when a task
+    /// ends, or "all", every change of status and every update and replacement.
+    public var events: String?
 
     public init(
         pools: [Pool]? = nil, resources: [Resource]? = nil, priority: PrioritySettings? = nil,
-        urgency: UrgencySettings? = nil, store: Store? = nil
+        urgency: UrgencySettings? = nil, store: Store? = nil, events: String? = nil
     ) {
         self.pools = pools
         self.resources = resources
         self.priority = priority
         self.urgency = urgency
         self.store = store
+        self.events = events
     }
 }
 
@@ -384,6 +388,80 @@ public struct TaskInfo: Codable, Sendable {
     public let attempt: UInt32
 }
 
+/// How a task ended.
+public enum TaskResult: Sendable, Equatable {
+    /// The task succeeded, with the output it was completed with.
+    case succeeded(output: Data)
+    /// The task did not succeed: the final status and the message, for example
+    /// "dead_lettered: relay refused".
+    case ended(String)
+}
+
+/// Something that happened to a task.
+public struct Event: Decodable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case task, key, pool, status, attempt, priority, message, lagged
+        case atUnixMs = "at_unix_ms"
+        case kind = "event"
+    }
+
+    /// The task's id.
+    public let task: UInt64?
+    public let key: String?
+    public let pool: String?
+    /// The task's status after the event, for example "succeeded".
+    public let status: String?
+    public let attempt: UInt32?
+    public let priority: Priority?
+    /// When it happened, in milliseconds since 1970.
+    public let atUnixMs: Int64?
+    /// The message of a task that failed.
+    public let message: String?
+    /// "transition" (the status changed), "updated", "replaced" or "successor".
+    public let kind: String?
+    /// Set when the program read too slowly and this many events were lost. Such an event
+    /// carries nothing else.
+    public let lagged: UInt64?
+}
+
+/// A subscription to the status events of a scheduler. It is released with its last
+/// reference. One thread at a time may read it.
+public final class EventStream: @unchecked Sendable {
+    private let handle: OpaquePointer
+    // Keeps the scheduler alive as long as events are read.
+    private let scheduler: Scheduler
+
+    init(_ scheduler: Scheduler) throws {
+        var out: OpaquePointer?
+        try check(cronoq_events_open(scheduler.handle, &out))
+        guard let handle = out else {
+            throw CronoqError.internal("no subscription was returned")
+        }
+        self.handle = handle
+        self.scheduler = scheduler
+    }
+
+    deinit {
+        cronoq_events_close(handle)
+    }
+
+    /// Wait up to `timeout` seconds for the next event. Throws `CronoqError.timeout` if
+    /// none came, and `.shutdown` after the scheduler was shut down.
+    public func next(timeout: TimeInterval) throws -> Event {
+        var buf = cronoq_buf()
+        try check(cronoq_events_next(handle, milliseconds(timeout), &buf))
+        defer { cronoq_buf_free(&buf) }
+        guard let ptr = buf.ptr else {
+            throw CronoqError.internal("an empty event")
+        }
+        do {
+            return try JSONDecoder().decode(Event.self, from: Data(bytes: ptr, count: buf.len))
+        } catch {
+            throw CronoqError.internal("\(error)")
+        }
+    }
+}
+
 /// The ordering keys of a pool.
 public struct OrderingSnapshot: Codable, Sendable {
     public let keys: UInt64
@@ -504,9 +582,13 @@ public struct Lease: @unchecked Sendable {
     /// The attempt's timeout.
     public let timeout: TimeInterval?
 
-    /// Report that the attempt succeeded.
-    public func complete() throws {
-        try check(cronoq_complete(scheduler.handle, id))
+    /// Report that the attempt succeeded. `output` is the task's result: bytes that only
+    /// the program understands. `Scheduler.wait` hands them to whoever waits for the task.
+    public func complete(output: Data = Data()) throws {
+        let status: cronoq_status = output.withUnsafeBytes { bytes in
+            cronoq_complete(scheduler.handle, id, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+        }
+        try check(status)
     }
 
     /// Report that the attempt failed. A retryable failure is tried again after the task's
@@ -702,6 +784,25 @@ public final class Scheduler: @unchecked Sendable {
         defer { cronoq_buf_free(&buf) }
         guard let ptr = buf.ptr else { return Data() }
         return Data(bytes: ptr, count: buf.len)
+    }
+
+    /// Wait up to `timeout` seconds for a task to end, and return its result. Throws
+    /// `CronoqError.timeout` if the task has not ended yet, `.notFound` if the scheduler
+    /// does not know the task or no longer keeps its result, and `.shutdown` after
+    /// `shutdown`. Any number of threads may wait for one task.
+    public func wait(_ ref: TaskRef, timeout: TimeInterval) throws -> TaskResult {
+        var buf = cronoq_buf()
+        var succeeded: Int32 = 0
+        try check(withRef(ref) { cronoq_wait(handle, $0, $1, milliseconds(timeout), &succeeded, &buf) })
+        let data = take(&buf)
+        return succeeded == 1 ? .succeeded(output: data) : .ended(String(decoding: data, as: UTF8.self))
+    }
+
+    /// Subscribe to what happens to the scheduler's tasks from now on. By default there is
+    /// one event when a task ends; with `Config.events` "all" every change of status is an
+    /// event. Each subscription gets every event.
+    public func events() throws -> EventStream {
+        try EventStream(self)
     }
 
     /// Describe a live task. Throws `CronoqError.notFound` if the scheduler does not know it.

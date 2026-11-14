@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -219,6 +220,9 @@ type Config struct {
 	Priority  *PrioritySettings `json:"priority,omitempty"`
 	Urgency   *UrgencySettings  `json:"urgency,omitempty"`
 	Store     *Store            `json:"store,omitempty"`
+	// Events says which status events subscriptions get: "final" (default), one event when
+	// a task ends, or "all", every change of status and every update and replacement.
+	Events string `json:"events,omitempty"`
 }
 
 // Task holds the options of a submission. The zero value is a normal task in the pool
@@ -478,9 +482,15 @@ func (l *Lease) end(f func(h unsafe.Pointer) (int32, string)) error {
 	return statusError(f(h))
 }
 
-// Complete reports that the attempt succeeded.
+// Complete reports that the attempt succeeded, without an output.
 func (l *Lease) Complete() error {
-	return l.end(func(h unsafe.Pointer) (int32, string) { return cComplete(h, l.ID) })
+	return l.CompleteWithOutput(nil)
+}
+
+// CompleteWithOutput reports that the attempt succeeded, with the task's result: bytes that
+// only the program understands. Wait hands them to whoever waits for the task.
+func (l *Lease) CompleteWithOutput(output []byte) error {
+	return l.end(func(h unsafe.Pointer) (int32, string) { return cComplete(h, l.ID, output) })
 }
 
 // Fail reports that the attempt failed. A retryable failure is tried again after the
@@ -628,6 +638,131 @@ func (s *Scheduler) Snapshot() (*Snapshot, error) {
 		return nil, fmt.Errorf("%w: %v", ErrInternal, err)
 	}
 	return &snap, nil
+}
+
+// Result is how a task ended.
+type Result struct {
+	// Succeeded says whether the task succeeded.
+	Succeeded bool
+	// Output is what the task was completed with, if it succeeded.
+	Output []byte
+	// Message is the final status and the message of a task that did not succeed, for
+	// example "dead_lettered: relay refused".
+	Message string
+}
+
+// Wait waits up to timeout for a task to end and returns its result. It returns ErrTimeout
+// if the task has not ended yet, ErrNotFound if the scheduler does not know the task or no
+// longer keeps its result, and ErrShutdown after Shutdown. Any number of goroutines may wait
+// for one task.
+func (s *Scheduler) Wait(ref TaskRef, timeout time.Duration) (*Result, error) {
+	h, err := s.enter()
+	if err != nil {
+		return nil, err
+	}
+	defer s.calls.Done()
+	if timeout < 0 {
+		timeout = 0
+	}
+	succeeded, data, status, msg := cWait(h, ref.ID, ref.Key, uint64(timeout/time.Millisecond))
+	if err := statusError(status, msg); err != nil {
+		return nil, err
+	}
+	if succeeded {
+		return &Result{Succeeded: true, Output: data}, nil
+	}
+	return &Result{Message: string(data)}, nil
+}
+
+// Event is something that happened to a task.
+type Event struct {
+	// Task is the task's id.
+	Task uint64 `json:"task"`
+	Key  string `json:"key"`
+	Pool string `json:"pool"`
+	// Status is the task's status after the event, for example "succeeded".
+	Status   string   `json:"status"`
+	Attempt  uint32   `json:"attempt"`
+	Priority Priority `json:"priority"`
+	// AtUnixMs is when it happened, in milliseconds since 1970.
+	AtUnixMs int64 `json:"at_unix_ms"`
+	// Message is the message of a task that failed, if any.
+	Message string `json:"message"`
+	// Kind is "transition" (the status changed), "updated", "replaced" or "successor".
+	Kind string `json:"event"`
+	// Lagged is not zero when the program read too slowly and this many events were lost.
+	// Such an Event carries nothing else.
+	Lagged uint64 `json:"lagged"`
+}
+
+// Events is a subscription to the status events of a scheduler. Close it when done.
+type Events struct {
+	s      *Scheduler
+	mu     sync.Mutex
+	handle unsafe.Pointer
+	closed atomic.Bool
+}
+
+// Events subscribes to what happens to the scheduler's tasks from now on. By default there
+// is one event when a task ends; with Config.Events "all" every change of status is an
+// event. Each subscription gets every event.
+func (s *Scheduler) Events() (*Events, error) {
+	h, err := s.enter()
+	if err != nil {
+		return nil, err
+	}
+	defer s.calls.Done()
+	e, status, msg := cEventsOpen(h)
+	if err := statusError(status, msg); err != nil {
+		return nil, err
+	}
+	return &Events{s: s, handle: e}, nil
+}
+
+// Next waits up to timeout for the next event. It returns ErrTimeout if none came, and
+// ErrShutdown after the scheduler was shut down or the subscription was closed. One
+// goroutine at a time may read a subscription.
+func (e *Events) Next(timeout time.Duration) (*Event, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		// Wait in short steps, so that Close does not have to wait for a long timeout.
+		step := time.Until(deadline)
+		if step > 100*time.Millisecond {
+			step = 100 * time.Millisecond
+		}
+		if step < 0 {
+			step = 0
+		}
+		e.mu.Lock()
+		if e.closed.Load() {
+			e.mu.Unlock()
+			return nil, ErrShutdown
+		}
+		text, status, msg := cEventsNext(e.handle, uint64(step/time.Millisecond))
+		e.mu.Unlock()
+		if status == statusTimeout && time.Now().Before(deadline) {
+			continue
+		}
+		if err := statusError(status, msg); err != nil {
+			return nil, err
+		}
+		var ev Event
+		if err := json.Unmarshal([]byte(text), &ev); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInternal, err)
+		}
+		return &ev, nil
+	}
+}
+
+// Close releases the subscription. Calling it twice is allowed.
+func (e *Events) Close() {
+	if e.closed.Swap(true) {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cEventsClose(e.handle)
+	e.handle = nil
 }
 
 // Shutdown stops the scheduler: goroutines waiting in Next return ErrShutdown at once and

@@ -87,7 +87,7 @@ cronoq_lease lease;
 switch (cronoq_next_lease(s, NULL, 5000, &lease)) {    /* waits up to 5 s */
 case CRONOQ_OK:
   if (send(lease.payload, lease.payload_len))
-    cronoq_complete(s, lease.lease);
+    cronoq_complete(s, lease.lease, NULL, 0);          /* no output */
   else
     cronoq_fail(s, lease.lease, "relay refused", /*retryable*/ 1, /*retry_after_ms*/ -1);
   cronoq_lease_free(&lease);
@@ -219,7 +219,8 @@ optional, and an unknown field is an error.
                 {"kind": "rate", "name": "relay", "rate": 5.0, "burst": 10}],
   "priority": {"base": {"critical": 1000}, "allow_overtaking_high": false},
   "urgency": {"max": 100, "window_s": 300},
-  "store": {"sqlite": "/path/to/queue.db"}
+  "store": {"sqlite": "/path/to/queue.db"},
+  "events": "final"
 }
 ```
 
@@ -234,6 +235,7 @@ optional, and an unknown field is an error.
 | `priority`, `urgency` | The [priority](../concepts/priorities.md) and [urgency](../concepts/deadlines.md) settings, for all pools or for one. Classes are named `critical`, `high`, `normal`, `low`. |
 | `resources` | [Semaphores and rate limits](../concepts/resources.md) that tasks name in their `resources`. |
 | `store.sqlite` | Keep tasks in this SQLite file. Needs a library built with `sqlite`. |
+| `events` | Which [status events](#results-and-events) subscriptions get: `final` (default) or `all`. |
 
 ## Task options
 
@@ -271,6 +273,9 @@ an error.
 | [Update a queued task](../concepts/updating.md) | `cronoq_update` | `Update` | `update` |
 | [Floor of an ordering key](../concepts/ordering-keys.md#a-floor-for-a-key) | `cronoq_set_ordering_floor` | `SetOrderingFloor` | `setOrderingFloor` |
 | [Pause, resume](../concepts/pausing.md) | `cronoq_pause`, `cronoq_resume` | `Pause`, `Resume` | `pause`, `resume` |
+| Report with a result | `cronoq_complete` with output bytes | `Lease.CompleteWithOutput` | `Lease.complete(output:)` |
+| [Wait for a result](#results-and-events) | `cronoq_wait` | `Wait` | `wait` |
+| [Status events](#results-and-events) | `cronoq_events_open`, `cronoq_events_next`, `cronoq_events_close` | `Events`, `Events.Next`, `Events.Close` | `events()`, `EventStream.next` |
 | Look | `cronoq_task`, `cronoq_snapshot` | `Task`, `Snapshot` | `task`, `snapshot` |
 | Version | `cronoq_abi_version`, `cronoq_version` | `Version` | `Scheduler.libraryVersion` |
 
@@ -282,6 +287,54 @@ Three results end an attempt:
 | Fail | The work failed. | Retryable: tried again after a backoff until the retry policy is used up. Not retryable: the task fails for good. |
 | Release | You cannot run the task now, and nothing is wrong with it (no network, the app is going to the background). | The task keeps its place and is handed out again after the delay. No retry is used, up to `max_releases`. |
 
+## Results and events
+
+The part of your program that submits a task is often not the part that runs it. Two calls
+connect them.
+
+**A result.** An attempt can be completed with an **output**: bytes that only your program
+understands, like the payload. **Wait** blocks until the task has ended, up to a timeout, and
+returns how it ended.
+
+| The task | Wait returns |
+|---|---|
+| succeeded | "Succeeded" and the output (empty if none was given). |
+| ended in another way | "Not succeeded" and text: the final status and the message, for example `dead_lettered: relay refused` or `cancelled: ...`. |
+| has not ended yet | Timeout. Call again. |
+| is unknown, or ended too long ago | Not found. |
+
+```go
+r, err := s.Wait(embedded.TaskRef{Key: "upload-17"}, 30*time.Second)
+if err == nil && r.Succeeded {
+    use(r.Output)
+}
+```
+
+Any number of threads may wait for one task. The scheduler keeps the results of the last
+1024 tasks that ended; with the SQLite store, older ones are read from the file.
+
+**Events.** A subscription delivers what happens to tasks, as it happens, to a thread that
+asks for the next event with a blocking call.
+
+| `"events"` in the configuration | Events you get |
+|---|---|
+| `"final"` (default) | One per task, when it ends: `succeeded`, `failed`, `dead_lettered`, `cancelled`, and so on. |
+| `"all"` | Every change of status (`ready`, `running`, `retrying`, ...), and every update and replacement. |
+
+```json
+{"task": 7, "key": "k", "pool": "default", "status": "succeeded", "attempt": 1,
+ "priority": "normal", "at_unix_ms": 1767225600000, "message": null, "event": "transition"}
+```
+
+- `event` is `transition` (the status changed), `updated`, `replaced` or `successor`.
+- Each subscription gets every event from the moment it was opened. Open it before you submit
+  the tasks you want to follow.
+- The scheduler keeps the last 4096 events for a slow reader. A reader that falls further
+  behind gets `{"lagged": n}` once, with the number of events it lost, and then goes on with
+  the oldest event that is kept. Events are for showing progress; use **wait** when you must
+  not miss the end of a task.
+- Events are not stored. After a restart, a subscription starts empty.
+
 ## What to know
 
 - **Results are applied a moment later.** `complete`, `fail` and `release` hand the result to
@@ -291,11 +344,8 @@ Three results end an attempt:
 - **A paused pool.** `next lease` waits out its timeout and then reports "paused" with the
   reason, so a loop around it does not spin. A paused class or ordering key is not reported
   this way: the call just finds nothing of it. See the snapshot for those.
-- **No output.** A task has a payload but no result value: your program already has the
-  result when it reports the attempt.
 - **Not in the C API:** recurring schedules, fixed start times, dependencies between tasks,
-  fair sharing between tenants, worker labels, status events. Ask for what you need in an
-  issue.
+  fair sharing between tenants, worker labels. Ask for what you need in an issue.
 - **A task may be started a moment before a thread asks for it.** When a thread stops
   waiting, or the scheduler ends a lease you hold (timeout, cancel), the scheduler can have
   started one more task already. That task counts as running, its timeout runs, and it goes

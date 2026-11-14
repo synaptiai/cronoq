@@ -13,7 +13,9 @@ contain breaking changes; they are called out under **Changed**.
   (crate `cronoq-ffi`), with a generated header, `cronoq.h`, runs the scheduler inside a Go,
   Swift or C program without a server. The program submits tasks as bytes and runs them
   itself: its threads take one attempt at a time with a blocking call (`cronoq_next_lease`)
-  and report it (`cronoq_complete`, `cronoq_fail`, `cronoq_release`). Also: cancel, update,
+  and report it (`cronoq_complete`, with an optional output, `cronoq_fail`,
+  `cronoq_release`). `cronoq_wait` waits for a task to end and returns its output, and a
+  subscription (`cronoq_events_open`, `cronoq_events_next`) delivers status events. Also: cancel, update,
   replace by key, ordering keys and their floor, pause and resume, snapshot, an ABI version
   check, and an optional SQLite store (build feature `sqlite`). Errors are status codes and
   no panic crosses the boundary. Two wrappers are maintained with it: Go

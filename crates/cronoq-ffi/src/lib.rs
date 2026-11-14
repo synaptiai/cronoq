@@ -22,13 +22,14 @@ mod pull;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cronoq::{
-    BlockingScheduler, Error, PauseTarget, Priority, Scheduler, Store, SubmitOutcome, TaskError,
-    TaskId, TaskRef,
+    BlockingScheduler, Error, PauseTarget, Priority, Scheduler, StatusEvent, Store, SubmitOutcome,
+    TaskError, TaskFailure, TaskId, TaskRef,
 };
 use cronoq_core::{OrderingError, SubmitError, UpdateError};
 use serde_json::json;
@@ -76,8 +77,9 @@ pub enum cronoq_status {
 
 use cronoq_status::*;
 
-/// Bytes the library allocated: JSON text in UTF-8. `ptr[len]` is a zero byte, so `ptr` is
-/// also a C string. Free it with [`cronoq_buf_free`]; never with `free`.
+/// Bytes the library allocated: JSON text in UTF-8, or the output of a task. `ptr[len]` is
+/// a zero byte, so text is also a C string. Free it with [`cronoq_buf_free`]; never with
+/// `free`.
 #[repr(C)]
 pub struct cronoq_buf {
     /// The bytes, or null when empty.
@@ -122,11 +124,27 @@ struct LeaseOwner {
 
 /// A scheduler. Made by [`cronoq_new`], released by [`cronoq_free`].
 pub struct cronoq_scheduler {
+    shared: Arc<Shared>,
+}
+
+/// What a scheduler and the event subscriptions made from it share.
+struct Shared {
     /// `None` after shutdown.
     sched: RwLock<Option<BlockingScheduler<Bytes, Bytes>>>,
     hub: Arc<Hub>,
     /// The store, if tasks are kept in one: it is told when the scheduler stops.
     store: Option<Arc<dyn Store<Bytes, Bytes>>>,
+    /// The names of the pools, in the order of their numbers.
+    pools: Vec<Arc<str>>,
+    /// Set when the scheduler is being stopped: calls that wait give up.
+    stopping: AtomicBool,
+}
+
+/// A subscription to the status events of a scheduler. Made by [`cronoq_events_open`],
+/// released by [`cronoq_events_close`].
+pub struct cronoq_events {
+    shared: Arc<Shared>,
+    events: Mutex<tokio::sync::broadcast::Receiver<StatusEvent>>,
 }
 
 /// A failed call: its status and the message for `cronoq_last_error`.
@@ -249,14 +267,17 @@ fn c_string(s: &str) -> CString {
 }
 
 fn buf(text: String) -> cronoq_buf {
-    let len = text.len();
-    let mut bytes = text.into_bytes();
+    bytes_buf(text.into_bytes())
+}
+
+fn bytes_buf(mut bytes: Vec<u8>) -> cronoq_buf {
+    let len = bytes.len();
     bytes.push(0);
     let ptr = Box::into_raw(bytes.into_boxed_slice()) as *mut u8;
     cronoq_buf { ptr, len }
 }
 
-impl cronoq_scheduler {
+impl Shared {
     /// Run `f` with the scheduler, unless it was shut down.
     fn with<T>(&self, f: impl FnOnce(&BlockingScheduler<Bytes, Bytes>) -> Res<T>) -> Res<T> {
         let guard = self.sched.read().unwrap_or_else(|e| e.into_inner());
@@ -308,6 +329,7 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
         }));
     }
     let resources = cfg.resources();
+    let all_events = cfg.all_events();
     let sqlite = cfg.store.as_ref().and_then(|s| s.sqlite.clone());
     #[cfg(not(feature = "sqlite"))]
     if sqlite.is_some() {
@@ -318,7 +340,7 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
     let opened: Arc<std::sync::OnceLock<Arc<dyn Store<Bytes, Bytes>>>> = Arc::default();
     let opened2 = opened.clone();
     let sched = BlockingScheduler::start(move || async move {
-        let mut b = Scheduler::<Bytes, Bytes>::builder();
+        let mut b = Scheduler::<Bytes, Bytes>::builder().emit_transitions(all_events);
         for p in pools {
             b = b.pool(p);
         }
@@ -350,15 +372,20 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
         });
     }
     Ok(cronoq_scheduler {
-        sched: RwLock::new(Some(sched)),
-        hub,
-        store: opened.get().cloned(),
+        shared: Arc::new(Shared {
+            sched: RwLock::new(Some(sched)),
+            hub,
+            store: opened.get().cloned(),
+            pools: names,
+            stopping: AtomicBool::new(false),
+        }),
     })
 }
 
 /// Stop the scheduler, giving the host up to `grace` to report the leases it holds.
-fn stop(s: &cronoq_scheduler, grace: Duration) -> Res {
+fn stop(s: &Shared, grace: Duration) -> Res {
     // No new leases; the threads that wait for one return and let go of the scheduler.
+    s.stopping.store(true, Ordering::SeqCst);
     s.hub.close();
     // Leases the host holds can still be reported.
     s.hub.wait_until_idle(grace);
@@ -389,9 +416,11 @@ fn stop(s: &cronoq_scheduler, grace: Duration) -> Res {
 ///
 /// # Safety
 /// `s` is null or a pointer from `cronoq_new` that was not freed.
-unsafe fn scheduler<'a>(s: *const cronoq_scheduler) -> Res<&'a cronoq_scheduler> {
+unsafe fn scheduler<'a>(s: *const cronoq_scheduler) -> Res<&'a Arc<Shared>> {
     // SAFETY: the caller guarantees a live scheduler or null.
-    unsafe { s.as_ref() }.ok_or_else(|| invalid("the scheduler is null"))
+    unsafe { s.as_ref() }
+        .map(|s| &s.shared)
+        .ok_or_else(|| invalid("the scheduler is null"))
 }
 
 /// The revision of the API this library implements. See `CRONOQ_ABI_VERSION`.
@@ -444,13 +473,15 @@ pub extern "C" fn cronoq_last_error() -> *const c_char {
 ///                 {"kind": "rate", "name": "relay", "rate": 5.0, "burst": 10}],
 ///   "priority": {"base": {"critical": 1000}, "allow_overtaking_high": false},
 ///   "urgency": {"max": 100, "window_s": 300},
-///   "store": {"sqlite": "/path/to/queue.db"}
+///   "store": {"sqlite": "/path/to/queue.db"},
+///   "events": "final"
 /// }
 /// ```
 ///
 /// Every field is optional; an unknown field is an error. `overflow` is `reject` (the
 /// default), `shed_lowest` or `shed_oldest`. `store.sqlite` needs a library built with the
-/// SQLite store; without `store`, tasks are kept in memory.
+/// SQLite store; without `store`, tasks are kept in memory. `events` is `final` (the default:
+/// subscriptions get one event when a task ends) or `all` (every change of status).
 ///
 /// On `CRONOQ_OK`, `*out` is the scheduler. Release it with `cronoq_free`.
 ///
@@ -520,7 +551,7 @@ pub unsafe extern "C" fn cronoq_free(s: *mut cronoq_scheduler) {
         }
         // SAFETY: the caller hands back a pointer from `cronoq_new` and no longer uses it.
         let s = unsafe { Box::from_raw(s) };
-        let _ = stop(&s, Duration::ZERO);
+        let _ = stop(&s.shared, Duration::ZERO);
         Ok(CRONOQ_OK)
     });
 }
@@ -740,11 +771,7 @@ pub unsafe extern "C" fn cronoq_lease_free(lease: *mut cronoq_lease) {
 }
 
 /// End a lease with `result`.
-fn finish(
-    s: &cronoq_scheduler,
-    lease: u64,
-    result: Result<Bytes, TaskError>,
-) -> Res<cronoq_status> {
+fn finish(s: &Shared, lease: u64, result: Result<Bytes, TaskError>) -> Res<cronoq_status> {
     s.with(|b| {
         let held = s
             .hub
@@ -755,17 +782,37 @@ fn finish(
 
 /// Report that the attempt succeeded. The task is done.
 ///
+/// `output` is the task's result: bytes that only the host understands, copied by the call.
+/// It may be null when `output_len` is 0. `cronoq_wait` hands it to whoever waits for the
+/// task.
+///
 /// Returns `CRONOQ_LEASE_GONE` if the lease is over (timed out, cancelled, already ended):
 /// the report is ignored.
 ///
 /// Thread safety: may be called from any thread, not only the one that took the lease.
 ///
 /// # Safety
-/// `s` is a live scheduler.
+/// `s` is a live scheduler. `output` points to `output_len` readable bytes (or is null with
+/// length 0).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cronoq_complete(s: *const cronoq_scheduler, lease: u64) -> cronoq_status {
-    // SAFETY: caller.
-    guard(|| finish(unsafe { scheduler(s) }?, lease, Ok(Bytes::new())))
+pub unsafe extern "C" fn cronoq_complete(
+    s: *const cronoq_scheduler,
+    lease: u64,
+    output: *const u8,
+    output_len: usize,
+) -> cronoq_status {
+    guard(|| {
+        let output = if output_len == 0 {
+            Bytes::new()
+        } else if output.is_null() {
+            return Err(invalid("output is null but output_len is not 0"));
+        } else {
+            // SAFETY: the caller guarantees `output_len` readable bytes.
+            Bytes::copy_from_slice(unsafe { std::slice::from_raw_parts(output, output_len) })
+        };
+        // SAFETY: caller.
+        finish(unsafe { scheduler(s) }?, lease, Ok(output))
+    })
 }
 
 /// Report that the attempt failed. `message` (null allowed) is kept with the task.
@@ -1065,6 +1112,247 @@ pub unsafe extern "C" fn cronoq_resume(
         }
         Ok(CRONOQ_OK)
     })
+}
+
+/// Poll `f` on this thread until it is ready, `deadline` passes, or the scheduler is being
+/// stopped. The futures used here only wait on a channel, so they need no runtime; the
+/// thread does not hold the scheduler while it waits.
+fn park_until<F: std::future::Future + Unpin>(
+    shared: &Shared,
+    mut f: F,
+    deadline: Option<std::time::Instant>,
+) -> Option<F::Output> {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    loop {
+        if let std::task::Poll::Ready(v) = std::pin::Pin::new(&mut f).poll(&mut cx) {
+            return Some(v);
+        }
+        if shared.stopping.load(Ordering::SeqCst) {
+            return None;
+        }
+        // Wake up now and then to notice a stop.
+        let mut nap = Duration::from_millis(50);
+        if let Some(d) = deadline {
+            let left = d.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            nap = nap.min(left);
+        }
+        std::thread::park_timeout(nap);
+    }
+}
+
+fn shut_down() -> Fail {
+    Fail(CRONOQ_SHUTDOWN, "the scheduler was shut down".into())
+}
+
+/// Wait up to `timeout_ms` for a task to end, and get its result. The task is the one with
+/// `key` when `key` is not null, else the one with id `task`.
+///
+/// - `CRONOQ_OK`: the task ended. `*out_succeeded` is 1 if it succeeded, and `*out` is then
+///   the output that was reported with `cronoq_complete` (empty if there was none).
+///   Otherwise `*out_succeeded` is 0 and `*out` is text: the final status and the message,
+///   for example `dead_lettered: relay refused`.
+/// - `CRONOQ_TIMEOUT`: the task has not ended yet. Call again.
+/// - `CRONOQ_NOT_FOUND`: the scheduler does not know the task, or it ended so long ago that
+///   its result is no longer kept. The results of the last 1024 tasks that ended are kept in
+///   memory; with a store, older ones are read from it.
+/// - `CRONOQ_SHUTDOWN`: the scheduler was shut down.
+///
+/// Any number of threads may wait for one task; each gets the result.
+///
+/// Ownership: on `CRONOQ_OK` the host owns `*out` and frees it with `cronoq_buf_free`.
+/// Whatever the result, `*out` may be passed to `cronoq_buf_free` afterwards.
+///
+/// Thread safety: may be called from any number of threads at once; each call blocks its
+/// thread.
+///
+/// # Safety
+/// `s` is a live scheduler. `key` is null or a zero-terminated string. `out_succeeded` is
+/// null or writable. `out` points to writable memory for one `cronoq_buf`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_wait(
+    s: *const cronoq_scheduler,
+    task: u64,
+    key: *const c_char,
+    timeout_ms: u64,
+    out_succeeded: *mut i32,
+    out: *mut cronoq_buf,
+) -> cronoq_status {
+    guard(|| {
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        // SAFETY: caller, for every pointer below.
+        unsafe { out.write(bytes_buf_empty()) };
+        let s = unsafe { scheduler(s) }?;
+        let target = unsafe { task_ref(task, key) }?;
+        let deadline = std::time::Instant::now().checked_add(Duration::from_millis(timeout_ms));
+        let handle = s.with(|b| Ok(b.block_on(b.scheduler().handle(target))?))?;
+        let Some(handle) = handle else {
+            return Err(Fail(CRONOQ_NOT_FOUND, "no such task".into()));
+        };
+        // Wait without holding the scheduler: a shutdown is not kept waiting.
+        let Some(result) = park_until(s, handle, deadline) else {
+            return if s.stopping.load(Ordering::SeqCst) {
+                Err(shut_down())
+            } else {
+                Ok(CRONOQ_TIMEOUT)
+            };
+        };
+        let (succeeded, bytes) = match result {
+            Ok(output) => (1, output.to_vec()),
+            Err(TaskFailure::Ended { status, message }) => {
+                let status = snake(&format!("{status:?}"));
+                (0, format!("{status}: {message}").into_bytes())
+            }
+            Err(TaskFailure::Shutdown) => return Err(shut_down()),
+            Err(e) => return Err(Fail(CRONOQ_NOT_FOUND, e.to_string())),
+        };
+        if !out_succeeded.is_null() {
+            unsafe { *out_succeeded = succeeded };
+        }
+        unsafe { out.write(bytes_buf(bytes)) };
+        Ok(CRONOQ_OK)
+    })
+}
+
+/// Subscribe to the status events of the scheduler: what happens to its tasks from now on.
+///
+/// By default an event is sent when a task ends (`succeeded`, `failed`, `dead_lettered`,
+/// `cancelled`, ...). With `"events": "all"` in the configuration, every change of status is
+/// sent (`ready`, `running`, `retrying`, ...), and also updates and replacements.
+///
+/// On `CRONOQ_OK`, `*out` is the subscription. Read it with `cronoq_events_next` and release
+/// it with `cronoq_events_close`. Each subscription gets every event; several may be open.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler. `out` points to writable memory for one pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_events_open(
+    s: *const cronoq_scheduler,
+    out: *mut *mut cronoq_events,
+) -> cronoq_status {
+    guard(|| {
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        // SAFETY: caller, for every pointer below.
+        unsafe { *out = std::ptr::null_mut() };
+        let s = unsafe { scheduler(s) }?;
+        let events = s.with(|b| Ok(b.events()))?;
+        let sub = Box::new(cronoq_events {
+            shared: s.clone(),
+            events: Mutex::new(events),
+        });
+        unsafe { *out = Box::into_raw(sub) };
+        Ok(CRONOQ_OK)
+    })
+}
+
+/// Wait up to `timeout_ms` for the next event of a subscription.
+///
+/// - `CRONOQ_OK`: `*out` is the event as JSON:
+///
+///   ```json
+///   {"task": 7, "key": "k", "pool": "default", "status": "succeeded", "attempt": 1,
+///    "priority": "normal", "at_unix_ms": 1767225600000, "message": null,
+///    "event": "transition"}
+///   ```
+///
+///   `event` is `transition` (the status changed), `updated`, `replaced` or `successor`.
+///   If the host read too slowly and events were dropped, the next call returns
+///   `{"lagged": 12}` with the number of events that were lost, and reading goes on with
+///   the oldest event that is still kept (the last 4096 are).
+/// - `CRONOQ_TIMEOUT`: no event in time. Call again.
+/// - `CRONOQ_SHUTDOWN`: the scheduler was shut down; no more events will come.
+///
+/// Ownership: on `CRONOQ_OK` the host owns `*out` and frees it with `cronoq_buf_free`.
+/// Whatever the result, `*out` may be passed to `cronoq_buf_free` afterwards.
+///
+/// Thread safety: one thread at a time per subscription (a second caller waits); different
+/// subscriptions may be read at the same time. Each call blocks its thread.
+///
+/// # Safety
+/// `events` is null or a subscription from `cronoq_events_open` that was not closed. `out`
+/// points to writable memory for one `cronoq_buf`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_events_next(
+    events: *const cronoq_events,
+    timeout_ms: u64,
+    out: *mut cronoq_buf,
+) -> cronoq_status {
+    use tokio::sync::broadcast::error::RecvError;
+    guard(|| {
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        // SAFETY: caller, for every pointer below.
+        unsafe { out.write(bytes_buf_empty()) };
+        let sub = unsafe { events.as_ref() }.ok_or_else(|| invalid("events is null"))?;
+        let deadline = std::time::Instant::now().checked_add(Duration::from_millis(timeout_ms));
+        let mut rx = sub.events.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(got) = park_until(&sub.shared, Box::pin(rx.recv()), deadline) else {
+            return if sub.shared.stopping.load(Ordering::SeqCst) {
+                Err(shut_down())
+            } else {
+                Ok(CRONOQ_TIMEOUT)
+            };
+        };
+        let text = match got {
+            Ok(e) => json!({
+                "task": e.id.0,
+                "key": e.key.as_deref(),
+                "pool": sub.shared.pools.get(e.pool.0 as usize).map(|p| &**p),
+                "status": snake(&format!("{:?}", e.status)),
+                "attempt": e.attempt,
+                "priority": e.priority.name(),
+                "at_unix_ms": e.at.0 / 1_000_000,
+                "message": e.message.as_deref(),
+                "event": snake(&format!("{:?}", e.kind)),
+            }),
+            Err(RecvError::Lagged(n)) => json!({ "lagged": n }),
+            Err(RecvError::Closed) => return Err(shut_down()),
+        };
+        unsafe { out.write(buf(text.to_string())) };
+        Ok(CRONOQ_OK)
+    })
+}
+
+/// Release a subscription. Null is allowed and does nothing. A subscription may be closed
+/// before or after its scheduler is freed.
+///
+/// Thread safety: no other thread may be inside `cronoq_events_next` with this subscription.
+///
+/// # Safety
+/// `events` is null or a subscription from `cronoq_events_open` that was not closed, and no
+/// other thread uses it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_events_close(events: *mut cronoq_events) {
+    let _ = guard(|| {
+        if !events.is_null() {
+            // SAFETY: the caller hands back a pointer from `cronoq_events_open`.
+            drop(unsafe { Box::from_raw(events) });
+        }
+        Ok(CRONOQ_OK)
+    });
+}
+
+fn bytes_buf_empty() -> cronoq_buf {
+    cronoq_buf {
+        ptr: std::ptr::null_mut(),
+        len: 0,
+    }
 }
 
 /// `CamelCase` as `snake_case`, for the names of statuses.

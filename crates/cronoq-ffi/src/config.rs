@@ -31,6 +31,17 @@ pub(crate) struct Config {
     priority: Option<PriorityJson>,
     urgency: Option<UrgencyJson>,
     pub(crate) store: Option<StoreJson>,
+    events: Option<EventsJson>,
+}
+
+/// Which status events subscriptions get.
+#[derive(Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum EventsJson {
+    /// One event when a task ends (the default).
+    Final,
+    /// Every change of status, and updates and replacements.
+    All,
 }
 
 /// Where tasks are kept. Without it they are kept in memory.
@@ -201,6 +212,11 @@ impl Config {
             });
         }
         Ok(c)
+    }
+
+    /// Whether subscriptions get every change of status, not only the last one.
+    pub(crate) fn all_events(&self) -> bool {
+        self.events == Some(EventsJson::All)
     }
 
     pub(crate) fn resources(&self) -> Vec<ResourceConfig> {
