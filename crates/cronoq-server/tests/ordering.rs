@@ -636,7 +636,7 @@ async fn a_pinned_tenant_has_its_own_ordering_keys() {
     let mut shared = s.tasks(CLIENT).await;
     let mut acme = s.tasks(ACME).await;
     // Another caller's task in key "shared"; acme's failing task names the same key.
-    let mut id_of = async |c: &mut pb::tasks_client::TasksClient<Intercepted>, t: pb::TaskSpec| {
+    let id_of = async |c: &mut pb::tasks_client::TasksClient<Intercepted>, t: pb::TaskSpec| {
         c.submit(submit(t, false)).await.unwrap().into_inner().id
     };
     let theirs = id_of(&mut shared, ordered(b"theirs", "shared")).await;
