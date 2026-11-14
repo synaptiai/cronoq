@@ -165,8 +165,7 @@ func cstr(s string, null bool) *byte {
 	if s == "" && null {
 		return nil
 	}
-	b := make([]byte, len(s)+1)
-	copy(b, s)
+	b := append([]byte(s), 0)
 	return &b[0]
 }
 
