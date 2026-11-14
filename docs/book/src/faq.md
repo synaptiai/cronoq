@@ -34,7 +34,9 @@ practical; use `max_pending` to bound them.
 ### Can I use cronoq without tokio?
 
 From Rust, use `BlockingScheduler` (it owns a private tokio runtime), or drive `cronoq-core`
-yourself. From Python, the bindings manage their own runtime.
+yourself. From Python, the bindings manage their own runtime. From Go, Swift or C, the
+experimental [embedded library](guides/embedding.md) runs the scheduler on one thread that
+the library owns. Its SQLite store, if used, adds threads of its own.
 
 ### Do I need Postgres?
 
@@ -89,4 +91,70 @@ The new version applies its schema migrations when it connects, and an older bui
 start against a newer schema, so upgrades roll forward only. When a release adds no migration,
 replace the standbys first and the leader last; accepted work survives the leader change and
 workers reconnect on their own. When the changelog lists a migration, follow its upgrade notes
-(or stop all replicas, then start the new version).
+(or stop all replicas, then start the new version). See [Upgrading](guides/upgrading.md).
+
+### How do I keep the events of one account in order?
+
+Give them the same [ordering key](concepts/ordering-keys.md). Tasks of one pool that share an
+ordering key run one at a time, in the order they were submitted. Tasks with other keys run in
+parallel. See [Ordered work per entity](use-cases/ordered-work.md).
+
+### Does priority work inside an ordering key?
+
+Not for the order inside the key: that is always submission order. Priority decides how the
+key competes with other work. The task at the front of a key runs at the highest class among
+the key's unfinished tasks, so a critical task lifts the tasks in front of it.
+
+### What is the difference between a key and an ordering key?
+
+A key names one task. A second submission with the key of an existing task returns that task,
+so a key makes a submission safe to retry. An ordering key names a group of tasks that must
+run one at a time. It never deduplicates: two submissions with one ordering key are two tasks.
+A task may have both.
+
+### What is the difference between a halt and a pause?
+
+Both hold the tasks of an ordering key in place. A **halt** comes from a failure: a task that
+was submitted with halt on failure ended as failed or dead-lettered. A **pause** comes from an
+operator, and can also hold a pool or a class. Resuming an ordering key ends both. See
+[Ordering keys](concepts/ordering-keys.md#when-a-task-fails) and
+[Pausing and resuming](concepts/pausing.md).
+
+### Can I change a task after I submitted it?
+
+Yes, as long as it has not finished and has no fixed start. An
+[update](concepts/updating.md) changes its priority, deadline or tags and keeps its id and
+its place by submission order. An update of a task with a
+[fixed start](concepts/fixed-starts.md) is refused; this includes the occurrences of a
+recurring schedule. To change the payload,
+submit again with the same key and `on_key_conflict = replace_queued`
+([Replacing a task by key](concepts/replacing.md)). A task that has started an attempt keeps
+its payload; the new submission runs after it.
+
+### How do I stop work for a maintenance window?
+
+[Pause](concepts/pausing.md) the pool, one class of it or one ordering key, with a reason.
+What is paused stays queued and keeps its place; running attempts are not interrupted. Tasks
+with a fixed start and occurrences of schedules are not held. A pause has no timer: resume it
+when the window is over. See [Holding work without losing it](use-cases/holding-work.md).
+
+### My worker cannot reach a downstream service. Should the task fail?
+
+No. [Release](concepts/reliability.md#releasing-an-attempt) the attempt with a delay. The task
+keeps its place, is offered again after the delay, and the attempt does not count against the
+retry policy, up to `max_releases` (10 unless set).
+
+### The same key arrived with different content. What happens?
+
+By default the second submission is answered like a retry: it returns the existing task, and
+its content is dropped. With `on_key_conflict = reject` it is refused as a
+[key conflict](concepts/key-conflicts.md), with the id and status of the existing task. The
+changelog announces that `reject` becomes the default in the next minor release.
+
+### Can I use cronoq inside a mobile or desktop app?
+
+Experimentally, yes. A C library embeds the scheduler in a Go, Swift or C program, without a
+server ([Embedding from other languages](guides/embedding.md)). It does not run while the app
+is suspended. Call "resync clock" when the app becomes active again, so that timers that
+became due during the sleep fire. See
+[Offline-first clients and embedded queues](use-cases/embedded-queues.md).

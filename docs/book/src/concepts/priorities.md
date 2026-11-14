@@ -45,7 +45,8 @@ a failure, keeps its original place in its class.
 
 A task's class is not fixed at submission: [updating a queued task](updating.md) moves it to
 another class, where it keeps its place by submission order and the waiting time it has
-already accumulated.
+already accumulated. (A pool with [fair sharing](fairness.md) places it by tenant share
+instead; see [Updating queued tasks](updating.md).)
 
 ## Why dispatch never rescans the backlog
 

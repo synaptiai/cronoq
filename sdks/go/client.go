@@ -258,6 +258,13 @@ func (c *Client) submit(ctx context.Context, req *pb.SubmitRequest, wait bool, t
 		// was dropped, not stored.
 		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.Replace", BatchIndex: -1}
 	}
+	if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REJECT &&
+		r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+		// A server older than the option ignored it and did not compare the submissions:
+		// with the key in use, it returned the existing task; with the key free, it created
+		// this one.
+		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.RejectConflict; the conflict check did not happen", BatchIndex: -1}
+	}
 	return submitted(r), nil
 }
 

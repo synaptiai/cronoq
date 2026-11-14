@@ -1,12 +1,17 @@
 // Embedding cronoq from Go: submit tasks, take them in priority order, and use ordering
 // keys, replace by key, pause and release.
 //
+// Run it from the module directory, sdks/go-embed (the repository root has no go.mod). On
+// macOS the library is libcronoq_ffi.dylib.
+//
 //	cargo build --release -p cronoq-ffi
-//	CRONOQ_LIBRARY=target/release/libcronoq_ffi.so go run ./sdks/go-embed/example
+//	cd sdks/go-embed
+//	CRONOQ_LIBRARY="$PWD/../../target/release/libcronoq_ffi.so" go run ./example
 //
-// or, linking the static library with cgo:
+// or, linking the static library with cgo. The directory must hold libcronoq_ffi.a and no
+// dynamic library of the same name, because the linker prefers the dynamic one:
 //
-//	CGO_LDFLAGS=-L<dir with libcronoq_ffi.a> go run -tags cronoq_static ./sdks/go-embed/example
+//	CGO_LDFLAGS=-L<dir with only libcronoq_ffi.a> go run -tags cronoq_static ./example
 //
 // The program checks what it gets and exits with 1 if anything is not as expected.
 package main

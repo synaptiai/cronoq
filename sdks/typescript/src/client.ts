@@ -223,6 +223,14 @@ function accepted(t: Task, r: pb.SubmitResponse): Submitted {
     // dropped, not stored.
     throw new CronoqError("unimplemented", "the server does not support onKeyConflict");
   }
+  if (t.onKeyConflict === "reject" && r.outcome === pb.SubmitOutcome.UNSPECIFIED) {
+    // A server older than the option ignored it and did not compare the submissions: with the
+    // key in use, it returned the existing task; with the key free, it created this one.
+    throw new CronoqError(
+      "unimplemented",
+      "the server does not support onKeyConflict; the conflict check did not happen",
+    );
+  }
   return submitted(r);
 }
 

@@ -4,6 +4,7 @@ use std::process::Output;
 use std::time::Duration;
 
 use bytes::Bytes;
+use cronoq_proto::v1 as pb;
 use cronoq_server::worker::{WorkerOptions, run_worker};
 use cronoq_server::{Bound, Config};
 use tokio::sync::oneshot;
@@ -637,4 +638,97 @@ async fn a_pool_a_class_and_an_ordering_key_are_paused_and_resumed() {
     let v = json(&s.cli(METRICS, &["-o", "json", "snapshot"]).await);
     assert_eq!(v["pools"][0]["paused"], serde_json::Value::Null);
     s.stop().await;
+}
+
+/// What a 0.2.2 server does with a submission: it does not know `on_key_conflict`, returns the
+/// task that holds a key as a duplicate, and sets no outcome.
+struct OldServer;
+
+type Answer<T> = Result<tonic::Response<T>, tonic::Status>;
+
+fn old<T>() -> Answer<T> {
+    Err(tonic::Status::unimplemented("not part of this test"))
+}
+
+#[tonic::async_trait]
+impl pb::tasks_server::Tasks for OldServer {
+    async fn submit(&self, req: tonic::Request<pb::SubmitRequest>) -> Answer<pb::SubmitResponse> {
+        // Key `taken` belongs to task 7; any other key is free.
+        let taken = req.into_inner().task.is_some_and(|t| t.key == "taken");
+        Ok(tonic::Response::new(pb::SubmitResponse {
+            id: if taken { 7 } else { 8 },
+            duplicate: taken,
+            ..Default::default()
+        }))
+    }
+    async fn submit_batch(
+        &self,
+        _: tonic::Request<pb::SubmitBatchRequest>,
+    ) -> Answer<pb::SubmitBatchResponse> {
+        old()
+    }
+    async fn cancel(&self, _: tonic::Request<pb::CancelRequest>) -> Answer<pb::CancelResponse> {
+        old()
+    }
+    async fn update(&self, _: tonic::Request<pb::UpdateRequest>) -> Answer<pb::UpdateResponse> {
+        old()
+    }
+    async fn get(&self, _: tonic::Request<pb::GetRequest>) -> Answer<pb::TaskInfo> {
+        old()
+    }
+    async fn list_tasks(
+        &self,
+        _: tonic::Request<pb::ListTasksRequest>,
+    ) -> Answer<pb::ListTasksResponse> {
+        old()
+    }
+    async fn wait(&self, _: tonic::Request<pb::WaitRequest>) -> Answer<pb::TaskResult> {
+        old()
+    }
+    type WatchStream = futures_util::stream::Empty<Result<pb::StatusEvent, tonic::Status>>;
+    async fn watch(&self, _: tonic::Request<pb::WatchRequest>) -> Answer<Self::WatchStream> {
+        old()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reject_conflict_is_not_silently_ignored_by_an_older_server() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let serve = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(pb::tasks_server::TasksServer::new(OldServer))
+            .serve_with_incoming(tonic::transport::server::TcpIncoming::from(listener)),
+    );
+    let cli = |args: &'static [&'static str]| {
+        let url = url.clone();
+        tokio::task::spawn_blocking(move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_cronoq"))
+                .args(args)
+                .env("CRONOQ_SERVER", url)
+                .env_remove("CRONOQ_TOKEN")
+                .output()
+                .unwrap()
+        })
+    };
+    // The key is in use: the old server returns the existing task without comparing.
+    let o = cli(&["submit", "x", "--key", "taken", "--reject-conflict"])
+        .await
+        .unwrap();
+    assert!(!o.status.success(), "{}", stdout(&o));
+    let text = stderr(&o);
+    assert!(
+        text.contains("the server does not support --reject-conflict"),
+        "{text}"
+    );
+    // The key is free: the old server created the task, and the check still did not happen.
+    let o = cli(&["submit", "x", "--key", "free", "--reject-conflict"])
+        .await
+        .unwrap();
+    assert!(!o.status.success(), "{}", stdout(&o));
+    // Without the option, the same answers are fine.
+    let o = cli(&["submit", "x", "--key", "taken"]).await.unwrap();
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(stdout(&o).trim(), "7 (duplicate)");
+    serve.abort();
 }

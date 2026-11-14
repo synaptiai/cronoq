@@ -22,8 +22,8 @@ Rust programs use the [`cronoq` crate](rust-quickstart.md) and Python programs t
 
 ## How it works
 
-The scheduler runs inside the library, on one thread that the library owns. Your program does
-two things:
+The scheduler runs inside the library, on one thread that the library owns. (The SQLite
+store, if used, adds threads of its own.) Your program does two things:
 
 1. It **submits** tasks. A task is a payload of bytes that only your program understands,
    plus options: priority, key, ordering key, deadline, and so on.
@@ -37,12 +37,16 @@ scheduler ends it: the attempt ran longer than its timeout, or the task was canc
 
 **The task is chosen when a thread asks for it.** A pool hands out as many attempts as there
 are threads asking, so a task that is submitted later with a higher priority is still handed
-out first, as long as nobody has taken the earlier one.
+out first, as long as nobody has taken the earlier one. There is one exception, described
+under [What to know](#what-to-know): a task can already be started when a waiting thread
+gives up.
 
 ## Getting the library
 
-Each release has an archive per platform, `cronoq-embed-<version>-<target>`, with the dynamic
-library, the static library and the header:
+Release 0.2.2 does not contain the library; until the next release, build it yourself as
+shown below. Each release after 0.2.2 has an archive per platform,
+`cronoq-embed-<version>-<target>`, with the dynamic library, the static library and the
+header:
 
 | Platform | Target | Dynamic library |
 |---|---|---|
@@ -55,6 +59,9 @@ The Windows x86-64 library is built with the GNU toolchain, because that is what
 links with. The Windows ARM64 library is built with MSVC: its dynamic library works with the
 Go wrapper's default mode, and its static library (`cronoq_ffi.lib`) is for MSVC, not for
 cgo.
+
+The libraries in the release archives, and the binary framework for Swift, are built without
+the `sqlite` feature.
 
 To build it yourself you need a Rust toolchain:
 
@@ -162,6 +169,7 @@ A complete program is in
 
 ```swift
 import Cronoq
+import Foundation
 
 let scheduler = try Scheduler()
 try scheduler.submit(Data("send event 17".utf8), TaskOptions(priority: .high, orderingKey: "chat-1"))
@@ -181,6 +189,9 @@ while true {
         print("paused: \(reason)")
     } catch CronoqError.shutdown {
         break
+    } catch {
+        print("error: \(error)")
+        break
     }
 }
 ```
@@ -195,7 +206,7 @@ cargo build --release -p cronoq-ffi
 swift build -Xlinker -L<dir with libcronoq_ffi.a>
 ```
 
-For iOS, and to do without a Rust toolchain, each release has a binary framework,
+For iOS, and to do without a Rust toolchain, each release after 0.2.2 has a binary framework,
 `CCronoq.xcframework.zip`, with the static library for iOS devices (ARM64), the Apple-silicon
 iOS simulator and macOS (ARM64 and x86-64), and its checksum. Copy `sdks/swift` into your
 project, delete `Sources/CCronoq`, and replace the `CCronoq` target in `Package.swift`:
@@ -447,6 +458,10 @@ With a library built with the `sqlite` feature, `"store": {"sqlite": "<path>"}` 
 pauses and ordering-key settings in that file. After a restart the queue is as it was; an
 attempt that was running is tried again. One program at a time may have the file open.
 
+The libraries in the release archives and the binary framework are built without the `sqlite`
+feature. For a queue that survives restarts, build the library yourself:
+`cargo build --release -p cronoq-ffi --features sqlite`.
+
 ## Rules of the boundary
 
 These are also at the top of `cronoq.h`.
@@ -458,7 +473,7 @@ These are also at the top of `cronoq.h`.
 | **Payloads** | Opaque bytes. Copied at submit. |
 | **What the library returns** | Stays the library's until you hand it back: a scheduler to `cronoq_free`, a lease to `cronoq_lease_free`, a buffer to `cronoq_buf_free`. Never to `free()`. A lease's pointers stay valid until `cronoq_lease_free`, also after the lease was completed. |
 | **Threads** | A scheduler may be used from any number of threads at once. The exception is `cronoq_free`: every other thread must be out of the library first. Call `cronoq_shutdown`, which wakes the threads that wait in `cronoq_next_lease`, then join them, then free. |
-| **The library's thread** | One, started by `cronoq_new` and stopped by `cronoq_shutdown`. It never calls into your program. |
+| **The library's thread** | The scheduler runs on one thread, started by `cronoq_new` and stopped by `cronoq_shutdown`. It never calls into your program. The SQLite store, if used, adds threads of its own: one for each database connection it opens. |
 | **Versions** | `cronoq_abi_version()` must equal the `CRONOQ_ABI_VERSION` of the header you built with. The number changes when an existing function, structure or constant changes; additions do not change it. The wrappers check it for you. |
 
 The Go and Swift wrappers take care of ownership and of the per-thread error message. In Go,

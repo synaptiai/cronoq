@@ -574,6 +574,14 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 // submission was dropped, not stored.
                 bail!("the server does not support --replace");
             }
+            if a.reject_conflict && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+                // A server older than the option ignored it and did not compare the
+                // submissions: with the key in use, it returned the existing task; with the
+                // key free, it created this one.
+                bail!(
+                    "the server does not support --reject-conflict; the conflict check did not happen"
+                );
+            }
             if let Some(res) = &r.result {
                 return Ok(print_result(res, out));
             }
