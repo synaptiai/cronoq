@@ -293,9 +293,15 @@ Three results end an attempt:
 - **Not in the C API:** recurring schedules, fixed start times, dependencies between tasks,
   fair sharing between tenants, worker labels, status events. Ask for what you need in an
   issue.
-- **An attempt may be given back by the library itself.** If the scheduler ends a lease you
-  hold (timeout, cancel) and starts the next task before it learns that your thread is busy,
-  the library releases that task again. It shows as one release in the totals.
+- **A task may be started a moment before a thread asks for it.** When a thread stops
+  waiting, or the scheduler ends a lease you hold (timeout, cancel), the scheduler can have
+  started one more task already. That task counts as running, its timeout runs, and it goes
+  to the next thread that asks. Keep asking, or shut down, rather than leaving a pool alone
+  with work in it.
+- **Stopping.** `shutdown` wakes the threads that wait and hands out nothing more. For the
+  grace period you give it, leases you hold can still be reported; it returns as soon as
+  all are. A lease that is still held after that is released: its task keeps its place and
+  no retry is used.
 
 ## Keeping tasks across restarts
 

@@ -475,7 +475,8 @@ private func withOptionalCString<R>(_ s: String?, _ body: (UnsafePointer<CChar>?
 }
 
 private func milliseconds(_ t: TimeInterval) -> UInt64 {
-    t > 0 ? UInt64(t * 1000) : 0
+    // Longer than a thousand years is "for ever"; this also keeps infinity from trapping.
+    t > 0 ? UInt64(min(t, 3.0e10) * 1000) : 0
 }
 
 /// One attempt of a task, taken with `Scheduler.next`. End it with exactly one of
@@ -726,8 +727,9 @@ public final class Scheduler: @unchecked Sendable {
     }
 
     /// Stop the scheduler: threads waiting in `next` throw `CronoqError.shutdown` at once
-    /// and every later call throws it. Attempts in progress get up to `grace` seconds to be
-    /// reported.
+    /// and no new lease is handed out. For up to `grace` seconds, leases that are held can
+    /// still be reported; the call returns as soon as all are. A lease that is still held
+    /// after that is released: its task keeps its place and no retry is used.
     public func shutdown(grace: TimeInterval = 0) throws {
         try check(cronoq_shutdown(handle, milliseconds(grace)))
     }

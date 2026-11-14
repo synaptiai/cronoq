@@ -233,12 +233,17 @@ impl Config {
 
 impl PoolJson {
     /// The pool, without its executor. Its capacity starts at zero and follows the host.
+    /// Most attempts of the pool the host may hold at a time.
+    pub(crate) fn max_leases(&self) -> u32 {
+        self.max_leases.unwrap_or(DEFAULT_MAX_LEASES)
+    }
+
     pub(crate) fn pool(
         &self,
         priority: &Option<PriorityConfig>,
         urgency: &Option<UrgencyConfig>,
     ) -> Result<Pool<Bytes, Bytes>, String> {
-        let max = self.max_leases.unwrap_or(DEFAULT_MAX_LEASES);
+        let max = self.max_leases();
         if max == 0 {
             return Err(format!(
                 "pool '{}': max_leases must be at least 1",

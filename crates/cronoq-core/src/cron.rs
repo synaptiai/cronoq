@@ -28,7 +28,7 @@ impl Schedule {
         };
         #[cfg(not(feature = "tz"))]
         if let Some(t) = tz
-            && !t.eq_ignore_ascii_case("UTC")
+            && !["utc", "etc/utc", "z"].contains(&t.to_ascii_lowercase().as_str())
         {
             return Err(format!(
                 "time zone '{t}': this build has no time-zone data (feature `tz`); \

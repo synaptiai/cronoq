@@ -631,8 +631,9 @@ func (s *Scheduler) Snapshot() (*Snapshot, error) {
 }
 
 // Shutdown stops the scheduler: goroutines waiting in Next return ErrShutdown at once and
-// every later call returns ErrShutdown. Attempts in progress get up to grace to be
-// reported. Close still has to be called.
+// no new lease is handed out. For up to grace, leases that are held can still be reported;
+// Shutdown returns as soon as all are. A lease that is still held after that is released:
+// its task keeps its place and no retry is used. Close still has to be called.
 func (s *Scheduler) Shutdown(grace time.Duration) error {
 	h, err := s.enter()
 	if err != nil {

@@ -27,8 +27,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
 use cronoq::{
-    BlockingScheduler, Error, PauseTarget, Priority, Scheduler, SubmitOutcome, TaskError, TaskId,
-    TaskRef,
+    BlockingScheduler, Error, PauseTarget, Priority, Scheduler, Store, SubmitOutcome, TaskError,
+    TaskId, TaskRef,
 };
 use cronoq_core::{OrderingError, SubmitError, UpdateError};
 use serde_json::json;
@@ -125,6 +125,8 @@ pub struct cronoq_scheduler {
     /// `None` after shutdown.
     sched: RwLock<Option<BlockingScheduler<Bytes, Bytes>>>,
     hub: Arc<Hub>,
+    /// The store, if tasks are kept in one: it is told when the scheduler stops.
+    store: Option<Arc<dyn Store<Bytes, Bytes>>>,
 }
 
 /// A failed call: its status and the message for `cronoq_last_error`.
@@ -291,7 +293,12 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
     let priority = cfg.priority();
     let urgency = cfg.urgency().map_err(invalid)?;
     let names: Vec<Arc<str>> = cfg.pools.iter().map(|p| p.name.as_str().into()).collect();
-    let hub = Hub::new(names.iter().cloned());
+    let hub = Hub::new(
+        names
+            .iter()
+            .cloned()
+            .zip(cfg.pools.iter().map(|p| p.max_leases())),
+    );
     let mut pools = Vec::new();
     for (p, name) in cfg.pools.iter().zip(&names) {
         let pool = p.pool(&priority, &urgency).map_err(invalid)?;
@@ -308,6 +315,8 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
             "store.sqlite: this build of the library has no SQLite store (feature `sqlite`)",
         ));
     }
+    let opened: Arc<std::sync::OnceLock<Arc<dyn Store<Bytes, Bytes>>>> = Arc::default();
+    let opened2 = opened.clone();
     let sched = BlockingScheduler::start(move || async move {
         let mut b = Scheduler::<Bytes, Bytes>::builder();
         for p in pools {
@@ -324,10 +333,13 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
         }
         #[cfg(feature = "sqlite")]
         if let Some(path) = sqlite {
-            b = b.store(cronoq_store_sqlite::SqliteStore::open(path).await?);
+            let store: Arc<dyn Store<Bytes, Bytes>> =
+                Arc::new(cronoq_store_sqlite::SqliteStore::open(path).await?);
+            let _ = opened2.set(store.clone());
+            b = b.store_arc(store);
         }
         #[cfg(not(feature = "sqlite"))]
-        let _ = sqlite;
+        let _ = (sqlite, opened2);
         Ok(b)
     })?;
     {
@@ -340,7 +352,37 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
     Ok(cronoq_scheduler {
         sched: RwLock::new(Some(sched)),
         hub,
+        store: opened.get().cloned(),
     })
+}
+
+/// Stop the scheduler, giving the host up to `grace` to report the leases it holds.
+fn stop(s: &cronoq_scheduler, grace: Duration) -> Res {
+    // No new leases; the threads that wait for one return and let go of the scheduler.
+    s.hub.close();
+    // Leases the host holds can still be reported.
+    s.hub.wait_until_idle(grace);
+    // What is still out is given back, so that the tasks keep their place and no retry is
+    // used. The capacity goes to zero first, or they would be started again at once.
+    let _ = s.with(|b| {
+        for pool in s.hub.pools() {
+            sync_capacity(b, &s.hub, &pool);
+        }
+        Ok(())
+    });
+    s.hub.abandon();
+    let taken = s.sched.write().unwrap_or_else(|e| e.into_inner()).take();
+    let Some(b) = taken else {
+        return Ok(());
+    };
+    // Nothing is running any more; this lets the scheduler write down what was given back.
+    let stopped = b.block_on(b.scheduler().shutdown(Duration::from_secs(1)));
+    if let Some(store) = &s.store {
+        // Let go of the store, so that the next start does not wait for the claim to expire.
+        b.block_on(store.release_leadership());
+    }
+    let _ = b.shutdown(Duration::ZERO);
+    Ok(stopped?)
 }
 
 /// The scheduler behind a pointer from the host.
@@ -438,9 +480,12 @@ pub unsafe extern "C" fn cronoq_new(
 }
 
 /// Stop the scheduler. Threads waiting in `cronoq_next_lease` return `CRONOQ_SHUTDOWN` at
-/// once; every later call returns `CRONOQ_SHUTDOWN`. Leases the host still holds are over.
-/// Running attempts get up to `grace_ms` to be reported before the scheduler stops. With a
-/// store, tasks that did not finish are kept and run after the next start.
+/// once and no new lease is handed out. For up to `grace_ms` the host can still report the
+/// leases it holds (`cronoq_complete`, `cronoq_fail`, `cronoq_release`); the call returns as
+/// soon as all are reported. A lease that is still held after that is released: its task
+/// keeps its place and no retry is used. From then on every call returns
+/// `CRONOQ_SHUTDOWN`. With a store, tasks that did not finish are kept and run after the
+/// next start.
 ///
 /// The scheduler still has to be released with `cronoq_free`. Stopping twice is allowed.
 ///
@@ -453,12 +498,7 @@ pub unsafe extern "C" fn cronoq_shutdown(s: *mut cronoq_scheduler, grace_ms: u64
     guard(|| {
         // SAFETY: caller.
         let s = unsafe { scheduler(s) }?;
-        // First wake the threads that wait for a lease: they hold the scheduler.
-        s.hub.close();
-        let taken = s.sched.write().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(b) = taken {
-            b.shutdown(Duration::from_millis(grace_ms))?;
-        }
+        stop(s, Duration::from_millis(grace_ms))?;
         Ok(CRONOQ_OK)
     })
 }
@@ -480,11 +520,7 @@ pub unsafe extern "C" fn cronoq_free(s: *mut cronoq_scheduler) {
         }
         // SAFETY: the caller hands back a pointer from `cronoq_new` and no longer uses it.
         let s = unsafe { Box::from_raw(s) };
-        s.hub.close();
-        let taken = s.sched.write().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(b) = taken {
-            let _ = b.shutdown(Duration::ZERO);
-        }
+        let _ = stop(&s, Duration::ZERO);
         Ok(CRONOQ_OK)
     });
 }
@@ -589,6 +625,9 @@ pub unsafe extern "C" fn cronoq_submit(
 /// Thread safety: may be called from any number of threads at once; each call blocks its
 /// thread. Nothing calls back into the host.
 ///
+/// Whatever the result, `*out` may be passed to `cronoq_lease_free` afterwards: it is zeroed
+/// when no lease was handed out.
+///
 /// # Safety
 /// `s` is a live scheduler. `pool` is null or a zero-terminated string. `out` points to
 /// writable memory for one `cronoq_lease`.
@@ -601,11 +640,14 @@ pub unsafe extern "C" fn cronoq_next_lease(
 ) -> cronoq_status {
     guard(|| {
         // SAFETY: caller, for every pointer below.
-        let s = unsafe { scheduler(s) }?;
-        let pool = unsafe { pool_name(pool) }?;
         if out.is_null() {
             return Err(invalid("out is null"));
         }
+        // Whatever happens next, the lease is safe to free.
+        // SAFETY: `out` is writable (caller); all-zero is a valid `cronoq_lease`.
+        unsafe { out.write(std::mem::zeroed()) };
+        let s = unsafe { scheduler(s) }?;
+        let pool = unsafe { pool_name(pool) }?;
         if !s.hub.has_pool(pool) {
             return Err(invalid(format!("unknown pool '{pool}'")));
         }
@@ -1065,11 +1107,18 @@ pub unsafe extern "C" fn cronoq_task(
 ) -> cronoq_status {
     guard(|| {
         // SAFETY: caller, for every pointer below.
-        let s = unsafe { scheduler(s) }?;
-        let target = unsafe { task_ref(task, key) }?;
         if out.is_null() {
             return Err(invalid("out is null"));
         }
+        // Whatever happens next, the buffer is safe to free.
+        unsafe {
+            out.write(cronoq_buf {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+            })
+        };
+        let s = unsafe { scheduler(s) }?;
+        let target = unsafe { task_ref(task, key) }?;
         let found = s.with(|b| Ok(b.block_on(b.scheduler().task(target))?))?;
         let Some(t) = found else {
             return Err(Fail(CRONOQ_NOT_FOUND, "no such task".into()));
@@ -1116,11 +1165,18 @@ pub unsafe extern "C" fn cronoq_snapshot(
     out: *mut cronoq_buf,
 ) -> cronoq_status {
     guard(|| {
-        // SAFETY: caller.
-        let s = unsafe { scheduler(s) }?;
         if out.is_null() {
             return Err(invalid("out is null"));
         }
+        // Whatever happens next, the buffer is safe to free.
+        // SAFETY: caller.
+        unsafe {
+            out.write(cronoq_buf {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+            })
+        };
+        let s = unsafe { scheduler(s) }?;
         let snap = s.with(|b| Ok(b.snapshot()?))?;
         let names = ["critical", "high", "normal", "low"];
         let pools: Vec<_> = snap

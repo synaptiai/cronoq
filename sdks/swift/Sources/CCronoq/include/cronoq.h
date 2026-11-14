@@ -166,9 +166,12 @@ const char *cronoq_last_error(void);
 enum cronoq_status cronoq_new(const char *config_json, struct cronoq_scheduler **out);
 
 // Stop the scheduler. Threads waiting in `cronoq_next_lease` return `CRONOQ_SHUTDOWN` at
-// once; every later call returns `CRONOQ_SHUTDOWN`. Leases the host still holds are over.
-// Running attempts get up to `grace_ms` to be reported before the scheduler stops. With a
-// store, tasks that did not finish are kept and run after the next start.
+// once and no new lease is handed out. For up to `grace_ms` the host can still report the
+// leases it holds (`cronoq_complete`, `cronoq_fail`, `cronoq_release`); the call returns as
+// soon as all are reported. A lease that is still held after that is released: its task
+// keeps its place and no retry is used. From then on every call returns
+// `CRONOQ_SHUTDOWN`. With a store, tasks that did not finish are kept and run after the
+// next start.
 //
 // The scheduler still has to be released with `cronoq_free`. Stopping twice is allowed.
 //
@@ -256,6 +259,9 @@ enum cronoq_status cronoq_submit(const struct cronoq_scheduler *s,
 //
 // Thread safety: may be called from any number of threads at once; each call blocks its
 // thread. Nothing calls back into the host.
+//
+// Whatever the result, `*out` may be passed to `cronoq_lease_free` afterwards: it is zeroed
+// when no lease was handed out.
 //
 // # Safety
 // `s` is a live scheduler. `pool` is null or a zero-terminated string. `out` points to

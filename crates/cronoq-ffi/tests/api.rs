@@ -432,14 +432,16 @@ fn cancelling_a_running_task_ends_its_lease() {
     );
     assert_eq!(unsafe { cronoq_heartbeat(s.0, t.lease) }, CRONOQ_LEASE_GONE);
     assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_LEASE_GONE);
-    // The slot of the ended lease is not handed to a task nobody waits for.
+    // The next task may or may not have been started for the slot of the ended lease; either
+    // way it goes to the next thread that asks, without a release or a retry.
     submit(&s, "y", "");
-    eventually(&s, "nothing runs", |v| {
-        v["running"] == 0 && v["pools"][0]["capacity"] == 0
+    let t = next(&s);
+    assert_eq!((t.payload.as_str(), t.attempt), ("y", 1));
+    complete(&s, &t);
+    let snap = eventually(&s, "idle", |v| {
+        v["running"] == 0 && v["pools"][0]["capacity"] == 0 && v["totals"]["succeeded"] == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    assert_eq!(snapshot(&s)["running"], 0);
-    assert_eq!(drain(&s), ["y"]);
+    assert_eq!(snap["totals"]["releases"], 0);
 }
 
 #[test]
@@ -614,6 +616,189 @@ fn wrong_arguments_are_errors_not_crashes() {
         cronoq_buf_free(null_mut());
         cronoq_lease_free(null_mut());
     }
+}
+
+#[test]
+fn a_pool_hands_out_at_most_max_leases_at_a_time() {
+    let s = std::sync::Arc::new(new(r#"{"pools": [{"name": "default", "max_leases": 2}]}"#));
+    for i in 0..60 {
+        submit(&s, &i.to_string(), "");
+    }
+    let out = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let most = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let threads: Vec<_> = (0..5)
+        .map(|_| {
+            let (s, out, most) = (s.clone(), out.clone(), most.clone());
+            std::thread::spawn(move || {
+                use std::sync::atomic::Ordering::SeqCst;
+                let mut done = 0;
+                while let Ok(t) = next_in(&s, None, 200) {
+                    most.fetch_max(out.fetch_add(1, SeqCst) + 1, SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    out.fetch_sub(1, SeqCst);
+                    complete(&s, &t);
+                    done += 1;
+                }
+                done
+            })
+        })
+        .collect();
+    let done: i32 = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(done, 60);
+    assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_waiting_thread_still_gets_work_when_another_thread_took_its_task() {
+    let s = std::sync::Arc::new(new(""));
+    let waiter = {
+        let s = s.clone();
+        std::thread::spawn(move || next_in(&s, None, 5000).map(|t| t.payload))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    // "x" is started for the waiting thread; this thread may take it first.
+    submit(&s, "x", "");
+    let mine = next_in(&s, None, 0);
+    submit(&s, "y", "");
+    let start = std::time::Instant::now();
+    let theirs = waiter.join().unwrap().unwrap();
+    assert!(
+        start.elapsed().as_millis() < 1000,
+        "the waiting thread was left out"
+    );
+    match mine {
+        Ok(t) => {
+            assert_eq!((t.payload.as_str(), theirs.as_str()), ("x", "y"));
+            complete(&s, &t);
+        }
+        Err(_) => assert_eq!(theirs, "x"),
+    }
+}
+
+#[test]
+fn polling_with_short_timeouts_loses_no_task_and_uses_no_release() {
+    // Even a pool that allows no release and no retry runs every task once.
+    let s = std::sync::Arc::new(new(
+        r#"{"pools": [{"name": "default", "max_releases": 0, "retry": {"max_attempts": 1}}]}"#,
+    ));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let threads: Vec<_> = (0..6u64)
+        .map(|n| {
+            let (s, stop) = (s.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut done = 0u32;
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    if let Ok(t) = next_in(&s, None, n % 3) {
+                        assert_eq!(t.attempt, 1);
+                        complete(&s, &t);
+                        done += 1;
+                    }
+                }
+                done
+            })
+        })
+        .collect();
+    for i in 0..1500 {
+        submit(&s, &i.to_string(), "");
+    }
+    let snap = eventually(&s, "all done", |v| v["totals"]["succeeded"] == 1500);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let done: u32 = threads.into_iter().map(|t| t.join().unwrap()).sum();
+    assert_eq!(done, 1500);
+    assert_eq!(snap["totals"]["releases"], 0);
+    assert_eq!(snap["totals"]["dead_lettered"], 0);
+}
+
+#[test]
+fn a_lease_can_be_reported_during_the_grace_of_a_shutdown() {
+    let s = std::sync::Arc::new(new(""));
+    submit(&s, "x", "");
+    let t = next(&s);
+    let stopper = {
+        let s = s.clone();
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            assert_eq!(unsafe { cronoq_shutdown(s.0, 10_000) }, CRONOQ_OK);
+            start.elapsed()
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    // No new lease, but the held one is still good.
+    assert_eq!(next_in(&s, None, 0).unwrap_err(), CRONOQ_SHUTDOWN);
+    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_OK);
+    // The shutdown does not wait out its grace once everything is reported.
+    assert!(stopper.join().unwrap().as_millis() < 5000);
+    assert_eq!(unsafe { cronoq_complete(s.0, t.lease) }, CRONOQ_SHUTDOWN);
+}
+
+#[test]
+fn a_failed_call_leaves_a_lease_and_a_buffer_that_are_safe_to_free() {
+    let s = new("");
+    let mut l = std::mem::MaybeUninit::<cronoq_lease>::uninit();
+    unsafe { l.as_mut_ptr().write_bytes(0xAA, 1) };
+    assert_eq!(
+        unsafe { cronoq_next_lease(s.0, null(), 0, l.as_mut_ptr()) },
+        CRONOQ_TIMEOUT
+    );
+    unsafe { cronoq_lease_free(l.as_mut_ptr()) };
+    let mut b = std::mem::MaybeUninit::<cronoq_buf>::uninit();
+    unsafe { b.as_mut_ptr().write_bytes(0xAA, 1) };
+    assert_eq!(
+        unsafe { cronoq_task(s.0, 77, null(), b.as_mut_ptr()) },
+        CRONOQ_NOT_FOUND
+    );
+    unsafe { cronoq_buf_free(b.as_mut_ptr()) };
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn with_a_store_a_held_lease_is_not_a_lost_attempt_and_a_restart_is_quick() {
+    let dir = std::env::temp_dir().join(format!("cronoq-ffi-held-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("queue.db");
+    let cfg = serde_json::json!({
+        "store": {"sqlite": path.to_str().unwrap()},
+        "pools": [{"name": "default", "retry": {"max_attempts": 1}}],
+    })
+    .to_string();
+    {
+        let s = new(&cfg);
+        for i in 0..5 {
+            submit(&s, &i.to_string(), "");
+        }
+        // Two leases are held when the program stops.
+        let _a = next(&s);
+        let _b = next(&s);
+    }
+    let start = std::time::Instant::now();
+    let s = new(&cfg);
+    assert!(
+        start.elapsed().as_secs() < 5,
+        "reopening took {:?}",
+        start.elapsed()
+    );
+    // All five are still there and none was failed. The two that were held come back after
+    // their backoff, as attempt 2 with the first attempt not counted.
+    let mut got = Vec::new();
+    for _ in 0..5 {
+        let t = next(&s);
+        assert_eq!(
+            t.attempt,
+            if t.payload == "0" || t.payload == "1" {
+                2
+            } else {
+                1
+            }
+        );
+        complete(&s, &t);
+        got.push(t.payload);
+    }
+    got.sort();
+    assert_eq!(got, ["0", "1", "2", "3", "4"]);
+    let snap = eventually(&s, "done", |v| v["totals"]["succeeded"] == 5);
+    assert_eq!(snap["totals"]["dead_lettered"], 0);
+    drop(s);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[cfg(feature = "sqlite")]

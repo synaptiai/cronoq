@@ -36,20 +36,23 @@ struct Held {
     done: Done,
 }
 
-#[derive(Default)]
 struct PoolQueue {
     ready: VecDeque<Offer>,
     /// Threads blocked in `next` for this pool.
     waiting: u32,
     /// Leases of this pool the host holds.
     held: u32,
+    /// Most attempts of this pool that may be out at a time (`max_leases`).
+    max: u32,
 }
 
 impl PoolQueue {
-    /// One slot per lease the host holds and one per thread that waits for a lease. An
-    /// attempt in `ready` is on its way to a waiting thread, which is already counted.
+    /// One slot per lease the host holds and one per thread that waits for a lease, up to
+    /// `max`. An attempt in `ready` is normally on its way to a waiting thread, which is
+    /// counted already. One that was started for a thread that has stopped waiting keeps
+    /// its slot until the next thread takes it.
     fn capacity(&self) -> u32 {
-        self.held + self.waiting
+        (self.held + self.waiting.max(self.ready.len() as u32)).min(self.max)
     }
 }
 
@@ -78,12 +81,19 @@ pub(crate) enum Next {
 }
 
 impl Hub {
-    pub(crate) fn new(pools: impl IntoIterator<Item = Arc<str>>) -> Arc<Hub> {
+    /// A hub for these pools, each with the most attempts it hands out at a time.
+    pub(crate) fn new(pools: impl IntoIterator<Item = (Arc<str>, u32)>) -> Arc<Hub> {
         let hub = Hub::default();
         {
             let mut s = hub.lock();
-            for p in pools {
-                s.pools.insert(p, PoolQueue::default());
+            for (p, max) in pools {
+                let q = PoolQueue {
+                    ready: VecDeque::new(),
+                    waiting: 0,
+                    held: 0,
+                    max,
+                };
+                s.pools.insert(p, q);
             }
         }
         Arc::new(hub)
@@ -108,9 +118,18 @@ impl Hub {
     }
 
     /// The capacity `pool` should have now: the leases the host holds plus the threads
-    /// waiting for one.
+    /// waiting for one, up to the pool's `max_leases`. Nothing once the hub is closed.
     pub(crate) fn capacity(&self, pool: &str) -> u32 {
-        self.lock().pools.get(pool).map_or(0, PoolQueue::capacity)
+        let s = self.lock();
+        if s.closed {
+            return 0;
+        }
+        s.pools.get(pool).map_or(0, PoolQueue::capacity)
+    }
+
+    /// The names of the pools.
+    pub(crate) fn pools(&self) -> Vec<Arc<str>> {
+        self.lock().pools.keys().cloned().collect()
     }
 
     /// Wait up to `timeout` for an attempt of `pool`. `sync` is called, without the lock
@@ -123,6 +142,10 @@ impl Hub {
             return Next::Closed;
         }
         if let Some(o) = Self::take(&mut s, pool) {
+            // This attempt was on its way to a thread that still waits: that thread needs
+            // another one.
+            drop(s);
+            sync();
             return Next::Lease(o);
         }
         // Nothing is ready: ask the scheduler for one more attempt.
@@ -162,10 +185,14 @@ impl Hub {
         }
         sync();
         // An attempt may have been started for this thread in the meantime: take it. One
-        // that arrives later still finds no waiting thread and is given back (`execute`).
+        // that arrives later keeps its slot and goes to the next thread that asks.
         let mut s = self.lock();
         match Self::take(&mut s, pool) {
-            Some(o) => Next::Lease(o),
+            Some(o) => {
+                drop(s);
+                sync();
+                Next::Lease(o)
+            }
             None => Next::Timeout,
         }
     }
@@ -208,6 +235,7 @@ impl Hub {
         };
         s.pools.get_mut(&h.pool).expect("pool of a held lease").held -= 1;
         drop(s);
+        self.changed.notify_all();
         sync(&h.pool);
         let _ = h.done.send(result);
         true
@@ -269,19 +297,46 @@ impl Hub {
         }
     }
 
-    /// Stop handing out leases and wake every waiting thread.
+    /// Stop handing out leases and wake every waiting thread. Leases the host holds can
+    /// still be reported.
     pub(crate) fn close(&self) {
+        self.lock().closed = true;
+        self.changed.notify_all();
+    }
+
+    /// Wait up to `grace` for the host to report the leases it holds.
+    pub(crate) fn wait_until_idle(&self, grace: Duration) {
+        let deadline = Instant::now().checked_add(grace);
         let mut s = self.lock();
-        s.closed = true;
-        for q in s.pools.values_mut() {
-            q.ready.clear();
+        while !s.held.is_empty() {
+            let left = match deadline {
+                Some(d) => d.saturating_duration_since(Instant::now()),
+                None => Duration::from_secs(3600),
+            };
+            if left.is_zero() {
+                return;
+            }
+            s = self
+                .changed
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
-        // Dropping the senders ends the attempts.
-        s.held.clear();
+    }
+
+    /// Give back every attempt that is still out, held or not: the tasks keep their place
+    /// and no retry is used. Call it after the capacity went to zero, or they start again.
+    pub(crate) fn abandon(&self) {
+        let mut s = self.lock();
+        let mut out: Vec<Done> = s.held.drain().map(|(_, h)| h.done).collect();
         for q in s.pools.values_mut() {
             q.held = 0;
+            out.extend(q.ready.drain(..).map(|o| o.done));
         }
         drop(s);
+        for done in out {
+            let _ = done.send(Err(TaskError::release(Duration::ZERO)));
+        }
         self.changed.notify_all();
     }
 }
@@ -320,26 +375,16 @@ impl Executor<Bytes, Bytes> for PullExecutor {
         {
             let mut s = self.hub.lock();
             if s.closed {
-                return Box::pin(async { Err(TaskError::retryable("the scheduler is closed")) });
+                // Started while the scheduler was being stopped: give it back, and not at
+                // once, so that it is not started again before the stop is through.
+                return Box::pin(async { Err(TaskError::release(Duration::from_secs(1))) });
             }
             let Some(q) = s.pools.get_mut(&self.pool) else {
                 return Box::pin(async { Err(TaskError::permanent("unknown pool")) });
             };
-            if q.ready.len() as u32 >= q.waiting {
-                // No thread waits for this attempt: it was started for a slot that has gone
-                // since (the capacity is lowered by a message, and the scheduler may start
-                // an attempt before it arrives). Lower the capacity first, then give the
-                // task back, so that it keeps its place and is not started again at once.
-                drop(s);
-                let resync = self.hub.resync.get().map(|f| f(self.pool.clone()));
-                return Box::pin(async move {
-                    drop(guard);
-                    if let Some(r) = resync {
-                        r.await;
-                    }
-                    Err(TaskError::release(Duration::ZERO))
-                });
-            }
+            // If no thread waits for it (the capacity is lowered by a message, and the
+            // scheduler may start an attempt before it arrives), it stays here, keeps its
+            // slot, and goes to the next thread that asks.
             q.ready.push_back(Offer { ctx, payload, done });
         }
         self.hub.changed.notify_all();
@@ -347,7 +392,7 @@ impl Executor<Bytes, Bytes> for PullExecutor {
             let _guard = guard;
             match result.await {
                 Ok(r) => r,
-                Err(_) => Err(TaskError::retryable("the scheduler was closed")),
+                Err(_) => Err(TaskError::release(Duration::ZERO)),
             }
         })
     }
