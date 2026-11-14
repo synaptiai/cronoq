@@ -249,3 +249,63 @@ fn released_attempts_are_recovered_and_do_not_count_after_a_failover() {
     end(&mut r, TaskId(1), Outcome::retryable("x"));
     assert_eq!(r.status(TaskId(1)), Some(TaskStatus::DeadLettered));
 }
+
+#[test]
+fn releases_of_a_fixed_start_task_count_while_its_pool_is_paused() {
+    // A pause does not hold a task with a fixed start, so its releases are not free.
+    for target in [PauseTarget::Pool, PauseTarget::Class(Priority::Normal)] {
+        let mut s = Sim::with_pool(PoolConfig {
+            max_releases: 1,
+            ..PoolConfig::fixed("default", 1)
+        });
+        s.hang = true;
+        s.core.pause(s.now, PoolId(0), &target, "x").unwrap();
+        let id = s.submit(job().fixed_start(FixedStart::at(t(1.0))));
+        s.run_until(t(2.0));
+        assert_eq!(s.status(id), Some(TaskStatus::Running));
+        assert!(release(&mut s, id, 0.0));
+        assert_eq!(attempts(&s, id), vec![1, 2]);
+        // The second release is over the limit: a failure, which uses the one retry.
+        assert!(release(&mut s, id, 0.0));
+        assert_eq!(s.core.snapshot(s.now).totals.releases, 1);
+        s.run_until(t(10.0));
+        assert_eq!(attempts(&s, id), vec![1, 2, 3]);
+        assert!(release(&mut s, id, 0.0));
+        assert_eq!(s.status(id), Some(TaskStatus::DeadLettered));
+        s.core.check_invariants();
+    }
+}
+
+#[test]
+fn a_replacement_brings_its_own_release_limit() {
+    let mut s = sim(1);
+    let blocker = s.submit(job());
+    let id = s.submit(job().key("k").max_releases(0));
+    let r = s.replace(job().key("k").max_releases(3), false).unwrap();
+    assert_eq!(r.outcome, SubmitOutcome::Replaced);
+    end(&mut s, blocker, Outcome::Success);
+    assert!(release(&mut s, id, 0.0));
+    assert_eq!(s.status(id), Some(TaskStatus::Running));
+    assert_eq!(attempts(&s, id), vec![1, 2]);
+    assert_eq!(s.core.snapshot(s.now).totals.releases, 1);
+}
+
+#[test]
+fn a_released_task_keeps_its_place_among_the_tenants_of_a_fair_pool() {
+    let mut s = Sim::with_pool(PoolConfig {
+        fairness: Some(Fairness::weights([("a", 1.0), ("b", 1.0)])),
+        ..PoolConfig::fixed("default", 1)
+    });
+    s.hang = true;
+    let first = s.submit(job().tenant("a"));
+    let second = s.submit(job().tenant("a"));
+    let third = s.submit(job().tenant("b"));
+    // Released without a delay, it is back before anything else, and its tenant is not
+    // charged a second time: `third` still runs before `second`.
+    assert!(release(&mut s, first, 0.0));
+    assert_eq!(s.order(), vec![first, first]);
+    end(&mut s, first, Outcome::Success);
+    end(&mut s, third, Outcome::Success);
+    assert_eq!(s.order(), vec![first, first, third, second]);
+    s.core.check_invariants();
+}

@@ -339,7 +339,7 @@ pub fn snapshot_json(s: &pb::SnapshotResponse) -> Value {
         "totals": {
             "submitted": t.submitted, "dispatched": t.dispatched, "succeeded": t.succeeded,
             "failed": t.failed, "dead_lettered": t.dead_lettered, "cancelled": t.cancelled,
-            "retries": t.retries, "timeouts": t.timeouts,
+            "retries": t.retries, "timeouts": t.timeouts, "releases": t.releases,
         },
     })
 }

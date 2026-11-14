@@ -56,6 +56,7 @@ What an executor returns decides whether the attempt is retried:
 | `Retryable { message, retry_after }` | `raise Retryable(msg, retry_after=s)`, or any other exception | `permanent = false`, `retry_after_s` | Retried per the retry policy, not before `retry_after`. |
 | `Permanent { message }` | `raise Permanent(msg)` | `permanent = true` | Fails the task now (`failed`). |
 | `Cancelled` | `CancelledError` caused by cronoq | `Cancelled` | The attempt was aborted; the engine already decided what happens next. |
+| `Release { after }` | `raise Release(delay)` | `Release` with `delay_s` | Not a failure: the task is offered again once the delay has passed, and the attempt does not count against the retry policy ([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)). Beyond `max_releases` (10 per pool unless set, or the task's own) it is a retryable failure with the message `released more than N times`, not retried before the delay. |
 | panic in a Rust executor | – | panic in a `run_worker` handler: retryable | In-process: permanent failure (`Failed`). The scheduler keeps running. |
 
 Timeouts (`timeout`) and lease expiries (no heartbeat within `lease_ttl`) are retryable

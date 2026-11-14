@@ -82,8 +82,10 @@ opened on the first call.
 `Task` fields: `Payload`, `ContentType`, `Kind`, `Pool`, `Key`, `Tenant`, `Priority`
 (`cronoq.Critical`, `High`, `Normal`, `Low`), `Timeout` (per attempt), `Deadline` (relative),
 `StartIn`, `After` (`[]Dep{{Ref: cronoq.Key("extract"), Cond: cronoq.OnSuccess}}`),
-`Resources`, `Tags`, `Labels` (worker labels the task requires) and `MaxAttempts` (replaces the
-pool's retry policy with this many attempts and the server's default backoff).
+`Resources`, `Tags`, `Labels` (worker labels the task requires), `MaxAttempts` (replaces the
+pool's retry policy with this many attempts and the server's default backoff) and `MaxReleases`
+(a `*uint32`; when set, replaces the pool's limit on how often an attempt of the task may be
+[released](../concepts/reliability.md#releasing-an-attempt)).
 
 `Task.Replace` lets the newest submission of `Key` win
 ([Replacing a task by key](../concepts/replacing.md)): a task that has not started is replaced
@@ -197,6 +199,7 @@ is reported if the handler returns within 5 seconds. It returns the output, or a
 | `cronoq.Permanent(err)` | The task fails without retrying. |
 | `cronoq.RetryAfter(err, d)` | Retryable failure, retried no earlier than `d`. |
 | `cronoq.Reject(reason)` | Hand the lease back unrun; the server offers it to another worker. |
+| `cronoq.Release(after)` | [Release the attempt](../concepts/reliability.md#releasing-an-attempt): the task is leased again, to any worker, once the `time.Duration` `after` has passed, and the attempt does not use up a retry, up to the pool's `max_releases` or `Task.MaxReleases`. Against a server that does not know releases it is sent as a retryable failure with the delay, which uses a retry. |
 | `cronoq.ErrCancelTask` | The task ends as cancelled. |
 | any other error, or a panic | Retryable failure. |
 

@@ -973,6 +973,9 @@ pub struct LimitsConfig {
     /// Most ordering keys that keep a class floor while they have no tasks (bounds memory
     /// and the stored state). Beyond it a new kept floor is refused; submissions never are.
     pub max_ordering_settings: usize,
+    /// Highest `max_releases` a submitted task may ask for. A pool's own `max_releases` is
+    /// the operator's choice and is not limited by this.
+    pub max_task_releases: u32,
     /// Most tasks one `ListTasks` page returns.
     pub max_list: usize,
 }
@@ -1001,6 +1004,7 @@ impl Default for LimitsConfig {
             key_retention_s: 3600.0,
             key_retention_max: 1_000_000,
             max_ordering_settings: 100_000,
+            max_task_releases: 1000,
             max_list: 1000,
         }
     }

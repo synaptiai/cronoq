@@ -555,6 +555,8 @@ message Totals {
   uint64 stale_completions = 13;
   // Submissions dropped without running because a newer one with their key replaced them.
   uint64 superseded = 14;
+  // Attempts given back by their worker to be run again later (`Release`).
+  uint64 releases = 15;
 }
 
 message SnapshotResponse {

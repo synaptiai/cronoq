@@ -67,6 +67,9 @@ cronoq watch --pool llm --all               # every transition, until Ctrl-C
 `submit` sends a string argument as UTF-8 text, `--json` as JSON (checked first), and
 `--file PATH` or `-` (stdin) as bytes; `--content-type` overrides the type the worker sees.
 `--after TASK` (repeatable, an id or a key) makes the task wait for another to succeed.
+`--max-releases N` sets how often a worker may
+[release](../concepts/reliability.md#releasing-an-attempt) an attempt of the task without it counting
+as a failure (default: the pool's `max_releases`).
 
 `--ordering-key KEY` puts the task in an [ordering key](../concepts/ordering-keys.md);
 `--halt-on-failure` needs it. The `ordering` commands, `pause` and `resume` act on the pool

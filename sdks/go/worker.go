@@ -129,7 +129,8 @@ func (e releaseError) Error() string { return "cronoq: released by its handler" 
 // after has passed. The attempt does not count against the task's retry policy, up to the
 // pool's max_releases releases of one task; beyond that a release counts as a retryable
 // failure. Against a server from before releases it is sent as a failure that is retried
-// after the delay, which uses up an attempt.
+// after the delay, which uses up an attempt. A Release wrapped in another error, also in
+// Permanent, is still a release.
 func Release(after time.Duration) error { return releaseError{after} }
 
 type rejectError struct{ reason string }

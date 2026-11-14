@@ -109,6 +109,9 @@ struct Entry<P> {
     tenant: u32,
     /// Start tag in the class's fair queue (pools with fairness).
     vtag: u64,
+    /// Set by a release: the class (plus one) whose fair tag in `vtag` the task keeps when it
+    /// is offered again. Zero: none.
+    keep_tag: u8,
     /// The class the task is queued and scored at. Its own class, except for the head of an
     /// ordering key, which runs at the highest class among the key's tasks and its floor.
     eff: u8,
@@ -1064,6 +1067,7 @@ impl<P> Core<P> {
             e.hint_ns = spec.duration_hint.map(nanos).unwrap_or(0);
             e.timeout_ns = spec.timeout.map(nanos).unwrap_or(0);
             e.retry = spec.retry.map(Box::new);
+            e.max_releases = spec.max_releases;
         }
         self.reposition(
             k,
@@ -2161,6 +2165,7 @@ impl<P> Core<P> {
             constraint,
             tenant,
             vtag: 0,
+            keep_tag: 0,
             eff: spec.priority as u8,
             strand: 0,
             halt: spec.on_failure == OrderFailure::Halt,
@@ -2359,7 +2364,9 @@ impl<P> Core<P> {
         };
         self.end_attempt(&l);
         let k = l.key;
-        let held = self.class_held(k) || self.strand_of(k).is_some_and(Strand::held);
+        // A task with a fixed start is not held by a pause: its releases count.
+        let held = (self.entry(k).fixed.is_none() && self.class_held(k))
+            || self.strand_of(k).is_some_and(Strand::held);
         let (count, cap, pool) = {
             let e = self.entry(k);
             let cap = e
@@ -2379,6 +2386,8 @@ impl<P> Core<P> {
             let e = self.entry_mut(k);
             e.releases += 1;
             e.release_count += !held as u32;
+            // It keeps its place among the tenants of a fair pool, and is not charged again.
+            e.keep_tag = e.eff + 1;
             e.status = TaskStatus::Retrying;
             e.retry_at = at;
             (e.id, e.class, e.key.clone(), e.attempt, e.releases)
@@ -3701,8 +3710,16 @@ impl<P> Core<P> {
             e.loc = Loc::Edf;
             self.pools[pool as usize].edf[class].insert((lst, seq), k);
         } else if self.pools[pool as usize].fair.is_some() {
-            let tenant = self.entry(k).tenant;
-            let tag = self.fair_tag(pool, class, tenant);
+            let (tenant, kept) = {
+                let e = self.entry_mut(k);
+                (e.tenant, std::mem::take(&mut e.keep_tag))
+            };
+            // A released task comes back with the tag it had, if it still runs at that class.
+            let tag = if kept as usize == class + 1 {
+                self.entry(k).vtag
+            } else {
+                self.fair_tag(pool, class, tenant)
+            };
             let e = self.entry_mut(k);
             e.vtag = tag;
             e.loc = Loc::Fair;

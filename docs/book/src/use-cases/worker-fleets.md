@@ -50,7 +50,9 @@ curl -X POST https://cronoq.internal/v1/tasks -H "authorization: Bearer $TOKEN" 
 3. The server sends `Lease` messages, at most `slots` at a time.
 4. For each lease the worker sends `Heartbeat` well within `lease_ttl_s` (the bundled clients
    send one every third of the TTL), then `Complete{output}`, `Fail{message, permanent,
-   retry_after_s}`, or `Nack` to hand the lease to another worker.
+   retry_after_s}`, `Nack` to hand the lease to another worker, or `Release{delay_s}` to give
+   the task back for later without using up a retry
+   ([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 5. The server may send `Abort{lease}` (timeout, cancellation, lease expiry). The worker stops
    that attempt.
 6. When the stream closes, its in-flight leases are retried elsewhere and capacity shrinks.

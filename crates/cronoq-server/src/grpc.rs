@@ -1262,8 +1262,7 @@ impl pb::workers_server::Workers for WorkersService {
                         registry.finish(worker, c.lease, Err(TaskError::Cancelled));
                     }
                     Some(Msg::Release(r)) => {
-                        // A delay that makes no sense is no delay.
-                        let after = convert::secs(r.delay_s).unwrap_or_default();
+                        let after = convert::release_delay(r.delay_s);
                         registry.finish(worker, r.lease, Err(TaskError::release(after)));
                     }
                     Some(Msg::Register(_)) => {

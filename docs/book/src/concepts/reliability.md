@@ -52,14 +52,22 @@ throw new Release(30);
 | The task | Keeps its place in line (and in its [ordering key](ordering-keys.md)) and is offered again, to any worker, once the delay has passed. Until then its status is `retrying`. |
 | The attempt number | Goes up: every attempt has its own number, so logs and [fencing](#exactly-once-side-effects) stay unambiguous. |
 | The retry policy | Is not charged. A task with `max_attempts = 3` that was released twice may still fail three times. |
-| Resources it held | Are free at once. |
-| Failure counts | Not a failure: it is counted in `releases`, not in `failed` or `retries`. |
+| Resources it held | [Concurrency limits](resources.md) are free at once. A rate-limit token the attempt took is spent: the next attempt takes a new one. |
+| [Fair pools](fairness.md) | It keeps its turn among the tenants, and its tenant is not charged a second time. |
+| Failure counts | Not a failure: it is counted in the `releases` total (`cronoq_releases_total`), not in `failed` or `retries`. |
 
 A task that is released again and again would never end, so releases are limited:
 `max_releases` per pool (10 unless set), or per task. A release beyond the limit is treated as
 a retryable failure, with the delay asked for as its minimum backoff, and from then on the
 retry policy applies. Releases made while a [pause](pausing.md) holds the task do not count
-toward the limit: a worker draining a paused pool does not use it up.
+toward the limit: a worker draining a paused pool does not use it up. (A task with a
+[fixed start](fixed-starts.md) is not held by a pause, so its releases always count.)
+
+Over the network, a task may not ask for a `max_releases` above the server's
+`limits.max_task_releases` (1000 unless set). A delay that is negative or not a number is no
+delay; one that is too long is cut to the longest the server accepts (100 years). A worker
+that releases without a delay gets the task back at once, so give a delay unless the worker
+is going away.
 
 Three ways to give a task back, and what each costs:
 
@@ -180,10 +188,13 @@ used. If attempts remain, it is retried after a backoff; otherwise it is dead-le
 [Durability and HA](durability.md).
 
 Released attempts are stored with the task and still do not count after a failover. Two
-limits are worth knowing:
+things are worth knowing:
 
 - A release that the store had not yet recorded when the leader died is the case above: the
   attempt was running as far as the store knows, so it counts as used.
+- The delay of a release is not stored. A task that was waiting out a release when the
+  leader died is offered again after its retry backoff, which may be sooner or later than
+  the delay that was asked for.
 - How many of a task's releases count toward `max_releases` is kept in memory only. After a
   failover the limit starts again, so a task may be released up to `max_releases` more
   times.

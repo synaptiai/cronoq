@@ -100,9 +100,10 @@ are the generated Connect clients, for calls the class does not wrap (such as `a
 `Task` fields: `payload`, `contentType`, `kind`, `pool`, `key`, `tenant`, `priority`
 (`"critical"`, `"high"`, `"normal"`, `"low"`), `timeout` (per attempt), `deadline` (relative),
 `startIn`, `after` (references, or `{ ref, cond }` with `cond` `"on_success"`, `"on_complete"`
-or `"on_failure"`), `resources`, `tags`, `labels` (worker labels the task requires) and
+or `"on_failure"`), `resources`, `tags`, `labels` (worker labels the task requires),
 `maxAttempts` (replaces the pool's retry policy with this many attempts and the server's default
-backoff).
+backoff) and `maxReleases` (replaces the pool's limit on how often an attempt of the task may be
+[released](../concepts/reliability.md#releasing-an-attempt)).
 
 `Task.onKeyConflict: "replace_queued"` lets the newest submission of `key` win
 ([Replacing a task by key](../concepts/replacing.md)): a task that has not started is replaced
@@ -215,6 +216,7 @@ within 5 seconds. The handler returns the output, or throws:
 | `new Permanent(msg)` | The task fails without retrying. |
 | `new Retryable(msg, retryAfter)` | Retryable failure, retried no earlier than `retryAfter` seconds. |
 | `new Reject(reason)` | Hand the lease back unrun; the server offers it to another worker. |
+| `new Release(delay)` | [Release the attempt](../concepts/reliability.md#releasing-an-attempt): the task is leased again, to any worker, after `delay` seconds (default 0), and the attempt does not use up a retry, up to the pool's `max_releases` or `Task.maxReleases`. Against a server that does not know releases it is sent as a retryable failure with the delay, which uses a retry. |
 | `new CancelTask(msg)` | The task ends as cancelled. |
 | anything else | Retryable failure. |
 

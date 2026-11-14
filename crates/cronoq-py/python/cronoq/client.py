@@ -544,6 +544,8 @@ class Totals:
     lease_expiries: int = 0
     stale_completions: int = 0
     superseded: int = 0
+    #: Attempts given back by their worker to be run again later.
+    releases: int = 0
 
 
 @dataclass(frozen=True)
@@ -1197,6 +1199,7 @@ class Client:
                 lease_expiries=t.lease_expiries,
                 stale_completions=t.stale_completions,
                 superseded=t.superseded,
+                releases=t.releases,
             ),
             workers_connected=r.workers_connected,
             unavailable_shards=tuple(r.unavailable_shards),

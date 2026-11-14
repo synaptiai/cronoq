@@ -729,7 +729,7 @@ class WorkerGroup(_message.Message):
     def __init__(self, labels: _Optional[_Mapping[str, str]] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ...) -> None: ...
 
 class Totals(_message.Message):
-    __slots__ = ("submitted", "dispatched", "succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed", "retries", "timeouts", "lease_expiries", "stale_completions", "superseded")
+    __slots__ = ("submitted", "dispatched", "succeeded", "failed", "dead_lettered", "cancelled", "skipped", "missed", "shed", "retries", "timeouts", "lease_expiries", "stale_completions", "superseded", "releases")
     SUBMITTED_FIELD_NUMBER: _ClassVar[int]
     DISPATCHED_FIELD_NUMBER: _ClassVar[int]
     SUCCEEDED_FIELD_NUMBER: _ClassVar[int]
@@ -744,6 +744,7 @@ class Totals(_message.Message):
     LEASE_EXPIRIES_FIELD_NUMBER: _ClassVar[int]
     STALE_COMPLETIONS_FIELD_NUMBER: _ClassVar[int]
     SUPERSEDED_FIELD_NUMBER: _ClassVar[int]
+    RELEASES_FIELD_NUMBER: _ClassVar[int]
     submitted: int
     dispatched: int
     succeeded: int
@@ -758,7 +759,8 @@ class Totals(_message.Message):
     lease_expiries: int
     stale_completions: int
     superseded: int
-    def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ..., stale_completions: _Optional[int] = ..., superseded: _Optional[int] = ...) -> None: ...
+    releases: int
+    def __init__(self, submitted: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., dead_lettered: _Optional[int] = ..., cancelled: _Optional[int] = ..., skipped: _Optional[int] = ..., missed: _Optional[int] = ..., shed: _Optional[int] = ..., retries: _Optional[int] = ..., timeouts: _Optional[int] = ..., lease_expiries: _Optional[int] = ..., stale_completions: _Optional[int] = ..., superseded: _Optional[int] = ..., releases: _Optional[int] = ...) -> None: ...
 
 class SnapshotResponse(_message.Message):
     __slots__ = ("pools", "live_tasks", "running", "pending", "totals", "workers_connected", "unavailable_shards")

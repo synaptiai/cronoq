@@ -1618,6 +1618,7 @@ impl From<cronoq::Snapshot> for Snapshot {
             ("recurring_invalid", t.recurring_invalid),
             ("stale_completions", t.stale_completions),
             ("superseded", t.superseded),
+            ("releases", t.releases),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))

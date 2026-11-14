@@ -3824,7 +3824,9 @@ type Totals struct {
 	// or from an earlier leader); they were ignored.
 	StaleCompletions uint64 `protobuf:"varint,13,opt,name=stale_completions,json=staleCompletions,proto3" json:"stale_completions,omitempty"`
 	// Submissions dropped without running because a newer one with their key replaced them.
-	Superseded    uint64 `protobuf:"varint,14,opt,name=superseded,proto3" json:"superseded,omitempty"`
+	Superseded uint64 `protobuf:"varint,14,opt,name=superseded,proto3" json:"superseded,omitempty"`
+	// Attempts given back by their worker to be run again later (`Release`).
+	Releases      uint64 `protobuf:"varint,15,opt,name=releases,proto3" json:"releases,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3953,6 +3955,13 @@ func (x *Totals) GetStaleCompletions() uint64 {
 func (x *Totals) GetSuperseded() uint64 {
 	if x != nil {
 		return x.Superseded
+	}
+	return 0
+}
+
+func (x *Totals) GetReleases() uint64 {
+	if x != nil {
+		return x.Releases
 	}
 	return 0
 }
@@ -5498,7 +5507,7 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\x04busy\x18\x03 \x01(\rR\x04busy\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcb\x03\n" +
 	"\x06Totals\x12\x1c\n" +
 	"\tsubmitted\x18\x01 \x01(\x04R\tsubmitted\x12\x1e\n" +
 	"\n" +
@@ -5518,7 +5527,8 @@ const file_cronoq_v1_cronoq_proto_rawDesc = "" +
 	"\x11stale_completions\x18\r \x01(\x04R\x10staleCompletions\x12\x1e\n" +
 	"\n" +
 	"superseded\x18\x0e \x01(\x04R\n" +
-	"superseded\"\x9b\x02\n" +
+	"superseded\x12\x1a\n" +
+	"\breleases\x18\x0f \x01(\x04R\breleases\"\x9b\x02\n" +
 	"\x10SnapshotResponse\x12-\n" +
 	"\x05pools\x18\x01 \x03(\v2\x17.cronoq.v1.PoolSnapshotR\x05pools\x12\x1d\n" +
 	"\n" +

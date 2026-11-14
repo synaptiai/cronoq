@@ -48,7 +48,7 @@ MSRV: Rust 1.94 (edition 2024) for every crate.
 | `scaler(impl Scaler)`, `scaler_arc(..)` | Capacity backend (default `SlotScaler`: in-process slots). |
 | `autoscale(AutoscaleConfig)`, `no_autoscale()` | Autoscaling policy. |
 | `priority(PriorityConfig)`, `urgency(UrgencyConfig)` | Class scores and deadline urgency for this pool only (default: the scheduler's). |
-| `configure(FnOnce(&mut PoolConfig))` | Every other pool setting (bounds, overflow, retry, lease TTL, max hold, tenant `fairness`, ...). |
+| `configure(FnOnce(&mut PoolConfig))` | Every other pool setting (bounds, overflow, retry, lease TTL, max hold, tenant `fairness`, ...). `configure(\|p\| p.max_releases = n)` sets how often an attempt of one task may be [released](../concepts/reliability.md#releasing-an-attempt) without counting as a failure (default 10). |
 
 ### `Scheduler<P, O>`
 
@@ -77,7 +77,7 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `task(target)` | `Option<TaskSummary>` | One task that has not finished (pool, kind, key, priority, status, attempt, tenant); `None` if unknown or finished. |
 | `list_tasks(pools, statuses, after, limit)` | `Vec<TaskSummary>` | Live tasks in id order, filtered by pool (any if empty) and status (any if empty), with ids above `after`. Finished tasks are listed by a durable store (`StoreQueries::list_finished`). |
 | `list_recurring()` | `Vec<RecurringInfo>` | Recurring schedules with their next occurrence and latest task. |
-| `snapshot()` | `Snapshot` | Metrics and quality signals. `PoolSnapshot::ordering` is an `OrderingSnapshot` (`keys`, `waiting`, `halted`, `paused`, `settings`) for the pool's [ordering keys](../concepts/ordering-keys.md). `PoolSnapshot::pauses` is the pool's `PoolPauses` and `PoolSnapshot::paused_tasks` the number of ready tasks held by a [pause](../concepts/pausing.md). |
+| `snapshot()` | `Snapshot` | Metrics and quality signals. `Snapshot::totals.releases` counts [released](../concepts/reliability.md#releasing-an-attempt) attempts. `PoolSnapshot::ordering` is an `OrderingSnapshot` (`keys`, `waiting`, `halted`, `paused`, `settings`) for the pool's [ordering keys](../concepts/ordering-keys.md). `PoolSnapshot::pauses` is the pool's `PoolPauses` and `PoolSnapshot::paused_tasks` the number of ready tasks held by a [pause](../concepts/pausing.md). |
 | `set_capacity(pool, n)` | `()` | Report capacity for pools with an `ExternalScaler`. |
 | `set_group_capacity(pool, labels, n)` | `()` | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `add_recurring(Recurring)` / `remove_recurring(name)` | `()` / `bool` | Cron schedules. |
@@ -104,7 +104,9 @@ after the change is durable. The four ordering methods and the four pause method
 `replace_queued()` and `renew_position()` ([replacing a task by key](../concepts/replacing.md);
 single submissions only), `fingerprint(u128)` and `on_key_conflict(KeyConflict)`
 ([detecting conflicting submissions](../concepts/key-conflicts.md)), `ordering_key(key)` and
-`halt_on_failure()` ([ordering keys](../concepts/ordering-keys.md); not with a fixed start).
+`halt_on_failure()` ([ordering keys](../concepts/ordering-keys.md); not with a fixed start),
+`max_releases(n)` (how often an attempt of this task may be
+[released](../concepts/reliability.md#releasing-an-attempt) without counting as a failure, instead of the pool's `max_releases`).
 Builder order does not matter. Strings must not contain NUL characters.
 
 `Submitted` (from `enqueue`) has `id`, `duplicate` and `outcome`: a `SubmitOutcome` of
@@ -124,7 +126,14 @@ absolute deadline, a fixed start, dependencies or an ordering key.
 | `Executor<P, O>` | Trait: `execute(ctx, Arc<P>) -> BoxFuture<Result<O, TaskError>>`, optional `abort(lease)`. |
 | `FnExecutor` | Wraps an `async fn(TaskContext, Arc<P>)`; what `Pool::executor_fn` uses. |
 | `TaskContext` | `id`, `lease`, `attempt`, `pool`, `kind`, `key`, `tags`, `deadline`, `timeout`, `group` (labels of the worker group the attempt was assigned to); `is_cancelled()`, `cancelled().await`, `cancellation_token()`, `heartbeat()`, `tag(key)`, `traceparent()`; `TaskContext::for_test(id)` for unit tests. |
-| `TaskError` | `Retryable { message, retry_after }`, `Permanent { message }`, `Cancelled`; constructors `retryable`, `retry_after`, `permanent`, `from_err`. |
+| `TaskError` | `Retryable { message, retry_after }`, `Permanent { message }`, `Cancelled`, `Release { after }`; constructors `retryable`, `retry_after`, `permanent`, `release`, `from_err`. |
+
+`TaskError::release(after)` gives the task back without a verdict
+([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)): it keeps its place and is
+offered again once `after` has passed. The attempt number goes up, and the attempt does not
+count against the retry policy. A task may be released `max_releases` times (the pool's, 10
+unless set, or the task's own); a release beyond that is a retryable failure with the message
+`released more than N times` and `after` as its minimum backoff.
 
 A panicking executor fails its attempt permanently (`panic: ...`); the scheduler and other
 attempts keep running.
@@ -188,6 +197,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `submit_batch_with(now, specs, &[KeyConflict])` | Atomic batch with one mode per task (or none for the configured default). |
 | `submit_with`, `try_submit_with` | Admission with `SubmitOptions { on_key_conflict, renew_position }`: `KeyConflict::Reject` compares `TaskSpec::fingerprint` with the one stored for the key and fails with `SubmitError::KeyConflict` when they differ; `KeyConflict::ReplaceQueued` replaces the task holding the key or stores the submission to run after it. Emits `Mutation::Replaced` or `Mutation::PendingReplacement`. |
 | `complete(now, lease, Outcome)`, `heartbeat(now, lease)` | Attempt feedback. |
+| `release(now, lease, delay) -> bool` | [Release an attempt](../concepts/reliability.md#releasing-an-attempt): the task is `Retrying` and is offered again once `delay` has passed; the attempt does not count against the retry policy. Beyond `PoolConfig::max_releases` (default 10) or `TaskSpec::max_releases`, the release is a retryable failure with `delay` as its minimum backoff; releases made while a pause holds the task do not count toward the limit. `false` for a lease that is unknown, as for `complete`. Emits `Mutation::Released { id, attempt, releases, at }`: `attempt` is the attempts made so far, `releases` how many of them were released, `at` the engine time of the release. `Totals::releases` counts releases. |
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
 | `update(now, target, TaskPatch)` | Change a live task's priority, deadline or tags; emits `Mutation::Updated` and, with `emit_transitions`, a `StatusEvent` of `EventKind::Updated`. |
 | `set_capacity(now, pool, n)`, `set_group_capacity(now, pool, labels, n)` | Capacity changes, for the whole pool or for the workers with exactly `labels`. |
@@ -197,7 +207,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `tick(now)`, `next_wakeup()` | Timers. |
 | `poll_action()`, `drain_actions()`, `has_actions()` | `Action::{Dispatch, Abort, ScaleTo, Status, Persist, SpaceAvailable}` for the driver. |
 | `snapshot(now)` | Metrics. |
-| `recover(now, Recovered)` | Restore state loaded from a store. `Recovered::paused` is the pauses in place, each a `RecoveredPause { pool, target, reason }`. |
+| `recover(now, Recovered)` | Restore state loaded from a store. `Recovered::paused` is the pauses in place, each a `RecoveredPause { pool, target, reason }`. `RecoveredTask::releases` is how many of the task's attempts (`attempt`) were released; a store keeps it from `Mutation::Released`, and those attempts do not count against the retry policy after recovery. |
 | `check_invariants()` | Panics on internal inconsistency (tests and fuzzing). |
 
 `CoreConfig` fields: `pools`, `resources`, `priority`, `urgency`, `global_bounds`, `retention`,

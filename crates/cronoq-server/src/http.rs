@@ -1402,7 +1402,7 @@ async fn snapshot(
             "failed": t.failed, "dead_lettered": t.dead_lettered, "cancelled": t.cancelled,
             "skipped": t.skipped, "missed": t.missed, "shed": t.shed, "retries": t.retries,
             "timeouts": t.timeouts, "lease_expiries": t.lease_expiries,
-            "stale_completions": t.stale_completions, "superseded": t.superseded,
+            "stale_completions": t.stale_completions, "superseded": t.superseded, "releases": t.releases,
         },
     })))
 }
