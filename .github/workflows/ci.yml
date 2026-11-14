@@ -38,6 +38,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo clippy -p cronoq --no-default-features --all-targets
+      # Embedded builds leave out cron, time-zone data and the multi-threaded runtime.
+      - run: cargo clippy -p cronoq-core --no-default-features --all-targets
+      - run: cargo clippy -p cronoq-core --no-default-features --features cron --all-targets
+      - run: cargo clippy -p cronoq-ffi --features sqlite --all-targets
       - name: Rustdoc (no broken links, no missing docs)
         run: cargo doc --workspace --no-deps --exclude cronoq-py
         env:
@@ -77,6 +81,14 @@ jobs:
       # throwaway servers from /usr/lib/postgresql/16/bin.
       - run: ls /usr/lib/postgresql/16/bin/initdb
       - run: cargo test --workspace
+      - name: Feature sets of the core (no cron, cron without time zones)
+        run: |
+          cargo test -p cronoq-core --no-default-features --test features
+          cargo test -p cronoq-core --no-default-features --features cron --test features
+      - name: Blocking scheduler on the single-threaded runtime
+        run: cargo test -p cronoq --no-default-features --test review --test runtime blocking
+      - name: C API with the SQLite store
+        run: cargo test -p cronoq-ffi --features sqlite
       - name: Deterministic simulation (more seeds)
         run: cargo test --release -p cronoq-core --test sim
         env:
@@ -173,6 +185,113 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         working-directory: sdks/go
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  # The embeddable C library: its own tests, the C example, the Go wrapper in both build
+  # modes and, on macOS, the Swift package. The libraries are kept as artifacts so that they
+  # can be tried without a Rust toolchain.
+  embed:
+    name: embed (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            dylib: libcronoq_ffi.so
+            cc: cc
+            libs: -lpthread -ldl -lm
+          - os: macos-15
+            target: aarch64-apple-darwin
+            dylib: libcronoq_ffi.dylib
+            cc: cc
+            libs: ""
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            dylib: libcronoq_ffi.dylib
+            cc: cc
+            libs: ""
+          # cgo links with the GNU toolchain on Windows, so the library is built for it.
+          - os: windows-2022
+            target: x86_64-pc-windows-gnu
+            dylib: cronoq_ffi.dll
+            cc: gcc
+            libs: -lws2_32 -luserenv -lntdll -lbcrypt -ladvapi32 -lkernel32
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: embed-${{ matrix.target }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: sdks/go-embed/go.sum
+      - name: Tests of the C API
+        run: cargo test -p cronoq-ffi --target ${{ matrix.target }}
+      - name: Build the libraries
+        run: |
+          cargo build --release -p cronoq-ffi --target ${{ matrix.target }}
+          mkdir -p out/static
+          cp target/${{ matrix.target }}/release/${{ matrix.dylib }} out/
+          cp target/${{ matrix.target }}/release/libcronoq_ffi.a out/static/
+          cp crates/cronoq-ffi/include/cronoq.h out/
+      - name: The header is generated from the source
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          cargo install cbindgen --locked --version 0.29.4
+          cd crates/cronoq-ffi
+          cbindgen --config cbindgen.toml --crate cronoq-ffi --output include/cronoq.h
+          git diff --exit-code -- include/cronoq.h
+          cmp include/cronoq.h ../../sdks/go-embed/include/cronoq.h
+          cmp include/cronoq.h ../../sdks/swift/Sources/CCronoq/include/cronoq.h
+      - name: C example
+        run: |
+          ${{ matrix.cc }} -Wall -Wextra -Werror -I crates/cronoq-ffi/include \
+            crates/cronoq-ffi/examples/c/example.c out/static/libcronoq_ffi.a \
+            ${{ matrix.libs }} -o out/example
+          ./out/example
+          rm out/example*
+      - name: Go, loading the dynamic library without cgo
+        working-directory: sdks/go-embed
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          root=$(cd ../.. && (pwd -W 2>/dev/null || pwd))
+          export CRONOQ_LIBRARY="$root/out/${{ matrix.dylib }}"
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -count=1 ./...
+          go run ./example
+      - name: Go, linking the static library with cgo
+        working-directory: sdks/go-embed
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          root=$(cd ../.. && (pwd -W 2>/dev/null || pwd))
+          export CGO_LDFLAGS="-L$root/out/static"
+          go vet -tags cronoq_static ./...
+          go test -tags cronoq_static -count=1 ./...
+          go run -tags cronoq_static ./example
+      - name: Swift package
+        if: startsWith(matrix.os, 'macos')
+        working-directory: sdks/swift
+        run: |
+          swift test -Xlinker -L"$GITHUB_WORKSPACE/out/static"
+          swift run -Xlinker -L"$GITHUB_WORKSPACE/out/static" cronoq-example
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cronoq-embed-${{ matrix.target }}
+          path: out/
+          if-no-files-found: error
 
   typescript:
     runs-on: ubuntu-24.04

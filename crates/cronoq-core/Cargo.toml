@@ -30,6 +30,7 @@ tz = ["cron", "dep:chrono-tz"]
 
 [dev-dependencies]
 proptest.workspace = true
+chrono.workspace = true
 criterion = { version = "0.8", default-features = false }
 
 [[bench]]
