@@ -642,6 +642,15 @@ impl ScheduleJson {
         let template = self.task.unwrap_or_default().task(payload)?;
         let mut r = Recurring::new(name, cron, template);
         if let Some(tz) = self.tz {
+            // Said here, and not left to the engine: in a build of the whole workspace the
+            // engine has time-zone data although this library was not asked to have it.
+            #[cfg(not(feature = "tz"))]
+            if tz != "UTC" && tz != "Etc/UTC" {
+                return Err(format!(
+                    "time zone '{tz}': this build has no time-zone data (feature `tz`); \
+                     only UTC is available"
+                ));
+            }
             r = r.tz(tz);
         }
         if let Some(o) = self.overlap {
