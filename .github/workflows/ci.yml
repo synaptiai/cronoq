@@ -87,8 +87,11 @@ jobs:
           cargo test -p cronoq-core --no-default-features --features cron --test features
       - name: Blocking scheduler on the single-threaded runtime
         run: cargo test -p cronoq --no-default-features --test review --test runtime blocking
-      - name: C API with the SQLite store
-        run: cargo test -p cronoq-ffi --features sqlite
+      - name: C API with the SQLite store, with time-zone data, and without cron
+        run: |
+          cargo test -p cronoq-ffi --features sqlite
+          cargo test -p cronoq-ffi --features tz
+          cargo test -p cronoq-ffi --no-default-features
       - name: Deterministic simulation (more seeds)
         run: cargo test --release -p cronoq-core --test sim
         env:

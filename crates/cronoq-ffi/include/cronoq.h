@@ -90,8 +90,7 @@ typedef struct cronoq_lease {
   const char *key;
   // The task's kind (an empty string if it has none).
   const char *kind;
-  // A JSON object with the rest: `pool`, `tags`, and, when set, `deadline_unix_ms` and
-  // `timeout_ms`.
+  // A JSON object with the rest: `pool`, `tags`, `labels` (those the task requires), and, when set, `deadline_unix_ms` and `timeout_ms`.
   const char *info_json;
   // Private to the library.
   void *owner;
@@ -277,6 +276,34 @@ enum cronoq_status cronoq_next_lease(const struct cronoq_scheduler *s,
                                      const char *pool,
                                      uint64_t timeout_ms,
                                      struct cronoq_lease *out);
+
+// Like [`cronoq_next_lease`], for a thread that carries labels.
+//
+// A task submitted with `labels` runs only on a thread whose labels include all of them. A
+// task without labels runs on any thread, and the scheduler prefers threads with fewer
+// labels for it. `cronoq_next_lease` is this call without labels.
+//
+// `labels_json` is a JSON object of strings, e.g. `{"network": "wifi", "power": "mains"}`.
+// Null and `{}` mean no labels. Threads that pass the same labels form a group; a pool
+// keeps at most 64 different groups, and `max_leases` holds for all of them together.
+//
+// A group stays for the life of the scheduler: labels are for a few lasting properties of
+// threads, not for values that keep changing. The labels a task requires are in the
+// lease's `info_json`, as `labels`.
+//
+// When several groups wait and the pool is at `max_leases`, an attempt may be started
+// before a lease is free for it. It is handed out as soon as one is; its timeout runs
+// from its start. An attempt of a task with labels that no thread with those labels asks
+// for within the pool's `label_grace_ms` (default 1000) is given back, as by
+// `cronoq_release`.
+//
+// # Safety
+// As for `cronoq_next_lease`. `labels_json` is null or a zero-terminated string.
+enum cronoq_status cronoq_next_lease_labeled(const struct cronoq_scheduler *s,
+                                             const char *pool,
+                                             const char *labels_json,
+                                             uint64_t timeout_ms,
+                                             struct cronoq_lease *out);
 
 // Release what a lease from `cronoq_next_lease` points to, and clear it. This does not end
 // the attempt: call `cronoq_complete`, `cronoq_fail` or `cronoq_release` for that, before
@@ -570,11 +597,89 @@ enum cronoq_status cronoq_resync_clock(const struct cronoq_scheduler *s, uint64_
 // `s` is a live scheduler.
 enum cronoq_status cronoq_advance_clock(const struct cronoq_scheduler *s, uint64_t by_ms);
 
+// Add a recurring schedule, or replace the one with this name.
+//
+// At each time `cron` names, the scheduler submits a task with a copy of `payload`, to
+// start at that time. `cron` has five fields (minute, hour, day of month, month, day of
+// week), or six with seconds first.
+//
+// `options_json` is null, or a JSON object in which every field is optional and an unknown
+// field is an error:
+//
+// ```json
+// {
+//   "tz": "Europe/Lisbon",
+//   "overlap": "skip",
+//   "tolerance_ms": 1000,
+//   "on_miss": "run_late",
+//   "task": {"pool": "default", "kind": "sync", "key": "sync", "priority": "low"}
+// }
+// ```
+//
+// - `tz`: the time zone of `cron`. UTC when left out. A name other than `UTC` needs a
+//   library built with the feature `tz`; the published libraries do not have it.
+// - `overlap`: what happens while the previous occurrence is not done: `skip` (default),
+//   `allow`, `queue` (run after it) or `queue_on_success` (run after it if it succeeded).
+// - `tolerance_ms`: how late an occurrence may start and still be on time.
+// - `on_miss`: what happens to an occurrence that is later than that: `run_late`
+//   (default), `skip` or `fail`.
+// - `task`: the options of each occurrence, as for `cronoq_submit`. A `key` is a prefix:
+//   each occurrence gets `<key>@<its start in UTC>`. `deadline_ms` counts from the
+//   occurrence's start. A fixed start, `after`, and a replacing `on_key_conflict` describe
+//   one task and are refused.
+//
+// Schedules are kept where tasks are kept. In memory they are gone when the scheduler is
+// freed: add them again at every start. With a store, adding one again replaces it.
+//
+// Returns `CRONOQ_INVALID_ARGUMENT` for a cron expression or time zone the library cannot
+// read, also when it was built without the feature `cron`.
+//
+// Thread safety: may be called from any number of threads at once.
+//
+// # Safety
+// `s` is a live scheduler. `name` and `cron` are zero-terminated strings. `payload` points
+// to `payload_len` readable bytes (or is null with length 0). `options_json` is null or a
+// zero-terminated string.
+enum cronoq_status cronoq_schedule_add(const struct cronoq_scheduler *s,
+                                       const char *name,
+                                       const char *cron,
+                                       const uint8_t *payload,
+                                       size_t payload_len,
+                                       const char *options_json);
+
+// Remove the recurring schedule `name`. Occurrences that were submitted already stay.
+//
+// Returns `CRONOQ_NOT_FOUND` if there is no such schedule.
+//
+// Thread safety: may be called from any number of threads at once.
+//
+// # Safety
+// `s` is a live scheduler. `name` is a zero-terminated string.
+enum cronoq_status cronoq_schedule_remove(const struct cronoq_scheduler *s, const char *name);
+
+// The recurring schedules as a JSON array, ordered by name:
+//
+// ```json
+// [{"name": "sync", "cron": "*/5 * * * *", "tz": null, "pool": "default", "kind": "sync",
+//   "overlap": "skip", "next_unix_ms": 1790000100000, "last_task": 12}]
+// ```
+//
+// `next_unix_ms` is the next occurrence (null when there is none) and `last_task` the task
+// of the latest one (null before the first).
+//
+// Ownership: on `CRONOQ_OK` the host owns `*out` and frees it with `cronoq_buf_free`.
+//
+// Thread safety: may be called from any number of threads at once.
+//
+// # Safety
+// `s` is a live scheduler. `out` points to writable memory for one `cronoq_buf`.
+enum cronoq_status cronoq_schedules(const struct cronoq_scheduler *s, struct cronoq_buf *out);
+
 // Describe a live task (by `key` when not null, else by id `task`) as JSON:
 //
 // ```json
 // {"id": 7, "key": "k", "pool": "default", "kind": "", "priority": "normal",
-//  "status": "ready", "attempt": 0}
+//  "status": "ready", "attempt": 0, "tenant": null}
 // ```
 //
 // `status` is one of `blocked`, `scheduled`, `ready`, `running`, `retrying` for a live

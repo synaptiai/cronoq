@@ -192,8 +192,10 @@ the store (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`). To buil
   times out if the task has a timeout shorter than the sleep, and the lease expires if the
   pool has a lease TTL shorter than the sleep. Release leases before the app goes to the
   background if you can.
-- **Not in the C API:** recurring schedules, fixed start times, dependencies between tasks,
-  fair sharing between tenants and worker labels.
+- **Schedules run in UTC.** The published libraries have recurring schedules but no
+  time-zone data, which would about double their size. A schedule in a named time zone needs
+  a library you build with the `tz` feature
+  ([details](../guides/embedding.md#recurring-schedules)).
 - **Results and events are there when you need them.** An attempt can be completed with an
   output, another part of the app can wait for a task to end, and a subscription delivers
   status events, for example to show progress

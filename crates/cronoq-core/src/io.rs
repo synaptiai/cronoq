@@ -287,6 +287,9 @@ pub struct Dispatch<P> {
     /// Labels of the worker group chosen for this attempt (empty for the unlabeled group);
     /// a driver with several groups must run the attempt on a worker of this group.
     pub group: Labels,
+    /// Labels the task requires (empty if none). Every label is among those of `group`; any
+    /// worker that carries them all may run the attempt.
+    pub labels: Labels,
 }
 
 /// Sorted `(name, value)` labels of a worker group.
@@ -306,6 +309,7 @@ impl<P> Clone for Dispatch<P> {
             deadline: self.deadline,
             tags: self.tags.clone(),
             group: self.group.clone(),
+            labels: self.labels.clone(),
         }
     }
 }

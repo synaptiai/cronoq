@@ -195,6 +195,42 @@ type Pool struct {
 	LeaseTTLMs uint64            `json:"lease_ttl_ms,omitempty"`
 	Priority   *PrioritySettings `json:"priority,omitempty"`
 	Urgency    *UrgencySettings  `json:"urgency,omitempty"`
+	// Fairness shares the pool between the tenants of its tasks (Task.Tenant).
+	Fairness *Fairness `json:"fairness,omitempty"`
+	// UnknownDependency says what happens to a task that waits for a key no task has
+	// (Task.After). By default the submission is refused.
+	UnknownDependency *UnknownDependency `json:"unknown_dependency,omitempty"`
+	// LabelGraceMs is how long an attempt of a task with labels waits for a caller of
+	// NextLabeled that carries them before it is given back (default 1000, at least 10).
+	// Make it longer than the longest pause between two calls of such a caller.
+	LabelGraceMs uint64 `json:"label_grace_ms,omitempty"`
+}
+
+// Fairness shares a pool between tenants in proportion to their weights. Within a class,
+// tasks without a deadline are handed out so that each tenant with waiting work gets its
+// share.
+type Fairness struct {
+	// Weights by tenant.
+	Weights map[string]float64 `json:"weights,omitempty"`
+	// DefaultWeight is the weight of every other tenant and of tasks without one (default 1).
+	DefaultWeight float64 `json:"default_weight,omitempty"`
+}
+
+// UnknownDependency makes a pool wait for a task with the key a dependency names.
+type UnknownDependency struct {
+	// Await: wait for the key instead of refusing the submission.
+	Await bool `json:"await"`
+	// TimeoutMs: give up and skip the task after this long (0: wait for ever).
+	TimeoutMs uint64 `json:"timeout_ms,omitempty"`
+}
+
+// Dep is a task another task waits for: by Key when it is not empty, else by id Task.
+type Dep struct {
+	Task uint64 `json:"task,omitempty"`
+	Key  string `json:"key,omitempty"`
+	// When is the outcome to wait for: "success" (default), "complete" (any outcome) or
+	// "failure". A task whose dependency can no longer be met is skipped.
+	When string `json:"when,omitempty"`
 }
 
 // Resource is a limit that tasks share: a semaphore (Kind "semaphore", Permits) or a rate
@@ -254,6 +290,58 @@ type Task struct {
 	RenewPosition bool `json:"renew_position,omitempty"`
 	// MaxReleases overrides the pool's limit for this task.
 	MaxReleases *uint32 `json:"max_releases,omitempty"`
+	// StartInMs starts the task that far from now, at a time the scheduler keeps a slot
+	// free for. StartAtUnixMs does the same for a time of day, in milliseconds since 1970
+	// UTC. Set at most one.
+	// Zero means "not set" for both.
+	StartInMs     uint64 `json:"start_in_ms,omitempty"`
+	StartAtUnixMs uint64 `json:"start_at_unix_ms,omitempty"`
+	// StartToleranceMs is how late the start may be and still be on time (default 1000).
+	StartToleranceMs *uint64 `json:"start_tolerance_ms,omitempty"`
+	// OnMiss says what a start that is later than that does: "run_late" (default), "skip"
+	// or "fail".
+	OnMiss string `json:"on_miss,omitempty"`
+	// DurationHintMs is how long an attempt is expected to run, until the scheduler has
+	// seen tasks of this kind.
+	DurationHintMs uint64 `json:"duration_hint_ms,omitempty"`
+	// After lists the tasks this one waits for.
+	After []Dep `json:"after,omitempty"`
+	// Tenant is who the task belongs to, for pools with Fairness.
+	Tenant string `json:"tenant,omitempty"`
+	// Labels a goroutine must carry to get the task (NextLabeled).
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// Schedule holds the options of a recurring schedule. The zero value runs in UTC, skips
+// an occurrence while the previous one is not done, and submits normal tasks to "default".
+type Schedule struct {
+	// Tz is the IANA time zone of the cron expression (default UTC). A zone other than UTC
+	// needs a library built with time-zone data; the published libraries have none.
+	Tz string `json:"tz,omitempty"`
+	// Overlap says what happens while the previous occurrence is not done: "skip"
+	// (default), "allow", "queue" or "queue_on_success".
+	Overlap string `json:"overlap,omitempty"`
+	// ToleranceMs is how late an occurrence may start and still be on time.
+	ToleranceMs *uint64 `json:"tolerance_ms,omitempty"`
+	// OnMiss says what a later occurrence does: "run_late" (default), "skip" or "fail".
+	OnMiss string `json:"on_miss,omitempty"`
+	// Task holds the options of each occurrence. Its Key is a prefix: each occurrence gets
+	// "<key>@<its start in UTC>". Its DeadlineMs counts from the occurrence's start.
+	Task *Task `json:"task,omitempty"`
+}
+
+// ScheduleInfo describes a recurring schedule.
+type ScheduleInfo struct {
+	Name    string `json:"name"`
+	Cron    string `json:"cron"`
+	Tz      string `json:"tz"`
+	Pool    string `json:"pool"`
+	Kind    string `json:"kind"`
+	Overlap string `json:"overlap"`
+	// NextUnixMs is the next occurrence, in milliseconds since 1970 UTC (nil: none).
+	NextUnixMs *int64 `json:"next_unix_ms"`
+	// LastTask is the task of the latest occurrence (nil before the first).
+	LastTask *uint64 `json:"last_task"`
 }
 
 // Outcome says what a submission did.
@@ -310,6 +398,7 @@ type TaskInfo struct {
 	Priority Priority `json:"priority"`
 	Status   string   `json:"status"`
 	Attempt  uint32   `json:"attempt"`
+	Tenant   string   `json:"tenant"`
 }
 
 // PoolSnapshot is the state of one pool.
@@ -428,6 +517,8 @@ type Lease struct {
 	Pool string
 	// Tags are the task's tags.
 	Tags map[string]string
+	// Labels are the labels the task requires (see NextLabeled).
+	Labels map[string]string
 	// Deadline is the task's deadline, or the zero time.
 	Deadline time.Time
 	// Timeout is the attempt's timeout, or 0.
@@ -441,6 +532,28 @@ type Lease struct {
 // It returns ErrTimeout when nothing became ready in time, a *PausedError (matching
 // ErrPaused) when in addition the pool is paused, and ErrShutdown after Shutdown or Close.
 func (s *Scheduler) Next(pool string, timeout time.Duration) (*Lease, error) {
+	return s.NextLabeled(pool, nil, timeout)
+}
+
+// NextLabeled is Next for a goroutine that carries labels. A task submitted with Labels
+// goes only to a caller whose labels include all of them. A task without labels goes to
+// any caller, and the scheduler prefers callers with fewer labels for it.
+//
+// Callers that pass the same labels form a group. A pool keeps at most 64 different
+// groups for the life of the scheduler, so labels are for a few lasting properties, not for
+// values that keep changing. MaxLeases holds for all groups of a pool together.
+//
+// An attempt of a task with labels that no caller with those labels asks for within the
+// pool's LabelGraceMs (default one second) is given back, as by Release.
+func (s *Scheduler) NextLabeled(pool string, labels map[string]string, timeout time.Duration) (*Lease, error) {
+	var labelsJSON string
+	if len(labels) > 0 {
+		text, err := json.Marshal(labels)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
+		labelsJSON = string(text)
+	}
 	h, err := s.enter()
 	if err != nil {
 		return nil, err
@@ -449,7 +562,7 @@ func (s *Scheduler) Next(pool string, timeout time.Duration) (*Lease, error) {
 	if timeout < 0 {
 		timeout = 0
 	}
-	raw, status, msg := cNextLease(h, pool, uint64(timeout/time.Millisecond))
+	raw, status, msg := cNextLease(h, pool, labelsJSON, uint64(timeout/time.Millisecond))
 	if err := statusError(status, msg); err != nil {
 		return nil, err
 	}
@@ -457,13 +570,14 @@ func (s *Scheduler) Next(pool string, timeout time.Duration) (*Lease, error) {
 	var info struct {
 		Pool           string            `json:"pool"`
 		Tags           map[string]string `json:"tags"`
+		Labels         map[string]string `json:"labels"`
 		DeadlineUnixMs *int64            `json:"deadline_unix_ms"`
 		TimeoutMs      *int64            `json:"timeout_ms"`
 	}
 	if err := json.Unmarshal([]byte(raw.info), &info); err != nil {
 		return nil, fmt.Errorf("%w: lease info: %v", ErrInternal, err)
 	}
-	l.Pool, l.Tags = info.Pool, info.Tags
+	l.Pool, l.Tags, l.Labels = info.Pool, info.Tags, info.Labels
 	if info.DeadlineUnixMs != nil {
 		l.Deadline = time.UnixMilli(*info.DeadlineUnixMs)
 	}
@@ -620,6 +734,58 @@ func (s *Scheduler) Task(ref TaskRef) (*TaskInfo, error) {
 		return nil, fmt.Errorf("%w: %v", ErrInternal, err)
 	}
 	return &info, nil
+}
+
+// AddSchedule adds a recurring schedule, or replaces the one with this name. At each time
+// cron names (five fields, or six with seconds first) the scheduler submits a task with a
+// copy of payload, to start at that time. opts may be nil.
+//
+// Schedules are kept where tasks are kept. In memory they are gone when the scheduler is
+// closed: add them again at every start. With a store, adding one again replaces it.
+func (s *Scheduler) AddSchedule(name, cron string, payload []byte, opts *Schedule) error {
+	var options string
+	if opts != nil {
+		text, err := json.Marshal(opts)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
+		options = string(text)
+	}
+	h, err := s.enter()
+	if err != nil {
+		return err
+	}
+	defer s.calls.Done()
+	return statusError(cScheduleAdd(h, name, cron, payload, options))
+}
+
+// RemoveSchedule removes a recurring schedule. Occurrences that were submitted already
+// stay. It returns ErrNotFound if there is no such schedule.
+func (s *Scheduler) RemoveSchedule(name string) error {
+	h, err := s.enter()
+	if err != nil {
+		return err
+	}
+	defer s.calls.Done()
+	return statusError(cScheduleRemove(h, name))
+}
+
+// Schedules lists the recurring schedules, ordered by name.
+func (s *Scheduler) Schedules() ([]ScheduleInfo, error) {
+	h, err := s.enter()
+	if err != nil {
+		return nil, err
+	}
+	defer s.calls.Done()
+	text, status, msg := cSchedules(h)
+	if err := statusError(status, msg); err != nil {
+		return nil, err
+	}
+	var list []ScheduleInfo
+	if err := json.Unmarshal([]byte(text), &list); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInternal, err)
+	}
+	return list, nil
 }
 
 // Snapshot returns the state of the scheduler.

@@ -22,7 +22,10 @@ var (
 	fnShutdown         func(s unsafe.Pointer, graceMs uint64) int32
 	fnFree             func(s unsafe.Pointer)
 	fnSubmit           func(s unsafe.Pointer, payload *byte, n uintptr, options *byte, outTask *uint64, outOutcome *int32) int32
-	fnNextLease        func(s unsafe.Pointer, pool *byte, timeoutMs uint64, out *cLease) int32
+	fnNextLease        func(s unsafe.Pointer, pool, labels *byte, timeoutMs uint64, out *cLease) int32
+	fnScheduleAdd      func(s unsafe.Pointer, name, cron, payload *byte, payloadLen uintptr, options *byte) int32
+	fnScheduleRemove   func(s unsafe.Pointer, name *byte) int32
+	fnSchedules        func(s unsafe.Pointer, out *cBuf) int32
 	fnLeaseFree        func(l *cLease)
 	fnComplete         func(s unsafe.Pointer, lease uint64, output *byte, n uintptr) int32
 	fnWait             func(s unsafe.Pointer, task uint64, key *byte, timeoutMs uint64, ok *int32, out *cBuf) int32
@@ -116,7 +119,10 @@ func bind(handle uintptr) (err error) {
 		"cronoq_shutdown":           &fnShutdown,
 		"cronoq_free":               &fnFree,
 		"cronoq_submit":             &fnSubmit,
-		"cronoq_next_lease":         &fnNextLease,
+		"cronoq_next_lease_labeled": &fnNextLease,
+		"cronoq_schedule_add":       &fnScheduleAdd,
+		"cronoq_schedule_remove":    &fnScheduleRemove,
+		"cronoq_schedules":          &fnSchedules,
 		"cronoq_lease_free":         &fnLeaseFree,
 		"cronoq_complete":           &fnComplete,
 		"cronoq_wait":               &fnWait,
@@ -244,9 +250,11 @@ type rawLease struct {
 	info        string
 }
 
-func cNextLease(h unsafe.Pointer, pool string, timeoutMs uint64) (rawLease, int32, string) {
+func cNextLease(h unsafe.Pointer, pool, labels string, timeoutMs uint64) (rawLease, int32, string) {
 	var l cLease
-	status, msg := call(func() int32 { return fnNextLease(h, cstr(pool, true), timeoutMs, &l) })
+	status, msg := call(func() int32 {
+		return fnNextLease(h, cstr(pool, true), cstr(labels, true), timeoutMs, &l)
+	})
 	if status != statusOK {
 		return rawLease{}, status, msg
 	}
@@ -367,6 +375,31 @@ func takeBuf(b *cBuf) string {
 func cTask(h unsafe.Pointer, id uint64, key string) (string, int32, string) {
 	var b cBuf
 	status, msg := call(func() int32 { return fnTask(h, id, cstr(key, true), &b) })
+	if status != statusOK {
+		return "", status, msg
+	}
+	return takeBuf(&b), status, ""
+}
+
+func cScheduleAdd(h unsafe.Pointer, name, cron string, payload []byte, options string) (int32, string) {
+	var p *byte
+	if len(payload) > 0 {
+		p = &payload[0]
+	}
+	status, msg := call(func() int32 {
+		return fnScheduleAdd(h, cstr(name, false), cstr(cron, false), p, uintptr(len(payload)), cstr(options, true))
+	})
+	runtime.KeepAlive(payload)
+	return status, msg
+}
+
+func cScheduleRemove(h unsafe.Pointer, name string) (int32, string) {
+	return call(func() int32 { return fnScheduleRemove(h, cstr(name, false)) })
+}
+
+func cSchedules(h unsafe.Pointer) (string, int32, string) {
+	var b cBuf
+	status, msg := call(func() int32 { return fnSchedules(h, &b) })
 	if status != statusOK {
 		return "", status, msg
 	}

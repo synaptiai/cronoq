@@ -77,7 +77,8 @@ cargo build --release -p cronoq-ffi
 | Build feature | Default | Adds |
 |---|---|---|
 | `sqlite` | off | A durable store in a SQLite file ([below](#keeping-tasks-across-restarts)). |
-| `cron`, `tz` | off | Nothing you can call from C. They matter only when a store holds [recurring schedules](../concepts/recurring.md) written by another program. Time-zone data is most of the size of a full build. |
+| `cron` | on | [Recurring schedules](#recurring-schedules). Without it no schedule can be added. About 0.1 MB. |
+| `tz` | off | Time-zone data, for schedules in a time zone other than UTC. It about doubles the size of the library (on Linux, stripped: 1.9 MB without, 3.8 MB with). **The published libraries and frameworks do not have it:** their schedules run in UTC. |
 
 ## C
 
@@ -244,7 +245,10 @@ optional, and an unknown field is an error.
     "max_releases": 10,
     "lease_ttl_ms": 30000,
     "priority": {"aging_rate": {"low": 0.5}},
-    "urgency": {"window_s": 60}
+    "urgency": {"window_s": 60},
+    "fairness": {"weights": {"paying": 3}, "default_weight": 1},
+    "unknown_dependency": {"await": true, "timeout_ms": 60000},
+    "label_grace_ms": 1000
   }],
   "resources": [{"kind": "semaphore", "name": "uplink", "permits": 1},
                 {"kind": "rate", "name": "relay", "rate": 5.0, "burst": 10}],
@@ -263,6 +267,9 @@ optional, and an unknown field is an error.
 | `pools[].retry` | The [retry policy](../concepts/reliability.md) of the pool's tasks. |
 | `pools[].max_releases` | How often an attempt of one task may be [released](../concepts/reliability.md#releasing-an-attempt) without counting as a failure. |
 | `pools[].lease_ttl_ms` | Leases expire unless they are extended with a heartbeat within this time. Without it a lease lasts until its result is reported or its task's timeout. |
+| `pools[].fairness` | [Fair sharing](../concepts/fairness.md) of the pool between the tenants of its tasks: `weights` by tenant, and `default_weight` (default 1) for every other tenant and for tasks without one. |
+| `pools[].unknown_dependency` | What happens to a task that [waits for a key](../concepts/dependencies.md#unknown-parents) no task has. By default the submission is refused. With `{"await": true}` the task waits for a task with that key, for ever or for `timeout_ms`, after which it is skipped. |
+| `pools[].label_grace_ms` | How long an attempt of a task with [labels](#labels) waits for a thread that carries them before it is given back (default 1000, at least 10). |
 | `priority`, `urgency` | The [priority](../concepts/priorities.md) and [urgency](../concepts/deadlines.md) settings, for all pools or for one. Classes are named `critical`, `high`, `normal`, `low`. |
 | `resources` | [Semaphores and rate limits](../concepts/resources.md) that tasks name in their `resources`. |
 | `store.sqlite` | Keep tasks in this SQLite file. Needs a library built with `sqlite`. |
@@ -290,6 +297,98 @@ an error.
 | `fingerprint`, with `on_key_conflict: reject` | 1 to 32 hexadecimal digits that stand for the content. A submission whose key belongs to a task with another fingerprint is a [conflict](../concepts/key-conflicts.md). |
 | `renew_position` | A replacement goes to the back of the queue instead of keeping the place. |
 | `max_releases` | Overrides the pool's limit for this task. |
+| `start_in_ms`, `start_at_unix_ms` | A [fixed start](../concepts/fixed-starts.md): that far from now, or at a time in milliseconds since 1970 UTC. Give at most one. The task is not handed out before it. |
+| `start_tolerance_ms`, `on_miss` | How late a fixed start may be and still be on time (default 1000), and what a later one does: `run_late` (default), `skip` or `fail`. |
+| `duration_hint_ms` | How long an attempt is expected to run, until the scheduler has seen tasks of this kind. |
+| `after` | [Tasks this one waits for](../concepts/dependencies.md). Each entry is a task id, a key, or `{"task": id}` or `{"key": "..."}` with `"when"`: `success` (default), `complete` (any outcome) or `failure`. A task whose dependency can no longer be met is skipped. |
+| `tenant` | Who the task belongs to, for a pool with `fairness`. |
+| `labels` | [Labels](#labels) a thread must carry to get the task. |
+
+A fixed start needs a thread that asks for a lease at that time: the scheduler hands the task
+to the next thread that asks once the start has come. It keeps a slot free for the task
+shortly before the start, so with a single thread other work can be held back for about as
+long as the scheduler expects that work to run (one second until it has seen the kind;
+`duration_hint_ms` tells it).
+
+## Recurring schedules
+
+A [recurring schedule](../concepts/recurring.md) submits a task at each time a cron expression
+names. The expression has five fields (minute, hour, day of month, month, day of week), or six
+with seconds first.
+
+```c
+cronoq_schedule_add(s, "sync", "*/5 * * * *", (const uint8_t *)"sync", 4,
+                    "{\"overlap\": \"skip\", \"task\": {\"kind\": \"sync\", \"priority\": \"low\"}}");
+```
+
+```go
+err := s.AddSchedule("sync", "*/5 * * * *", []byte("sync"),
+    &embedded.Schedule{Overlap: "skip", Task: &embedded.Task{Kind: "sync", Priority: embedded.Low}})
+```
+
+```swift
+try scheduler.addSchedule(
+    name: "sync", cron: "*/5 * * * *", payload: Data("sync".utf8),
+    ScheduleOptions(overlap: "skip", task: TaskOptions(kind: "sync", priority: .low)))
+```
+
+| Option | Meaning |
+|---|---|
+| `tz` | The IANA time zone of the expression. UTC when left out. **A zone other than UTC needs a library built with the `tz` feature; the published libraries refuse it.** |
+| `overlap` | What happens while the previous occurrence is not done: `skip` (default), `allow`, `queue` (run after it) or `queue_on_success` (run after it if it succeeded). |
+| `tolerance_ms`, `on_miss` | How late an occurrence may start and still be on time, and what a later one does: `run_late` (default), `skip` or `fail`. |
+| `task` | The options of each occurrence, as for a submission. A `key` is a prefix: each occurrence gets `<key>@<its start in UTC>`. `deadline_ms` counts from the occurrence's start. A fixed start, `after` and a replacing `on_key_conflict` describe one task and are refused. |
+
+- **Adding a schedule with a name that exists replaces it.** Remove one with
+  `cronoq_schedule_remove` (Go `RemoveSchedule`, Swift `removeSchedule`); list them with
+  `cronoq_schedules` (Go `Schedules`, Swift `schedules`).
+- **Schedules are kept where tasks are kept.** In memory they are gone when the program ends:
+  add them again at every start. With the SQLite store they are kept, and adding one again
+  replaces it, so the same start-up code is right in both cases.
+- **Nothing runs while the program does not.** An occurrence is a task with a fixed start, and
+  a task needs a thread that asks for it. Without a store, occurrences that fell into the
+  time the program was not running are not made up. On a phone, call the
+  [clock resynchronisation](#time-sleep-and-phones) when the app becomes active, or the
+  schedule is late by the time slept.
+
+## Labels
+
+A task with [labels](../concepts/labels.md) goes only to a thread that carries all of them.
+The thread says which labels it has when it asks for a lease:
+
+```c
+cronoq_next_lease_labeled(s, NULL, "{\"network\": \"wifi\"}", 5000, &lease);
+```
+
+```go
+lease, err := s.NextLabeled("", map[string]string{"network": "wifi"}, 5*time.Second)
+```
+
+```swift
+let lease = try scheduler.next(labels: ["network": "wifi"], timeout: 5)
+```
+
+- A task without labels goes to any thread. The scheduler prefers threads with fewer labels
+  for it, so labelled threads stay free for the work only they can do.
+- `cronoq_next_lease` is the same call without labels.
+- The lease carries the labels its task requires.
+- **Use a few lasting labels.** Threads that pass the same labels form a group, and a pool
+  keeps at most 64 different groups for the life of the scheduler; a call with one more set
+  of labels is an error. A label is for a property such as "has Wi-Fi", not for a value that
+  keeps changing, such as a battery level.
+- **The labels are a statement about the thread at the time it asks.** To stop taking work
+  that needs a label (the device left Wi-Fi), ask without it.
+- **`max_leases` holds for all groups of a pool together.** Your program never holds more
+  attempts than that. When threads of several groups wait and the pool is at its limit, the
+  scheduler may start one attempt more per group than there are leases free. Such an attempt
+  is handed out as soon as a lease is free; its timeout runs from its start.
+- **An attempt nobody with its labels asks for is given back.** The scheduler can start a
+  task for a thread a moment after that thread stopped waiting. If the task has no labels,
+  the next thread of the pool takes it. If it has labels and no thread with them asks within
+  the pool's `label_grace_ms` (default one second), the attempt is [released](../concepts/reliability.md#releasing-an-attempt): the
+  task goes back to the queue and waits for such a thread. This counts toward the task's
+  `max_releases`, so make `label_grace_ms` longer than the longest pause between two calls
+  of a thread with labels.
 
 ## Operations
 
@@ -298,6 +397,8 @@ an error.
 | Start, stop | `cronoq_new`, `cronoq_shutdown`, `cronoq_free` | `Open`, `Shutdown`, `Close` | `Scheduler()`, `shutdown`, release of the last reference |
 | Submit | `cronoq_submit` | `Submit` | `submit` |
 | Take an attempt | `cronoq_next_lease`, `cronoq_lease_free` | `Next` | `next` |
+| Take an attempt as a thread with [labels](#labels) | `cronoq_next_lease_labeled` | `NextLabeled` | `next(labels:)` |
+| [Recurring schedules](#recurring-schedules) | `cronoq_schedule_add`, `cronoq_schedule_remove`, `cronoq_schedules` | `AddSchedule`, `RemoveSchedule`, `Schedules` | `addSchedule`, `removeSchedule`, `schedules` |
 | Report | `cronoq_complete`, `cronoq_fail`, `cronoq_release` | `Lease.Complete`, `Fail`, `Release` | `Lease.complete`, `fail`, `release` |
 | Extend a lease | `cronoq_heartbeat` | `Lease.Heartbeat` | `Lease.heartbeat` |
 | Cancel | `cronoq_cancel` | `Cancel` | `cancel` |
@@ -376,8 +477,6 @@ asks for the next event with a blocking call.
 - **A paused pool.** `next lease` waits out its timeout and then reports "paused" with the
   reason, so a loop around it does not spin. A paused class or ordering key is not reported
   this way: the call just finds nothing of it. See the snapshot for those.
-- **Not in the C API:** recurring schedules, fixed start times, dependencies between tasks,
-  fair sharing between tenants, worker labels. Ask for what you need in an issue.
 - **A task may be started a moment before a thread asks for it.** When a thread stops
   waiting, or the scheduler ends a lease you hold (timeout, cancel), the scheduler can have
   started one more task already. That task counts as running, its timeout runs, and it goes
@@ -458,7 +557,7 @@ By default tasks are kept in memory: when the program ends, the queue is gone. T
 program whose own database is the source of truth and that fills the queue again at start.
 
 With a library built with the `sqlite` feature, `"store": {"sqlite": "<path>"}` keeps tasks,
-pauses and ordering-key settings in that file. After a restart the queue is as it was; an
+recurring schedules, pauses and ordering-key settings in that file. After a restart the queue is as it was; an
 attempt that was running is tried again. One program at a time may have the file open.
 
 Each release after 0.2.2 has the library with the store as a second variant:

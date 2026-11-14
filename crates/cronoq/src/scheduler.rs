@@ -270,6 +270,16 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
             if let Err(e) = scoring {
                 return Err(Error::Config(format!("pool '{}': {e}", p.cfg.name)));
             }
+            if let Some(f) = &p.cfg.fairness {
+                // The engine works with the inverse of a weight as a whole number.
+                let ok = |w: f64| (1e-6..=1e6).contains(&w);
+                if !ok(f.default_weight) || f.weights.iter().any(|(_, w)| !ok(*w)) {
+                    return Err(Error::Config(format!(
+                        "pool '{}': tenant weights must be between 0.000001 and 1000000",
+                        p.cfg.name
+                    )));
+                }
+            }
             rts.push(PoolRt {
                 name: p.cfg.name.clone(),
                 executor,

@@ -98,12 +98,12 @@ type rawLease struct {
 	info        string
 }
 
-func cNextLease(h unsafe.Pointer, pool string, timeoutMs uint64) (rawLease, int32, string) {
-	p := cstr(pool, true)
-	defer free(p)
+func cNextLease(h unsafe.Pointer, pool, labels string, timeoutMs uint64) (rawLease, int32, string) {
+	p, lb := cstr(pool, true), cstr(labels, true)
+	defer free(p, lb)
 	var l C.cronoq_lease
 	status, msg := call(func() int32 {
-		return int32(C.cronoq_next_lease(sched(h), p, C.uint64_t(timeoutMs), &l))
+		return int32(C.cronoq_next_lease_labeled(sched(h), p, lb, C.uint64_t(timeoutMs), &l))
 	})
 	if status != statusOK {
 		return rawLease{}, status, msg
@@ -251,6 +251,33 @@ func cTask(h unsafe.Pointer, id uint64, key string) (string, int32, string) {
 	defer free(k)
 	var b C.cronoq_buf
 	status, msg := call(func() int32 { return int32(C.cronoq_task(sched(h), C.uint64_t(id), k, &b)) })
+	if status != statusOK {
+		return "", status, msg
+	}
+	return takeBuf(&b), status, ""
+}
+
+func cScheduleAdd(h unsafe.Pointer, name, cron string, payload []byte, options string) (int32, string) {
+	n, c, opts := cstr(name, false), cstr(cron, false), cstr(options, true)
+	defer free(n, c, opts)
+	var p *C.uint8_t
+	if len(payload) > 0 {
+		p = (*C.uint8_t)(unsafe.Pointer(&payload[0]))
+	}
+	return call(func() int32 {
+		return int32(C.cronoq_schedule_add(sched(h), n, c, p, C.size_t(len(payload)), opts))
+	})
+}
+
+func cScheduleRemove(h unsafe.Pointer, name string) (int32, string) {
+	n := cstr(name, false)
+	defer free(n)
+	return call(func() int32 { return int32(C.cronoq_schedule_remove(sched(h), n)) })
+}
+
+func cSchedules(h unsafe.Pointer) (string, int32, string) {
+	var b C.cronoq_buf
+	status, msg := call(func() int32 { return int32(C.cronoq_schedules(sched(h), &b)) })
 	if status != statusOK {
 		return "", status, msg
 	}

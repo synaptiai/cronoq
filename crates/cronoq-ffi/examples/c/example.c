@@ -107,6 +107,23 @@ int main(void) {
   CHECK(cronoq_release(sched, take("released"), 0) == CRONOQ_OK);
   run("released");
 
+  printf("a task waits for the task it depends on:\n");
+  submit("upload", "{\"key\": \"upload\", \"priority\": \"low\"}");
+  submit("announce", "{\"priority\": \"critical\", \"after\": [\"upload\"]}");
+  run("upload");
+  run("announce");
+
+  printf("a task with labels goes to a thread that carries them:\n");
+  submit("backup", "{\"labels\": {\"network\": \"wifi\"}}");
+  CHECK(cronoq_next_lease(sched, NULL, 50, &none) == CRONOQ_TIMEOUT);
+  cronoq_lease on_wifi;
+  CHECK(cronoq_next_lease_labeled(sched, NULL, "{\"network\": \"wifi\"}", 5000, &on_wifi) ==
+        CRONOQ_OK);
+  printf("  took %.*s\n", (int)on_wifi.payload_len, (const char *)on_wifi.payload);
+  CHECK(on_wifi.payload_len == 6 && memcmp(on_wifi.payload, "backup", 6) == 0);
+  CHECK(cronoq_complete(sched, on_wifi.lease, NULL, 0) == CRONOQ_OK);
+  cronoq_lease_free(&on_wifi);
+
   printf("output and events:\n");
   cronoq_events *events;
   CHECK(cronoq_events_open(sched, &events) == CRONOQ_OK);
@@ -140,6 +157,18 @@ int main(void) {
   CHECK(cronoq_snapshot(sched, &snapshot) == CRONOQ_OK);
   CHECK(strstr((const char *)snapshot.ptr, "\"releases\":1") != NULL);
   cronoq_buf_free(&snapshot);
+
+  printf("a recurring schedule:\n");
+  CHECK(cronoq_schedule_add(sched, "tick", "* * * * * *", (const uint8_t *)"tick", 4,
+                            "{\"task\": {\"kind\": \"tick\"}}") == CRONOQ_OK);
+  run("tick");
+  cronoq_buf schedules;
+  CHECK(cronoq_schedules(sched, &schedules) == CRONOQ_OK);
+  CHECK(strstr((const char *)schedules.ptr, "\"name\":\"tick\"") != NULL);
+  cronoq_buf_free(&schedules);
+  /* The occurrence that was already submitted for the next second stays; shutdown ends it. */
+  CHECK(cronoq_schedule_remove(sched, "tick") == CRONOQ_OK);
+  CHECK(cronoq_schedule_remove(sched, "tick") == CRONOQ_NOT_FOUND);
 
   CHECK(cronoq_shutdown(sched, 1000) == CRONOQ_OK);
   CHECK(cronoq_submit(sched, NULL, 0, NULL, NULL, NULL) == CRONOQ_SHUTDOWN);

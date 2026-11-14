@@ -265,4 +265,99 @@ final class CronoqTests: XCTestCase {
         wait(for: [woken], timeout: 5)
         XCTAssertThrowsError(try s.submit(Data())) { XCTAssertEqual($0 as? CronoqError, .shutdown) }
     }
+
+    func testFixedStartAndDependencies() throws {
+        let s = try Scheduler()
+        let started = Date()
+        let later = try submit(s, "later", TaskOptions(startInMs: 400))
+        XCTAssertEqual(try s.task(.id(later)).status, "scheduled")
+        let lease = try s.next(timeout: 5)
+        XCTAssertEqual(String(decoding: lease.payload, as: UTF8.self), "later")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.39)
+        try lease.complete()
+
+        let first = try submit(s, "first", TaskOptions(key: "first"))
+        let second = try submit(s, "second", TaskOptions(after: [.on(task: first)]))
+        _ = try submit(s, "third", TaskOptions(after: [.on(key: "first"), .on(task: second, when: "complete")]))
+        let handler = try submit(s, "handler", TaskOptions(after: [.on(task: second, when: "failure")]))
+        XCTAssertEqual(try s.task(.id(second)).status, "blocked")
+        XCTAssertEqual(try drain(s), ["first", "second", "third"])
+        // `second` succeeded, so its failure handler is skipped.
+        if case .succeeded = try s.wait(.id(handler), timeout: 2) {
+            XCTFail("the failure handler ran")
+        }
+    }
+
+    func testFairnessBetweenTenants() throws {
+        let s = try Scheduler(
+            Config(pools: [Pool(name: "default", fairness: Fairness(weights: ["big": 3]))]))
+        for i in 0..<12 {
+            _ = try submit(s, "big-\(i)", TaskOptions(tenant: "big"))
+        }
+        var last: UInt64 = 0
+        for i in 0..<12 {
+            last = try submit(s, "small-\(i)", TaskOptions(tenant: "small"))
+        }
+        XCTAssertEqual(try s.task(.id(last)).tenant, "small")
+        var small = 0
+        for _ in 0..<8 {
+            let lease = try s.next(timeout: 5)
+            if String(decoding: lease.payload, as: UTF8.self).hasPrefix("small") {
+                small += 1
+            }
+            try lease.complete()
+        }
+        XCTAssertEqual(small, 2)
+    }
+
+    func testLabels() throws {
+        let s = try Scheduler()
+        _ = try submit(s, "wifi", TaskOptions(labels: ["network": "wifi"]))
+        XCTAssertThrowsError(try s.next(timeout: 0.1)) { XCTAssertEqual($0 as? CronoqError, .timeout) }
+        XCTAssertThrowsError(try s.next(labels: ["network": "cellular"], timeout: 0.1)) {
+            XCTAssertEqual($0 as? CronoqError, .timeout)
+        }
+        let lease = try s.next(labels: ["network": "wifi", "power": "mains"], timeout: 5)
+        XCTAssertEqual(String(decoding: lease.payload, as: UTF8.self), "wifi")
+        XCTAssertEqual(lease.labels, ["network": "wifi"])
+        try lease.complete()
+        // A task without labels goes to any thread.
+        _ = try submit(s, "any")
+        let any = try s.next(labels: ["network": "wifi"], timeout: 5)
+        XCTAssertEqual(String(decoding: any.payload, as: UTF8.self), "any")
+        try any.complete()
+    }
+
+    func testSchedules() throws {
+        let s = try Scheduler()
+        try s.addSchedule(
+            name: "tick", cron: "* * * * * *", payload: Data("tick".utf8),
+            ScheduleOptions(overlap: "allow", task: TaskOptions(kind: "tick", key: "tick")))
+        let list = try s.schedules()
+        XCTAssertEqual(list.count, 1)
+        XCTAssertEqual(list[0].name, "tick")
+        XCTAssertEqual(list[0].kind, "tick")
+        XCTAssertEqual(list[0].overlap, "allow")
+        XCTAssertNotNil(list[0].nextUnixMs)
+        let a = try s.next(timeout: 5)
+        let b = try s.next(timeout: 5)
+        XCTAssertEqual(String(decoding: a.payload, as: UTF8.self), "tick")
+        XCTAssertNotEqual(a.task, b.task)
+        XCTAssertTrue(a.key?.hasPrefix("tick@") ?? false)
+        try a.complete()
+        try b.complete()
+        try s.removeSchedule("tick")
+        XCTAssertThrowsError(try s.removeSchedule("tick")) { error in
+            guard case .notFound = error as? CronoqError else {
+                return XCTFail("\(error)")
+            }
+        }
+        XCTAssertTrue(try s.schedules().isEmpty)
+        XCTAssertThrowsError(try s.addSchedule(name: "bad", cron: "not cron")) { error in
+            guard case .invalidArgument = error as? CronoqError else {
+                return XCTFail("\(error)")
+            }
+        }
+        try s.addSchedule(name: "utc", cron: "0 9 * * *", ScheduleOptions(tz: "UTC"))
+    }
 }
