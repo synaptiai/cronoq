@@ -16,12 +16,21 @@ categories = ["algorithms", "concurrency", "data-structures"]
 [dependencies]
 rustc-hash.workspace = true
 smallvec.workspace = true
-croner.workspace = true
-chrono.workspace = true
-chrono-tz.workspace = true
+croner = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+chrono-tz = { workspace = true, optional = true }
+
+[features]
+default = ["cron", "tz"]
+# Recurring schedules (cron expressions). Without it `Core::add_recurring` returns an error.
+cron = ["dep:croner", "dep:chrono"]
+# The IANA time-zone database for schedules. Without it schedules run in UTC only. This
+# data is most of the compiled size of the crate.
+tz = ["cron", "dep:chrono-tz"]
 
 [dev-dependencies]
 proptest.workspace = true
+chrono.workspace = true
 criterion = { version = "0.8", default-features = false }
 
 [[bench]]

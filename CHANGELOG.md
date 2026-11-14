@@ -9,6 +9,25 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Embedding from other languages (experimental until 1.0). A C library, `cronoq_ffi`
+  (crate `cronoq-ffi`), with a generated header, `cronoq.h`, runs the scheduler inside a Go,
+  Swift or C program without a server. The program submits tasks as bytes and runs them
+  itself: its threads take one attempt at a time with a blocking call (`cronoq_next_lease`)
+  and report it (`cronoq_complete`, with an optional output, `cronoq_fail`,
+  `cronoq_release`). `cronoq_wait` waits for a task to end and returns its output, and a
+  subscription (`cronoq_events_open`, `cronoq_events_next`) delivers status events. Also: cancel, update,
+  replace by key, ordering keys and their floor, pause and resume, snapshot, an ABI version
+  check, and an optional SQLite store (build feature `sqlite`). Errors are status codes and
+  no panic crosses the boundary. Two wrappers are maintained with it: Go
+  (`sdks/go-embed`: loads the dynamic library without cgo, or links the static one with the
+  build tag `cronoq_static`) and Swift (`sdks/swift`). Releases carry the libraries for
+  Linux, macOS and Windows (x86-64 and ARM64). See
+  [Embedding from other languages](docs/book/src/guides/embedding.md).
+- Cargo features `cron` and `tz` on `cronoq-core` and `cronoq`, and `rt-multi-thread` on
+  `cronoq`, all on by default. Without `cron` a schedule is refused; without `tz` schedules
+  run in UTC only and the time-zone database, most of the compiled size, is left out;
+  without `rt-multi-thread`, `build_blocking` runs a single-threaded runtime on a thread of
+  its own. `BlockingScheduler::start` and `BlockingScheduler::block_on`.
 - Releasing an attempt. An executor or a remote worker can give a task back without a
   verdict when it cannot run it now and nothing is wrong with the task (`TaskError::release`,
   `raise cronoq.Release(delay)`, `cronoq.Release(delay)` in Go, `throw new Release(delay)` in
@@ -134,6 +153,10 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Changed
 
+- **Breaking for `default-features = false`:** cron schedules, time-zone data and the
+  multi-threaded runtime of `build_blocking` are now the features `cron`, `tz` and
+  `rt-multi-thread` of the `cronoq` crate. They are on by default; a dependency on `cronoq`
+  with `default-features = false` has to name the ones it needs.
 - Priority and urgency settings are now checked. `Builder::build` returns `Error::Config`, the
   server refuses to start, and `CoreConfig::validate` fails when a value is negative or not
   finite, when the base scores are not strictly ordered (critical above high above normal above

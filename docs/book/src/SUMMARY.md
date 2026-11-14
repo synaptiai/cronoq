@@ -50,6 +50,7 @@
 # Guides
 
 - [Writing executors and workers](guides/workers.md)
+- [Embedding from other languages](guides/embedding.md)
 - [Using the HTTP API](guides/http-api.md)
 - [Command-line tool](guides/cli.md)
 - [Deploying the server](guides/deployment.md)

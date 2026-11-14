@@ -20,6 +20,7 @@
 
 mod autoscale;
 mod config;
+mod cron;
 mod engine;
 mod io;
 mod lane;

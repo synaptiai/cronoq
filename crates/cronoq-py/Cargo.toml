@@ -14,7 +14,7 @@ name = "_cronoq"
 crate-type = ["cdylib"]
 
 [dependencies]
-cronoq = { path = "../cronoq", default-features = false }
+cronoq = { path = "../cronoq", default-features = false, features = ["cron", "tz"] }
 cronoq-store-sqlite = { path = "../cronoq-store-sqlite" }
 async-trait = "0.1"
 bytes = "1"

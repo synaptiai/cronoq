@@ -1,6 +1,8 @@
 //! Synchronous facade for code that does not run on tokio.
 //!
-//! [`BlockingScheduler`] owns a private multi-threaded tokio runtime. Its methods block the
+//! [`BlockingScheduler`] owns a private tokio runtime: multi-threaded with the
+//! `rt-multi-thread` feature (on by default), otherwise a single-threaded one on a thread of
+//! its own. Its methods block the
 //! calling thread; they are safe to call from inside another tokio runtime too (the wait then
 //! happens on a helper thread), although async code should prefer [`Scheduler`] directly.
 
@@ -66,21 +68,90 @@ fn park_until<F: Future + Unpin>(mut f: F, deadline: Option<Instant>) -> Option<
     }
 }
 
+/// The private runtime of a [`BlockingScheduler`].
+struct Private {
+    handle: Handle,
+    /// The runtime itself (multi-threaded), or the thread that drives a single-threaded one.
+    #[cfg(feature = "rt-multi-thread")]
+    rt: Runtime,
+    #[cfg(not(feature = "rt-multi-thread"))]
+    stop: tokio::sync::oneshot::Sender<()>,
+    #[cfg(not(feature = "rt-multi-thread"))]
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Private {
+    #[cfg(feature = "rt-multi-thread")]
+    fn start() -> std::io::Result<Private> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("cronoq")
+            .build()?;
+        Ok(Private {
+            handle: rt.handle().clone(),
+            rt,
+        })
+    }
+
+    /// One thread that drives a single-threaded runtime until it is told to stop.
+    #[cfg(not(feature = "rt-multi-thread"))]
+    fn start() -> std::io::Result<Private> {
+        let rt: Runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let handle = rt.handle().clone();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name("cronoq".into())
+            .spawn(move || {
+                let _ = rt.block_on(stopped);
+                // Dropping the runtime here drops what is still spawned on it.
+            })?;
+        Ok(Private {
+            handle,
+            stop,
+            thread,
+        })
+    }
+
+    /// Stop the runtime. With `wait`, give its tasks a moment to end (not possible from
+    /// inside another runtime, where blocking is not allowed).
+    fn stop(self, wait: bool) {
+        #[cfg(feature = "rt-multi-thread")]
+        if wait {
+            self.rt.shutdown_timeout(Duration::from_secs(1));
+        } else {
+            self.rt.shutdown_background();
+        }
+        #[cfg(not(feature = "rt-multi-thread"))]
+        {
+            let _ = self.stop.send(());
+            if wait {
+                let _ = self.thread.join();
+            }
+        }
+    }
+}
+
 /// A scheduler that owns its own tokio runtime and exposes blocking methods.
 pub struct BlockingScheduler<P, O> {
-    rt: Option<Runtime>,
+    rt: Option<Private>,
     inner: Scheduler<P, O>,
 }
 
 impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
-    /// Build on a private multi-threaded runtime.
+    /// Build on a private runtime: multi-threaded with the `rt-multi-thread` feature (the
+    /// default), otherwise single-threaded on one thread of its own, which is enough for the
+    /// scheduler itself and for executors that do not block.
     pub fn build_blocking(self) -> Result<BlockingScheduler<P, O>, Error> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("cronoq")
-            .build()
-            .map_err(|e| Error::Config(format!("runtime: {e}")))?;
-        let inner = block_on(rt.handle(), self.build())?;
+        let rt = Private::start().map_err(|e| Error::Config(format!("runtime: {e}")))?;
+        let inner = match block_on(&rt.handle, self.build()) {
+            Ok(inner) => inner,
+            Err(e) => {
+                rt.stop(false);
+                return Err(e);
+            }
+        };
         Ok(BlockingScheduler {
             rt: Some(rt),
             inner,
@@ -89,8 +160,30 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Builder<P, O> {
 }
 
 impl<P: Send + Sync + 'static, O: Send + Sync + 'static> BlockingScheduler<P, O> {
+    /// Like [`Builder::build_blocking`], for a builder that has to be made on the runtime
+    /// the scheduler will run on: `make` runs there. A store that opens connections, for
+    /// example, must be opened on the runtime that will use them.
+    pub fn start<F, Fut>(make: F) -> Result<BlockingScheduler<P, O>, Error>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<Builder<P, O>, Error>> + Send,
+    {
+        let rt = Private::start().map_err(|e| Error::Config(format!("runtime: {e}")))?;
+        let built = block_on(&rt.handle, async move { make().await?.build().await });
+        match built {
+            Ok(inner) => Ok(BlockingScheduler {
+                rt: Some(rt),
+                inner,
+            }),
+            Err(e) => {
+                rt.stop(false);
+                Err(e)
+            }
+        }
+    }
+
     fn handle(&self) -> &Handle {
-        self.rt.as_ref().expect("runtime alive").handle()
+        &self.rt.as_ref().expect("runtime alive").handle
     }
     fn wrap(&self, h: TaskHandle<O>) -> BlockingHandle<O> {
         BlockingHandle { handle: Some(h) }
@@ -170,16 +263,21 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> BlockingScheduler<P, O>
     pub fn scheduler(&self) -> &Scheduler<P, O> {
         &self.inner
     }
+    /// Run a future to completion on the private runtime, blocking this thread: for the
+    /// methods of [`scheduler`](Self::scheduler) that have no blocking counterpart here.
+    pub fn block_on<F>(&self, f: F) -> F::Output
+    where
+        F: Future + Send,
+        F::Output: Send,
+    {
+        block_on(self.handle(), f)
+    }
     /// Blocking [`Scheduler::shutdown`]; also stops the private runtime.
     pub fn shutdown(mut self, grace: Duration) -> Result<(), Error> {
         let r = block_on(self.handle(), self.inner.shutdown(grace));
         if let Some(rt) = self.rt.take() {
-            // `shutdown_timeout` blocks, which is not allowed inside another runtime.
-            if Handle::try_current().is_ok() {
-                rt.shutdown_background();
-            } else {
-                rt.shutdown_timeout(Duration::from_secs(1));
-            }
+            // Waiting blocks, which is not allowed inside another runtime.
+            rt.stop(Handle::try_current().is_err());
         }
         r
     }
@@ -188,7 +286,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> BlockingScheduler<P, O>
 impl<P, O> Drop for BlockingScheduler<P, O> {
     fn drop(&mut self) {
         if let Some(rt) = self.rt.take() {
-            rt.shutdown_background();
+            rt.stop(false);
         }
     }
 }

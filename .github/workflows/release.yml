@@ -187,6 +187,59 @@ jobs:
           name: server-${{ matrix.target }}
           path: cronoq-server-*.*
 
+  # The embeddable C library (crates/cronoq-ffi): a dynamic and a static library and the
+  # header per platform, for the Go and Swift wrappers and for any other language.
+  embed-libraries:
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, dylib: libcronoq_ffi.so, static: libcronoq_ffi.a }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, dylib: libcronoq_ffi.so, static: libcronoq_ffi.a }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, dylib: libcronoq_ffi.dylib, static: libcronoq_ffi.a }
+          - { os: macos-15, target: aarch64-apple-darwin, dylib: libcronoq_ffi.dylib, static: libcronoq_ffi.a }
+          # The GNU target: cgo links with the GNU toolchain on Windows.
+          - { os: windows-2022, target: x86_64-pc-windows-gnu, dylib: cronoq_ffi.dll, static: libcronoq_ffi.a }
+          # Windows on ARM64 has no GNU toolchain on the runners: the MSVC build. Its
+          # dynamic library is what the Go wrapper loads without cgo.
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc, dylib: cronoq_ffi.dll, static: cronoq_ffi.lib }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked -p cronoq-ffi --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="cronoq-embed-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "$name/static"
+          cp LICENSE-MIT LICENSE-APACHE crates/cronoq-ffi/README.md crates/cronoq-ffi/include/cronoq.h "$name/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.dylib }}" "$name/"
+          cp "target/${{ matrix.target }}/release/${{ matrix.static }}" "$name/static/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: env.PUBLISH == 'true'
+        with:
+          subject-path: cronoq-embed-*.*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: embed-${{ matrix.target }}
+          path: cronoq-embed-*.*
+
   publish-pypi:
     needs: [test-wheels, sdist]
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.dry_run == false)
@@ -422,7 +475,7 @@ jobs:
           path: charts/*.tgz
 
   github-release:
-    needs: [publish-pypi, publish-crates, publish-npm, server-binaries, container, charts]
+    needs: [publish-pypi, publish-crates, publish-npm, server-binaries, embed-libraries, container, charts]
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
@@ -444,6 +497,7 @@ jobs:
           body_path: notes.md
           files: |
             artifacts/cronoq-server-*
+            artifacts/cronoq-embed-*
             artifacts/*.whl
             artifacts/cronoq-[0-9]*.tgz
             artifacts/cronoq-operator-[0-9]*.tgz

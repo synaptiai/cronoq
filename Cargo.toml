@@ -11,6 +11,7 @@ members = [
     "crates/cronoq-store-sqlite",
     "crates/cronoq-store-tests",
     "crates/cronoq-py",
+    "crates/cronoq-ffi",
 ]
 
 [workspace.package]
@@ -23,7 +24,7 @@ homepage = "https://synaptiai.github.io/cronoq/"
 authors = ["Daniel Bentes <daniel.bentes@synapti.ai>"]
 
 [workspace.dependencies]
-cronoq-core = { path = "crates/cronoq-core", version = "0.2.2" }
+cronoq-core = { path = "crates/cronoq-core", version = "0.2.2", default-features = false }
 rustc-hash = "2"
 smallvec = { version = "1", features = ["union", "const_generics"] }
 croner = "4"

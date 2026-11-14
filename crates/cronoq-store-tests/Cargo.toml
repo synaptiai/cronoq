@@ -11,7 +11,7 @@ homepage.workspace = true
 publish = false
 
 [dependencies]
-cronoq = { path = "../cronoq", default-features = false }
+cronoq = { path = "../cronoq", default-features = false, features = ["cron", "tz"] }
 cronoq-core.workspace = true
 async-trait = "0.1"
 bytes = "1"

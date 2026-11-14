@@ -27,7 +27,7 @@ any language and connected over gRPC.
 | **Durability and HA** | Postgres and SQLite stores with leader election and fencing; standby servers take over and resume every accepted task. |
 | **Observability** | OpenTelemetry metrics and trace propagation, Prometheus `/metrics`, and windowed quality metrics such as priority adherence and fixed-start hit rate. |
 
-## Three ways to use it
+## Ways to use it
 
 1. **Rust library** (`cronoq` crate): embed the scheduler in a tokio application. Payloads are
    plain Rust values; nothing is serialized. See the [Rust quickstart](guides/rust-quickstart.md).
@@ -37,7 +37,10 @@ any language and connected over gRPC.
    any language submit work and remote workers lease it, with SDKs for Rust, Python,
    [Go](reference/go.md) and [TypeScript](reference/typescript.md). See the [Server quickstart](guides/server-quickstart.md).
 
-All three share one engine, so the scheduling rules and metrics are the same everywhere. The
+There is also an experimental fourth: a **C library** that embeds the scheduler in a Go,
+Swift or C program without a server. See [Embedding from other languages](guides/embedding.md).
+
+All of them share one engine, so the scheduling rules and metrics are the same everywhere. The
 Rust library exposes a few engine settings, such as the priority and urgency parameters, that the
 Python package and the server leave at their defaults.
 

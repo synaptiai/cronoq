@@ -48,7 +48,7 @@ jobs:
           want=".github/workflows/release.yml push $TAG $sha"
           test "$run" = "$want" || { echo "run $RUN_ID is \"$run\", expected \"$want\""; exit 1; }
           failed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" \
-            -q '.jobs[] | select((.name | test("^(verify|wheels|sdist|test-wheels|server-binaries|npm-package|container|charts)")) and .conclusion != "success") | .name')
+            -q '.jobs[] | select((.name | test("^(verify|wheels|sdist|test-wheels|server-binaries|embed-libraries|npm-package|container|charts)")) and .conclusion != "success") | .name')
           test -z "$failed" || { echo "jobs of run $RUN_ID that did not pass:"; echo "$failed"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
@@ -144,6 +144,7 @@ jobs:
           body_path: notes.md
           files: |
             artifacts/cronoq-server-*
+            artifacts/cronoq-embed-*
             artifacts/*.whl
             artifacts/cronoq-[0-9]*.tgz
             artifacts/cronoq-operator-[0-9]*.tgz

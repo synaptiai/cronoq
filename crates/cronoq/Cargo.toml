@@ -14,7 +14,15 @@ keywords = ["scheduler", "task-queue", "priority", "autoscaling", "rate-limit"]
 categories = ["asynchronous", "concurrency"]
 
 [features]
-default = ["otel"]
+default = ["otel", "cron", "tz", "rt-multi-thread"]
+# Recurring schedules (cron expressions). Without it `add_recurring` returns an error.
+cron = ["cronoq-core/cron"]
+# The IANA time-zone database for schedules; without it schedules run in UTC only. It is
+# most of the compiled size of an embedded scheduler.
+tz = ["cron", "cronoq-core/tz"]
+# A multi-threaded private runtime for `build_blocking`. Without it `build_blocking` runs a
+# single-threaded runtime on one thread of its own.
+rt-multi-thread = ["tokio/rt-multi-thread"]
 otel = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 # Encoding of tasks and schedules shared by durable store implementations.
 store-codec = ["dep:serde", "dep:serde_json"]
@@ -26,7 +34,7 @@ bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 rustc-hash.workspace = true
 thiserror = "2"
-tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1.47", features = ["rt", "sync", "time", "macros"] }
 tokio-util = "0.7"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"], optional = true }

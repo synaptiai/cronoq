@@ -26,6 +26,8 @@
 cronoq decides **when** work runs, **in what order**, and **how much capacity** it needs. You
 decide **where** it runs: async functions in your process, Python coroutines, or remote workers
 connected over gRPC. One engine powers all three, with the same scheduling rules and metrics.
+An experimental C library embeds the same engine in Go, Swift and C programs
+([Embedding from other languages](https://synaptiai.github.io/cronoq/guides/embedding.html)).
 
 ## Why cronoq
 

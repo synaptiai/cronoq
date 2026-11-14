@@ -183,7 +183,17 @@ Engine types are re-exported from `cronoq-core`: `AutoscaleConfig`, `Bounds`, `D
 | Feature | Default | Effect |
 |---|---|---|
 | `otel` | on | OpenTelemetry metrics and W3C trace-context propagation ([metrics reference](metrics.md#opentelemetry-cronoq-crate)). |
+| `cron` | on | [Recurring schedules](../concepts/recurring.md). Without it `add_recurring` returns an error. |
+| `tz` | on | The IANA time-zone database for schedules (implies `cron`). Without it schedules run in UTC only. The database is most of the compiled size of a scheduler, so builds for small programs leave it out. |
+| `rt-multi-thread` | on | `build_blocking` runs a multi-threaded private runtime. Without it, it runs a single-threaded runtime on one thread of its own, which is enough for the scheduler and for executors that do not block. |
 | `store-codec` | off | The `cronoq::codec` module: conversions between engine types and the form durable stores keep, shared by the Postgres and SQLite stores. Needed only to write a store. |
+
+With `default-features = false` none of `otel`, `cron`, `tz` and `rt-multi-thread` is on: name
+the ones you need. `cronoq-core` has `cron` and `tz` with the same meaning.
+
+`BlockingScheduler::start(make)` is `build_blocking` for a builder that must be made on the
+scheduler's own runtime (for example with a store that opens connections there), and
+`BlockingScheduler::block_on(future)` runs a future of the async `scheduler()` on it.
 
 ## `cronoq-core`
 
