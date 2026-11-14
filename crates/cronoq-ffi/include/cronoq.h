@@ -294,7 +294,8 @@ enum cronoq_status cronoq_next_lease(const struct cronoq_scheduler *s,
 // When several groups wait and the pool is at `max_leases`, an attempt may be started
 // before a lease is free for it. It is handed out as soon as one is; its timeout runs
 // from its start. An attempt of a task with labels that no thread with those labels asks
-// for within a second is given back, as by `cronoq_release`.
+// for within the pool's `label_grace_ms` (default 1000) is given back, as by
+// `cronoq_release`.
 //
 // # Safety
 // As for `cronoq_next_lease`. `labels_json` is null or a zero-terminated string.

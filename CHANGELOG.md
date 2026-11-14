@@ -27,7 +27,8 @@ contain breaking changes; they are called out under **Changed**.
   fixed start (`start_in_ms`, `start_at_unix_ms`, `start_tolerance_ms`, `on_miss`),
   dependencies (`after`), a tenant for pools with `fairness`, and labels. A thread that
   carries labels asks for a lease with `cronoq_next_lease_labeled` (Go `NextLabeled`, Swift
-  `next(labels:)`). Recurring schedules: `cronoq_schedule_add`, `cronoq_schedule_remove`,
+  `next(labels:)`); the pool option `label_grace_ms` says how long an attempt of a task with
+  labels waits for such a thread. Recurring schedules: `cronoq_schedule_add`, `cronoq_schedule_remove`,
   `cronoq_schedules` (Go `AddSchedule`, `RemoveSchedule`, `Schedules`; Swift `addSchedule`,
   `removeSchedule`, `schedules`). The library's `cron` feature is now on by default; the
   published libraries have no time-zone data (feature `tz`), so their schedules run in UTC.

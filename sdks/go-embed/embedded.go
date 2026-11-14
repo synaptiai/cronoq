@@ -200,6 +200,10 @@ type Pool struct {
 	// UnknownDependency says what happens to a task that waits for a key no task has
 	// (Task.After). By default the submission is refused.
 	UnknownDependency *UnknownDependency `json:"unknown_dependency,omitempty"`
+	// LabelGraceMs is how long an attempt of a task with labels waits for a caller of
+	// NextLabeled that carries them before it is given back (default 1000, at least 10).
+	// Make it longer than the longest pause between two calls of such a caller.
+	LabelGraceMs uint64 `json:"label_grace_ms,omitempty"`
 }
 
 // Fairness shares a pool between tenants in proportion to their weights. Within a class,
@@ -539,8 +543,8 @@ func (s *Scheduler) Next(pool string, timeout time.Duration) (*Lease, error) {
 // groups for the life of the scheduler, so labels are for a few lasting properties, not for
 // values that keep changing. MaxLeases holds for all groups of a pool together.
 //
-// An attempt of a task with labels that no caller with those labels asks for within a
-// second is given back, as by Release.
+// An attempt of a task with labels that no caller with those labels asks for within the
+// pool's LabelGraceMs (default one second) is given back, as by Release.
 func (s *Scheduler) NextLabeled(pool string, labels map[string]string, timeout time.Duration) (*Lease, error) {
 	var labelsJSON string
 	if len(labels) > 0 {

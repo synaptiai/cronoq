@@ -69,6 +69,9 @@ pub(crate) struct PoolJson {
     urgency: Option<UrgencyJson>,
     fairness: Option<FairnessJson>,
     unknown_dependency: Option<UnknownDependencyJson>,
+    /// How long an attempt of a task with labels waits for a thread that carries them
+    /// before it is given back (default 1000, at least 10).
+    label_grace_ms: Option<u64>,
 }
 
 /// Fair sharing of a pool between the tenants of its tasks.
@@ -238,6 +241,7 @@ impl Config {
                 urgency: None,
                 fairness: None,
                 unknown_dependency: None,
+                label_grace_ms: None,
             });
         }
         Ok(c)
@@ -283,6 +287,12 @@ impl PoolJson {
         self.max_leases.unwrap_or(DEFAULT_MAX_LEASES)
     }
 
+    /// How long an attempt of a task with labels waits for a thread that carries them.
+    pub(crate) fn label_grace(&self) -> Duration {
+        self.label_grace_ms
+            .map_or(crate::pull::DEFAULT_LABEL_GRACE, ms)
+    }
+
     pub(crate) fn pool(
         &self,
         priority: &Option<PriorityConfig>,
@@ -292,6 +302,12 @@ impl PoolJson {
         if max == 0 {
             return Err(format!(
                 "pool '{}': max_leases must be at least 1",
+                self.name
+            ));
+        }
+        if self.label_grace_ms.is_some_and(|g| g < 10) {
+            return Err(format!(
+                "pool '{}': label_grace_ms must be at least 10",
                 self.name
             ));
         }

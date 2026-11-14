@@ -160,6 +160,7 @@ public struct Pool: Codable, Sendable {
         case urgency
         case fairness
         case unknownDependency = "unknown_dependency"
+        case labelGraceMs = "label_grace_ms"
     }
 
     public var name: String
@@ -182,12 +183,18 @@ public struct Pool: Codable, Sendable {
     /// What happens to a task that waits for a key no task has (`TaskOptions.after`). By
     /// default the submission is refused.
     public var unknownDependency: UnknownDependency?
+    /// How long an attempt of a task with labels waits for a caller of
+    /// `next(pool:labels:timeout:)` that carries them before it is given back (default
+    /// 1000, at least 10). Make it longer than the longest pause between two calls of such
+    /// a caller.
+    public var labelGraceMs: UInt64?
 
     public init(
         name: String, maxLeases: UInt32? = nil, maxPending: UInt64? = nil, overflow: String? = nil,
         retry: Retry? = nil, maxReleases: UInt32? = nil, leaseTtlMs: UInt64? = nil,
         priority: PrioritySettings? = nil, urgency: UrgencySettings? = nil,
-        fairness: Fairness? = nil, unknownDependency: UnknownDependency? = nil
+        fairness: Fairness? = nil, unknownDependency: UnknownDependency? = nil,
+        labelGraceMs: UInt64? = nil
     ) {
         self.name = name
         self.maxLeases = maxLeases
@@ -200,6 +207,7 @@ public struct Pool: Codable, Sendable {
         self.urgency = urgency
         self.fairness = fairness
         self.unknownDependency = unknownDependency
+        self.labelGraceMs = labelGraceMs
     }
 }
 
@@ -864,8 +872,8 @@ public final class Scheduler: @unchecked Sendable {
     /// pass the same labels form a group; a pool keeps at most 64 different groups for the
     /// life of the scheduler, so labels are for a few lasting properties, not for values
     /// that keep changing. `maxLeases` holds for all groups of a pool together. An attempt
-    /// of a task with labels that no caller with those labels asks for within a second is
-    /// given back, as by `Lease.release`.
+    /// of a task with labels that no caller with those labels asks for within the pool's
+    /// `labelGraceMs` (default one second) is given back, as by `Lease.release`.
     public func next(pool: String? = nil, labels: [String: String]? = nil, timeout: TimeInterval) throws -> Lease {
         var raw = cronoq_lease()
         let labelsText = try labels.map { try json($0) }

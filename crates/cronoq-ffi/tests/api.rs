@@ -1757,3 +1757,43 @@ fn a_tenant_weight_the_scheduler_cannot_work_with_is_refused() {
         assert!(last_error().contains("weights"), "{}", last_error());
     }
 }
+
+#[test]
+fn the_grace_for_an_attempt_with_labels_is_a_setting_of_the_pool() {
+    // With a long grace, an attempt that was started for a thread that left is still there
+    // when a thread with its labels comes back after more than the default second.
+    let s = new(r#"{"pools": [{"name": "default", "max_leases": 1, "label_grace_ms": 60000}]}"#);
+    let mut id = submit(&s, "wifi", r#"{"labels": {"net": "wifi"}}"#);
+    let mut stranded = false;
+    for _ in 0..200 {
+        match next_labeled(&s, None, Some(r#"{"net": "wifi"}"#), 0) {
+            Ok(t) => {
+                complete(&s, &t);
+                id = submit(&s, "wifi", r#"{"labels": {"net": "wifi"}}"#);
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                if task(&s, id).unwrap()["status"] == "running" {
+                    stranded = true;
+                    break;
+                }
+            }
+        }
+    }
+    if stranded {
+        std::thread::sleep(std::time::Duration::from_millis(1300));
+        assert_eq!(task(&s, id).unwrap()["status"], "running");
+    }
+    let t = next_labeled(&s, None, Some(r#"{"net": "wifi"}"#), 5000).unwrap();
+    assert_eq!((t.task, t.attempt), (id, 1));
+    complete(&s, &t);
+    assert_eq!(snapshot(&s)["totals"]["releases"], 0);
+
+    let mut out = null_mut();
+    let config = c(r#"{"pools": [{"name": "default", "label_grace_ms": 5}]}"#);
+    assert_eq!(
+        unsafe { cronoq_new(config.as_ptr(), &mut out) },
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert!(last_error().contains("label_grace_ms"), "{}", last_error());
+}

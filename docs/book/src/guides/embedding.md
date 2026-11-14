@@ -247,7 +247,8 @@ optional, and an unknown field is an error.
     "priority": {"aging_rate": {"low": 0.5}},
     "urgency": {"window_s": 60},
     "fairness": {"weights": {"paying": 3}, "default_weight": 1},
-    "unknown_dependency": {"await": true, "timeout_ms": 60000}
+    "unknown_dependency": {"await": true, "timeout_ms": 60000},
+    "label_grace_ms": 1000
   }],
   "resources": [{"kind": "semaphore", "name": "uplink", "permits": 1},
                 {"kind": "rate", "name": "relay", "rate": 5.0, "burst": 10}],
@@ -268,6 +269,7 @@ optional, and an unknown field is an error.
 | `pools[].lease_ttl_ms` | Leases expire unless they are extended with a heartbeat within this time. Without it a lease lasts until its result is reported or its task's timeout. |
 | `pools[].fairness` | [Fair sharing](../concepts/fairness.md) of the pool between the tenants of its tasks: `weights` by tenant, and `default_weight` (default 1) for every other tenant and for tasks without one. |
 | `pools[].unknown_dependency` | What happens to a task that [waits for a key](../concepts/dependencies.md#unknown-parents) no task has. By default the submission is refused. With `{"await": true}` the task waits for a task with that key, for ever or for `timeout_ms`, after which it is skipped. |
+| `pools[].label_grace_ms` | How long an attempt of a task with [labels](#labels) waits for a thread that carries them before it is given back (default 1000, at least 10). |
 | `priority`, `urgency` | The [priority](../concepts/priorities.md) and [urgency](../concepts/deadlines.md) settings, for all pools or for one. Classes are named `critical`, `high`, `normal`, `low`. |
 | `resources` | [Semaphores and rate limits](../concepts/resources.md) that tasks name in their `resources`. |
 | `store.sqlite` | Keep tasks in this SQLite file. Needs a library built with `sqlite`. |
@@ -383,9 +385,10 @@ let lease = try scheduler.next(labels: ["network": "wifi"], timeout: 5)
 - **An attempt nobody with its labels asks for is given back.** The scheduler can start a
   task for a thread a moment after that thread stopped waiting. If the task has no labels,
   the next thread of the pool takes it. If it has labels and no thread with them asks within
-  a second, the attempt is [released](../concepts/reliability.md#releasing-an-attempt): the
+  the pool's `label_grace_ms` (default one second), the attempt is [released](../concepts/reliability.md#releasing-an-attempt): the
   task goes back to the queue and waits for such a thread. This counts toward the task's
-  `max_releases`.
+  `max_releases`, so make `label_grace_ms` longer than the longest pause between two calls
+  of a thread with labels.
 
 ## Operations
 

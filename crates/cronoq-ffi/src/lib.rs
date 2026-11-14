@@ -332,7 +332,8 @@ fn build(config: &str) -> Res<cronoq_scheduler> {
         names
             .iter()
             .cloned()
-            .zip(cfg.pools.iter().map(|p| p.max_leases())),
+            .zip(cfg.pools.iter())
+            .map(|(name, p)| (name, p.max_leases(), p.label_grace())),
     );
     let mut pools = Vec::new();
     for (p, name) in cfg.pools.iter().zip(&names) {
@@ -707,7 +708,8 @@ pub unsafe extern "C" fn cronoq_next_lease(
 /// When several groups wait and the pool is at `max_leases`, an attempt may be started
 /// before a lease is free for it. It is handed out as soon as one is; its timeout runs
 /// from its start. An attempt of a task with labels that no thread with those labels asks
-/// for within a second is given back, as by `cronoq_release`.
+/// for within the pool's `label_grace_ms` (default 1000) is given back, as by
+/// `cronoq_release`.
 ///
 /// # Safety
 /// As for `cronoq_next_lease`. `labels_json` is null or a zero-terminated string.

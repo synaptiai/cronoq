@@ -38,8 +38,9 @@ pub(crate) type Group = Vec<(Arc<str>, Arc<str>)>;
 const MAX_GROUPS: usize = 64;
 
 /// How long an attempt of a task that requires labels may wait for a thread that carries
-/// them before it is given back. Threads that poll come back sooner than this.
-const ORPHAN_GRACE: Duration = Duration::from_secs(1);
+/// them before it is given back, unless the pool says otherwise (`label_grace_ms`). Threads
+/// that poll come back sooner than this.
+pub(crate) const DEFAULT_LABEL_GRACE: Duration = Duration::from_secs(1);
 
 /// `labels` as the scheduler orders them.
 pub(crate) fn group_of(labels: &[(Arc<str>, Arc<str>)]) -> Group {
@@ -71,6 +72,8 @@ struct PoolQueue {
     groups: BTreeMap<Group, GroupQueue>,
     /// Most attempts of this pool the host may hold at a time (`max_leases`).
     max: u32,
+    /// How long an attempt of a task with labels waits for a thread that carries them.
+    grace: Duration,
 }
 
 /// Whether a thread with the labels `have` may run a task that requires `need`.
@@ -143,14 +146,15 @@ pub(crate) enum Next {
 
 impl Hub {
     /// A hub for these pools, each with the most attempts it hands out at a time.
-    pub(crate) fn new(pools: impl IntoIterator<Item = (Arc<str>, u32)>) -> Arc<Hub> {
+    pub(crate) fn new(pools: impl IntoIterator<Item = (Arc<str>, u32, Duration)>) -> Arc<Hub> {
         let hub = Hub::default();
         {
             let mut s = hub.lock();
-            for (p, max) in pools {
+            for (p, max, grace) in pools {
                 let q = PoolQueue {
                     groups: BTreeMap::from([(Group::new(), GroupQueue::default())]),
                     max,
+                    grace,
                 };
                 s.pools.insert(p, q);
             }
@@ -498,7 +502,7 @@ impl Executor<Bytes, Bytes> for PullExecutor {
         payload: Arc<Bytes>,
     ) -> BoxFuture<Result<Bytes, TaskError>> {
         let (done, result) = oneshot::channel();
-        let need;
+        let (need, grace);
         let guard = Forget {
             hub: self.hub.clone(),
             pool: self.pool.clone(),
@@ -520,6 +524,7 @@ impl Executor<Bytes, Bytes> for PullExecutor {
             // one whose labels cover what the task requires.
             let group = group_of(&ctx.group);
             need = ctx.labels.clone();
+            grace = q.grace;
             let g = q.groups.entry(group).or_default();
             g.ready.push_back(Offer { ctx, payload, done });
         }
@@ -544,7 +549,7 @@ impl Executor<Bytes, Bytes> for PullExecutor {
                     // A task that requires labels can only go to some threads. If none of
                     // them asks any more, the attempt is given back, so that it does not
                     // keep one of the pool's leases for ever.
-                    _ = tokio::time::sleep(ORPHAN_GRACE), if needs_labels => {
+                    _ = tokio::time::sleep(grace), if needs_labels => {
                         if hub.reclaim(&pool, lease) {
                             if let Some(resync) = hub.resync.get() {
                                 resync(pool.clone()).await;
