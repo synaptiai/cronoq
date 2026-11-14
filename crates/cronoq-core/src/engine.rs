@@ -388,8 +388,7 @@ impl Pool {
 
 struct Recurring<P> {
     spec: RecurringSpec<P>,
-    cron: croner::Cron,
-    tz: chrono_tz::Tz,
+    schedule: crate::cron::Schedule,
     next: Option<Time>,
     last_task: Option<TaskId>,
     /// Latest occurrence already turned into a task.
@@ -3003,15 +3002,7 @@ impl<P> Core<P> {
         next: Option<Time>,
         chain_last: Option<TaskId>,
     ) -> Result<(), String> {
-        let cron = croner::parser::CronParser::builder()
-            .seconds(croner::parser::Seconds::Optional)
-            .build()
-            .parse(&spec.cron)
-            .map_err(|e| format!("invalid cron '{}': {e}", spec.cron))?;
-        let tz: chrono_tz::Tz = match &spec.tz {
-            Some(t) => t.parse().map_err(|_| format!("unknown time zone '{t}'"))?,
-            None => chrono_tz::UTC,
-        };
+        let schedule = crate::cron::Schedule::parse(&spec.cron, spec.tz.as_deref())?;
         self.check_config(&spec.template)
             .map_err(|e| format!("invalid template: {e}"))?;
         if spec.template.ordering_key.is_some() {
@@ -3035,8 +3026,7 @@ impl<P> Core<P> {
             .unwrap_or((None, None));
         let mut r = Recurring {
             spec,
-            cron,
-            tz,
+            schedule,
             next: None,
             last_task,
             materialized,
@@ -3112,14 +3102,11 @@ impl<P> Core<P> {
     }
 
     fn next_occurrence(&self, r: &Recurring<P>, after: Time) -> Option<Time> {
-        use chrono::TimeZone;
         let wall = self.cfg.epoch_unix_nanos as i128 + after.0 as i128;
         // Cron has whole-second resolution: drop the sub-second part so occurrences land
         // exactly on the second instead of inheriting the offset of `after`.
         let secs = i64::try_from(wall.div_euclid(1_000_000_000)).ok()?;
-        let dt = r.tz.timestamp_opt(secs, 0).single()?;
-        let next = r.cron.find_next_occurrence(&dt, false).ok()?;
-        let ns = next.timestamp_nanos_opt()? as i128 - self.cfg.epoch_unix_nanos as i128;
+        let ns = r.schedule.next_after(secs)? as i128 - self.cfg.epoch_unix_nanos as i128;
         (ns >= 0).then_some(Time(ns as u64))
     }
 
@@ -5458,8 +5445,8 @@ fn edge_satisfied(cond: EdgeCond, parent: TaskStatus) -> bool {
 fn occurrence_key(prefix: &str, epoch_unix_nanos: i64, at: Time) -> Arc<str> {
     let wall = epoch_unix_nanos as i128 + at.0 as i128;
     let secs = wall.div_euclid(1_000_000_000) as i64;
-    match chrono::DateTime::from_timestamp(secs, 0) {
-        Some(t) => format!("{prefix}@{}", t.format("%Y-%m-%dT%H:%M:%SZ")).into(),
+    match crate::cron::utc_stamp(secs) {
+        Some(t) => format!("{prefix}@{t}").into(),
         None => format!("{prefix}@{secs}").into(),
     }
 }

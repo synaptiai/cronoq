@@ -801,6 +801,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cronoq-ffi"
+version = "0.2.2"
+dependencies = [
+ "bytes",
+ "cronoq",
+ "cronoq-core",
+ "cronoq-store-sqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cronoq-operator"
 version = "0.2.2"
 dependencies = [
