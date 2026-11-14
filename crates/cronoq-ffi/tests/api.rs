@@ -77,15 +77,24 @@ fn text(p: *const c_char) -> String {
 }
 
 fn next_in(s: &Sched, pool: Option<&str>, timeout_ms: u64) -> Result<Taken, cronoq_status> {
+    next_labeled(s, pool, None, timeout_ms)
+}
+
+/// Take a lease as a thread with `labels` (a JSON object), or without labels.
+fn next_labeled(
+    s: &Sched,
+    pool: Option<&str>,
+    labels: Option<&str>,
+    timeout_ms: u64,
+) -> Result<Taken, cronoq_status> {
     let mut l = std::mem::MaybeUninit::<cronoq_lease>::zeroed();
     let pool = pool.map(c);
-    let status = unsafe {
-        cronoq_next_lease(
-            s.0,
-            pool.as_ref().map_or(null(), |p| p.as_ptr()),
-            timeout_ms,
-            l.as_mut_ptr(),
-        )
+    let pool = pool.as_ref().map_or(null(), |p| p.as_ptr());
+    let status = match labels {
+        None => unsafe { cronoq_next_lease(s.0, pool, timeout_ms, l.as_mut_ptr()) },
+        Some(labels) => unsafe {
+            cronoq_next_lease_labeled(s.0, pool, c(labels).as_ptr(), timeout_ms, l.as_mut_ptr())
+        },
     };
     if status != CRONOQ_OK {
         return Err(status);
@@ -1094,4 +1103,467 @@ fn with_a_store_tasks_survive_a_restart() {
     assert_eq!(drain(&s), ["kept", "done"]);
     drop(s);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+fn schedule_add(s: &Sched, name: &str, cron: &str, payload: &str, options: &str) -> cronoq_status {
+    unsafe {
+        cronoq_schedule_add(
+            s.0,
+            c(name).as_ptr(),
+            c(cron).as_ptr(),
+            payload.as_ptr(),
+            payload.len(),
+            c(options).as_ptr(),
+        )
+    }
+}
+
+fn schedules(s: &Sched) -> serde_json::Value {
+    let mut b = cronoq_buf {
+        ptr: null_mut(),
+        len: 0,
+    };
+    assert_eq!(unsafe { cronoq_schedules(s.0, &mut b) }, CRONOQ_OK);
+    json(&mut b)
+}
+
+#[test]
+fn a_task_with_a_fixed_start_is_not_handed_out_before_it() {
+    let s = new("");
+    let started = std::time::Instant::now();
+    let id = submit(&s, "later", r#"{"start_in_ms": 400}"#);
+    assert_eq!(task(&s, id).unwrap()["status"], "scheduled");
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+    let t = next(&s);
+    assert_eq!(t.payload, "later");
+    let waited = started.elapsed();
+    assert!(
+        waited >= std::time::Duration::from_millis(390),
+        "{waited:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_millis(1500),
+        "{waited:?}"
+    );
+    complete(&s, &t);
+
+    // The same with a time of day.
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 300;
+    let started = std::time::Instant::now();
+    submit(&s, "at", &format!(r#"{{"start_at_unix_ms": {at}}}"#));
+    assert_eq!(next(&s).payload, "at");
+    assert!(started.elapsed() >= std::time::Duration::from_millis(250));
+
+    let (status, ..) = submit_full(&s, "x", r#"{"start_in_ms": 1, "start_at_unix_ms": 2}"#);
+    assert_eq!(status, CRONOQ_INVALID_ARGUMENT);
+    assert!(last_error().contains("exclude"), "{}", last_error());
+}
+
+#[test]
+fn a_missed_start_follows_the_miss_policy() {
+    let s = new("");
+    // Nobody asks for a lease until the start and its tolerance are over.
+    let skip = submit(
+        &s,
+        "skip",
+        r#"{"start_in_ms": 50, "start_tolerance_ms": 50, "on_miss": "skip"}"#,
+    );
+    let late = submit(
+        &s,
+        "late",
+        r#"{"start_in_ms": 50, "start_tolerance_ms": 50, "on_miss": "run_late"}"#,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let t = next(&s);
+    assert_eq!((t.task, t.payload.as_str()), (late, "late"));
+    complete(&s, &t);
+    let (ok, message) = wait(&s, skip, 2000).unwrap();
+    assert!(!ok, "a skipped task did not succeed: {message}");
+}
+
+#[test]
+fn a_task_waits_for_the_tasks_it_depends_on() {
+    let s = new("");
+    let first = submit(&s, "first", r#"{"key": "first"}"#);
+    // By id, by key, and for any outcome.
+    let second = submit(&s, "second", &format!(r#"{{"after": [{first}]}}"#));
+    let third = submit(
+        &s,
+        "third",
+        &format!(r#"{{"after": ["first", {{"task": {second}, "when": "complete"}}]}}"#),
+    );
+    // Runs only if `second` fails.
+    let handler = submit(
+        &s,
+        "handler",
+        &format!(r#"{{"after": [{{"task": {second}, "when": "failure"}}]}}"#),
+    );
+    assert_eq!(task(&s, second).unwrap()["status"], "blocked");
+
+    let t = next(&s);
+    assert_eq!(t.payload, "first");
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+    complete(&s, &t);
+    let t = next(&s);
+    assert_eq!(t.payload, "second");
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+    complete(&s, &t);
+    let t = next(&s);
+    assert_eq!((t.task, t.payload.as_str()), (third, "third"));
+    complete(&s, &t);
+    // `second` succeeded, so its failure handler is skipped.
+    let (ok, _) = wait(&s, handler, 2000).unwrap();
+    assert!(!ok);
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+
+    // A dependency on a key no task has is refused, unless the pool waits for it.
+    let (status, ..) = submit_full(&s, "x", r#"{"after": ["nobody"]}"#);
+    assert_ne!(status, CRONOQ_OK);
+    let (status, ..) = submit_full(&s, "x", r#"{"after": [{"task": 1, "key": "k"}]}"#);
+    assert_eq!(status, CRONOQ_INVALID_ARGUMENT);
+
+    let s = new(r#"{"pools": [{"name": "default", "unknown_dependency": {"await": true}}]}"#);
+    submit(&s, "child", r#"{"after": ["parent"]}"#);
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+    submit(&s, "parent", r#"{"key": "parent"}"#);
+    assert_eq!(drain(&s), ["parent", "child"]);
+}
+
+#[test]
+fn a_fair_pool_shares_its_leases_between_tenants() {
+    let s = new(
+        r#"{"pools": [{"name": "default", "fairness": {"weights": {"big": 3}, "default_weight": 1}}]}"#,
+    );
+    for i in 0..12 {
+        submit(&s, &format!("big-{i}"), r#"{"tenant": "big"}"#);
+    }
+    for i in 0..12 {
+        submit(&s, &format!("small-{i}"), r#"{"tenant": "small"}"#);
+    }
+    let id = submit(&s, "probe", r#"{"tenant": "small", "key": "probe"}"#);
+    assert_eq!(task(&s, id).unwrap()["tenant"], "small");
+    // Of the first eight, six are the big tenant's and two the small one's, although every
+    // task of the big tenant was submitted first.
+    let first: Vec<String> = (0..8)
+        .map(|_| {
+            let t = next(&s);
+            complete(&s, &t);
+            t.payload
+        })
+        .collect();
+    let small = first.iter().filter(|p| p.starts_with("small")).count();
+    assert_eq!(small, 2, "{first:?}");
+    // Each tenant's own tasks stay in order.
+    let big: Vec<&String> = first.iter().filter(|p| p.starts_with("big")).collect();
+    assert_eq!(big, ["big-0", "big-1", "big-2", "big-3", "big-4", "big-5"]);
+}
+
+#[test]
+fn a_task_with_labels_goes_only_to_a_thread_that_carries_them() {
+    let s = new("");
+    submit(&s, "wifi", r#"{"labels": {"network": "wifi"}}"#);
+    // A thread without labels, and one with other labels, do not get it.
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+    assert_eq!(
+        next_labeled(&s, None, Some(r#"{"network": "cellular"}"#), 100).unwrap_err(),
+        CRONOQ_TIMEOUT
+    );
+    // A thread with more labels than the task asks for does.
+    let t = next_labeled(
+        &s,
+        None,
+        Some(r#"{"power": "mains", "network": "wifi"}"#),
+        5000,
+    )
+    .unwrap();
+    assert_eq!(t.payload, "wifi");
+    assert_eq!(
+        t.info["labels"],
+        serde_json::json!({"network": "wifi", "power": "mains"})
+    );
+    complete(&s, &t);
+
+    // A task without labels runs on any thread; `{}` and null are "no labels".
+    submit(&s, "any-1", "");
+    let t = next_labeled(&s, None, Some(r#"{"network": "wifi"}"#), 5000).unwrap();
+    assert_eq!(t.payload, "any-1");
+    complete(&s, &t);
+    submit(&s, "any-2", "");
+    let t = next_labeled(&s, None, Some("{}"), 5000).unwrap();
+    assert_eq!(
+        (t.payload.as_str(), &t.info["labels"]),
+        ("any-2", &serde_json::json!({}))
+    );
+    complete(&s, &t);
+
+    assert_eq!(
+        next_labeled(&s, None, Some(r#"{"n": 1}"#), 0).unwrap_err(),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert!(last_error().contains("labels"), "{}", last_error());
+}
+
+#[test]
+fn threads_with_and_without_labels_share_the_max_leases_of_a_pool() {
+    let s = std::sync::Arc::new(new(r#"{"pools": [{"name": "default", "max_leases": 2}]}"#));
+    for i in 0..6 {
+        let options = if i % 2 == 0 {
+            r#"{"labels": {"gpu": "yes"}}"#
+        } else {
+            ""
+        };
+        submit(&s, &format!("t{i}"), options);
+    }
+    let a = next_labeled(&s, None, Some(r#"{"gpu": "yes"}"#), 5000).unwrap();
+    let b = next(&s);
+    // Two leases are out: a third is not handed out to either kind of thread.
+    assert_eq!(next_in(&s, None, 150).unwrap_err(), CRONOQ_TIMEOUT);
+    assert_eq!(
+        next_labeled(&s, None, Some(r#"{"gpu": "yes"}"#), 150).unwrap_err(),
+        CRONOQ_TIMEOUT
+    );
+    complete(&s, &a);
+    complete(&s, &b);
+    // Both kinds of thread together drain the rest; every task runs once.
+    let mut seen = vec![a.payload, b.payload];
+    let workers: Vec<_> = [Some(r#"{"gpu": "yes"}"#), None]
+        .into_iter()
+        .map(|labels| {
+            let s = s.clone();
+            std::thread::spawn(move || {
+                let mut out = Vec::new();
+                while let Ok(t) = next_labeled(&s, None, labels, 300) {
+                    if labels.is_none() {
+                        assert_eq!(t.info["labels"], serde_json::json!({}), "{}", t.payload);
+                    }
+                    complete(&s, &t);
+                    out.push(t.payload);
+                }
+                out
+            })
+        })
+        .collect();
+    for w in workers {
+        seen.extend(w.join().unwrap());
+    }
+    seen.sort();
+    assert_eq!(seen, ["t0", "t1", "t2", "t3", "t4", "t5"]);
+    assert_eq!(snapshot(&s)["totals"]["releases"], 0);
+}
+
+#[test]
+fn a_pool_keeps_a_limited_number_of_label_sets() {
+    let s = new("");
+    for i in 0..63 {
+        let labels = format!(r#"{{"n": "{i}"}}"#);
+        assert_eq!(
+            next_labeled(&s, None, Some(&labels), 0).unwrap_err(),
+            CRONOQ_TIMEOUT
+        );
+    }
+    assert_eq!(
+        next_labeled(&s, None, Some(r#"{"n": "one too many"}"#), 0).unwrap_err(),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    // Known sets, and no labels, still work.
+    submit(&s, "x", "");
+    assert_eq!(
+        next_labeled(&s, None, Some(r#"{"n": "5"}"#), 5000)
+            .unwrap()
+            .payload,
+        "x"
+    );
+}
+
+#[cfg(feature = "cron")]
+#[test]
+fn a_schedule_submits_a_task_at_each_of_its_times() {
+    let s = new("");
+    assert_eq!(
+        schedule_add(
+            &s,
+            "tick",
+            "* * * * * *",
+            "tick",
+            r#"{"overlap": "allow", "task": {"kind": "tick", "key": "tick", "priority": "high"}}"#
+        ),
+        CRONOQ_OK,
+        "{}",
+        last_error()
+    );
+    let list = schedules(&s);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["name"], "tick");
+    assert_eq!(list[0]["cron"], "* * * * * *");
+    assert_eq!(list[0]["kind"], "tick");
+    assert_eq!(list[0]["overlap"], "allow");
+    assert!(list[0]["next_unix_ms"].as_u64().unwrap() > 1_600_000_000_000);
+
+    let a = next(&s);
+    complete(&s, &a);
+    let b = next(&s);
+    complete(&s, &b);
+    assert_eq!((a.payload.as_str(), b.payload.as_str()), ("tick", "tick"));
+    assert_ne!(a.task, b.task);
+    // The key of an occurrence is the template's key and the start.
+    let key = a.key.unwrap();
+    assert!(key.starts_with("tick@20") && key.ends_with('Z'), "{key}");
+    assert!(schedules(&s)[0]["last_task"].as_u64().is_some());
+
+    // Adding it again replaces it; removing it stops it.
+    assert_eq!(
+        schedule_add(&s, "tick", "0 0 1 1 *", "yearly", ""),
+        CRONOQ_OK
+    );
+    let list = schedules(&s);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["cron"], "0 0 1 1 *");
+    assert_eq!(
+        unsafe { cronoq_schedule_remove(s.0, c("tick").as_ptr()) },
+        CRONOQ_OK
+    );
+    assert_eq!(
+        unsafe { cronoq_schedule_remove(s.0, c("tick").as_ptr()) },
+        CRONOQ_NOT_FOUND
+    );
+    assert_eq!(schedules(&s), serde_json::json!([]));
+}
+
+#[cfg(feature = "cron")]
+#[test]
+fn a_schedule_the_library_cannot_run_is_refused() {
+    let s = new("");
+    assert_eq!(
+        schedule_add(&s, "bad", "not cron", "", ""),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    // What describes a single task cannot be in the template.
+    assert_eq!(
+        schedule_add(
+            &s,
+            "bad",
+            "* * * * *",
+            "",
+            r#"{"task": {"start_in_ms": 5}}"#
+        ),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert!(last_error().contains("recurring"), "{}", last_error());
+    assert_eq!(
+        schedule_add(
+            &s,
+            "bad",
+            "* * * * *",
+            "",
+            r#"{"task": {"pool": "nowhere"}}"#
+        ),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        schedule_add(&s, "bad", "* * * * *", "", r#"{"every": 5}"#),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { cronoq_schedule_add(s.0, null(), c("* * * * *").as_ptr(), null(), 0, null()) },
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert_eq!(schedules(&s), serde_json::json!([]));
+    assert_eq!(
+        schedule_add(&s, "utc", "* * * * *", "", r#"{"tz": "UTC"}"#),
+        CRONOQ_OK
+    );
+}
+
+#[cfg(all(feature = "cron", not(feature = "tz")))]
+#[test]
+fn without_time_zone_data_a_named_time_zone_is_refused() {
+    let s = new("");
+    assert_eq!(
+        schedule_add(&s, "lisbon", "0 9 * * *", "", r#"{"tz": "Europe/Lisbon"}"#),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert!(last_error().contains("time-zone data"), "{}", last_error());
+}
+
+#[cfg(feature = "tz")]
+#[test]
+fn with_time_zone_data_a_schedule_runs_in_its_time_zone() {
+    let s = new("");
+    assert_eq!(
+        schedule_add(&s, "lisbon", "0 9 * * *", "", r#"{"tz": "Europe/Lisbon"}"#),
+        CRONOQ_OK,
+        "{}",
+        last_error()
+    );
+    assert_eq!(schedules(&s)[0]["tz"], "Europe/Lisbon");
+    assert_eq!(
+        schedule_add(&s, "bad", "0 9 * * *", "", r#"{"tz": "Mars/Olympus"}"#),
+        CRONOQ_INVALID_ARGUMENT
+    );
+}
+
+#[cfg(not(feature = "cron"))]
+#[test]
+fn without_cron_no_schedule_can_be_added() {
+    let s = new("");
+    assert_eq!(
+        schedule_add(&s, "tick", "* * * * *", "", ""),
+        CRONOQ_INVALID_ARGUMENT
+    );
+    assert_eq!(schedules(&s), serde_json::json!([]));
+}
+
+#[cfg(all(feature = "sqlite", feature = "cron"))]
+#[test]
+fn with_a_store_schedules_survive_a_restart() {
+    let dir = std::env::temp_dir().join(format!("cronoq-ffi-sched-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = format!(
+        r#"{{"store": {{"sqlite": "{}"}}}}"#,
+        dir.join("q.db").to_str().unwrap().replace('\\', "/")
+    );
+    {
+        let s = new(&config);
+        assert_eq!(schedule_add(&s, "yearly", "0 0 1 1 *", "y", ""), CRONOQ_OK);
+    }
+    let s = new(&config);
+    let list = schedules(&s);
+    assert_eq!(list[0]["name"], "yearly", "{list}");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn other_work_runs_before_a_fixed_start_when_it_fits() {
+    let s = new("");
+    submit(&s, "later", r#"{"start_in_ms": 3000}"#);
+    // Expected to take a second (the default): it fits before the start.
+    submit(&s, "fits", "");
+    let started = std::time::Instant::now();
+    let t = next(&s);
+    assert_eq!(t.payload, "fits");
+    assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+    complete(&s, &t);
+    let t = next(&s);
+    assert_eq!(t.payload, "later");
+    let waited = started.elapsed();
+    assert!(
+        waited >= std::time::Duration::from_millis(2900),
+        "{waited:?}"
+    );
+    complete(&s, &t);
+
+    // Shortly before the start, work that is not expected to fit is held back: the one
+    // slot is kept free for the start.
+    submit(&s, "later", r#"{"start_in_ms": 500}"#);
+    submit(&s, "long", "");
+    let t = next(&s);
+    assert_eq!(t.payload, "later");
+    complete(&s, &t);
+    assert_eq!(drain(&s), ["long"]);
 }

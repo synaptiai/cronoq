@@ -5,7 +5,7 @@
 //! number of threads waiting for one. A task is therefore chosen when a thread asks for it,
 //! not before, and the order of the queue is decided as late as possible.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -29,30 +29,70 @@ pub(crate) struct Leased {
     pub(crate) payload: Arc<Bytes>,
 }
 
+/// The labels of a group of host threads, sorted and without duplicates. Empty for threads
+/// without labels.
+pub(crate) type Group = Vec<(Arc<str>, Arc<str>)>;
+
+/// Most label groups a pool keeps. A group stays once a thread has asked with its labels.
+const MAX_GROUPS: usize = 64;
+
+/// `labels` as the scheduler orders them.
+pub(crate) fn group_of(labels: &[(Arc<str>, Arc<str>)]) -> Group {
+    let mut v = labels.to_vec();
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// An attempt a host thread has taken.
 struct Held {
     pool: Arc<str>,
+    group: Group,
     ctx: TaskContext,
     done: Done,
 }
 
-struct PoolQueue {
+#[derive(Default)]
+struct GroupQueue {
     ready: VecDeque<Offer>,
-    /// Threads blocked in `next` for this pool.
+    /// Threads blocked in `next` for this group.
     waiting: u32,
-    /// Leases of this pool the host holds.
+    /// Leases of this group the host holds.
     held: u32,
+}
+
+struct PoolQueue {
+    /// The threads without labels are the group with no labels; it always exists.
+    groups: BTreeMap<Group, GroupQueue>,
     /// Most attempts of this pool that may be out at a time (`max_leases`).
     max: u32,
 }
 
 impl PoolQueue {
-    /// One slot per lease the host holds and one per thread that waits for a lease, up to
-    /// `max`. An attempt in `ready` is normally on its way to a waiting thread, which is
-    /// counted already. One that was started for a thread that has stopped waiting keeps
-    /// its slot until the next thread takes it.
-    fn capacity(&self) -> u32 {
-        (self.held + self.waiting.max(self.ready.len() as u32)).min(self.max)
+    /// The capacity of each group: one slot per lease the host holds and one per thread that
+    /// waits for a lease. An attempt in `ready` is normally on its way to a waiting thread,
+    /// which is counted already. One that was started for a thread that has stopped waiting
+    /// keeps its slot until the next thread takes it.
+    ///
+    /// All groups together get at most `max` slots. Attempts that are out come first; what
+    /// is left goes to waiting threads, group by group, the threads without labels first.
+    fn capacities(&self) -> Vec<(Group, u32)> {
+        let mut left = self.max;
+        let mut out: Vec<(Group, u32)> = self
+            .groups
+            .iter()
+            .map(|(g, q)| {
+                let n = (q.held + q.ready.len() as u32).min(left);
+                left -= n;
+                (g.clone(), n)
+            })
+            .collect();
+        for ((_, n), q) in out.iter_mut().zip(self.groups.values()) {
+            let more = q.waiting.saturating_sub(q.ready.len() as u32).min(left);
+            left -= more;
+            *n += more;
+        }
+        out
     }
 }
 
@@ -88,9 +128,7 @@ impl Hub {
             let mut s = hub.lock();
             for (p, max) in pools {
                 let q = PoolQueue {
-                    ready: VecDeque::new(),
-                    waiting: 0,
-                    held: 0,
+                    groups: BTreeMap::from([(Group::new(), GroupQueue::default())]),
                     max,
                 };
                 s.pools.insert(p, q);
@@ -117,14 +155,33 @@ impl Hub {
         let _ = self.resync.set(Box::new(f));
     }
 
-    /// The capacity `pool` should have now: the leases the host holds plus the threads
-    /// waiting for one, up to the pool's `max_leases`. Nothing once the hub is closed.
-    pub(crate) fn capacity(&self, pool: &str) -> u32 {
+    /// The capacity each group of `pool` should have now: the leases the host holds plus
+    /// the threads waiting for one, up to the pool's `max_leases` for all groups together.
+    /// Nothing once the hub is closed.
+    pub(crate) fn capacities(&self, pool: &str) -> Vec<(Group, u32)> {
         let s = self.lock();
+        let mut c = s.pools.get(pool).map_or(Vec::new(), PoolQueue::capacities);
         if s.closed {
-            return 0;
+            c.iter_mut().for_each(|(_, n)| *n = 0);
         }
-        s.pools.get(pool).map_or(0, PoolQueue::capacity)
+        c
+    }
+
+    /// Make sure `pool` has the group `group`. False if the pool is unknown or has too many
+    /// groups already.
+    pub(crate) fn add_group(&self, pool: &str, group: &Group) -> bool {
+        let mut s = self.lock();
+        let Some(q) = s.pools.get_mut(pool) else {
+            return false;
+        };
+        if q.groups.contains_key(group) {
+            return true;
+        }
+        if q.groups.len() >= MAX_GROUPS {
+            return false;
+        }
+        q.groups.insert(group.clone(), GroupQueue::default());
+        true
     }
 
     /// The names of the pools.
@@ -132,16 +189,23 @@ impl Hub {
         self.lock().pools.keys().cloned().collect()
     }
 
-    /// Wait up to `timeout` for an attempt of `pool`. `sync` is called, without the lock
-    /// held, whenever the capacity the pool should have has changed: it has to bring the
-    /// scheduler's capacity in line with [`capacity`](Self::capacity).
-    pub(crate) fn next(&self, pool: &str, timeout: Duration, sync: &dyn Fn()) -> Next {
+    /// Wait up to `timeout` for an attempt of the group `group` of `pool` (the group was
+    /// added with [`add_group`](Self::add_group)). `sync` is called, without the lock held,
+    /// whenever the capacity the pool should have has changed: it has to bring the
+    /// scheduler's capacity in line with [`capacities`](Self::capacities).
+    pub(crate) fn next(
+        &self,
+        pool: &str,
+        group: &Group,
+        timeout: Duration,
+        sync: &dyn Fn(),
+    ) -> Next {
         let deadline = Instant::now().checked_add(timeout);
         let mut s = self.lock();
         if s.closed {
             return Next::Closed;
         }
-        if let Some(o) = Self::take(&mut s, pool) {
+        if let Some(o) = Self::take(&mut s, pool, group) {
             // This attempt was on its way to a thread that still waits: that thread needs
             // another one.
             drop(s);
@@ -149,7 +213,7 @@ impl Hub {
             return Next::Lease(o);
         }
         // Nothing is ready: ask the scheduler for one more attempt.
-        s.pools.get_mut(pool).expect("pool was checked").waiting += 1;
+        Self::queue(&mut s, pool, group).waiting += 1;
         drop(s);
         sync();
         let mut s = self.lock();
@@ -157,7 +221,7 @@ impl Hub {
             if s.closed {
                 break None;
             }
-            if let Some(o) = Self::take(&mut s, pool) {
+            if let Some(o) = Self::take(&mut s, pool, group) {
                 break Some(o);
             }
             let left = match deadline {
@@ -174,7 +238,7 @@ impl Hub {
                 .0;
         };
         let closed = s.closed;
-        s.pools.get_mut(pool).expect("pool was checked").waiting -= 1;
+        Self::queue(&mut s, pool, group).waiting -= 1;
         drop(s);
         if let Some(o) = got {
             // The lease took the place of the waiting thread: the capacity is unchanged.
@@ -187,7 +251,7 @@ impl Hub {
         // An attempt may have been started for this thread in the meantime: take it. One
         // that arrives later keeps its slot and goes to the next thread that asks.
         let mut s = self.lock();
-        match Self::take(&mut s, pool) {
+        match Self::take(&mut s, pool, group) {
             Some(o) => {
                 drop(s);
                 sync();
@@ -197,10 +261,15 @@ impl Hub {
         }
     }
 
-    /// Move the oldest ready attempt of `pool` to the held ones.
-    fn take(s: &mut State, pool: &str) -> Option<Leased> {
+    fn queue<'a>(s: &'a mut State, pool: &str, group: &Group) -> &'a mut GroupQueue {
+        let q = s.pools.get_mut(pool).expect("pool was checked");
+        q.groups.get_mut(group).expect("group was added")
+    }
+
+    /// Move the oldest ready attempt of the group to the held ones.
+    fn take(s: &mut State, pool: &str, group: &Group) -> Option<Leased> {
         let name = s.pools.get_key_value(pool)?.0.clone();
-        let q = s.pools.get_mut(pool)?;
+        let q = s.pools.get_mut(pool)?.groups.get_mut(group)?;
         let o = q.ready.pop_front()?;
         q.held += 1;
         // The host gets the context and the payload; the hub keeps the way to answer.
@@ -212,6 +281,7 @@ impl Hub {
             o.ctx.lease.0,
             Held {
                 pool: name,
+                group: group.clone(),
                 ctx: o.ctx,
                 done: o.done,
             },
@@ -233,7 +303,7 @@ impl Hub {
         let Some(h) = s.held.remove(&lease) else {
             return false;
         };
-        s.pools.get_mut(&h.pool).expect("pool of a held lease").held -= 1;
+        Self::queue(&mut s, &h.pool, &h.group).held -= 1;
         drop(s);
         self.changed.notify_all();
         sync(&h.pool);
@@ -278,14 +348,16 @@ impl Hub {
         let Some((name, q)) = s.pools.get_key_value(pool) else {
             return;
         };
-        let (name, before) = (name.clone(), q.capacity());
-        if s.held.remove(&lease).is_some() {
-            s.pools.get_mut(pool).expect("checked").held -= 1;
+        let (name, before) = (name.clone(), q.capacities());
+        if let Some(h) = s.held.remove(&lease) {
+            Self::queue(&mut s, pool, &h.group).held -= 1;
         } else {
             let q = s.pools.get_mut(pool).expect("checked");
-            q.ready.retain(|o| o.ctx.lease.0 != lease);
+            for g in q.groups.values_mut() {
+                g.ready.retain(|o| o.ctx.lease.0 != lease);
+            }
         }
-        let changed = s.pools[pool].capacity() != before && !s.closed;
+        let changed = s.pools[pool].capacities() != before && !s.closed;
         drop(s);
         self.changed.notify_all();
         // The scheduler ended a lease the host held: the pool has one slot too many.
@@ -329,7 +401,7 @@ impl Hub {
     pub(crate) fn abandon(&self) {
         let mut s = self.lock();
         let mut out: Vec<Done> = s.held.drain().map(|(_, h)| h.done).collect();
-        for q in s.pools.values_mut() {
+        for q in s.pools.values_mut().flat_map(|p| p.groups.values_mut()) {
             q.held = 0;
             out.extend(q.ready.drain(..).map(|o| o.done));
         }
@@ -384,8 +456,11 @@ impl Executor<Bytes, Bytes> for PullExecutor {
             };
             // If no thread waits for it (the capacity is lowered by a message, and the
             // scheduler may start an attempt before it arrives), it stays here, keeps its
-            // slot, and goes to the next thread that asks.
-            q.ready.push_back(Offer { ctx, payload, done });
+            // slot, and goes to the next thread that asks. The scheduler chose the group:
+            // one whose labels cover what the task requires.
+            let group = group_of(&ctx.group);
+            let g = q.groups.entry(group).or_default();
+            g.ready.push_back(Offer { ctx, payload, done });
         }
         self.hub.changed.notify_all();
         Box::pin(async move {

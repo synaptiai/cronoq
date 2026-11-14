@@ -5,8 +5,11 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use bytes::Bytes;
-use cronoq::{KeyConflict, Pool, Priority, ResourceConfig, RetryPolicy, Task, Update};
-use cronoq_core::{OverflowPolicy, PriorityConfig, UrgencyConfig};
+use cronoq::{
+    Dep, KeyConflict, MissPolicy, OverlapPolicy, Pool, Priority, Recurring, ResourceConfig,
+    RetryPolicy, Task, TaskId, TaskRef, UnknownDependency, Update,
+};
+use cronoq_core::{Fairness, OverflowPolicy, PriorityConfig, UrgencyConfig};
 use serde::Deserialize;
 
 /// Most leases of one pool the host may hold at a time, unless the pool says otherwise.
@@ -64,6 +67,30 @@ pub(crate) struct PoolJson {
     lease_ttl_ms: Option<u64>,
     priority: Option<PriorityJson>,
     urgency: Option<UrgencyJson>,
+    fairness: Option<FairnessJson>,
+    unknown_dependency: Option<UnknownDependencyJson>,
+}
+
+/// Fair sharing of a pool between the tenants of its tasks.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FairnessJson {
+    /// Weights by tenant.
+    #[serde(default)]
+    weights: BTreeMap<String, f64>,
+    /// The weight of every other tenant, and of tasks without one (default 1).
+    default_weight: Option<f64>,
+}
+
+/// What happens to a task that depends on a key no task has.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnknownDependencyJson {
+    /// Wait for a task with that key instead of refusing the submission.
+    #[serde(rename = "await")]
+    wait: bool,
+    /// Give up, and skip the task, after this long (left out: wait for ever).
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -209,6 +236,8 @@ impl Config {
                 lease_ttl_ms: None,
                 priority: None,
                 urgency: None,
+                fairness: None,
+                unknown_dependency: None,
             });
         }
         Ok(c)
@@ -294,6 +323,23 @@ impl PoolJson {
                     c.max_releases = n;
                 }
                 c.lease_ttl = self.lease_ttl_ms.map(ms);
+                if let Some(f) = &self.fairness {
+                    c.fairness = Some(Fairness {
+                        weights: f
+                            .weights
+                            .iter()
+                            .map(|(k, w)| (k.as_str().into(), *w))
+                            .collect(),
+                        default_weight: f.default_weight.unwrap_or(1.0),
+                    });
+                }
+                if let Some(u) = &self.unknown_dependency
+                    && u.wait
+                {
+                    c.unknown_dependency = UnknownDependency::Await {
+                        timeout: u.timeout_ms.map(ms),
+                    };
+                }
                 if pool_priority.is_some() {
                     c.priority = pool_priority;
                 }
@@ -303,6 +349,24 @@ impl PoolJson {
             });
         Ok(pool)
     }
+}
+
+/// The labels of a thread that asks for a lease: a JSON object of strings.
+pub(crate) fn labels(json: Option<&str>) -> Result<crate::pull::Group, String> {
+    let map: BTreeMap<String, String> = match json {
+        Some(j) if !j.trim().is_empty() => {
+            serde_json::from_str(j).map_err(|e| format!("labels: {e}"))?
+        }
+        _ => BTreeMap::new(),
+    };
+    if map
+        .iter()
+        .any(|(k, v)| k.contains('\0') || v.contains('\0'))
+    {
+        return Err("labels must not contain NUL characters".into());
+    }
+    let labels: Vec<_> = map.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+    Ok(crate::pull::group_of(&labels))
 }
 
 /// A class by its name.
@@ -333,6 +397,73 @@ enum OnFailureJson {
     Halt,
 }
 
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum MissJson {
+    RunLate,
+    Skip,
+    Fail,
+}
+
+impl MissJson {
+    fn policy(self) -> MissPolicy {
+        match self {
+            MissJson::RunLate => MissPolicy::RunLate,
+            MissJson::Skip => MissPolicy::Skip,
+            MissJson::Fail => MissPolicy::Fail,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "snake_case")]
+enum WhenJson {
+    #[default]
+    Success,
+    Complete,
+    Failure,
+}
+
+/// A task this one waits for: its id, its key, or either with the outcome to wait for.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DepJson {
+    Id(u64),
+    Key(String),
+    Full(DepFull),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DepFull {
+    task: Option<u64>,
+    key: Option<String>,
+    #[serde(default)]
+    when: WhenJson,
+}
+
+impl DepJson {
+    fn dep(self) -> Result<Dep, String> {
+        let (target, when) = match self {
+            DepJson::Id(id) => (TaskRef::Id(TaskId(id)), WhenJson::Success),
+            DepJson::Key(k) => (TaskRef::Key(k.into()), WhenJson::Success),
+            DepJson::Full(f) => (
+                match (f.task, f.key) {
+                    (Some(id), None) => TaskRef::Id(TaskId(id)),
+                    (None, Some(k)) => TaskRef::Key(k.into()),
+                    _ => return Err("after: give either `task` or `key`".into()),
+                },
+                f.when,
+            ),
+        };
+        Ok(match when {
+            WhenJson::Success => Dep::on_success(target),
+            WhenJson::Complete => Dep::on_complete(target),
+            WhenJson::Failure => Dep::on_failure(target),
+        })
+    }
+}
+
 /// The options of one task. Everything is optional.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -356,6 +487,20 @@ pub(crate) struct TaskJson {
     #[serde(default)]
     renew_position: bool,
     max_releases: Option<u32>,
+    /// Start this long from now, at a time the scheduler keeps a slot free for.
+    start_in_ms: Option<u64>,
+    /// Start at this time, in milliseconds since 1970 UTC.
+    start_at_unix_ms: Option<u64>,
+    start_tolerance_ms: Option<u64>,
+    on_miss: Option<MissJson>,
+    duration_hint_ms: Option<u64>,
+    /// Tasks this one waits for.
+    #[serde(default)]
+    after: Vec<DepJson>,
+    tenant: Option<String>,
+    /// Labels a thread must carry to run the task (`cronoq_next_lease_labeled`).
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
 }
 
 impl TaskJson {
@@ -426,7 +571,94 @@ impl TaskJson {
         if let Some(n) = self.max_releases {
             t = t.max_releases(n);
         }
+        match (self.start_in_ms, self.start_at_unix_ms) {
+            (Some(_), Some(_)) => {
+                return Err("start_in_ms and start_at_unix_ms exclude each other".into());
+            }
+            (Some(v), None) => t = t.start_in(ms(v)),
+            (None, Some(v)) => t = t.start_at(std::time::UNIX_EPOCH + ms(v)),
+            (None, None) => {}
+        }
+        if let Some(v) = self.start_tolerance_ms {
+            t = t.start_tolerance(ms(v));
+        }
+        if let Some(m) = self.on_miss {
+            t = t.on_miss(m.policy());
+        }
+        if let Some(v) = self.duration_hint_ms {
+            t = t.duration_hint(ms(v));
+        }
+        for d in self.after {
+            t = t.dep(d.dep()?);
+        }
+        if let Some(v) = self.tenant {
+            t = t.tenant(v);
+        }
+        for (k, v) in self.labels {
+            t = t.label(k, v);
+        }
         Ok(t)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OverlapJson {
+    Skip,
+    Allow,
+    Queue,
+    QueueOnSuccess,
+}
+
+/// The options of a recurring schedule. Everything is optional.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScheduleJson {
+    /// IANA time zone of the cron expression (UTC when left out).
+    tz: Option<String>,
+    overlap: Option<OverlapJson>,
+    tolerance_ms: Option<u64>,
+    on_miss: Option<MissJson>,
+    /// The options of each occurrence, as for a task.
+    task: Option<TaskJson>,
+}
+
+impl ScheduleJson {
+    pub(crate) fn parse(json: Option<&str>) -> Result<ScheduleJson, String> {
+        match json {
+            Some(j) if !j.trim().is_empty() => {
+                serde_json::from_str(j).map_err(|e| format!("schedule options: {e}"))
+            }
+            _ => Ok(ScheduleJson::default()),
+        }
+    }
+
+    pub(crate) fn recurring(
+        self,
+        name: &str,
+        cron: &str,
+        payload: Bytes,
+    ) -> Result<Recurring<Bytes>, String> {
+        let template = self.task.unwrap_or_default().task(payload)?;
+        let mut r = Recurring::new(name, cron, template);
+        if let Some(tz) = self.tz {
+            r = r.tz(tz);
+        }
+        if let Some(o) = self.overlap {
+            r = r.overlap(match o {
+                OverlapJson::Skip => OverlapPolicy::Skip,
+                OverlapJson::Allow => OverlapPolicy::Allow,
+                OverlapJson::Queue => OverlapPolicy::Queue,
+                OverlapJson::QueueOnSuccess => OverlapPolicy::QueueOnSuccess,
+            });
+        }
+        if let Some(t) = self.tolerance_ms {
+            r = r.tolerance(ms(t));
+        }
+        if let Some(m) = self.on_miss {
+            r = r.on_miss(m.policy());
+        }
+        Ok(r)
     }
 }
 

@@ -23,6 +23,14 @@ contain breaking changes; they are called out under **Changed**.
   build tag `cronoq_static`) and Swift (`sdks/swift`). Releases carry the libraries for
   Linux, macOS and Windows (x86-64 and ARM64). See
   [Embedding from other languages](docs/book/src/guides/embedding.md).
+- More of the engine in the embedded library. Tasks submitted through the C API can have a
+  fixed start (`start_in_ms`, `start_at_unix_ms`, `start_tolerance_ms`, `on_miss`),
+  dependencies (`after`), a tenant for pools with `fairness`, and labels. A thread that
+  carries labels asks for a lease with `cronoq_next_lease_labeled` (Go `NextLabeled`, Swift
+  `next(labels:)`). Recurring schedules: `cronoq_schedule_add`, `cronoq_schedule_remove`,
+  `cronoq_schedules` (Go `AddSchedule`, `RemoveSchedule`, `Schedules`; Swift `addSchedule`,
+  `removeSchedule`, `schedules`). The library's `cron` feature is now on by default; the
+  published libraries have no time-zone data (feature `tz`), so their schedules run in UTC.
 - Clock resynchronisation. Engine time follows the clock of the Rust standard library, which
   on Apple platforms and on Linux does not count the time a machine sleeps, so after a sleep
   every timer was late by the time slept. `Scheduler::resync_clock` (C

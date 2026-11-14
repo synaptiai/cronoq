@@ -158,6 +158,8 @@ public struct Pool: Codable, Sendable {
         case leaseTtlMs = "lease_ttl_ms"
         case priority
         case urgency
+        case fairness
+        case unknownDependency = "unknown_dependency"
     }
 
     public var name: String
@@ -175,11 +177,17 @@ public struct Pool: Codable, Sendable {
     public var leaseTtlMs: UInt64?
     public var priority: PrioritySettings?
     public var urgency: UrgencySettings?
+    /// Shares the pool between the tenants of its tasks (`TaskOptions.tenant`).
+    public var fairness: Fairness?
+    /// What happens to a task that waits for a key no task has (`TaskOptions.after`). By
+    /// default the submission is refused.
+    public var unknownDependency: UnknownDependency?
 
     public init(
         name: String, maxLeases: UInt32? = nil, maxPending: UInt64? = nil, overflow: String? = nil,
         retry: Retry? = nil, maxReleases: UInt32? = nil, leaseTtlMs: UInt64? = nil,
-        priority: PrioritySettings? = nil, urgency: UrgencySettings? = nil
+        priority: PrioritySettings? = nil, urgency: UrgencySettings? = nil,
+        fairness: Fairness? = nil, unknownDependency: UnknownDependency? = nil
     ) {
         self.name = name
         self.maxLeases = maxLeases
@@ -190,6 +198,70 @@ public struct Pool: Codable, Sendable {
         self.leaseTtlMs = leaseTtlMs
         self.priority = priority
         self.urgency = urgency
+        self.fairness = fairness
+        self.unknownDependency = unknownDependency
+    }
+}
+
+/// Shares a pool between tenants in proportion to their weights. Within a class, tasks
+/// without a deadline are handed out so that each tenant with waiting work gets its share.
+public struct Fairness: Codable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case weights
+        case defaultWeight = "default_weight"
+    }
+
+    /// Weights by tenant.
+    public var weights: [String: Double]?
+    /// The weight of every other tenant and of tasks without one (default 1).
+    public var defaultWeight: Double?
+
+    public init(weights: [String: Double]? = nil, defaultWeight: Double? = nil) {
+        self.weights = weights
+        self.defaultWeight = defaultWeight
+    }
+}
+
+/// Makes a pool wait for a task with the key a dependency names.
+public struct UnknownDependency: Codable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case wait = "await"
+        case timeoutMs = "timeout_ms"
+    }
+
+    /// Wait for the key instead of refusing the submission.
+    public var wait: Bool
+    /// Give up and skip the task after this long (nil: wait for ever).
+    public var timeoutMs: UInt64?
+
+    public init(wait: Bool = true, timeoutMs: UInt64? = nil) {
+        self.wait = wait
+        self.timeoutMs = timeoutMs
+    }
+}
+
+/// A task another task waits for.
+public struct Dependency: Codable, Sendable {
+    public var task: UInt64?
+    public var key: String?
+    /// The outcome to wait for: "success" (default), "complete" (any outcome) or "failure".
+    /// A task whose dependency can no longer be met is skipped.
+    public var when: String?
+
+    public init(task: UInt64? = nil, key: String? = nil, when: String? = nil) {
+        self.task = task
+        self.key = key
+        self.when = when
+    }
+
+    /// Wait for the task with this id.
+    public static func on(task id: UInt64, when: String? = nil) -> Dependency {
+        Dependency(task: id, key: nil, when: when)
+    }
+
+    /// Wait for the task with this key.
+    public static func on(key: String, when: String? = nil) -> Dependency {
+        Dependency(task: nil, key: key, when: when)
     }
 }
 
@@ -264,6 +336,14 @@ public struct TaskOptions: Codable, Sendable {
         case fingerprint
         case renewPosition = "renew_position"
         case maxReleases = "max_releases"
+        case startInMs = "start_in_ms"
+        case startAtUnixMs = "start_at_unix_ms"
+        case startToleranceMs = "start_tolerance_ms"
+        case onMiss = "on_miss"
+        case durationHintMs = "duration_hint_ms"
+        case after
+        case tenant
+        case labels
     }
 
     public var pool: String?
@@ -292,13 +372,34 @@ public struct TaskOptions: Codable, Sendable {
     public var renewPosition: Bool?
     /// Overrides the pool's limit for this task.
     public var maxReleases: UInt32?
+    /// Starts the task that far from now, at a time the scheduler keeps a slot free for.
+    public var startInMs: UInt64?
+    /// The same for a time of day, in milliseconds since 1970 UTC. Set at most one of the
+    /// two.
+    public var startAtUnixMs: UInt64?
+    /// How late the start may be and still be on time (default 1000).
+    public var startToleranceMs: UInt64?
+    /// What a start that is later than that does: "run_late" (default), "skip" or "fail".
+    public var onMiss: String?
+    /// How long an attempt is expected to run, until the scheduler has seen tasks of this
+    /// kind.
+    public var durationHintMs: UInt64?
+    /// The tasks this one waits for.
+    public var after: [Dependency]?
+    /// Who the task belongs to, for pools with `fairness`.
+    public var tenant: String?
+    /// Labels a thread must carry to get the task (`Scheduler.next(pool:labels:timeout:)`).
+    public var labels: [String: String]?
 
     public init(
         pool: String? = nil, kind: String? = nil, key: String? = nil, priority: Priority? = nil,
         deadlineMs: UInt64? = nil, timeoutMs: UInt64? = nil, retry: Retry? = nil,
         resources: [String: UInt32]? = nil, tags: [String: String]? = nil,
         orderingKey: String? = nil, onFailure: String? = nil, onKeyConflict: String? = nil,
-        fingerprint: String? = nil, renewPosition: Bool? = nil, maxReleases: UInt32? = nil
+        fingerprint: String? = nil, renewPosition: Bool? = nil, maxReleases: UInt32? = nil,
+        startInMs: UInt64? = nil, startAtUnixMs: UInt64? = nil, startToleranceMs: UInt64? = nil,
+        onMiss: String? = nil, durationHintMs: UInt64? = nil, after: [Dependency]? = nil,
+        tenant: String? = nil, labels: [String: String]? = nil
     ) {
         self.pool = pool
         self.kind = kind
@@ -315,7 +416,77 @@ public struct TaskOptions: Codable, Sendable {
         self.fingerprint = fingerprint
         self.renewPosition = renewPosition
         self.maxReleases = maxReleases
+        self.startInMs = startInMs
+        self.startAtUnixMs = startAtUnixMs
+        self.startToleranceMs = startToleranceMs
+        self.onMiss = onMiss
+        self.durationHintMs = durationHintMs
+        self.after = after
+        self.tenant = tenant
+        self.labels = labels
     }
+}
+
+/// The options of a recurring schedule. The default runs in UTC, skips an occurrence while
+/// the previous one is not done, and submits normal tasks to the pool "default".
+public struct ScheduleOptions: Codable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case tz
+        case overlap
+        case toleranceMs = "tolerance_ms"
+        case onMiss = "on_miss"
+        case task
+    }
+
+    /// The IANA time zone of the cron expression (default UTC). A zone other than UTC needs
+    /// a library built with time-zone data; the published libraries have none.
+    public var tz: String?
+    /// What happens while the previous occurrence is not done: "skip" (default), "allow",
+    /// "queue" or "queue_on_success".
+    public var overlap: String?
+    /// How late an occurrence may start and still be on time.
+    public var toleranceMs: UInt64?
+    /// What a later occurrence does: "run_late" (default), "skip" or "fail".
+    public var onMiss: String?
+    /// The options of each occurrence. Its `key` is a prefix: each occurrence gets
+    /// "<key>@<its start in UTC>". Its `deadlineMs` counts from the occurrence's start.
+    public var task: TaskOptions?
+
+    public init(
+        tz: String? = nil, overlap: String? = nil, toleranceMs: UInt64? = nil, onMiss: String? = nil,
+        task: TaskOptions? = nil
+    ) {
+        self.tz = tz
+        self.overlap = overlap
+        self.toleranceMs = toleranceMs
+        self.onMiss = onMiss
+        self.task = task
+    }
+}
+
+/// A recurring schedule as the scheduler sees it.
+public struct ScheduleInfo: Decodable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case name
+        case cron
+        case tz
+        case pool
+        case kind
+        case overlap
+        case nextUnixMs = "next_unix_ms"
+        case lastTask = "last_task"
+    }
+
+    public let name: String
+    public let cron: String
+    public let tz: String?
+    public let pool: String
+    public let kind: String
+    public let overlap: String
+    /// The next occurrence, in milliseconds since 1970 UTC.
+    public let nextUnixMs: Int64?
+    /// The task of the latest occurrence.
+    public let lastTask: UInt64?
 }
 
 /// What a submission did.
@@ -386,6 +557,7 @@ public struct TaskInfo: Codable, Sendable {
     public let priority: Priority
     public let status: String
     public let attempt: UInt32
+    public let tenant: String?
 }
 
 /// How a task ended.
@@ -577,6 +749,8 @@ public struct Lease: @unchecked Sendable {
     public let pool: String
     /// The task's tags.
     public let tags: [String: String]
+    /// The labels the attempt was taken with (see `Scheduler.next(pool:labels:timeout:)`).
+    public let labels: [String: String]
     /// The task's deadline.
     public let deadline: Date?
     /// The attempt's timeout.
@@ -618,12 +792,14 @@ private struct LeaseInfo: Decodable {
     enum CodingKeys: String, CodingKey {
         case pool
         case tags
+        case labels
         case deadlineUnixMs = "deadline_unix_ms"
         case timeoutMs = "timeout_ms"
     }
 
     let pool: String
     let tags: [String: String]
+    let labels: [String: String]
     let deadlineUnixMs: Int64?
     let timeoutMs: Int64?
 }
@@ -681,9 +857,22 @@ public final class Scheduler: @unchecked Sendable {
     ///
     /// Throws `CronoqError.timeout` when nothing became ready in time, `.paused` when in
     /// addition the pool is paused, and `.shutdown` after `shutdown`.
-    public func next(pool: String? = nil, timeout: TimeInterval) throws -> Lease {
+    ///
+    /// `labels` are the labels of the calling thread. A task submitted with labels goes
+    /// only to a caller whose labels include all of them. A task without labels goes to any
+    /// caller, and the scheduler prefers callers with fewer labels for it. Callers that
+    /// pass the same labels form a group; a pool keeps at most 64 different groups, and its
+    /// `maxLeases` holds for all of them together.
+    public func next(pool: String? = nil, labels: [String: String]? = nil, timeout: TimeInterval) throws -> Lease {
         var raw = cronoq_lease()
-        try check(withOptionalCString(pool) { cronoq_next_lease(handle, $0, milliseconds(timeout), &raw) })
+        let labelsText = try labels.map { try json($0) }
+        let wait = milliseconds(timeout)
+        let status: cronoq_status = withOptionalCString(pool) { p in
+            withOptionalCString(labelsText) { l in
+                cronoq_next_lease_labeled(handle, p, l, wait, &raw)
+            }
+        }
+        try check(status)
         defer { cronoq_lease_free(&raw) }
         let info: LeaseInfo
         do {
@@ -701,6 +890,7 @@ public final class Scheduler: @unchecked Sendable {
             kind: String(cString: raw.kind),
             pool: info.pool,
             tags: info.tags,
+            labels: info.labels,
             deadline: info.deadlineUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000) },
             timeout: info.timeoutMs.map { Double($0) / 1000 })
     }
@@ -811,6 +1001,46 @@ public final class Scheduler: @unchecked Sendable {
         try check(withRef(ref) { cronoq_task(handle, $0, $1, &buf) })
         do {
             return try JSONDecoder().decode(TaskInfo.self, from: take(&buf))
+        } catch {
+            throw CronoqError.internal("\(error)")
+        }
+    }
+
+    /// Add a recurring schedule, or replace the one with this name. At each time `cron`
+    /// names (five fields, or six with seconds first) the scheduler submits a task with a
+    /// copy of `payload`, to start at that time.
+    ///
+    /// Schedules are kept where tasks are kept. In memory they are gone when the scheduler
+    /// goes away: add them again at every start. With a store, adding one again replaces it.
+    public func addSchedule(
+        name: String, cron: String, payload: Data = Data(), _ options: ScheduleOptions? = nil
+    ) throws {
+        let text = try options.map { try json($0) }
+        let status: cronoq_status = payload.withUnsafeBytes { bytes in
+            name.withCString { n in
+                cron.withCString { c in
+                    withOptionalCString(text) { opts in
+                        cronoq_schedule_add(
+                            handle, n, c, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count, opts)
+                    }
+                }
+            }
+        }
+        try check(status)
+    }
+
+    /// Remove a recurring schedule. Occurrences that were submitted already stay. Throws
+    /// `CronoqError.notFound` if there is no such schedule.
+    public func removeSchedule(_ name: String) throws {
+        try check(name.withCString { cronoq_schedule_remove(handle, $0) })
+    }
+
+    /// The recurring schedules, ordered by name.
+    public func schedules() throws -> [ScheduleInfo] {
+        var buf = cronoq_buf()
+        try check(cronoq_schedules(handle, &buf))
+        do {
+            return try JSONDecoder().decode([ScheduleInfo].self, from: take(&buf))
         } catch {
             throw CronoqError.internal("\(error)")
         }

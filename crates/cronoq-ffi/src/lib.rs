@@ -34,7 +34,7 @@ use cronoq::{
 use cronoq_core::{OrderingError, SubmitError, UpdateError};
 use serde_json::json;
 
-use config::{Config, TaskJson, UpdateJson};
+use config::{Config, ScheduleJson, TaskJson, UpdateJson};
 use pull::{Hub, Next, PullExecutor};
 
 /// The revision of this API. It goes up when an existing function, structure or constant
@@ -107,8 +107,8 @@ pub struct cronoq_lease {
     pub key: *const c_char,
     /// The task's kind (an empty string if it has none).
     pub kind: *const c_char,
-    /// A JSON object with the rest: `pool`, `tags`, and, when set, `deadline_unix_ms` and
-    /// `timeout_ms`.
+    /// A JSON object with the rest: `pool`, `tags`, `labels` (of the group of threads the
+    /// attempt was started for), and, when set, `deadline_unix_ms` and `timeout_ms`.
     pub info_json: *const c_char,
     /// Private to the library.
     pub owner: *mut c_void,
@@ -288,22 +288,37 @@ impl Shared {
     }
 }
 
-/// Bring the capacity of `pool` in line with what the hub wants. Several threads may do this
-/// at once; whoever's call is applied last checks again, so the last word is current.
+/// What [`pull::Group`] is to the scheduler.
+fn label_refs(group: &pull::Group) -> Vec<(&str, &str)> {
+    group.iter().map(|(k, v)| (&**k, &**v)).collect()
+}
+
+/// Bring the capacity of `pool` in line with what the hub wants, for each of its label
+/// groups. Several threads may do this at once; whoever's call is applied last checks again,
+/// so the last word is current.
 fn sync_capacity(b: &BlockingScheduler<Bytes, Bytes>, hub: &Hub, pool: &str) {
-    loop {
-        let want = hub.capacity(pool);
-        if b.set_capacity(pool, want).is_err() || hub.capacity(pool) == want {
-            return;
-        }
-    }
+    b.block_on(sync_capacity_on(b.scheduler(), hub, pool));
 }
 
 /// The same from the scheduler's own thread, where blocking is not possible.
 async fn sync_capacity_async(sched: Scheduler<Bytes, Bytes>, hub: Arc<Hub>, pool: Arc<str>) {
+    sync_capacity_on(&sched, &hub, &pool).await;
+}
+
+async fn sync_capacity_on(sched: &Scheduler<Bytes, Bytes>, hub: &Hub, pool: &str) {
     loop {
-        let want = hub.capacity(&pool);
-        if sched.set_capacity(&pool, want).await.is_err() || hub.capacity(&pool) == want {
+        let want = hub.capacities(pool);
+        for (group, capacity) in &want {
+            let labels = label_refs(group);
+            if sched
+                .set_group_capacity(pool, &labels, *capacity)
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        if hub.capacities(pool) == want {
             return;
         }
     }
@@ -669,7 +684,49 @@ pub unsafe extern "C" fn cronoq_next_lease(
     timeout_ms: u64,
     out: *mut cronoq_lease,
 ) -> cronoq_status {
-    guard(|| {
+    // SAFETY: caller.
+    guard(|| unsafe { next_lease(s, pool, std::ptr::null(), timeout_ms, out) })
+}
+
+/// Like [`cronoq_next_lease`], for a thread that carries labels.
+///
+/// A task submitted with `labels` runs only on a thread whose labels include all of them. A
+/// task without labels runs on any thread, and the scheduler prefers threads with fewer
+/// labels for it. `cronoq_next_lease` is this call without labels.
+///
+/// `labels_json` is a JSON object of strings, e.g. `{"network": "wifi", "power": "mains"}`.
+/// Null and `{}` mean no labels. Threads that pass the same labels form a group; a pool
+/// keeps at most 64 different groups, and `max_leases` holds for all of them together.
+///
+/// The labels of the group the attempt was started for are in the lease's `info_json`, as
+/// `labels`.
+///
+/// # Safety
+/// As for `cronoq_next_lease`. `labels_json` is null or a zero-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_next_lease_labeled(
+    s: *const cronoq_scheduler,
+    pool: *const c_char,
+    labels_json: *const c_char,
+    timeout_ms: u64,
+    out: *mut cronoq_lease,
+) -> cronoq_status {
+    // SAFETY: caller.
+    guard(|| unsafe { next_lease(s, pool, labels_json, timeout_ms, out) })
+}
+
+/// What `cronoq_next_lease` and `cronoq_next_lease_labeled` do.
+///
+/// # Safety
+/// As for `cronoq_next_lease_labeled`.
+unsafe fn next_lease(
+    s: *const cronoq_scheduler,
+    pool: *const c_char,
+    labels_json: *const c_char,
+    timeout_ms: u64,
+    out: *mut cronoq_lease,
+) -> Res<cronoq_status> {
+    {
         // SAFETY: caller, for every pointer below.
         if out.is_null() {
             return Err(invalid("out is null"));
@@ -682,10 +739,17 @@ pub unsafe extern "C" fn cronoq_next_lease(
         if !s.hub.has_pool(pool) {
             return Err(invalid(format!("unknown pool '{pool}'")));
         }
+        let group =
+            config::labels(unsafe { text("labels_json", labels_json) }?).map_err(invalid)?;
+        if !s.hub.add_group(pool, &group) {
+            return Err(invalid(format!(
+                "pool '{pool}' has too many different sets of labels"
+            )));
+        }
         let timeout = Duration::from_millis(timeout_ms);
         let next = s.with(|b| {
             Ok(s.hub
-                .next(pool, timeout, &|| sync_capacity(b, &s.hub, pool)))
+                .next(pool, &group, timeout, &|| sync_capacity(b, &s.hub, pool)))
         })?;
         let leased = match next {
             Next::Lease(l) => l,
@@ -704,6 +768,8 @@ pub unsafe extern "C" fn cronoq_next_lease(
         let mut info = json!({
             "pool": &*ctx.pool,
             "tags": ctx.tags.iter().map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            "labels": ctx.group.iter().map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect::<std::collections::BTreeMap<_, _>>(),
         });
         if let Some(d) = ctx.deadline
@@ -737,7 +803,7 @@ pub unsafe extern "C" fn cronoq_next_lease(
         };
         unsafe { out.write(lease) };
         Ok(CRONOQ_OK)
-    })
+    }
 }
 
 /// Release what a lease from `cronoq_next_lease` points to, and clear it. This does not end
@@ -1431,11 +1497,159 @@ fn snake(name: &str) -> String {
     out
 }
 
+/// Add a recurring schedule, or replace the one with this name.
+///
+/// At each time `cron` names, the scheduler submits a task with a copy of `payload`, to
+/// start at that time. `cron` has five fields (minute, hour, day of month, month, day of
+/// week), or six with seconds first.
+///
+/// `options_json` is null, or a JSON object in which every field is optional and an unknown
+/// field is an error:
+///
+/// ```json
+/// {
+///   "tz": "Europe/Lisbon",
+///   "overlap": "skip",
+///   "tolerance_ms": 1000,
+///   "on_miss": "run_late",
+///   "task": {"pool": "default", "kind": "sync", "key": "sync", "priority": "low"}
+/// }
+/// ```
+///
+/// - `tz`: the time zone of `cron`. UTC when left out. A name other than `UTC` needs a
+///   library built with the feature `tz`; the published libraries do not have it.
+/// - `overlap`: what happens while the previous occurrence is not done: `skip` (default),
+///   `allow`, `queue` (run after it) or `queue_on_success` (run after it if it succeeded).
+/// - `tolerance_ms`: how late an occurrence may start and still be on time.
+/// - `on_miss`: what happens to an occurrence that is later than that: `run_late`
+///   (default), `skip` or `fail`.
+/// - `task`: the options of each occurrence, as for `cronoq_submit`. A `key` is a prefix:
+///   each occurrence gets `<key>@<its start in UTC>`. `deadline_ms` counts from the
+///   occurrence's start. A fixed start, `after`, and a replacing `on_key_conflict` describe
+///   one task and are refused.
+///
+/// Schedules are kept where tasks are kept. In memory they are gone when the scheduler is
+/// freed: add them again at every start. With a store, adding one again replaces it.
+///
+/// Returns `CRONOQ_INVALID_ARGUMENT` for a cron expression or time zone the library cannot
+/// read, also when it was built without the feature `cron`.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler. `name` and `cron` are zero-terminated strings. `payload` points
+/// to `payload_len` readable bytes (or is null with length 0). `options_json` is null or a
+/// zero-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_schedule_add(
+    s: *const cronoq_scheduler,
+    name: *const c_char,
+    cron: *const c_char,
+    payload: *const u8,
+    payload_len: usize,
+    options_json: *const c_char,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller, for every pointer below.
+        let s = unsafe { scheduler(s) }?;
+        let name = unsafe { required("name", name) }?;
+        let cron = unsafe { required("cron", cron) }?;
+        let payload = if payload_len == 0 {
+            Bytes::new()
+        } else if payload.is_null() {
+            return Err(invalid("payload is null but payload_len is not 0"));
+        } else {
+            Bytes::copy_from_slice(unsafe { std::slice::from_raw_parts(payload, payload_len) })
+        };
+        let options =
+            ScheduleJson::parse(unsafe { text("options_json", options_json) }?).map_err(invalid)?;
+        let recurring = options.recurring(name, cron, payload).map_err(invalid)?;
+        s.with(|b| Ok(b.add_recurring(recurring)?))?;
+        Ok(CRONOQ_OK)
+    })
+}
+
+/// Remove the recurring schedule `name`. Occurrences that were submitted already stay.
+///
+/// Returns `CRONOQ_NOT_FOUND` if there is no such schedule.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler. `name` is a zero-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_schedule_remove(
+    s: *const cronoq_scheduler,
+    name: *const c_char,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller, for every pointer below.
+        let s = unsafe { scheduler(s) }?;
+        let name = unsafe { required("name", name) }?;
+        if s.with(|b| Ok(b.remove_recurring(name)?))? {
+            Ok(CRONOQ_OK)
+        } else {
+            Err(Fail(CRONOQ_NOT_FOUND, "no such schedule".into()))
+        }
+    })
+}
+
+/// The recurring schedules as a JSON array, ordered by name:
+///
+/// ```json
+/// [{"name": "sync", "cron": "*/5 * * * *", "tz": null, "pool": "default", "kind": "sync",
+///   "overlap": "skip", "next_unix_ms": 1790000100000, "last_task": 12}]
+/// ```
+///
+/// `next_unix_ms` is the next occurrence (null when there is none) and `last_task` the task
+/// of the latest one (null before the first).
+///
+/// Ownership: on `CRONOQ_OK` the host owns `*out` and frees it with `cronoq_buf_free`.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler. `out` points to writable memory for one `cronoq_buf`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_schedules(
+    s: *const cronoq_scheduler,
+    out: *mut cronoq_buf,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller, for every pointer below.
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        // Whatever happens next, the buffer is safe to free.
+        unsafe { out.write(bytes_buf_empty()) };
+        let s = unsafe { scheduler(s) }?;
+        let mut list = s.with(|b| Ok(b.block_on(b.scheduler().list_recurring())?))?;
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        let list: Vec<_> = list
+            .iter()
+            .map(|r| {
+                json!({
+                    "name": &*r.name,
+                    "cron": &*r.cron,
+                    "tz": r.tz.as_deref(),
+                    "pool": &*r.pool,
+                    "kind": &*r.kind,
+                    "overlap": snake(&format!("{:?}", r.overlap)),
+                    "next_unix_ms": r.next.map(|t| t.0 / 1_000_000),
+                    "last_task": r.last_task.map(|t| t.0),
+                })
+            })
+            .collect();
+        unsafe { out.write(buf(serde_json::Value::Array(list).to_string())) };
+        Ok(CRONOQ_OK)
+    })
+}
+
 /// Describe a live task (by `key` when not null, else by id `task`) as JSON:
 ///
 /// ```json
 /// {"id": 7, "key": "k", "pool": "default", "kind": "", "priority": "normal",
-///  "status": "ready", "attempt": 0}
+///  "status": "ready", "attempt": 0, "tenant": null}
 /// ```
 ///
 /// `status` is one of `blocked`, `scheduled`, `ready`, `running`, `retrying` for a live
@@ -1483,6 +1697,7 @@ pub unsafe extern "C" fn cronoq_task(
             "priority": t.priority.name(),
             "status": snake(&format!("{:?}", t.status)),
             "attempt": t.attempt,
+            "tenant": t.tenant.as_deref(),
         })
         .to_string();
         unsafe { out.write(buf(text)) };

@@ -17,10 +17,11 @@ name = "cronoq_ffi"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
-default = []
-# Recurring schedules are not part of the C API; these only matter to stores that hold some.
+# Recurring schedules (`cronoq_schedule_add`). Without it no schedule can be added.
+default = ["cron"]
 cron = ["cronoq/cron"]
-tz = ["cronoq/tz"]
+# Time-zone data, for schedules in a time zone other than UTC. About twice the size.
+tz = ["cron", "cronoq/tz"]
 # A durable store in a SQLite file chosen by the host (`"store": {"sqlite": "<path>"}`).
 sqlite = ["dep:cronoq-store-sqlite"]
 

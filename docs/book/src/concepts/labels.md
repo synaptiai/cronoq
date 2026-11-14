@@ -21,6 +21,9 @@ the capacity of each group:
   in Rust, `Worker(labels=...)` in Python). The server adds each worker's slots to its group.
 - Embedded schedulers report groups with `Scheduler::set_group_capacity(pool, labels, n)`
   (Python `set_group_capacity`). `set_capacity` sets the unlabeled group.
+- Programs that embed the scheduler through the C library pass the labels of the asking
+  thread to `cronoq_next_lease_labeled` (Go `NextLabeled`, Swift `next(labels:)`). See
+  [Embedding from other languages](../guides/embedding.md#labels).
 - A pool's capacity is the sum over its groups; snapshots list each group's capacity and busy
   slots (`PoolSnapshot.groups`, `/v1/snapshot` → `pools[].groups`).
 

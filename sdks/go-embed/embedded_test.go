@@ -513,3 +513,141 @@ func TestClockAfterAGap(t *testing.T) {
 		t.Fatalf("time moved back by a resync: %v, %v", moved, err)
 	}
 }
+
+func TestFixedStart(t *testing.T) {
+	s := open(t, Config{})
+	started := time.Now()
+	id := submit(t, s, "later", &Task{StartInMs: 400})
+	info, err := s.Task(TaskRef{ID: id})
+	if err != nil || info.Status != "scheduled" {
+		t.Fatalf("task: %+v %v", info, err)
+	}
+	l := next(t, s)
+	if waited := time.Since(started); string(l.Payload) != "later" || waited < 390*time.Millisecond {
+		t.Fatalf("got %q after %v", l.Payload, waited)
+	}
+	if err := l.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Submit(nil, &Task{StartInMs: 1, StartAtUnixMs: 2}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("two starts: %v", err)
+	}
+}
+
+func TestDependencies(t *testing.T) {
+	s := open(t, Config{})
+	first := submit(t, s, "first", &Task{Key: "first"})
+	second := submit(t, s, "second", &Task{After: []Dep{{Task: first}}})
+	submit(t, s, "third", &Task{After: []Dep{{Key: "first"}, {Task: second, When: "complete"}}})
+	handler := submit(t, s, "handler", &Task{After: []Dep{{Task: second, When: "failure"}}})
+	if info, err := s.Task(TaskRef{ID: second}); err != nil || info.Status != "blocked" {
+		t.Fatalf("task: %+v %v", info, err)
+	}
+	equal(t, drain(t, s), []string{"first", "second", "third"})
+	r, err := s.Wait(TaskRef{ID: handler}, 2*time.Second)
+	if err != nil || r.Succeeded {
+		t.Fatalf("the failure handler of a task that succeeded: %+v %v", r, err)
+	}
+
+	waiting := open(t, Config{Pools: []Pool{{Name: "default", UnknownDependency: &UnknownDependency{Await: true}}}})
+	submit(t, waiting, "child", &Task{After: []Dep{{Key: "parent"}}})
+	submit(t, waiting, "parent", &Task{Key: "parent"})
+	equal(t, drain(t, waiting), []string{"parent", "child"})
+}
+
+func TestFairnessBetweenTenants(t *testing.T) {
+	s := open(t, Config{Pools: []Pool{{Name: "default", Fairness: &Fairness{Weights: map[string]float64{"big": 3}}}}})
+	for i := 0; i < 12; i++ {
+		submit(t, s, fmt.Sprintf("big-%d", i), &Task{Tenant: "big"})
+	}
+	var id uint64
+	for i := 0; i < 12; i++ {
+		id = submit(t, s, fmt.Sprintf("small-%d", i), &Task{Tenant: "small"})
+	}
+	if info, err := s.Task(TaskRef{ID: id}); err != nil || info.Tenant != "small" {
+		t.Fatalf("task: %+v %v", info, err)
+	}
+	small := 0
+	for i := 0; i < 8; i++ {
+		l := next(t, s)
+		if string(l.Payload[:5]) == "small" {
+			small++
+		}
+		if err := l.Complete(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if small != 2 {
+		t.Fatalf("the small tenant got %d of the first 8, want 2", small)
+	}
+}
+
+func TestLabels(t *testing.T) {
+	s := open(t, Config{})
+	submit(t, s, "wifi", &Task{Labels: map[string]string{"network": "wifi"}})
+	if _, err := s.Next("", 100*time.Millisecond); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("a goroutine without labels: %v", err)
+	}
+	if _, err := s.NextLabeled("", map[string]string{"network": "cellular"}, 100*time.Millisecond); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("a goroutine with other labels: %v", err)
+	}
+	l, err := s.NextLabeled("", map[string]string{"network": "wifi", "power": "mains"}, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(l.Payload) != "wifi" || l.Labels["power"] != "mains" || len(l.Labels) != 2 {
+		t.Fatalf("lease: %q %v", l.Payload, l.Labels)
+	}
+	if err := l.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	// A task without labels goes to any goroutine.
+	submit(t, s, "any", nil)
+	l, err = s.NextLabeled("", map[string]string{"network": "wifi"}, 5*time.Second)
+	if err != nil || string(l.Payload) != "any" {
+		t.Fatalf("lease: %v %v", l, err)
+	}
+	if err := l.Complete(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSchedules(t *testing.T) {
+	s := open(t, Config{})
+	err := s.AddSchedule("tick", "* * * * * *", []byte("tick"), &Schedule{
+		Overlap: "allow",
+		Task:    &Task{Kind: "tick", Key: "tick"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.Schedules()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("schedules: %+v %v", list, err)
+	}
+	if got := list[0]; got.Name != "tick" || got.Cron != "* * * * * *" || got.Kind != "tick" || got.Overlap != "allow" || got.NextUnixMs == nil {
+		t.Fatalf("schedule: %+v", got)
+	}
+	a, b := next(t, s), next(t, s)
+	if string(a.Payload) != "tick" || a.Task == b.Task || len(a.Key) < 10 || a.Key[:5] != "tick@" {
+		t.Fatalf("occurrences: %+v %+v", a, b)
+	}
+	_ = a.Complete()
+	_ = b.Complete()
+	if err := s.RemoveSchedule("tick"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveSchedule("tick"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("removing it twice: %v", err)
+	}
+	if list, err := s.Schedules(); err != nil || len(list) != 0 {
+		t.Fatalf("schedules: %+v %v", list, err)
+	}
+	if err := s.AddSchedule("bad", "not cron", nil, nil); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("a bad expression: %v", err)
+	}
+	// The published libraries have no time-zone data: a named zone is refused, UTC is not.
+	if err := s.AddSchedule("utc", "0 9 * * *", nil, &Schedule{Tz: "UTC"}); err != nil {
+		t.Fatal(err)
+	}
+}
