@@ -389,17 +389,24 @@ its slot and resources are freed as in `complete`. Then:
   is `attempt - releases`, in `fail_attempt` and for an attempt lost in recovery.
 - A second counter, `release_count`, counts the releases that count toward the limit
   (`TaskSpec::max_releases`, else `PoolConfig::max_releases`, default 10): those made while
-  neither the task's class or pool is paused nor its strand held. When it has reached the
+  neither the task's class or pool is paused nor its strand held (a fixed-start task is not
+  held by a pause, so its releases always count). When it has reached the
   limit, `release` is `fail_attempt(retryable, retry_after = delay)` instead. `release_count`
   is not persisted: after recovery it starts at zero.
 - `Mutation::Released { id, attempt, releases, at }` (a store records status `retrying`, the
   attempt count and `releases`); `RecoveredTask::releases`. A status event `Retrying` with the
   message `released`. `Totals::releases`. A release is not counted in `failed` or `retries`.
+- In a fair pool the task keeps its start tag when it is offered again at the same class,
+  and its tenant is not charged again. Semaphore amounts are returned; a token taken from a
+  bucket is not.
+- Replace in place takes the replacement's `max_releases`.
 - An unknown lease returns `false` and counts as a stale completion.
 
 Worker protocol: `WorkerMessage.release { lease, delay_s }`, sent only when
 `Registered.release_supported` is set; the protocol version is unchanged, so older workers
 keep working, and newer workers fall back to `Fail { retry_after_s }` with an older server.
+The server clamps `delay_s` to `[0, 100 years]` (NaN is 0) and refuses a submitted
+`max_releases` above `limits.max_task_releases` (default 1000).
 
 ---
 
