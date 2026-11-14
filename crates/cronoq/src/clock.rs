@@ -111,12 +111,11 @@ impl Clock {
     /// Move engine time forward by `by`.
     pub(crate) fn skip(&self, by: Duration) {
         let by = by.as_nanos().min(u64::MAX as u128 / 2) as u64;
-        // Saturating: a sum that wraps would move time back.
-        let _ = self
-            .skipped
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
-                Some(s.saturating_add(by))
-            });
+        // Saturating: a sum that wraps would move time back. Only the scheduler's own
+        // thread changes this value, so a read and a write are enough.
+        let skipped = self.skipped.load(Ordering::Relaxed);
+        self.skipped
+            .store(skipped.saturating_add(by), Ordering::Relaxed);
     }
 
     /// Current engine time.
