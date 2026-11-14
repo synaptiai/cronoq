@@ -406,7 +406,7 @@ Worker protocol: `WorkerMessage.release { lease, delay_s }`, sent only when
 `Registered.release_supported` is set; the protocol version is unchanged, so older workers
 keep working, and newer workers fall back to `Fail { retry_after_s }` with an older server.
 The server clamps `delay_s` to `[0, 100 years]` (NaN is 0) and refuses a submitted
-`max_releases` above `limits.max_task_releases` (default 1000).
+`max_releases` above `limits.max_task_releases` (default 100).
 
 ---
 

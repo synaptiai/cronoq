@@ -35,7 +35,7 @@ use crate::executor::{BoxFuture, Executor, HeartbeatFn, TaskContext};
 use crate::scaler::Scaler;
 use crate::scheduler::ResultRx;
 use crate::store::{Store, TimeBase};
-use crate::telemetry::{self, Metrics};
+use crate::telemetry::{self, AttemptEnd, Metrics};
 
 pub(crate) type Reply<T> = oneshot::Sender<T>;
 type ResultTx<O> = oneshot::Sender<Result<Arc<O>, TaskFailure>>;
@@ -1172,13 +1172,25 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                 let pool_name = self.pools[r.pool as usize].name.clone();
                 // A release is no verdict on the task: the engine takes it back as it is.
                 if let Err(TaskError::Release { after }) = result {
-                    self.metrics
-                        .attempt_finished(&pool_name, &r.kind, secs, true);
+                    // A release beyond the limit is a failure: the engine says which it was.
+                    let before = self.core.totals().releases;
                     self.core.release(now, lease, after);
+                    let end = if self.core.totals().releases > before {
+                        AttemptEnd::Released
+                    } else {
+                        AttemptEnd::Error
+                    };
+                    self.metrics
+                        .attempt_finished(&pool_name, &r.kind, secs, end);
                     return;
                 }
+                let end = if result.is_ok() {
+                    AttemptEnd::Ok
+                } else {
+                    AttemptEnd::Error
+                };
                 self.metrics
-                    .attempt_finished(&pool_name, &r.kind, secs, result.is_ok());
+                    .attempt_finished(&pool_name, &r.kind, secs, end);
                 let outcome = match result {
                     Ok(o) => {
                         self.outputs.insert(r.id, Arc::new(o));
@@ -1483,7 +1495,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                         &pool_name,
                         &r.kind,
                         r.started.elapsed().as_secs_f64(),
-                        false,
+                        AttemptEnd::Error,
                     );
                     tracing::debug!(task = %r.id, ?reason, "attempt aborted");
                 }

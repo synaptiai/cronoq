@@ -182,7 +182,7 @@ optional.
 | `keepalive_timeout_s` | float ≥ 0.1 | `20` | HTTP/2 keepalive ping timeout. |
 | `key_retention_s` | float ≥ 0 | `3600` | How long the key of a finished task keeps deduplicating submissions (a resubmission returns the finished task and its output), and how far back a new leader loads finished tasks from the store. |
 | `key_retention_max` | int | `1000000` | Most finished tasks kept for key deduplication (bounds memory). |
-| `max_task_releases` | int | `1000` | Highest `max_releases` a submitted task may ask for; a higher value is refused (`INVALID_ARGUMENT` / HTTP 400). A pool's own `max_releases` is not limited by this. |
+| `max_task_releases` | int | `100` | Highest `max_releases` a submitted task may ask for; a higher value is refused (`INVALID_ARGUMENT` / HTTP 400). A pool's own `max_releases` is not limited by this. |
 | `max_ordering_settings` | int | `100000` | Most [ordering keys](../concepts/ordering-keys.md#a-floor-for-a-key) that keep a class floor while they have no tasks. Beyond it a new kept floor is refused (`RESOURCE_EXHAUSTED` / HTTP 429); submissions never are. |
 | `max_list` | int, 1–100000 | `1000` | Most tasks one `ListTasks` or `GET /v1/tasks` page returns; larger requested limits are capped. |
 

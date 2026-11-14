@@ -51,11 +51,12 @@ contain breaking changes; they are called out under **Changed**.
   does not count against the retry policy. Releases of one task are limited by the pool's
   `max_releases` (default 10) or the task's own; a release beyond the limit is a retryable
   failure. Releases made while a pause holds the task do not count toward the limit.
-  Over the network a task's own limit may not exceed `limits.max_task_releases` (1000).
+  Over the network a task's own limit may not exceed `limits.max_task_releases` (100).
   The `releases` total is in the snapshot and in `cronoq_releases_total`.
   Released attempts are durable and still do not count after a failover. A worker checks
   `Registered.release_supported` and, with an older server, sends a retryable failure with
-  the delay instead. See
+  the delay instead. The OpenTelemetry attempt metrics (`cronoq.attempts`,
+  `cronoq.attempt.duration`) record a released attempt with `outcome = released`. See
   [Releasing an attempt](docs/book/src/concepts/reliability.md#releasing-an-attempt).
 - Pause and resume. A pool, one class of a pool or one ordering key can be paused with a
   reason: its tasks stay queued, keep their place and their age and count toward the bounds,
