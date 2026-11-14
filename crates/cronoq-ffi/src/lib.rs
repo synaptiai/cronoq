@@ -409,6 +409,9 @@ fn stop(s: &Shared, grace: Duration) -> Res {
         for pool in s.hub.pools() {
             sync_capacity(b, &s.hub, &pool);
         }
+        // The capacities are sent, not yet applied. The scheduler takes its commands in
+        // order, so once it has answered this one, they are.
+        let _ = b.snapshot();
         Ok(())
     });
     s.hub.abandon();
