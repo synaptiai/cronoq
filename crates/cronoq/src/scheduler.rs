@@ -793,10 +793,11 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
     ///
     /// The sleep is measured with a monotonic clock of the operating system that counts
     /// during sleep (`CLOCK_BOOTTIME` on Linux and Android, `CLOCK_MONOTONIC` on Apple
-    /// platforms), so a change of the wall clock has no effect. Where no such clock is known
-    /// (Windows), the wall clock is used instead, and a wall clock that was set forward is
-    /// followed. Engine time never moves back, and when nothing was missed this does
-    /// nothing and returns zero.
+    /// platforms, the tick count on Windows), so a change of the wall clock has no effect.
+    /// On other platforms the wall clock is used instead, and a wall clock that was set
+    /// forward is followed. Engine time never moves back, and when nothing was missed this
+    /// does nothing and returns zero (on Windows, where the tick count moves in steps, up
+    /// to a few milliseconds).
     pub async fn resync_clock(&self) -> Result<Duration, Error> {
         self.call(|reply| Cmd::ResyncClock { by: None, reply })
             .await

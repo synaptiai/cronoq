@@ -194,7 +194,8 @@ the ones you need. `cronoq-core` has `cron` and `tz` with the same meaning.
 `Scheduler::resync_clock()` moves engine time forward by the time it missed while the machine
 slept (the clock of the Rust standard library does not count sleep on Apple platforms and on
 Linux) and returns how far it moved. It measures the sleep with a monotonic clock that counts
-during sleep, so the wall clock has no effect. `Scheduler::advance_clock(by)` moves engine
+during sleep (on Linux, Android, Apple platforms and Windows), so the wall clock has no
+effect. `Scheduler::advance_clock(by)` moves engine
 time forward by a given time, for tests with the in-memory store. `Clock`
 is `Clone` and no longer `Copy`: its clones share one clock.
 

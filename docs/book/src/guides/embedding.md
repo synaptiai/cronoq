@@ -415,9 +415,8 @@ NotificationCenter.default.addObserver(
 - It returns how far the time moved. When nothing was missed it does nothing, so calling it
   more often than needed is harmless.
 - The sleep is measured with a monotonic clock of the operating system that counts during
-  sleep (`CLOCK_MONOTONIC` on Apple platforms, `CLOCK_BOOTTIME` on Linux). A wrong or changed
-  wall clock has no effect. On Windows the library knows no such clock and uses the wall
-  clock: there, a wall clock that was set forward is followed.
+  sleep (`CLOCK_MONOTONIC` on Apple platforms, `CLOCK_BOOTTIME` on Linux, the tick count on
+  Windows). A wrong or changed wall clock has no effect.
 - The scheduler's time never moves back.
 - **Leases held across the sleep.** A lease times out at the resynchronisation if its task has
   a timeout shorter than the sleep. It expires if its pool has a `lease_ttl_ms` shorter than
