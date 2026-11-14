@@ -27,14 +27,17 @@ echo
 echo "Stripped dynamic library (\`libcronoq_ffi.dylib\`, \`strip -x\`), release build of"
 echo "\`$(git rev-parse --short HEAD)\` with $(rustc --version)."
 echo
-echo "| Target | Default build | With cron and time-zone data (\`--features cron,tz\`) |"
-echo "|---|---|---|"
+echo "| Target | Default build | With the SQLite store (\`--features sqlite\`) | With cron and time-zone data (\`--features cron,tz\`) |"
+echo "|---|---|---|---|"
 for target in "${targets[@]}"; do
   small=$(size_of "$target")
+  store=$(size_of "$target" --features sqlite)
   full=$(size_of "$target" --features cron,tz)
-  echo "| \`$target\` | $(mib "$small") MiB ($small bytes) | $(mib "$full") MiB ($full bytes) |"
+  echo "| \`$target\` | $(mib "$small") MiB ($small bytes) | $(mib "$store") MiB ($store bytes) | $(mib "$full") MiB ($full bytes) |"
 done
 echo
-echo "The default build has no cron schedules and no time-zone database; neither can be used"
-echo "through the C API. The size a program grows by when it links the static library is"
-echo "smaller than these figures, because the linker drops what the program does not use."
+echo "The default build has no store, no cron schedules and no time-zone database. Each release"
+echo "has a second variant of the library and of the framework with the SQLite store. Cron and"
+echo "time zones cannot be used through the C API; they matter only to a store that holds"
+echo "schedules written by another program. The size a program grows by when it links the static"
+echo "library is smaller than these figures, because the linker drops what the program does not use."

@@ -60,8 +60,12 @@ links with. The Windows ARM64 library is built with MSVC: its dynamic library wo
 Go wrapper's default mode, and its static library (`cronoq_ffi.lib`) is for MSVC, not for
 cgo.
 
-The libraries in the release archives, and the binary framework for Swift, are built without
-the `sqlite` feature.
+Each archive, and the binary framework for Swift, comes in two variants:
+
+| Variant | Release files | Tasks are kept |
+|---|---|---|
+| Without a store | `cronoq-embed-<version>-<target>`, `CCronoq.xcframework.zip` | In memory. The smallest library. |
+| With the SQLite store | `cronoq-embed-sqlite-<version>-<target>`, `CCronoq-sqlite.xcframework.zip` | In memory, or in a SQLite file if the configuration names one ([below](#keeping-tasks-across-restarts)). |
 
 To build it yourself you need a Rust toolchain:
 
@@ -208,7 +212,8 @@ swift build -Xlinker -L<dir with libcronoq_ffi.a>
 
 For iOS, and to do without a Rust toolchain, each release after 0.2.2 has a binary framework,
 `CCronoq.xcframework.zip`, with the static library for iOS devices (ARM64), the Apple-silicon
-iOS simulator and macOS (ARM64 and x86-64), and its checksum. Copy `sdks/swift` into your
+iOS simulator and macOS (ARM64 and x86-64), and its checksum. `CCronoq-sqlite.xcframework.zip`
+is the same with the SQLite store. Copy `sdks/swift` into your
 project, delete `Sources/CCronoq`, and replace the `CCronoq` target in `Package.swift`:
 
 ```swift
@@ -437,7 +442,7 @@ the app is active again, after the resynchronisation.
 
 | Target | Status |
 |---|---|
-| iOS device, ARM64 (`aarch64-apple-ios`) | Built nightly and for each release. |
+| iOS device, ARM64 (`aarch64-apple-ios`) | Built nightly, for each release, and on pull requests that change the library or the Swift package. |
 | iOS simulator on Apple silicon (`aarch64-apple-ios-sim`) | Built, and tested in the simulator: the engine's simulation tests, the tests of the C API and the clock tests. |
 | macOS ARM64 and x86-64 | Built and tested on every pull request. |
 | Android | Not built or tested. Ask in an issue. |
@@ -445,9 +450,8 @@ the app is active again, after the resynchronisation.
 Everything in the C API works on iOS: priorities with aging, retries, resources, ordering
 keys, replace, update, pause, release. Each release has a size report,
 `cronoq-embed-apple-sizes.md`, with the stripped size of the library per target, with and
-without cron and time-zone data. The default build, which is what the framework contains, has
-neither, and no SQLite store: for a queue that survives restarts, build the library yourself
-with `--features sqlite`.
+without cron and time-zone data, and with the SQLite store. The default build has none of
+the three. For a queue that survives restarts, use the framework with the SQLite store.
 
 ## Keeping tasks across restarts
 
@@ -458,9 +462,9 @@ With a library built with the `sqlite` feature, `"store": {"sqlite": "<path>"}` 
 pauses and ordering-key settings in that file. After a restart the queue is as it was; an
 attempt that was running is tried again. One program at a time may have the file open.
 
-The libraries in the release archives and the binary framework are built without the `sqlite`
-feature. For a queue that survives restarts, build the library yourself:
-`cargo build --release -p cronoq-ffi --features sqlite`.
+Each release after 0.2.2 has the library with the store as a second variant:
+`cronoq-embed-sqlite-<version>-<target>` and `CCronoq-sqlite.xcframework.zip`. To build it
+yourself: `cargo build --release -p cronoq-ffi --features sqlite`.
 
 ## Rules of the boundary
 

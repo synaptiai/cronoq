@@ -147,6 +147,8 @@ jobs:
             artifacts/cronoq-embed-*
             artifacts/CCronoq.xcframework.zip
             artifacts/CCronoq.xcframework.zip.checksum
+            artifacts/CCronoq-sqlite.xcframework.zip
+            artifacts/CCronoq-sqlite.xcframework.zip.checksum
             artifacts/*.whl
             artifacts/cronoq-[0-9]*.tgz
             artifacts/cronoq-operator-[0-9]*.tgz

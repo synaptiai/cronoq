@@ -217,20 +217,26 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      - run: cargo build --release --locked -p cronoq-ffi --target ${{ matrix.target }}
-      - name: Package
+      # Two variants: without a store (tasks in memory), and with the SQLite store.
+      - name: Build and package
         shell: bash
         run: |
-          name="cronoq-embed-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "$name/static"
-          cp LICENSE-MIT LICENSE-APACHE crates/cronoq-ffi/README.md crates/cronoq-ffi/include/cronoq.h "$name/"
-          cp "target/${{ matrix.target }}/release/${{ matrix.dylib }}" "$name/"
-          cp "target/${{ matrix.target }}/release/${{ matrix.static }}" "$name/static/"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "$name.zip" "$name" > /dev/null
-          else
-            tar czf "$name.tar.gz" "$name"
-          fi
+          package() { # archive name, cargo build arguments...
+            local name=$1
+            shift
+            cargo build --release --locked -p cronoq-ffi --target ${{ matrix.target }} "$@"
+            mkdir -p "$name/static"
+            cp LICENSE-MIT LICENSE-APACHE crates/cronoq-ffi/README.md crates/cronoq-ffi/include/cronoq.h "$name/"
+            cp "target/${{ matrix.target }}/release/${{ matrix.dylib }}" "$name/"
+            cp "target/${{ matrix.target }}/release/${{ matrix.static }}" "$name/static/"
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              7z a "$name.zip" "$name" > /dev/null
+            else
+              tar czf "$name.tar.gz" "$name"
+            fi
+          }
+          package "cronoq-embed-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          package "cronoq-embed-sqlite-${GITHUB_REF_NAME}-${{ matrix.target }}" --features sqlite
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.PUBLISH == 'true'
         with:
@@ -507,6 +513,8 @@ jobs:
             artifacts/cronoq-embed-*
             artifacts/CCronoq.xcframework.zip
             artifacts/CCronoq.xcframework.zip.checksum
+            artifacts/CCronoq-sqlite.xcframework.zip
+            artifacts/CCronoq-sqlite.xcframework.zip.checksum
             artifacts/*.whl
             artifacts/cronoq-[0-9]*.tgz
             artifacts/cronoq-operator-[0-9]*.tgz
