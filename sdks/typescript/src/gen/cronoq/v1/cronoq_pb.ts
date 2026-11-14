@@ -2674,8 +2674,9 @@ export const Admin: GenService<{
   },
   /**
    * Ordering keys. Reading needs the metrics role, changing the admin role; both need the
-   * pool to be allowed. Credentials pinned to a tenant cannot change an ordering key: a key
-   * may hold tasks of other tenants.
+   * pool to be allowed. Credentials pinned to a tenant have their own ordering keys: key `k`
+   * of tenant `t` is stored, and seen by other credentials, as `t:k` (with `%` and `:` in the
+   * tenant written `%25` and `%3A`). They submit to, read and change those keys only.
    *
    * @generated from rpc cronoq.v1.Admin.GetOrdering
    */

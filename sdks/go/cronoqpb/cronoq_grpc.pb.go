@@ -528,8 +528,9 @@ const (
 type AdminClient interface {
 	Snapshot(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*SnapshotResponse, error)
 	// Ordering keys. Reading needs the metrics role, changing the admin role; both need the
-	// pool to be allowed. Credentials pinned to a tenant cannot change an ordering key: a key
-	// may hold tasks of other tenants.
+	// pool to be allowed. Credentials pinned to a tenant have their own ordering keys: key `k`
+	// of tenant `t` is stored, and seen by other credentials, as `t:k` (with `%` and `:` in the
+	// tenant written `%25` and `%3A`). They submit to, read and change those keys only.
 	GetOrdering(ctx context.Context, in *OrderingRequest, opts ...grpc.CallOption) (*OrderingInfo, error)
 	ListHaltedOrderings(ctx context.Context, in *ListHaltedOrderingsRequest, opts ...grpc.CallOption) (*ListHaltedOrderingsResponse, error)
 	SetOrderingFloor(ctx context.Context, in *SetOrderingFloorRequest, opts ...grpc.CallOption) (*Empty, error)
@@ -645,8 +646,9 @@ func (c *adminClient) ListRecurring(ctx context.Context, in *Empty, opts ...grpc
 type AdminServer interface {
 	Snapshot(context.Context, *Empty) (*SnapshotResponse, error)
 	// Ordering keys. Reading needs the metrics role, changing the admin role; both need the
-	// pool to be allowed. Credentials pinned to a tenant cannot change an ordering key: a key
-	// may hold tasks of other tenants.
+	// pool to be allowed. Credentials pinned to a tenant have their own ordering keys: key `k`
+	// of tenant `t` is stored, and seen by other credentials, as `t:k` (with `%` and `:` in the
+	// tenant written `%25` and `%3A`). They submit to, read and change those keys only.
 	GetOrdering(context.Context, *OrderingRequest) (*OrderingInfo, error)
 	ListHaltedOrderings(context.Context, *ListHaltedOrderingsRequest) (*ListHaltedOrderingsResponse, error)
 	SetOrderingFloor(context.Context, *SetOrderingFloorRequest) (*Empty, error)
