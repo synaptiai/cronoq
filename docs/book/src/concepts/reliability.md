@@ -64,7 +64,7 @@ toward the limit: a worker draining a paused pool does not use it up. (A task wi
 [fixed start](fixed-starts.md) is not held by a pause, so its releases always count.)
 
 Over the network, a task may not ask for a `max_releases` above the server's
-`limits.max_task_releases` (1000 unless set). A delay that is negative or not a number is no
+`limits.max_task_releases` (100 unless set). A delay that is negative or not a number is no
 delay; one that is too long is cut to the longest the server accepts (100 years). A worker
 that releases without a delay gets the task back at once, so give a delay unless the worker
 is going away.

@@ -18,13 +18,22 @@ async fn exports_task_metrics() {
 
     let s = Scheduler::<u64, u64>::builder()
         .pool(
-            Pool::fixed("default", 2).executor_fn(|_c, x: Arc<u64>| async move {
-                if *x == 3 {
-                    Err(TaskError::permanent("no"))
-                } else {
-                    Ok(*x)
-                }
-            }),
+            Pool::fixed("default", 2)
+                .executor_fn(|c, x: Arc<u64>| async move {
+                    if *x == 3 {
+                        Err(TaskError::permanent("no"))
+                    } else if *x == 4 && c.attempt <= 2 {
+                        // Two releases; the pool allows one, so the second is a failure.
+                        Err(TaskError::release(Duration::ZERO))
+                    } else {
+                        Ok(*x)
+                    }
+                })
+                .configure(|p| {
+                    p.max_releases = 1;
+                    p.retry.initial_backoff = Duration::from_millis(1);
+                    p.retry.jitter = false;
+                }),
         )
         .build()
         .await
@@ -54,5 +63,33 @@ async fn exports_task_metrics() {
     ] {
         assert!(names.contains(expected), "missing {expected} in {names:?}");
     }
+    // Attempts are counted by how they ended. Task 4 was released once (accepted), released
+    // again (over the limit: an error) and then ran.
+    let outcomes: BTreeSet<String> = exporter
+        .get_finished_metrics()
+        .unwrap()
+        .iter()
+        .flat_map(|rm| {
+            rm.scope_metrics()
+                .flat_map(|sm| sm.metrics().filter(|m| m.name() == "cronoq.attempts"))
+                .map(|m| format!("{m:?}"))
+                .collect::<Vec<_>>()
+        })
+        .flat_map(|dump| {
+            ["ok", "error", "released"]
+                .into_iter()
+                .filter(|o| dump.contains(&format!("\"{o}\"")))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["error", "ok", "released"]
+            .map(String::from)
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(s.snapshot().await.unwrap().totals.releases, 1);
     s.shutdown(Duration::from_secs(1)).await.unwrap();
 }

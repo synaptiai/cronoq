@@ -104,7 +104,7 @@ Without a provider the instruments are no-ops.
 |---|---|---|---|
 | `cronoq.tasks.submitted` | counter | `pool` | Tasks admitted. |
 | `cronoq.tasks.finished` | counter | `pool`, `status` | Tasks reaching a terminal status. |
-| `cronoq.attempts` | counter | `pool`, `kind`, `outcome` (`ok` / `error`) | Finished attempts. |
+| `cronoq.attempts` | counter | `pool`, `kind`, `outcome` (`ok` / `error` / `released`) | Finished attempts. `released` is an attempt that its executor [gave back](../concepts/reliability.md#releasing-an-attempt); a release beyond the limit counts as `error`. |
 | `cronoq.attempt.duration` | histogram (s) | `pool`, `kind`, `outcome` | Attempt run time. |
 | `cronoq.pool.workers` | observable gauge | `pool` | Current capacity. |
 | `cronoq.pool.desired_workers` | observable gauge | `pool` | Autoscaler target. |

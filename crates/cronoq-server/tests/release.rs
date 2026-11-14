@@ -110,7 +110,7 @@ async fn a_released_task_is_leased_again_without_using_a_retry() {
 
     // A task may not ask for more releases than the server allows.
     let mut greedy = spec(b"greedy");
-    greedy.max_releases = Some(1001);
+    greedy.max_releases = Some(101);
     let e = c.submit(submit(greedy, false)).await.unwrap_err();
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
     assert!(e.message().contains("max_releases"), "{}", e.message());

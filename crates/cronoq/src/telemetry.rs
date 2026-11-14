@@ -82,6 +82,17 @@ pub(crate) struct Metrics {
     inner: otel::Instruments,
 }
 
+/// How an attempt ended, for the attempt metrics.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AttemptEnd {
+    /// The executor returned a result.
+    Ok,
+    /// The executor failed, or the attempt was aborted.
+    Error,
+    /// The executor gave the task back without a verdict, and the release was accepted.
+    Released,
+}
+
 impl Metrics {
     pub fn new() -> Self {
         let gauges = Arc::new(Mutex::new(Gauges::default()));
@@ -101,11 +112,11 @@ impl Metrics {
     }
 
     #[inline]
-    pub fn attempt_finished(&self, pool: &Arc<str>, kind: &Arc<str>, secs: f64, ok: bool) {
+    pub fn attempt_finished(&self, pool: &Arc<str>, kind: &Arc<str>, secs: f64, end: AttemptEnd) {
         #[cfg(feature = "otel")]
-        self.inner.attempt(pool, kind, secs, ok);
+        self.inner.attempt(pool, kind, secs, end);
         #[cfg(not(feature = "otel"))]
-        let _ = (pool, kind, secs, ok);
+        let _ = (pool, kind, secs, end);
     }
 
     #[inline]
@@ -275,11 +286,16 @@ mod otel {
                 ],
             );
         }
-        pub fn attempt(&self, pool: &Arc<str>, kind: &Arc<str>, secs: f64, ok: bool) {
+        pub fn attempt(&self, pool: &Arc<str>, kind: &Arc<str>, secs: f64, end: super::AttemptEnd) {
+            let outcome = match end {
+                super::AttemptEnd::Ok => "ok",
+                super::AttemptEnd::Error => "error",
+                super::AttemptEnd::Released => "released",
+            };
             let attrs = [
                 KeyValue::new("pool", pool.clone()),
                 KeyValue::new("kind", kind.clone()),
-                KeyValue::new("outcome", if ok { "ok" } else { "error" }),
+                KeyValue::new("outcome", outcome),
             ];
             self.attempts.add(1, &attrs);
             self.run.record(secs, &attrs);

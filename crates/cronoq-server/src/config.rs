@@ -1004,7 +1004,7 @@ impl Default for LimitsConfig {
             key_retention_s: 3600.0,
             key_retention_max: 1_000_000,
             max_ordering_settings: 100_000,
-            max_task_releases: 1000,
+            max_task_releases: 100,
             max_list: 1000,
         }
     }
