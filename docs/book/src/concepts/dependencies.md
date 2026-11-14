@@ -21,6 +21,9 @@ A key names one live task at a time. With `replace_queued` it can name a series 
 after the other: a dependency or a lookup by key refers to the task that holds the key at that
 moment. Depend on an id to pin one task of the series.
 
+A key is not an [ordering key](ordering-keys.md), which makes tasks of one subject run one at
+a time and never deduplicates. A task may have both.
+
 Keys stay reserved while the task is live and for the retention window after it ends
 (`limits.key_retention_s` on the server, `CoreConfig::retention` in the library; 1 hour by
 default). Separately, the server deletes finished rows from a Postgres or SQLite store after

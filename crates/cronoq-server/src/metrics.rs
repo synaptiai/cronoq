@@ -124,6 +124,27 @@ pub fn render(s: &pb::SnapshotResponse) -> String {
     }
     o.per_pool(
         s,
+        "cronoq_pool_ordering_keys",
+        "gauge",
+        "Ordering keys that have tasks",
+        |p| p.ordering_keys as f64,
+    );
+    o.per_pool(
+        s,
+        "cronoq_pool_ordering_waiting",
+        "gauge",
+        "Ready tasks waiting for an older task of their ordering key, or for a halted key",
+        |p| p.ordering_waiting as f64,
+    );
+    o.per_pool(
+        s,
+        "cronoq_pool_ordering_halted",
+        "gauge",
+        "Ordering keys halted by a failed task",
+        |p| p.ordering_halted as f64,
+    );
+    o.per_pool(
+        s,
         "cronoq_pool_reservations",
         "gauge",
         "Fixed-start reservations",

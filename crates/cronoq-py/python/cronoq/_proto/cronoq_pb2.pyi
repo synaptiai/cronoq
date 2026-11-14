@@ -44,6 +44,12 @@ class MissPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     MISS_POLICY_SKIP: _ClassVar[MissPolicy]
     MISS_POLICY_FAIL: _ClassVar[MissPolicy]
 
+class OrderFailure(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ORDER_FAILURE_UNSPECIFIED: _ClassVar[OrderFailure]
+    ORDER_FAILURE_CONTINUE: _ClassVar[OrderFailure]
+    ORDER_FAILURE_HALT: _ClassVar[OrderFailure]
+
 class KeyConflict(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     KEY_CONFLICT_UNSPECIFIED: _ClassVar[KeyConflict]
@@ -99,6 +105,9 @@ MISS_POLICY_UNSPECIFIED: MissPolicy
 MISS_POLICY_RUN_LATE: MissPolicy
 MISS_POLICY_SKIP: MissPolicy
 MISS_POLICY_FAIL: MissPolicy
+ORDER_FAILURE_UNSPECIFIED: OrderFailure
+ORDER_FAILURE_CONTINUE: OrderFailure
+ORDER_FAILURE_HALT: OrderFailure
 KEY_CONFLICT_UNSPECIFIED: KeyConflict
 KEY_CONFLICT_RETURN_EXISTING: KeyConflict
 KEY_CONFLICT_REPLACE_QUEUED: KeyConflict
@@ -149,7 +158,7 @@ class RetryPolicy(_message.Message):
     def __init__(self, max_attempts: _Optional[int] = ..., initial_backoff_s: _Optional[float] = ..., multiplier: _Optional[float] = ..., max_backoff_s: _Optional[float] = ..., jitter: bool = ...) -> None: ...
 
 class TaskSpec(_message.Message):
-    __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags", "labels", "tenant")
+    __slots__ = ("payload", "content_type", "kind", "pool", "priority", "key", "deadline_in_s", "deadline_unix_ns", "start_in_s", "start_unix_ns", "tolerance_s", "on_miss", "duration_hint_s", "timeout_s", "retry", "deps", "resources", "tags", "labels", "tenant", "ordering_key", "on_failure")
     class ResourcesEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -191,6 +200,8 @@ class TaskSpec(_message.Message):
     TAGS_FIELD_NUMBER: _ClassVar[int]
     LABELS_FIELD_NUMBER: _ClassVar[int]
     TENANT_FIELD_NUMBER: _ClassVar[int]
+    ORDERING_KEY_FIELD_NUMBER: _ClassVar[int]
+    ON_FAILURE_FIELD_NUMBER: _ClassVar[int]
     payload: bytes
     content_type: str
     kind: str
@@ -211,7 +222,9 @@ class TaskSpec(_message.Message):
     tags: _containers.ScalarMap[str, str]
     labels: _containers.ScalarMap[str, str]
     tenant: str
-    def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., tenant: _Optional[str] = ...) -> None: ...
+    ordering_key: str
+    on_failure: OrderFailure
+    def __init__(self, payload: _Optional[bytes] = ..., content_type: _Optional[str] = ..., kind: _Optional[str] = ..., pool: _Optional[str] = ..., priority: _Optional[_Union[Priority, str]] = ..., key: _Optional[str] = ..., deadline_in_s: _Optional[float] = ..., deadline_unix_ns: _Optional[int] = ..., start_in_s: _Optional[float] = ..., start_unix_ns: _Optional[int] = ..., tolerance_s: _Optional[float] = ..., on_miss: _Optional[_Union[MissPolicy, str]] = ..., duration_hint_s: _Optional[float] = ..., timeout_s: _Optional[float] = ..., retry: _Optional[_Union[RetryPolicy, _Mapping]] = ..., deps: _Optional[_Iterable[_Union[Dep, _Mapping]]] = ..., resources: _Optional[_Mapping[str, int]] = ..., tags: _Optional[_Mapping[str, str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., tenant: _Optional[str] = ..., ordering_key: _Optional[str] = ..., on_failure: _Optional[_Union[OrderFailure, str]] = ...) -> None: ...
 
 class SubmitRequest(_message.Message):
     __slots__ = ("task", "wait", "wait_timeout_s", "on_key_conflict", "renew_position")
@@ -589,7 +602,7 @@ class Empty(_message.Message):
     def __init__(self) -> None: ...
 
 class PoolSnapshot(_message.Message):
-    __slots__ = ("name", "capacity", "busy", "held", "desired", "pending_by_class", "reservations", "dispatched", "succeeded", "failed", "priority_adherence", "fixed_start_hit_rate", "utilization", "schedule_efficiency", "wait_p50_s", "wait_p90_s", "wait_p99_s", "cost", "workers_connected", "groups", "priority", "urgency")
+    __slots__ = ("name", "capacity", "busy", "held", "desired", "pending_by_class", "reservations", "dispatched", "succeeded", "failed", "priority_adherence", "fixed_start_hit_rate", "utilization", "schedule_efficiency", "wait_p50_s", "wait_p90_s", "wait_p99_s", "cost", "workers_connected", "groups", "priority", "urgency", "ordering_keys", "ordering_waiting", "ordering_halted")
     NAME_FIELD_NUMBER: _ClassVar[int]
     CAPACITY_FIELD_NUMBER: _ClassVar[int]
     BUSY_FIELD_NUMBER: _ClassVar[int]
@@ -612,6 +625,9 @@ class PoolSnapshot(_message.Message):
     GROUPS_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     URGENCY_FIELD_NUMBER: _ClassVar[int]
+    ORDERING_KEYS_FIELD_NUMBER: _ClassVar[int]
+    ORDERING_WAITING_FIELD_NUMBER: _ClassVar[int]
+    ORDERING_HALTED_FIELD_NUMBER: _ClassVar[int]
     name: str
     capacity: int
     busy: int
@@ -634,7 +650,10 @@ class PoolSnapshot(_message.Message):
     groups: _containers.RepeatedCompositeFieldContainer[WorkerGroup]
     priority: PriorityConfig
     urgency: UrgencyConfig
-    def __init__(self, name: _Optional[str] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ..., held: _Optional[int] = ..., desired: _Optional[int] = ..., pending_by_class: _Optional[_Iterable[int]] = ..., reservations: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., priority_adherence: _Optional[float] = ..., fixed_start_hit_rate: _Optional[float] = ..., utilization: _Optional[float] = ..., schedule_efficiency: _Optional[float] = ..., wait_p50_s: _Optional[float] = ..., wait_p90_s: _Optional[float] = ..., wait_p99_s: _Optional[float] = ..., cost: _Optional[float] = ..., workers_connected: _Optional[int] = ..., groups: _Optional[_Iterable[_Union[WorkerGroup, _Mapping]]] = ..., priority: _Optional[_Union[PriorityConfig, _Mapping]] = ..., urgency: _Optional[_Union[UrgencyConfig, _Mapping]] = ...) -> None: ...
+    ordering_keys: int
+    ordering_waiting: int
+    ordering_halted: int
+    def __init__(self, name: _Optional[str] = ..., capacity: _Optional[int] = ..., busy: _Optional[int] = ..., held: _Optional[int] = ..., desired: _Optional[int] = ..., pending_by_class: _Optional[_Iterable[int]] = ..., reservations: _Optional[int] = ..., dispatched: _Optional[int] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ..., priority_adherence: _Optional[float] = ..., fixed_start_hit_rate: _Optional[float] = ..., utilization: _Optional[float] = ..., schedule_efficiency: _Optional[float] = ..., wait_p50_s: _Optional[float] = ..., wait_p90_s: _Optional[float] = ..., wait_p99_s: _Optional[float] = ..., cost: _Optional[float] = ..., workers_connected: _Optional[int] = ..., groups: _Optional[_Iterable[_Union[WorkerGroup, _Mapping]]] = ..., priority: _Optional[_Union[PriorityConfig, _Mapping]] = ..., urgency: _Optional[_Union[UrgencyConfig, _Mapping]] = ..., ordering_keys: _Optional[int] = ..., ordering_waiting: _Optional[int] = ..., ordering_halted: _Optional[int] = ...) -> None: ...
 
 class PriorityConfig(_message.Message):
     __slots__ = ("base", "aging_rate", "age_cap", "allow_overtaking_high")
@@ -813,3 +832,71 @@ class ListRecurringResponse(_message.Message):
     schedules: _containers.RepeatedCompositeFieldContainer[RecurringInfo]
     unavailable_shards: _containers.RepeatedScalarFieldContainer[str]
     def __init__(self, schedules: _Optional[_Iterable[_Union[RecurringInfo, _Mapping]]] = ..., unavailable_shards: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class OrderingRequest(_message.Message):
+    __slots__ = ("pool", "key")
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    pool: str
+    key: str
+    def __init__(self, pool: _Optional[str] = ..., key: _Optional[str] = ...) -> None: ...
+
+class OrderingInfo(_message.Message):
+    __slots__ = ("pool", "key", "tasks", "head", "effective", "floor", "persist", "halted")
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    TASKS_FIELD_NUMBER: _ClassVar[int]
+    HEAD_FIELD_NUMBER: _ClassVar[int]
+    EFFECTIVE_FIELD_NUMBER: _ClassVar[int]
+    FLOOR_FIELD_NUMBER: _ClassVar[int]
+    PERSIST_FIELD_NUMBER: _ClassVar[int]
+    HALTED_FIELD_NUMBER: _ClassVar[int]
+    pool: str
+    key: str
+    tasks: int
+    head: int
+    effective: Priority
+    floor: Priority
+    persist: bool
+    halted: bool
+    def __init__(self, pool: _Optional[str] = ..., key: _Optional[str] = ..., tasks: _Optional[int] = ..., head: _Optional[int] = ..., effective: _Optional[_Union[Priority, str]] = ..., floor: _Optional[_Union[Priority, str]] = ..., persist: bool = ..., halted: bool = ...) -> None: ...
+
+class SetOrderingFloorRequest(_message.Message):
+    __slots__ = ("pool", "key", "floor", "persist")
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    FLOOR_FIELD_NUMBER: _ClassVar[int]
+    PERSIST_FIELD_NUMBER: _ClassVar[int]
+    pool: str
+    key: str
+    floor: Priority
+    persist: bool
+    def __init__(self, pool: _Optional[str] = ..., key: _Optional[str] = ..., floor: _Optional[_Union[Priority, str]] = ..., persist: bool = ...) -> None: ...
+
+class ListHaltedOrderingsRequest(_message.Message):
+    __slots__ = ("pool", "limit")
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    pool: str
+    limit: int
+    def __init__(self, pool: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class ListHaltedOrderingsResponse(_message.Message):
+    __slots__ = ("keys",)
+    KEYS_FIELD_NUMBER: _ClassVar[int]
+    keys: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, keys: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class ResumeRequest(_message.Message):
+    __slots__ = ("pool", "ordering_key")
+    POOL_FIELD_NUMBER: _ClassVar[int]
+    ORDERING_KEY_FIELD_NUMBER: _ClassVar[int]
+    pool: str
+    ordering_key: str
+    def __init__(self, pool: _Optional[str] = ..., ordering_key: _Optional[str] = ...) -> None: ...
+
+class ResumeResponse(_message.Message):
+    __slots__ = ("resumed",)
+    RESUMED_FIELD_NUMBER: _ClassVar[int]
+    resumed: bool
+    def __init__(self, resumed: bool = ...) -> None: ...

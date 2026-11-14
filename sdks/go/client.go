@@ -248,6 +248,10 @@ func (c *Client) submit(ctx context.Context, req *pb.SubmitRequest, wait bool, t
 	if err != nil {
 		return Submitted{}, wrapWith(err, trailer)
 	}
+	if req.GetTask().GetOrderingKey() != "" && r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+		// A server older than ordering keys ignored the key and admitted the task.
+		return submitted(r), &Error{Code: codes.Unimplemented, Message: "the server does not support Task.OrderingKey; the task was submitted without it", BatchIndex: -1}
+	}
 	if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REPLACE_QUEUED &&
 		r.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
 		// A server older than the option ignored it: with the key in use, this submission
@@ -285,6 +289,9 @@ func (c *Client) SubmitBatch(ctx context.Context, tasks []Task) ([]Submitted, er
 	out := make([]Submitted, len(r.Tasks))
 	for i, s := range r.Tasks {
 		out[i] = submitted(s)
+		if i < len(req.Tasks) && req.Tasks[i].GetOrderingKey() != "" && s.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
+			return out, &Error{Code: codes.Unimplemented, Message: "the server does not support Task.OrderingKey; the batch was submitted without it", BatchIndex: -1}
+		}
 		if req.OnKeyConflict == pb.KeyConflict_KEY_CONFLICT_REJECT && s.GetOutcome() == pb.SubmitOutcome_SUBMIT_OUTCOME_UNSPECIFIED {
 			// A server older than the option ignored it and admitted the batch.
 			return out, &Error{Code: codes.Unimplemented, Message: "the server does not support RejectConflict for batches; the batch was submitted without it", BatchIndex: -1}
@@ -510,6 +517,81 @@ func (c *Client) Watch(ctx context.Context, o WatchOptions) iter.Seq2[Event, err
 func (c *Client) Snapshot(ctx context.Context) (*pb.SnapshotResponse, error) {
 	r, err := c.admin.Snapshot(ctx, &pb.Empty{})
 	return r, wrap(err)
+}
+
+// OrderingInfo is an ordering key as the server holds it.
+type OrderingInfo struct {
+	Pool string
+	Key  string
+	// Tasks of the key that have not finished.
+	Tasks uint64
+	// Head is the oldest of them, the only one that may run; 0 if the key has no tasks.
+	Head uint64
+	// Effective is the class the head runs at: the highest among the key's tasks and its
+	// floor. Empty without tasks or a floor.
+	Effective Priority
+	// Floor is the class floor, or empty.
+	Floor Priority
+	// Persist says the floor stays when the key has no tasks left.
+	Persist bool
+	// Halted says a failed task halted the key: nothing of it runs until [Client.Resume].
+	Halted bool
+}
+
+// Ordering returns an ordering key of pool (the default pool if empty): its tasks, the one
+// at the front, the class that one runs at and whether the key is halted (metrics role). A
+// key with no tasks and no kept floor has Tasks 0.
+func (c *Client) Ordering(ctx context.Context, pool, key string) (*OrderingInfo, error) {
+	r, err := c.admin.GetOrdering(ctx, &pb.OrderingRequest{Pool: pool, Key: key})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	info := &OrderingInfo{
+		Pool: r.GetPool(), Key: r.GetKey(), Tasks: r.GetTasks(), Head: r.GetHead(),
+		Effective: priority(r.GetEffective()), Persist: r.GetPersist(), Halted: r.GetHalted(),
+	}
+	if r.Floor != nil {
+		info.Floor = priority(r.GetFloor())
+	}
+	return info, nil
+}
+
+// HaltedOrderings lists the halted ordering keys of pool, in name order (metrics role). A
+// limit of 0 takes the server's default.
+func (c *Client) HaltedOrderings(ctx context.Context, pool string, limit uint32) ([]string, error) {
+	r, err := c.admin.ListHaltedOrderings(ctx, &pb.ListHaltedOrderingsRequest{Pool: pool, Limit: limit})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	return r.GetKeys(), nil
+}
+
+// SetOrderingFloor sets the class the front of an ordering key never runs below, whatever
+// the classes of the key's tasks; an empty floor removes it. No task's own class changes.
+// The floor goes when the key has no tasks left unless persist is set; the server limits how
+// many keys keep one (ResourceExhausted beyond it). Admin role.
+func (c *Client) SetOrderingFloor(ctx context.Context, pool, key string, floor Priority, persist bool) error {
+	req := &pb.SetOrderingFloorRequest{Pool: pool, Key: key, Persist: persist}
+	if floor != "" {
+		p := floor.pb()
+		if p == pb.Priority_PRIORITY_UNSPECIFIED {
+			return &Error{Code: codes.InvalidArgument, Message: fmt.Sprintf("unknown priority %q", string(floor)), BatchIndex: -1}
+		}
+		req.Floor = &p
+	}
+	_, err := c.admin.SetOrderingFloor(ctx, req)
+	return wrap(err)
+}
+
+// Resume resumes an ordering key that a failed task halted ([Task.HaltOnFailure]): its
+// oldest task is offered again. It reports whether the key was halted; resuming one that is
+// not is not an error. Admin role.
+func (c *Client) Resume(ctx context.Context, pool, orderingKey string) (bool, error) {
+	r, err := c.admin.Resume(ctx, &pb.ResumeRequest{Pool: pool, OrderingKey: orderingKey})
+	if err != nil {
+		return false, wrap(err)
+	}
+	return r.GetResumed(), nil
 }
 
 // Ref names a task by id or by key.

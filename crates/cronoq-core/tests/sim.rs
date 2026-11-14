@@ -33,6 +33,10 @@ static UPDATES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// Coverage counters: replacements in place, and replacements stored behind a started task.
 static REPLACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STORED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Coverage counters for ordering keys: halts that were resumed, and tasks that started
+/// behind another task of their key.
+static RESUMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ORDERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone)]
 struct Planned {
@@ -42,6 +46,9 @@ struct Planned {
     arrival: Time,
     plain: bool,
     parents: Vec<TaskId>,
+    /// Ordering key, and whether the task still holds the place it was submitted at.
+    okey: Option<String>,
+    renewed: bool,
 }
 
 fn duration(r: &mut R, profile: u64) -> f64 {
@@ -131,7 +138,17 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
             spec = spec.deadline(t(clock + r.f() * 30.0));
             plain = false;
         }
-        if r.chance(0.05) {
+        // An ordering key: a few per pool, so that keys are busy. Not with a fixed start.
+        let fixed = r.chance(0.05);
+        let okey = (!fixed && r.chance(0.25)).then(|| format!("o{}", r.below(5)));
+        if let Some(k) = &okey {
+            spec = spec.ordering_key(k.clone());
+            if r.chance(0.3) {
+                spec = spec.halt_on_failure();
+            }
+            plain = false;
+        }
+        if fixed {
             spec = spec.fixed_start(FixedStart {
                 at: t(clock + 1.0 + r.f() * 20.0),
                 tolerance: secs(1.0),
@@ -194,6 +211,8 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
                     arrival: s.now,
                     plain,
                     parents,
+                    okey,
+                    renewed: false,
                 });
             }
             Ok(_) => {}
@@ -201,6 +220,20 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
                 SubmitError::ReservationConflict | SubmitError::Cycle | SubmitError::Overloaded,
             ) => {}
             Err(e) => panic!("seed {seed}: unexpected submit error {e:?}"),
+        }
+        // Ordering keys: a floor now and then, and halted keys are resumed after a while.
+        if r.chance(0.02) {
+            let floor = Priority::from_index(r.below(5) as usize);
+            let key = format!("o{}", r.below(5));
+            let pool = PoolId(r.below(3) as u16);
+            s.core
+                .set_ordering_floor(s.now, pool, &key, floor, r.chance(0.3))
+                .unwrap();
+            s.drain();
+        }
+        if r.chance(0.03) {
+            let n = s.resume_halted();
+            RESUMED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
         }
         // Random cancellations and capacity jitter.
         if r.chance(0.01) && !planned.is_empty() {
@@ -241,12 +274,17 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
             let (key, id) = keyed[r.below(keyed.len() as u64) as usize].clone();
             if let Some(i) = planned.iter().position(|p| p.id == id) {
                 let dur = 0.01 + (i as f64) * 1e-6 + r.f() * 1e-7;
-                let spec = TaskSpec::new(Job::ok(dur))
+                let mut spec = TaskSpec::new(Job::ok(dur))
                     .pool(pool_names[planned[i].pool])
                     .priority(Priority::from_index(r.below(4) as usize).unwrap())
                     .key(key);
-                match s.replace(spec, r.chance(0.5)) {
+                if let Some(k) = &planned[i].okey {
+                    spec = spec.ordering_key(k.clone());
+                }
+                let renew = r.chance(0.5);
+                match s.replace(spec, renew) {
                     Ok(sub) => {
+                        planned[i].renewed |= renew;
                         match sub.outcome {
                             SubmitOutcome::Replaced => {
                                 REPLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -261,6 +299,9 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
                         }
                     }
                     Err(SubmitError::ReplaceMismatch(_) | SubmitError::Overloaded) => {}
+                    // A renewed place would be behind a task of the ordering key that
+                    // waits for this one.
+                    Err(SubmitError::Cycle) if renew && planned[i].okey.is_some() => {}
                     Err(e) => panic!("seed {seed}: unexpected replace error {e:?}"),
                 }
             }
@@ -268,7 +309,70 @@ fn run_seed(seed: u64, tasks: usize) -> (Totals, usize) {
     }
     s.core.set_capacity(s.now, PoolId(2), 3);
     s.drain();
-    s.run_to_completion(20_000.0);
+    // Halted keys are resumed until nothing is left.
+    loop {
+        s.run_to_completion(20_000.0);
+        let n = s.resume_halted();
+        RESUMED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        if n == 0 {
+            break;
+        }
+    }
+
+    // Ordering keys. A successor stands for the task it follows.
+    let mut root: HashMap<TaskId, TaskId> = HashMap::new();
+    for st in &s.started {
+        if let Some((_, v)) = st.tags.iter().find(|(k, _)| k == "cronoq.follows") {
+            let prev = TaskId(v.parse().expect("task id"));
+            let r0 = *root.get(&prev).unwrap_or(&prev);
+            root.insert(st.id, r0);
+        }
+    }
+    let by_id: HashMap<TaskId, usize> =
+        planned.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    // Per pool and key: start, end and task (its index in `planned`) of every attempt.
+    type Spans = Vec<(Time, Time, usize)>;
+    let mut by_key: HashMap<(usize, &str), Spans> = HashMap::new();
+    for st in &s.started {
+        let r0 = *root.get(&st.id).unwrap_or(&st.id);
+        let Some(&i) = by_id.get(&r0) else { continue };
+        let Some(k) = &planned[i].okey else { continue };
+        let end = *s
+            .attempt_end
+            .get(&st.lease)
+            .unwrap_or_else(|| panic!("seed {seed}: attempt of {} never ended", st.id));
+        by_key
+            .entry((planned[i].pool, k.as_str()))
+            .or_default()
+            .push((st.at, end, i));
+    }
+    for ((pool, key), spans) in &by_key {
+        // Attempts are in start order. No two tasks of a key run at once.
+        for w in spans.windows(2) {
+            assert!(
+                w[0].1 <= w[1].0,
+                "seed {seed}: tasks {} and {} of key {key} in pool {pool} overlap",
+                planned[w[0].2].id,
+                planned[w[1].2].id
+            );
+        }
+        // Tasks that kept their place start in submission order.
+        let mut first: Vec<usize> = Vec::new();
+        for (_, _, i) in spans {
+            if !planned[*i].renewed && !first.contains(i) {
+                first.push(*i);
+            }
+        }
+        assert!(
+            first.windows(2).all(|w| w[0] < w[1]),
+            "seed {seed}: key {key} in pool {pool} started out of submission order: {:?}",
+            first.iter().map(|i| planned[*i].id).collect::<Vec<_>>()
+        );
+        ORDERED.fetch_add(
+            first.len().saturating_sub(1) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
 
     // Every attempt of one task saw the same payload: a replacement never changes a task
     // that has started.
@@ -374,6 +478,8 @@ fn randomized_workloads() {
     assert!(UPDATES.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(REPLACED.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(STORED.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(RESUMED.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(ORDERED.load(std::sync::atomic::Ordering::Relaxed) > 0);
 }
 
 #[test]

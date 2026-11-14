@@ -538,6 +538,62 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Scheduler<P, O> {
         .await?
     }
 
+    /// An ordering key of `pool` ([`Task::ordering_key`]) as the engine holds it: how many
+    /// tasks it has, which is at the front, the class that one runs at, and whether the key
+    /// is halted. `None` for a key with no tasks and no kept floor.
+    pub async fn ordering(
+        &self,
+        pool: &str,
+        key: &str,
+    ) -> Result<Option<cronoq_core::OrderingInfo>, Error> {
+        let pool = self.pool_id(pool)?;
+        let key = key.into();
+        self.call(|reply| Cmd::Ordering { pool, key, reply }).await
+    }
+
+    /// The ordering keys of `pool` that are halted, in name order, at most `limit`.
+    pub async fn halted_orderings(&self, pool: &str, limit: usize) -> Result<Vec<Arc<str>>, Error> {
+        let pool = self.pool_id(pool)?;
+        self.call(|reply| Cmd::HaltedOrderings { pool, limit, reply })
+            .await
+    }
+
+    /// Set (or with `None` remove) the class floor of an ordering key: the task at its
+    /// front never runs below that class, whatever the classes of the key's tasks. No
+    /// task's own class changes. The floor goes when the key has no tasks left, unless
+    /// `persist` is set; the number of keys that keep one is limited
+    /// ([`CoreConfig::max_ordering_settings`](cronoq_core::CoreConfig::max_ordering_settings)),
+    /// and [`Error::Ordering`] reports the limit. With a persistent store, returns once the
+    /// change is durable.
+    pub async fn set_ordering_floor(
+        &self,
+        pool: &str,
+        key: &str,
+        floor: Option<cronoq_core::Priority>,
+        persist: bool,
+    ) -> Result<(), Error> {
+        let pool = self.pool_id(pool)?;
+        let key = key.into();
+        self.call(|reply| Cmd::SetOrderingFloor {
+            pool,
+            key,
+            floor,
+            persist,
+            reply,
+        })
+        .await?
+    }
+
+    /// Resume an ordering key that a failed task halted ([`Task::halt_on_failure`]): its
+    /// oldest task is offered again. Returns whether the key was halted; resuming a key
+    /// that is not is not an error.
+    pub async fn resume_ordering(&self, pool: &str, key: &str) -> Result<bool, Error> {
+        let pool = self.pool_id(pool)?;
+        let key = key.into();
+        self.call(|reply| Cmd::ResumeOrdering { pool, key, reply })
+            .await?
+    }
+
     /// Current status of a task (live or recently finished), as the engine holds it. With a
     /// durable store this can report a terminal status shortly before that status is committed;
     /// a [`TaskHandle`] resolves, and [`Scheduler::events`] report the change, only after it is.

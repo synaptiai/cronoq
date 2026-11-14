@@ -714,6 +714,22 @@ pub(crate) struct Opts {
     tenant: Option<Arc<str>>,
     pub(crate) fingerprint: Option<u128>,
     pub(crate) on_key_conflict: cronoq::KeyConflict,
+    ordering_key: Option<Arc<str>>,
+    halt_on_failure: bool,
+}
+
+impl Opts {
+    /// Set the ordering key (`ordering_key=`, `halt_on_failure=`).
+    pub(crate) fn ordered(mut self, key: Option<&str>, halt_on_failure: bool) -> PyResult<Self> {
+        if halt_on_failure && key.is_none() {
+            return Err(PyValueError::new_err(
+                "halt_on_failure needs an ordering_key",
+            ));
+        }
+        self.ordering_key = key.map(Into::into);
+        self.halt_on_failure = halt_on_failure;
+        Ok(self)
+    }
 }
 
 /// A fingerprint: an `int` below 2**128, or 16 bytes (big-endian), for example a digest.
@@ -906,6 +922,12 @@ impl Opts {
         if let Some(f) = self.fingerprint {
             t = t.fingerprint(f);
         }
+        if let Some(k) = &self.ordering_key {
+            t = t.ordering_key(k.clone());
+            if self.halt_on_failure {
+                t = t.halt_on_failure();
+            }
+        }
         t = t.on_key_conflict(self.on_key_conflict);
         if let Some(tn) = &self.tenant {
             t = t.tenant(tn.clone());
@@ -928,7 +950,8 @@ impl Task {
         payload, *, priority=None, pool=None, kind=None, key=None, deadline_in=None,
         deadline_at=None, start_in=None, start_at=None, tolerance=None, on_miss=None,
         duration_hint=None, timeout=None, retry=None, after=None, deps=None, resources=None,
-        tags=None, labels=None, tenant=None, fingerprint=None, on_key_conflict=None
+        tags=None, labels=None, tenant=None, fingerprint=None, on_key_conflict=None,
+        ordering_key=None, halt_on_failure=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -954,6 +977,8 @@ impl Task {
         tenant: Option<&str>,
         fingerprint: Option<&Bound<'_, PyAny>>,
         on_key_conflict: Option<&str>,
+        ordering_key: Option<&str>,
+        halt_on_failure: bool,
     ) -> PyResult<Self> {
         let mode = parse_key_conflict(on_key_conflict)?;
         if mode == cronoq::KeyConflict::ReplaceQueued {
@@ -982,7 +1007,8 @@ impl Task {
             tags,
             labels,
             tenant,
-        )?;
+        )?
+        .ordered(ordering_key, halt_on_failure)?;
         opts.fingerprint = fingerprint;
         opts.on_key_conflict = mode;
         Ok(Task { payload, opts })

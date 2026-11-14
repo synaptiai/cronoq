@@ -32,6 +32,9 @@ Shedding rules:
 - **Victims** are tasks waiting to run: queued tasks, including those parked waiting for a
   shared resource. Running tasks are never shed.
 - **Fixed-start tasks are never shed**: their capacity was promised when they were admitted.
+- **Only the front of an ordering key.** A task that waits behind another task of its
+  [ordering key](ordering-keys.md) is never picked; every task of a key still counts toward
+  the bounds, with its own class.
 - **Only when it helps.** A bound on the incoming task's own class is never relieved by evicting
   tasks of other classes, so such submissions are rejected without shedding.
 - **Only for admissible tasks.** All other admission checks (unknown pool or dependency, cycle,

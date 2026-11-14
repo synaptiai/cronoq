@@ -65,10 +65,26 @@ pub struct PoolSnapshot {
     pub cost: f64,
     /// Worker groups by label set (the unlabeled group first).
     pub groups: Vec<GroupSnapshot>,
+    /// Ordering keys of the pool.
+    pub ordering: OrderingSnapshot,
     /// Class scores and aging in effect for this pool.
     pub priority: crate::config::PriorityConfig,
     /// Deadline urgency curve in effect for this pool.
     pub urgency: crate::config::UrgencyConfig,
+}
+
+/// Ordering keys of a pool at a glance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrderingSnapshot {
+    /// Ordering keys that have tasks.
+    pub keys: usize,
+    /// Tasks that are ready but wait for an older task of their ordering key, or for a
+    /// halted key to be resumed.
+    pub waiting: usize,
+    /// Ordering keys halted by a failed task.
+    pub halted: usize,
+    /// Ordering keys with a class floor that is kept while they have no tasks.
+    pub settings: usize,
 }
 
 impl PoolSnapshot {

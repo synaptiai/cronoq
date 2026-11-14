@@ -98,6 +98,26 @@ message TaskSpec {
   map<string, string> labels = 19;
   // Tenant, for pools that share capacity fairly between tenants.
   string tenant = 20;
+  // Ordering key: tasks of one pool that share it run one at a time, in the order they were
+  // submitted, however many workers are free. Tasks with different keys do not wait for each
+  // other. The order inside a key is submission order, not priority; the task at the front
+  // runs at the highest class among the key's waiting tasks. It is not a deduplication key
+  // (`key`): two submissions with the same ordering key are two tasks. Not allowed together
+  // with a start time, or in a schedule's template.
+  string ordering_key = 21;
+  // With `ordering_key`: what a failure of this task does to the tasks behind it.
+  OrderFailure on_failure = 22;
+}
+
+// What a task that ends as failed (or dead-lettered) does to its ordering key. A task that
+// is cancelled, skipped or shed never halts its key.
+enum OrderFailure {
+  ORDER_FAILURE_UNSPECIFIED = 0; // treated as CONTINUE
+  // The next task of the key runs.
+  ORDER_FAILURE_CONTINUE = 1;
+  // The key is halted: its tasks stay queued, in place, until it is resumed (`Admin.Resume`)
+  // or they are cancelled.
+  ORDER_FAILURE_HALT = 2;
 }
 
 message SubmitRequest {
@@ -445,6 +465,13 @@ message PoolSnapshot {
   PriorityConfig priority = 21;
   // Deadline urgency curve in effect for this pool.
   UrgencyConfig urgency = 22;
+  // Ordering keys that have tasks.
+  uint64 ordering_keys = 23;
+  // Tasks that are ready but wait for an older task of their ordering key, or for a halted
+  // key to be resumed.
+  uint64 ordering_waiting = 24;
+  // Ordering keys halted by a failed task.
+  uint64 ordering_halted = 25;
 }
 
 // Score of a waiting task: base + min(aging_rate * seconds waited, age_cap) + urgency. Each
@@ -569,8 +596,74 @@ message ListRecurringResponse {
   repeated string unavailable_shards = 2;
 }
 
+// An ordering key of a pool.
+message OrderingRequest {
+  string pool = 1; // default "default"
+  string key = 2;
+}
+
+// An ordering key as the scheduler holds it. A key with no tasks and no kept floor has
+// `tasks = 0` and nothing else set.
+message OrderingInfo {
+  string pool = 1;
+  string key = 2;
+  // Tasks of the key that have not finished.
+  uint64 tasks = 3;
+  // The oldest of them: the only one that may run.
+  optional uint64 head = 4;
+  // The class the head runs at: the highest among the key's tasks and its floor.
+  Priority effective = 5; // UNSPECIFIED without tasks or a floor
+  // Class floor, if any.
+  optional Priority floor = 6;
+  // The floor stays when the key has no tasks left.
+  bool persist = 7;
+  // A failed task halted the key: nothing of it runs until it is resumed.
+  bool halted = 8;
+}
+
+message SetOrderingFloorRequest {
+  string pool = 1; // default "default"
+  string key = 2;
+  // The head of the key never runs below this class, whatever the classes of the key's
+  // tasks; no task's own class changes. Unset removes the floor.
+  optional Priority floor = 3;
+  // Keep the floor when the key has no tasks left (otherwise it goes with them). The number
+  // of keys that keep one is limited (`limits.max_ordering_settings`); beyond it the call
+  // fails with RESOURCE_EXHAUSTED.
+  bool persist = 4;
+}
+
+message ListHaltedOrderingsRequest {
+  string pool = 1; // default "default"
+  uint32 limit = 2; // default 100, at most 1000
+}
+
+message ListHaltedOrderingsResponse {
+  // Halted ordering keys of the pool, in name order.
+  repeated string keys = 1;
+}
+
+// What to resume: a halted ordering key of a pool.
+message ResumeRequest {
+  string pool = 1; // default "default"
+  string ordering_key = 2;
+}
+
+message ResumeResponse {
+  // Whether there was anything to resume. Resuming what is not halted is not an error.
+  bool resumed = 1;
+}
+
 service Admin {
   rpc Snapshot(Empty) returns (SnapshotResponse);
+  // Ordering keys. Reading needs the metrics role, changing the admin role; both need the
+  // pool to be allowed. Credentials pinned to a tenant have their own ordering keys: key `k`
+  // of tenant `t` is stored, and seen by other credentials, as `t:k` (with `%` and `:` in the
+  // tenant written `%25` and `%3A`). They submit to, read and change those keys only.
+  rpc GetOrdering(OrderingRequest) returns (OrderingInfo);
+  rpc ListHaltedOrderings(ListHaltedOrderingsRequest) returns (ListHaltedOrderingsResponse);
+  rpc SetOrderingFloor(SetOrderingFloorRequest) returns (Empty);
+  rpc Resume(ResumeRequest) returns (ResumeResponse);
   rpc AddRecurring(RecurringRequest) returns (Empty);
   rpc RemoveRecurring(RemoveRecurringRequest) returns (RemoveRecurringResponse);
   // Both need the metrics role and list only what the caller's pools allow.

@@ -68,6 +68,8 @@ This page describes **worker protocol version 3**.
 | `tags` | map<string, string> | Labels passed to the worker. |
 | `labels` | map<string, string> | Worker labels the task requires ([Worker labels](../concepts/labels.md)). |
 | `tenant` | string | Tenant, for pools that share capacity fairly ([Fair sharing](../concepts/fairness.md)). |
+| `ordering_key` | string | Tasks of one pool that share it run one at a time, in submission order ([Ordering keys](../concepts/ordering-keys.md)). Not a deduplication key. At most `max_key_len`. With `start_in_s` or `start_unix_ns`, or in a schedule template, it is `INVALID_ARGUMENT`. |
+| `on_failure` | `OrderFailure` | With `ordering_key`: what a failure of this task does to its key. `ORDER_FAILURE_UNSPECIFIED` and `ORDER_FAILURE_CONTINUE`: the next task runs. `ORDER_FAILURE_HALT`: the key is halted until `Admin.Resume`. `ORDER_FAILURE_HALT` without an `ordering_key` is `INVALID_ARGUMENT`. |
 
 The fields match the [HTTP task object](http.md#task-object), which documents them in detail.
 `TaskRef` is a `oneof` of `id` (uint64) and `key` (string).
@@ -100,7 +102,7 @@ expires first the call fails with `DEADLINE_EXCEEDED` and the task keeps running
 | `SUBMIT_OUTCOME_PENDING` | The task has started: this submission is stored and runs after it. `id`, and `result` with `wait`, are the running task's. |
 | `SUBMIT_OUTCOME_UNSPECIFIED` | From a server older than the field: use `duplicate`. |
 
-A replacement that does not match the task (pool, resources, labels, tenant, dependencies, or a
+A replacement that does not match the task (pool, resources, labels, ordering key, tenant, dependencies, or a
 fixed start on either side) fails with `FAILED_PRECONDITION`. `renew_position` without
 `KEY_CONFLICT_REPLACE_QUEUED`, or `KEY_CONFLICT_REPLACE_QUEUED` without a key, is
 `INVALID_ARGUMENT`.
@@ -257,6 +259,10 @@ implement these rules; see [Writing executors and workers](../guides/workers.md)
 | RPC | Role | Request → Response |
 |---|---|---|
 | `Snapshot` | metrics | `Empty` → `SnapshotResponse` |
+| `GetOrdering` | metrics | `OrderingRequest{pool, key}` → `OrderingInfo` |
+| `ListHaltedOrderings` | metrics | `ListHaltedOrderingsRequest{pool, limit}` → `ListHaltedOrderingsResponse{keys}` |
+| `SetOrderingFloor` | admin | `SetOrderingFloorRequest{pool, key, floor, persist}` → `Empty` |
+| `Resume` | admin | `ResumeRequest{pool, ordering_key}` → `ResumeResponse{resumed}` |
 | `AddRecurring` | admin | `RecurringRequest{name, cron, tz, template, overlap}` → `Empty` |
 | `RemoveRecurring` | admin | `RemoveRecurringRequest{name}` → `RemoveRecurringResponse{removed}` |
 | `ListWorkers` | metrics | `Empty` → `ListWorkersResponse{workers}` |
@@ -273,16 +279,39 @@ occurrence); schedules are sorted by name.
 `held`, `desired`, `pending_by_class`, `reservations`, `dispatched`, `succeeded`, `failed`,
 `priority_adherence`, `fixed_start_hit_rate`, `utilization`, `schedule_efficiency`,
 `wait_p50_s`, `wait_p90_s`, `wait_p99_s`, `cost`, `workers_connected`, `groups`: one
-`WorkerGroup{labels, capacity, busy}` per set of worker labels, unlabeled first, and the
+`WorkerGroup{labels, capacity, busy}` per set of worker labels, unlabeled first,
+`ordering_keys`, `ordering_waiting` and `ordering_halted`, and the
 `priority` and `urgency` settings in effect for the pool), `live_tasks`,
 `running`, `pending`, `workers_connected`, `unavailable_shards` and `totals` (`submitted`,
 `dispatched`, `succeeded`, `failed`, `dead_lettered`, `cancelled`, `skipped`, `missed`, `shed`,
 `retries`, `timeouts`, `lease_expiries`, `stale_completions`). The [HTTP snapshot](http.md#get-v1snapshot) documents each
 field.
 
+The four ordering calls act on one [ordering key](../concepts/ordering-keys.md) of one pool
+(`pool` empty: `default`). The pool must be allowed for the credentials (`PERMISSION_DENIED`
+otherwise); an unknown pool is `NOT_FOUND`.
+
+- `GetOrdering` returns `OrderingInfo{pool, key, tasks, head, effective, floor, persist,
+  halted}`: the tasks of the key that have not finished, the id of the one at the front
+  (unset if none), the class that one runs at (`PRIORITY_UNSPECIFIED` without tasks or a
+  floor), the class floor (unset if none), whether the floor is kept while the key has no
+  tasks, and whether the key is halted. A key with no tasks and no kept floor has `tasks = 0`
+  and nothing else set.
+- `ListHaltedOrderings` returns the halted keys of the pool in name order, at most `limit`
+  (default 100, at most 1000).
+- `SetOrderingFloor` sets the class the front task of the key never runs below; an unset
+  `floor` removes it. With `persist`, the floor stays when the key has no tasks left. The
+  number of keys that keep one is limited by `limits.max_ordering_settings`; beyond it the
+  call fails with `RESOURCE_EXHAUSTED`. `persist` without a `floor` is `INVALID_ARGUMENT`.
+- `Resume` resumes a halted key. `resumed` is false when the key was not halted, which is not
+  an error.
+
+`SetOrderingFloor` and `Resume` need a key (`INVALID_ARGUMENT` without one). Credentials pinned to a tenant have their own ordering keys: their key `k` is stored, and seen by other credentials, as `<tenant>:k`. They submit to, read and change those keys only.
+With a durable store, both return after the change is stored.
+
 `AddRecurring` registers (or replaces) a cron schedule named `name`. `cron` has six fields
 (seconds first) or five (seconds = 0); `tz` is an IANA time zone (default UTC). The template is
-a `TaskSpec` without `deadline_unix_ns`, `start_*` or `deps` (`INVALID_ARGUMENT` otherwise).
+a `TaskSpec` without `deadline_unix_ns`, `start_*`, `deps` or `ordering_key` (`INVALID_ARGUMENT` otherwise).
 Each occurrence gets its own fixed start at the cron time, with the template's `tolerance_s`
 (default 1 s) and `on_miss` (default `RUN_LATE`). The template's `deadline_in_s` is relative to
 each occurrence's start, and its `key` is a prefix: each occurrence's key is
@@ -331,11 +360,11 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 
 | Code | Cause |
 |---|---|
-| `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle; oversize string or collection. |
+| `INVALID_ARGUMENT` | Invalid spec, duration, reference, cron expression or time zone; dependency cycle, including a dependency on a task that is behind the task in its own ordering key; an ordering key together with a start time or in a schedule template; `on_failure` without an ordering key; `SetOrderingFloor` or `Resume` without a key; `persist` without a floor; oversize string or collection. |
 | `NOT_FOUND` | Unknown task, pool, resource or dependency. |
 | `ALREADY_EXISTS` | The key is already used by a task in a pool outside the credentials' scope. |
 | `FAILED_PRECONDITION` | A key that belongs to a task submitted with other content, for a submission with `KEY_CONFLICT_REJECT` (told apart by the `cronoq-conflict-task` metadata); fixed-start reservation conflict; an `Update` of a task with a fixed start; a `KEY_CONFLICT_REPLACE_QUEUED` submission that does not match the task it would replace; a task or pool served by another shard that this server cannot forward to (named in the `cronoq-shard` metadata); a key that names tasks in several shards (use the id); a worker with an older protocol version. |
-| `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. |
+| `RESOURCE_EXHAUSTED` | Queue bounds reached (`max_pending`, `max_pending_total`); retry later. For `SetOrderingFloor` with `persist`: too many ordering keys keep a floor (`limits.max_ordering_settings`); retrying does not help until one is removed. |
 | `UNAUTHENTICATED` | Missing, malformed or unknown credentials. |
 | `PERMISSION_DENIED` | The credentials lack the role; the pool or tenant is outside their scope; a worker claims labels its credentials do not allow; or, on gRPC-Web with no credentials configured and no `--insecure-no-auth`, the request does not name a loopback host. |
 | `DEADLINE_EXCEEDED` | A wait timed out while the task is still running, or no `Register` within 10 s. |
@@ -353,6 +382,7 @@ browser clients such as the [TypeScript SDK](typescript.md)'s `@synaptiai/cronoq
 | `TaskStatus` | `TASK_STATUS_UNSPECIFIED`, `BLOCKED`, `SCHEDULED`, `READY`, `RUNNING`, `RETRYING`, `SUCCEEDED`, `FAILED`, `DEAD_LETTERED`, `CANCELLED`, `SKIPPED`, `MISSED`, `SHED` (prefixed `TASK_STATUS_`) |
 | `EdgeCond` | `EDGE_COND_UNSPECIFIED` (= on success), `EDGE_COND_ON_SUCCESS`, `EDGE_COND_ON_COMPLETE`, `EDGE_COND_ON_FAILURE` |
 | `MissPolicy` | `MISS_POLICY_UNSPECIFIED` (= run late), `MISS_POLICY_RUN_LATE`, `MISS_POLICY_SKIP`, `MISS_POLICY_FAIL` |
+| `OrderFailure` | `ORDER_FAILURE_UNSPECIFIED` (= continue), `ORDER_FAILURE_CONTINUE`, `ORDER_FAILURE_HALT` |
 | `Overlap` | `OVERLAP_UNSPECIFIED` (= skip), `OVERLAP_SKIP`, `OVERLAP_ALLOW`, `OVERLAP_QUEUE`, `OVERLAP_QUEUE_ON_SUCCESS` |
 
 Status meanings: [HTTP statuses](http.md#statuses).

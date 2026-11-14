@@ -16,7 +16,7 @@ use axum::extract::{DefaultBodyLimit, FromRequest, Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -257,10 +257,22 @@ pub fn router(st: St) -> Router {
         .route("/v1/snapshot", get(snapshot))
         .route("/v1/workers", get(list_workers))
         .route("/v1/recurring", get(list_recurring))
+        .route("/v1/pools/{pool}/ordering", get(list_halted_orderings))
+        .route("/v1/pools/{pool}/ordering/{key}", get(get_ordering))
         .route("/metrics", get(metrics));
+    let admin = Router::new()
+        .route(
+            "/v1/pools/{pool}/ordering/{key}/floor",
+            put(set_ordering_floor).delete(clear_ordering_floor),
+        )
+        .route(
+            "/v1/pools/{pool}/ordering/{key}/resume",
+            post(resume_ordering),
+        );
     let body_limit = st.limits.max_http_body_bytes;
     gated(api, &st, Role::Client)
         .merge(gated(metrics, &st, Role::Metrics))
+        .merge(gated(admin, &st, Role::Admin))
         .merge(health_routes())
         .fallback(|| async { api_error(StatusCode::NOT_FOUND, "no such route".into()) })
         .method_not_allowed_fallback(|| async {
@@ -444,6 +456,10 @@ pub struct TaskJson {
     labels: HashMap<String, String>,
     /// Tenant, for pools that share capacity fairly between tenants.
     tenant: Option<String>,
+    /// Ordering key: tasks of one pool that share it run one at a time, in submission order.
+    ordering_key: Option<String>,
+    /// With `ordering_key`: `continue` (default) or `halt` the key when this task fails.
+    on_failure: Option<String>,
     /// What to do when the key is already in use: `return_existing` (default) or
     /// `replace_queued` (single submissions only).
     on_key_conflict: Option<String>,
@@ -552,6 +568,12 @@ impl TaskJson {
             Some("fail") => pb::MissPolicy::Fail,
             Some(p) => return Err(bad(format!("unknown on_miss '{p}' (run_late, skip, fail)"))),
         };
+        let on_failure = match self.on_failure.as_deref() {
+            None => pb::OrderFailure::Unspecified,
+            Some("continue") => pb::OrderFailure::Continue,
+            Some("halt") => pb::OrderFailure::Halt,
+            Some(p) => return Err(bad(format!("unknown on_failure '{p}' (continue, halt)"))),
+        };
         let mut deps = Vec::new();
         for a in &self.after {
             let target = match a {
@@ -616,6 +638,8 @@ impl TaskJson {
             tags: self.tags,
             labels: self.labels,
             tenant: self.tenant.unwrap_or_default(),
+            ordering_key: self.ordering_key.unwrap_or_default(),
+            on_failure: on_failure as i32,
         };
         Ok((spec, self.wait, self.wait_timeout_s))
     }
@@ -1072,6 +1096,104 @@ async fn list_workers(
     Ok(Json(v))
 }
 
+fn ordering_json(i: &pb::OrderingInfo) -> Value {
+    json!({
+        "pool": i.pool, "key": i.key, "tasks": i.tasks,
+        "head": i.head.map(|id| id.to_string()),
+        "effective": priority_name(i.effective),
+        "floor": i.floor.and_then(priority_name),
+        "persist": i.persist, "halted": i.halted,
+    })
+}
+
+/// `GET /v1/pools/{pool}/ordering/{key}`: an ordering key as the scheduler holds it.
+async fn get_ordering(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path((pool, key)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let app = app(&st)?;
+    let pool = crate::grpc::ordering_target(&p, &app.limits, &pool, &key)?;
+    let i = crate::route::get_ordering(app, &p, &pool, &key).await?;
+    Ok(Json(ordering_json(&i)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HaltedQuery {
+    /// Only `halted=true` is supported: ordering keys are not listed otherwise.
+    halted: Option<bool>,
+    limit: Option<u32>,
+}
+
+/// `GET /v1/pools/{pool}/ordering?halted=true`: the halted ordering keys of a pool.
+async fn list_halted_orderings(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path(pool): Path<String>,
+    Query(q): Query<HaltedQuery>,
+) -> Result<Json<Value>, ApiError> {
+    if q.halted != Some(true) {
+        return Err(bad(
+            "only halted ordering keys are listed: add ?halted=true",
+        ));
+    }
+    let app = app(&st)?;
+    let pool = crate::grpc::ordering_target(&p, &app.limits, &pool, "")?;
+    let keys = crate::route::list_halted_orderings(app, &p, &pool, q.limit.unwrap_or(0)).await?;
+    Ok(Json(json!({ "pool": pool, "keys": keys })))
+}
+
+/// Body of `PUT /v1/pools/{pool}/ordering/{key}/floor`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorJson {
+    /// The class the head of the key never runs below.
+    floor: String,
+    /// Keep the floor when the key has no tasks left.
+    #[serde(default)]
+    persist: bool,
+}
+
+async fn set_ordering_floor(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path((pool, key)): Path<(String, String)>,
+    ApiJson(body): ApiJson<FloorJson>,
+) -> Result<Json<Value>, ApiError> {
+    let app = app(&st)?;
+    let pool = crate::grpc::ordering_change(&p, &app.limits, &pool, &key)?;
+    let floor = crate::convert::priority(parse_priority(&body.floor)? as i32)?;
+    crate::route::set_ordering_floor(app, &p, &pool, &key, Some(floor), body.persist).await?;
+    let i = crate::route::get_ordering(app, &p, &pool, &key).await?;
+    Ok(Json(ordering_json(&i)))
+}
+
+/// `DELETE /v1/pools/{pool}/ordering/{key}/floor`: remove the floor.
+async fn clear_ordering_floor(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path((pool, key)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let app = app(&st)?;
+    let pool = crate::grpc::ordering_change(&p, &app.limits, &pool, &key)?;
+    crate::route::set_ordering_floor(app, &p, &pool, &key, None, false).await?;
+    let i = crate::route::get_ordering(app, &p, &pool, &key).await?;
+    Ok(Json(ordering_json(&i)))
+}
+
+/// `POST /v1/pools/{pool}/ordering/{key}/resume`: resume a halted ordering key.
+async fn resume_ordering(
+    State(st): State<St>,
+    Extension(p): Extension<Principal>,
+    Path((pool, key)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let app = app(&st)?;
+    let pool = crate::grpc::ordering_change(&p, &app.limits, &pool, &key)?;
+    let resumed = crate::route::resume_ordering(app, &p, &pool, &key).await?;
+    Ok(Json(json!({ "resumed": resumed })))
+}
+
 async fn list_recurring(
     State(st): State<St>,
     Extension(p): Extension<Principal>,
@@ -1127,6 +1249,10 @@ async fn snapshot(
                 "utilization": p.utilization, "schedule_efficiency": p.schedule_efficiency,
                 "wait_p50_s": p.wait_p50_s, "wait_p90_s": p.wait_p90_s, "wait_p99_s": p.wait_p99_s,
                 "cost": p.cost, "workers_connected": p.workers_connected,
+                "ordering": {
+                    "keys": p.ordering_keys, "waiting": p.ordering_waiting,
+                    "halted": p.ordering_halted,
+                },
                 "groups": p.groups.iter().map(|g| json!({
                     "labels": g.labels, "capacity": g.capacity, "busy": g.busy,
                 })).collect::<Vec<_>>(),

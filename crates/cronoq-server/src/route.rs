@@ -72,9 +72,23 @@ pub async fn submit(
                 as i32,
             renew_position: opts.renew_position,
         };
-        return answer(sh, c.tasks.submit(bounded(app, req)).await);
+        let ordered = !req.task.as_ref().is_some_and(|t| t.ordering_key.is_empty());
+        let r = answer(sh, c.tasks.submit(bounded(app, req)).await)?;
+        if ordered && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+            return Err(unordered(sh));
+        }
+        return Ok(r);
     }
     grpc::submit_one(app, p, spec, opts, wait, stop).await
+}
+
+/// A shard older than ordering keys ignored the key and admitted the task. It also sends no
+/// outcome, which is how to tell.
+fn unordered(sh: &Shard) -> Status {
+    Status::unimplemented(format!(
+        "shard '{}' does not support ordering keys; the submission was admitted without one",
+        sh.name
+    ))
 }
 
 /// What `mode` means on this server: its configured default if the caller named none.
@@ -108,6 +122,7 @@ pub async fn submit_batch(
                 }
                 let mut c = clients(app, p, sh, "this batch")?;
                 let mode = configured(app, mode);
+                let ordered = specs.iter().any(|s| !s.ordering_key.is_empty());
                 let req = pb::SubmitBatchRequest {
                     tasks: specs,
                     on_key_conflict: convert::key_conflict_to_pb(mode) as i32,
@@ -116,6 +131,9 @@ pub async fn submit_batch(
                 // A shard older than the option ignores it on a batch and admits the tasks.
                 // It also sends no outcome, which is how to tell.
                 let unspecified = pb::SubmitOutcome::Unspecified as i32;
+                if ordered && r.tasks.iter().any(|t| t.outcome == unspecified) {
+                    return Err(unordered(sh));
+                }
                 if mode == cronoq::KeyConflict::Reject
                     && r.tasks.iter().any(|t| t.outcome == unspecified)
                 {
@@ -591,6 +609,103 @@ pub async fn add_recurring(
         return Ok(());
     }
     grpc::add_recurring(app, r).await
+}
+
+/// An ordering key, from the shard of its pool.
+pub async fn get_ordering(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    key: &str,
+) -> Result<pb::OrderingInfo, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::OrderingRequest {
+            pool: pool.to_string(),
+            key: key.to_string(),
+        };
+        return answer(sh, c.admin.get_ordering(bounded(app, req)).await);
+    }
+    // As the caller names it; stored under the tenant's prefix for pinned credentials.
+    let mut info = grpc::get_ordering(app, pool, &grpc::tenant_key(p, key)).await?;
+    info.key = key.to_string();
+    Ok(info)
+}
+
+/// The halted ordering keys of a pool, from its shard.
+pub async fn list_halted_orderings(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    limit: u32,
+) -> Result<Vec<String>, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::ListHaltedOrderingsRequest {
+            pool: pool.to_string(),
+            limit,
+        };
+        let r = answer(sh, c.admin.list_halted_orderings(bounded(app, req)).await)?;
+        return Ok(r.keys);
+    }
+    let Some(tenant) = &p.tenant else {
+        return grpc::list_halted_orderings(app, pool, limit).await;
+    };
+    // Pinned credentials see the halted keys of their own namespace, by their own names.
+    let prefix = grpc::tenant_prefix(tenant);
+    let wanted = match limit {
+        0 => 100,
+        n => n.min(grpc::MAX_HALTED_LIST),
+    } as usize;
+    let all = grpc::list_all_halted_orderings(app, pool).await?;
+    Ok(all
+        .iter()
+        .filter_map(|k| k.strip_prefix(&prefix))
+        .take(wanted)
+        .map(str::to_string)
+        .collect())
+}
+
+/// Set or remove the floor of an ordering key, on the shard of its pool.
+pub async fn set_ordering_floor(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    key: &str,
+    floor: Option<cronoq::Priority>,
+    persist: bool,
+) -> Result<(), Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::SetOrderingFloorRequest {
+            pool: pool.to_string(),
+            key: key.to_string(),
+            floor: floor.map(|f| convert::priority_to_pb(f) as i32),
+            persist,
+        };
+        answer(sh, c.admin.set_ordering_floor(bounded(app, req)).await)?;
+        return Ok(());
+    }
+    grpc::set_ordering_floor(app, pool, &grpc::tenant_key(p, key), floor, persist).await
+}
+
+/// Resume a halted ordering key, on the shard of its pool.
+pub async fn resume_ordering(
+    app: &AppState,
+    p: &Principal,
+    pool: &str,
+    key: &str,
+) -> Result<bool, Status> {
+    if let Some(sh) = routing(app, p).and_then(|m| m.other_for_pool(pool)) {
+        let mut c = clients(app, p, sh, &format!("pool '{pool}'"))?;
+        let req = pb::ResumeRequest {
+            pool: pool.to_string(),
+            ordering_key: key.to_string(),
+        };
+        let r = answer(sh, c.admin.resume(bounded(app, req)).await)?;
+        return Ok(r.resumed);
+    }
+    grpc::resume_ordering(app, pool, &grpc::tenant_key(p, key)).await
 }
 
 /// Remove a schedule from whichever shard has it.

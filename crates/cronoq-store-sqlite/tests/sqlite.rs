@@ -179,6 +179,9 @@ async fn an_older_database_is_upgraded_in_place() {
     for sql in [
         "DROP TABLE cronoq_pending",
         "ALTER TABLE cronoq_tasks DROP COLUMN fingerprint",
+        "ALTER TABLE cronoq_tasks DROP COLUMN ordering_key",
+        "ALTER TABLE cronoq_tasks DROP COLUMN halt_on_failure",
+        "DROP TABLE cronoq_ordering",
         "UPDATE cronoq_schema_version SET version = 1",
     ] {
         sqlx::query(sql).execute(store.pool()).await.unwrap();
@@ -191,17 +194,36 @@ async fn an_older_database_is_upgraded_in_place() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let epoch = store.acquire_leadership().await.unwrap();
     let stored = Mutation::PendingReplacement {
         id: TaskId(1),
         seq: 2,
         arrival: Time(now()),
         renew: false,
-        spec: TaskSpec::new(Bytes::from_static(b"y")).fingerprint(5),
+        spec: TaskSpec::new(Bytes::from_static(b"y"))
+            .fingerprint(5)
+            .ordering_key("k")
+            .halt_on_failure(),
     };
-    store.commit(epoch, BASE, &[stored], &[]).await.unwrap();
+    let halted = Mutation::Ordering {
+        pool: "default".into(),
+        key: "k".into(),
+        floor: None,
+        persist: false,
+        halted: true,
+    };
+    store
+        .commit(epoch, BASE, &[stored, halted], &[])
+        .await
+        .unwrap();
     let rec = store.recover(BASE).await.unwrap();
+    // The task from before the upgrade has no ordering key; what is written now has.
+    assert_eq!(rec.tasks[0].spec.ordering_key, None);
+    assert_eq!(rec.tasks[0].spec.on_failure, OrderFailure::Continue);
+    assert_eq!(rec.pending[0].spec.ordering_key.as_deref(), Some("k"));
+    assert_eq!(rec.pending[0].spec.on_failure, OrderFailure::Halt);
+    assert!(rec.ordering.len() == 1 && rec.ordering[0].halted);
     assert_eq!((rec.tasks.len(), rec.pending.len()), (1, 1));
     // The task from before the upgrade has no fingerprint; the new submission has its own.
     assert_eq!(rec.tasks[0].spec.fingerprint, None);

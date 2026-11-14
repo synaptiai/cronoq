@@ -209,6 +209,19 @@ impl CodecStore {
                         tags: tags.clone(),
                         at: *at,
                     },
+                    Mutation::Ordering {
+                        pool,
+                        key,
+                        floor,
+                        persist,
+                        halted,
+                    } => Mutation::Ordering {
+                        pool: pool.clone(),
+                        key: key.clone(),
+                        floor: *floor,
+                        persist: *persist,
+                        halted: *halted,
+                    },
                     Mutation::RecurringNext { name, next, last } => Mutation::RecurringNext {
                         name: name.clone(),
                         next: *next,
@@ -262,6 +275,7 @@ impl Store<PyObj, PyObj> for CodecStore {
                 terminal: rec.terminal,
                 recurring: Vec::with_capacity(rec.recurring.len()),
                 pending: Vec::with_capacity(rec.pending.len()),
+                ordering: rec.ordering,
                 next_id: rec.next_id,
             };
             for p in rec.pending {

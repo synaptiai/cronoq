@@ -39,6 +39,9 @@ The server computes the fingerprint from the request.
 | Priority | Tenant |
 | Dependencies | |
 
+An [ordering key](ordering-keys.md) is compared on its own, not through the fingerprint: a
+submission whose key is held by an unfinished task of another ordering key is a conflict.
+
 A retry that only differs in the right-hand column is still a retry. Use
 [replace by key](replacing.md) when a key is *meant* to take new content.
 

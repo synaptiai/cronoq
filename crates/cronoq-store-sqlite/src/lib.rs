@@ -55,8 +55,8 @@ use bytes::Bytes;
 use cronoq::codec::*;
 use cronoq::{Store, StoreError, StoreQueries, TimeBase};
 use cronoq_core::{
-    Mutation, Priority, Recovered, RecoveredRecurring, RecoveredTask, RecoveredTerminal, TaskId,
-    TaskRef, TaskSpec, TaskStatus, Time,
+    Mutation, OrderFailure, Priority, Recovered, RecoveredRecurring, RecoveredTask,
+    RecoveredTerminal, TaskId, TaskRef, TaskSpec, TaskStatus, Time,
 };
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow,
@@ -71,6 +71,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("migration_2.sql"),
     include_str!("migration_3.sql"),
+    include_str!("migration_4.sql"),
 ];
 /// Status stored for tasks that are live but have not started an attempt yet.
 const QUEUED: &str = "queued";
@@ -657,7 +658,8 @@ impl SqliteStore {
                 // handled (schedules are applied in the second pass).
                 Mutation::RecurringUpsert { .. }
                 | Mutation::RecurringRemove { .. }
-                | Mutation::RecurringNext { .. } => {}
+                | Mutation::RecurringNext { .. }
+                | Mutation::Ordering { .. } => {}
             }
         }
 
@@ -790,6 +792,38 @@ impl SqliteStore {
                     .await
                     .map_err(db)?;
                 }
+                Mutation::Ordering {
+                    pool,
+                    key,
+                    floor,
+                    persist,
+                    halted,
+                } => {
+                    if floor.is_none() && !halted {
+                        // Back to the default: no row.
+                        sqlx::query("DELETE FROM cronoq_ordering WHERE pool = ?1 AND key = ?2")
+                            .bind(clean(pool))
+                            .bind(clean(key))
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(db)?;
+                    } else {
+                        sqlx::query(
+                            "INSERT INTO cronoq_ordering (pool, key, floor, persist, halted) \
+                             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (pool, key) DO UPDATE SET \
+                             floor = excluded.floor, persist = excluded.persist, \
+                             halted = excluded.halted",
+                        )
+                        .bind(clean(pool))
+                        .bind(clean(key))
+                        .bind(floor.map(|f| f as i64))
+                        .bind(*persist)
+                        .bind(*halted)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                    }
+                }
                 // Listed, not `_`: tasks were applied in the first pass.
                 Mutation::Submitted { .. }
                 | Mutation::Status { .. }
@@ -839,6 +873,8 @@ struct InsertRow {
     labels: String,
     tenant: Option<String>,
     fingerprint: Option<Vec<u8>>,
+    ordering_key: Option<String>,
+    halt: bool,
     created: i64,
     /// The latest transition within the batch; `None` while the task has not moved.
     status: Option<StatusRow>,
@@ -873,6 +909,8 @@ impl InsertRow {
             labels: labels_json(s),
             tenant: s.tenant.as_deref().map(cleaned),
             fingerprint: s.fingerprint.map(|f| f.to_be_bytes().to_vec()),
+            ordering_key: s.ordering_key.as_deref().map(cleaned),
+            halt: s.on_failure == OrderFailure::Halt,
             created: now,
             status: None,
         }
@@ -893,8 +931,9 @@ impl InsertRow {
             "INSERT INTO cronoq_tasks (id, seq, arrival_unix_ns, pool, kind, priority, key, payload, \
              deadline_unix_ns, fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, \
              timeout_ns, retry, deps, resources, tags, status, terminal, attempt, updated_unix_ns, message, \
-             labels, tenant, fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
-             ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26) \
+             labels, tenant, fingerprint, ordering_key, halt_on_failure) VALUES (?1, ?2, ?3, ?4, \
+             ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, \
+             ?23, ?24, ?25, ?26, ?27, ?28) \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(self.id)
@@ -923,6 +962,8 @@ impl InsertRow {
         .bind(&self.labels)
         .bind(self.tenant.as_deref())
         .bind(self.fingerprint.as_deref())
+        .bind(self.ordering_key.as_deref())
+        .bind(self.halt)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -940,7 +981,7 @@ impl InsertRow {
         sqlx::query(
             "UPDATE cronoq_tasks SET seq = ?2, arrival_unix_ns = ?3, kind = ?4, priority = ?5, \
              payload = ?6, deadline_unix_ns = ?7, duration_hint_ns = ?8, timeout_ns = ?9, \
-             retry = ?10, tags = ?11, tenant = ?12, fingerprint = ?13 \
+             retry = ?10, tags = ?11, tenant = ?12, fingerprint = ?13, halt_on_failure = ?14 \
              WHERE id = ?1 AND terminal = 0",
         )
         .bind(self.id)
@@ -956,6 +997,7 @@ impl InsertRow {
         .bind(&self.tags)
         .bind(self.tenant.as_deref())
         .bind(self.fingerprint.as_deref())
+        .bind(self.halt)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -972,8 +1014,9 @@ impl InsertRow {
         sqlx::query(
             "INSERT OR REPLACE INTO cronoq_pending (task_id, seq, arrival_unix_ns, renew, pool, \
              kind, priority, key, payload, deadline_unix_ns, duration_hint_ns, timeout_ns, retry, \
-             deps, resources, tags, labels, tenant, fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
-             ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             deps, resources, tags, labels, tenant, fingerprint, ordering_key, halt_on_failure) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
+             ?18, ?19, ?20, ?21)",
         )
         .bind(self.id)
         .bind(self.seq)
@@ -994,6 +1037,8 @@ impl InsertRow {
         .bind(&self.labels)
         .bind(self.tenant.as_deref())
         .bind(self.fingerprint.as_deref())
+        .bind(self.ordering_key.as_deref())
+        .bind(self.halt)
         .execute(&mut **tx)
         .await
         .map_err(db)?;
@@ -1043,6 +1088,10 @@ fn decode_task(base: TimeBase, r: &SqliteRow) -> Result<RecoveredTask<Bytes>, St
     spec.labels = tags_from(&r.get::<String, _>("labels"))?;
     spec.tenant = r.get::<Option<String>, _>("tenant").map(Into::into);
     spec.fingerprint = fingerprint_from(r.get("fingerprint"));
+    spec.ordering_key = r.get::<Option<String>, _>("ordering_key").map(Into::into);
+    if r.get::<bool, _>("halt_on_failure") {
+        spec.on_failure = OrderFailure::Halt;
+    }
     Ok(RecoveredTask {
         id: TaskId(r.get::<i64, _>("id") as u64),
         seq: r.get::<i64, _>("seq") as u64,
@@ -1193,7 +1242,8 @@ impl Store<Bytes, Bytes> for SqliteStore {
         let rows = sqlx::query(
             "SELECT id, seq, arrival_unix_ns, pool, kind, priority, key, payload, deadline_unix_ns, \
              fixed_at_unix_ns, fixed_tolerance_ns, fixed_on_miss, duration_hint_ns, timeout_ns, \
-             retry, deps, resources, tags, labels, tenant, fingerprint, attempt FROM cronoq_tasks \
+             retry, deps, resources, tags, labels, tenant, fingerprint, ordering_key, \
+             halt_on_failure, attempt FROM cronoq_tasks \
              WHERE terminal = 0 \
              ORDER BY id",
         )
@@ -1225,7 +1275,8 @@ impl Store<Bytes, Bytes> for SqliteStore {
             "SELECT task_id AS id, seq, arrival_unix_ns, renew, pool, kind, priority, key, payload, \
              deadline_unix_ns, NULL AS fixed_at_unix_ns, NULL AS fixed_tolerance_ns, \
              NULL AS fixed_on_miss, duration_hint_ns, timeout_ns, retry, deps, resources, tags, \
-             labels, tenant, fingerprint, 0 AS attempt FROM cronoq_pending \
+             labels, tenant, fingerprint, ordering_key, halt_on_failure, 0 AS attempt \
+             FROM cronoq_pending \
              WHERE task_id IN (SELECT id FROM cronoq_tasks WHERE terminal = 0) ORDER BY task_id",
         )
         .fetch_all(pool)
@@ -1301,6 +1352,26 @@ impl Store<Bytes, Bytes> for SqliteStore {
                 at: from_unix(base, now),
                 fingerprint: None,
             }));
+
+        // Ordering keys with a floor or a halt.
+        let rows = sqlx::query(
+            "SELECT pool, key, floor, persist, halted FROM cronoq_ordering ORDER BY pool, key",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(db)?;
+        for r in rows {
+            let floor = r
+                .get::<Option<i64>, _>("floor")
+                .and_then(|f| Priority::from_index(f.max(0) as usize));
+            rec.ordering.push(cronoq_core::RecoveredOrdering {
+                pool: r.get::<String, _>("pool").into(),
+                key: r.get::<String, _>("key").into(),
+                floor,
+                persist: r.get("persist"),
+                halted: r.get("halted"),
+            });
+        }
 
         let rows = sqlx::query(
             "SELECT name, spec, template_payload, next_unix_ns, last_task_id FROM cronoq_recurring ORDER BY name",

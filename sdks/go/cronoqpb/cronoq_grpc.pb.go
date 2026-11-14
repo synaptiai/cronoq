@@ -511,11 +511,15 @@ var Workers_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	Admin_Snapshot_FullMethodName        = "/cronoq.v1.Admin/Snapshot"
-	Admin_AddRecurring_FullMethodName    = "/cronoq.v1.Admin/AddRecurring"
-	Admin_RemoveRecurring_FullMethodName = "/cronoq.v1.Admin/RemoveRecurring"
-	Admin_ListWorkers_FullMethodName     = "/cronoq.v1.Admin/ListWorkers"
-	Admin_ListRecurring_FullMethodName   = "/cronoq.v1.Admin/ListRecurring"
+	Admin_Snapshot_FullMethodName            = "/cronoq.v1.Admin/Snapshot"
+	Admin_GetOrdering_FullMethodName         = "/cronoq.v1.Admin/GetOrdering"
+	Admin_ListHaltedOrderings_FullMethodName = "/cronoq.v1.Admin/ListHaltedOrderings"
+	Admin_SetOrderingFloor_FullMethodName    = "/cronoq.v1.Admin/SetOrderingFloor"
+	Admin_Resume_FullMethodName              = "/cronoq.v1.Admin/Resume"
+	Admin_AddRecurring_FullMethodName        = "/cronoq.v1.Admin/AddRecurring"
+	Admin_RemoveRecurring_FullMethodName     = "/cronoq.v1.Admin/RemoveRecurring"
+	Admin_ListWorkers_FullMethodName         = "/cronoq.v1.Admin/ListWorkers"
+	Admin_ListRecurring_FullMethodName       = "/cronoq.v1.Admin/ListRecurring"
 )
 
 // AdminClient is the client API for Admin service.
@@ -523,6 +527,14 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AdminClient interface {
 	Snapshot(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*SnapshotResponse, error)
+	// Ordering keys. Reading needs the metrics role, changing the admin role; both need the
+	// pool to be allowed. Credentials pinned to a tenant have their own ordering keys: key `k`
+	// of tenant `t` is stored, and seen by other credentials, as `t:k` (with `%` and `:` in the
+	// tenant written `%25` and `%3A`). They submit to, read and change those keys only.
+	GetOrdering(ctx context.Context, in *OrderingRequest, opts ...grpc.CallOption) (*OrderingInfo, error)
+	ListHaltedOrderings(ctx context.Context, in *ListHaltedOrderingsRequest, opts ...grpc.CallOption) (*ListHaltedOrderingsResponse, error)
+	SetOrderingFloor(ctx context.Context, in *SetOrderingFloorRequest, opts ...grpc.CallOption) (*Empty, error)
+	Resume(ctx context.Context, in *ResumeRequest, opts ...grpc.CallOption) (*ResumeResponse, error)
 	AddRecurring(ctx context.Context, in *RecurringRequest, opts ...grpc.CallOption) (*Empty, error)
 	RemoveRecurring(ctx context.Context, in *RemoveRecurringRequest, opts ...grpc.CallOption) (*RemoveRecurringResponse, error)
 	// Both need the metrics role and list only what the caller's pools allow.
@@ -542,6 +554,46 @@ func (c *adminClient) Snapshot(ctx context.Context, in *Empty, opts ...grpc.Call
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SnapshotResponse)
 	err := c.cc.Invoke(ctx, Admin_Snapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminClient) GetOrdering(ctx context.Context, in *OrderingRequest, opts ...grpc.CallOption) (*OrderingInfo, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OrderingInfo)
+	err := c.cc.Invoke(ctx, Admin_GetOrdering_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminClient) ListHaltedOrderings(ctx context.Context, in *ListHaltedOrderingsRequest, opts ...grpc.CallOption) (*ListHaltedOrderingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListHaltedOrderingsResponse)
+	err := c.cc.Invoke(ctx, Admin_ListHaltedOrderings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminClient) SetOrderingFloor(ctx context.Context, in *SetOrderingFloorRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Admin_SetOrderingFloor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminClient) Resume(ctx context.Context, in *ResumeRequest, opts ...grpc.CallOption) (*ResumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResumeResponse)
+	err := c.cc.Invoke(ctx, Admin_Resume_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -593,6 +645,14 @@ func (c *adminClient) ListRecurring(ctx context.Context, in *Empty, opts ...grpc
 // for forward compatibility.
 type AdminServer interface {
 	Snapshot(context.Context, *Empty) (*SnapshotResponse, error)
+	// Ordering keys. Reading needs the metrics role, changing the admin role; both need the
+	// pool to be allowed. Credentials pinned to a tenant have their own ordering keys: key `k`
+	// of tenant `t` is stored, and seen by other credentials, as `t:k` (with `%` and `:` in the
+	// tenant written `%25` and `%3A`). They submit to, read and change those keys only.
+	GetOrdering(context.Context, *OrderingRequest) (*OrderingInfo, error)
+	ListHaltedOrderings(context.Context, *ListHaltedOrderingsRequest) (*ListHaltedOrderingsResponse, error)
+	SetOrderingFloor(context.Context, *SetOrderingFloorRequest) (*Empty, error)
+	Resume(context.Context, *ResumeRequest) (*ResumeResponse, error)
 	AddRecurring(context.Context, *RecurringRequest) (*Empty, error)
 	RemoveRecurring(context.Context, *RemoveRecurringRequest) (*RemoveRecurringResponse, error)
 	// Both need the metrics role and list only what the caller's pools allow.
@@ -610,6 +670,18 @@ type UnimplementedAdminServer struct{}
 
 func (UnimplementedAdminServer) Snapshot(context.Context, *Empty) (*SnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Snapshot not implemented")
+}
+func (UnimplementedAdminServer) GetOrdering(context.Context, *OrderingRequest) (*OrderingInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOrdering not implemented")
+}
+func (UnimplementedAdminServer) ListHaltedOrderings(context.Context, *ListHaltedOrderingsRequest) (*ListHaltedOrderingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListHaltedOrderings not implemented")
+}
+func (UnimplementedAdminServer) SetOrderingFloor(context.Context, *SetOrderingFloorRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetOrderingFloor not implemented")
+}
+func (UnimplementedAdminServer) Resume(context.Context, *ResumeRequest) (*ResumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Resume not implemented")
 }
 func (UnimplementedAdminServer) AddRecurring(context.Context, *RecurringRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddRecurring not implemented")
@@ -658,6 +730,78 @@ func _Admin_Snapshot_Handler(srv interface{}, ctx context.Context, dec func(inte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AdminServer).Snapshot(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Admin_GetOrdering_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OrderingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).GetOrdering(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_GetOrdering_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).GetOrdering(ctx, req.(*OrderingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Admin_ListHaltedOrderings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListHaltedOrderingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).ListHaltedOrderings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_ListHaltedOrderings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).ListHaltedOrderings(ctx, req.(*ListHaltedOrderingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Admin_SetOrderingFloor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetOrderingFloorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).SetOrderingFloor(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_SetOrderingFloor_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).SetOrderingFloor(ctx, req.(*SetOrderingFloorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Admin_Resume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServer).Resume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Admin_Resume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServer).Resume(ctx, req.(*ResumeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -744,6 +888,22 @@ var Admin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Snapshot",
 			Handler:    _Admin_Snapshot_Handler,
+		},
+		{
+			MethodName: "GetOrdering",
+			Handler:    _Admin_GetOrdering_Handler,
+		},
+		{
+			MethodName: "ListHaltedOrderings",
+			Handler:    _Admin_ListHaltedOrderings_Handler,
+		},
+		{
+			MethodName: "SetOrderingFloor",
+			Handler:    _Admin_SetOrderingFloor_Handler,
+		},
+		{
+			MethodName: "Resume",
+			Handler:    _Admin_Resume_Handler,
 		},
 		{
 			MethodName: "AddRecurring",

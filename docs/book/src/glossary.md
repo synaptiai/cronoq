@@ -8,6 +8,9 @@
 
 **Class**: a priority level: critical, high, normal or low.
 
+**Class floor**: a class set on an ordering key; the task at the front of the key never runs
+below it, and no task's own priority changes ([Ordering keys](concepts/ordering-keys.md#a-floor-for-a-key)).
+
 **Deadline**: a soft time by which a task should be done; it raises urgency.
 
 **Dead letter**: terminal status for a task whose retryable failures used every attempt.
@@ -37,6 +40,10 @@ never changed by a [replacement](concepts/replacing.md), only followed.
 
 **Fixed start**: a time at which a task should begin, backed by a reservation.
 
+**Halted (ordering key)**: said of an ordering key after a task submitted with halt on failure
+ended as failed or dead-lettered; its tasks stay queued, in order, and none runs until the key
+is resumed ([Ordering keys](concepts/ordering-keys.md#when-a-task-fails)).
+
 **Hold**: a worker slot kept free for a fixed-start task about to begin.
 
 **Key**: an optional unique name of a task, used for deduplication and references.
@@ -48,6 +55,9 @@ never changed by a [replacement](concepts/replacing.md), only followed.
 **Lease TTL**: how long a lease survives without a heartbeat.
 
 **Miss policy**: what happens to a fixed-start task that could not start within its tolerance.
+
+**Ordering key**: a name shared by tasks of one pool that must run one at a time, in the order
+they were submitted; it does not deduplicate ([Ordering keys](concepts/ordering-keys.md)).
 
 **Parked**: a ready task waiting for a resource, outside the dispatch queue.
 

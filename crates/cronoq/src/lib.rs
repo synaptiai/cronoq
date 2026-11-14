@@ -64,3 +64,4 @@ pub use cronoq_core::{
     Time, UnknownDependency, UrgencyConfig,
 };
 pub use cronoq_core::{EventKind, TaskPatch, UpdateError, Updated};
+pub use cronoq_core::{OrderFailure, OrderingError, OrderingInfo, OrderingSnapshot};

@@ -65,11 +65,15 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `handle(target)` | `Option<TaskHandle<O>>` | Attach to an existing task by id or key. |
 | `cancel(target)` | `bool` | `false` if the task already finished. |
 | `update(target, Update)` | `Updated` | [Change the priority, deadline or tags](../concepts/updating.md) of a task that has not finished. `Update::new()` with `priority(p)`, `deadline_in(d)`, `deadline_at(t)`, `no_deadline()`, `tags(pairs)`. `Updated` has `id`, `status`, `deferred` and `changed`. |
+| `ordering(pool, key)` | `Option<OrderingInfo>` | An [ordering key](../concepts/ordering-keys.md) of `pool`: `tasks`, `head`, `effective`, `floor`, `persist`, `halted`. `None` for a key with no tasks and no kept floor. |
+| `halted_orderings(pool, limit)` | `Vec<Arc<str>>` | The halted ordering keys of `pool`, in name order, at most `limit`. |
+| `set_ordering_floor(pool, key, floor, persist)` | `()` | Set the class floor of an ordering key (`floor` is an `Option<Priority>`; `None` removes it). With `persist`, the floor stays when the key has no tasks left; beyond `CoreConfig::max_ordering_settings` kept floors the call fails with `Error::Ordering(OrderingError::TooManySettings)`. |
+| `resume_ordering(pool, key)` | `bool` | Resume a halted ordering key. `false` if the key was not halted, which is not an error. |
 | `status(target)` | `Option<TaskStatus>` | `None` for unknown tasks. |
 | `task(target)` | `Option<TaskSummary>` | One task that has not finished (pool, kind, key, priority, status, attempt, tenant); `None` if unknown or finished. |
 | `list_tasks(pools, statuses, after, limit)` | `Vec<TaskSummary>` | Live tasks in id order, filtered by pool (any if empty) and status (any if empty), with ids above `after`. Finished tasks are listed by a durable store (`StoreQueries::list_finished`). |
 | `list_recurring()` | `Vec<RecurringInfo>` | Recurring schedules with their next occurrence and latest task. |
-| `snapshot()` | `Snapshot` | Metrics and quality signals. |
+| `snapshot()` | `Snapshot` | Metrics and quality signals. `PoolSnapshot::ordering` is an `OrderingSnapshot` (`keys`, `waiting`, `halted`, `settings`) for the pool's [ordering keys](../concepts/ordering-keys.md). |
 | `set_capacity(pool, n)` | `()` | Report capacity for pools with an `ExternalScaler`. |
 | `set_group_capacity(pool, labels, n)` | `()` | Report the slots of the pool's workers with exactly `labels` ([Worker labels](../concepts/labels.md)). |
 | `add_recurring(Recurring)` / `remove_recurring(name)` | `()` / `bool` | Cron schedules. |
@@ -78,8 +82,10 @@ A cheap-to-clone handle. Every method is `async` and returns `Result<_, Error>`,
 | `stopped()` | `()` | Resolves when the scheduler stops for any reason. |
 | `shutdown(grace)` | `()` | Stop admitting, let running attempts finish for `grace`, then stop. |
 
-With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`, `add_recurring` and
-`remove_recurring` return only after the change is durable.
+With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`, `add_recurring`,
+`remove_recurring`, `set_ordering_floor` and `resume_ordering` return only after the change is
+durable. The four ordering methods return `Error::Submit(SubmitError::UnknownPool)` for a pool
+the scheduler does not have.
 
 `TaskHandle<O>` is a `Future<Output = Result<Arc<O>, TaskFailure>>` with `id()`,
 `is_duplicate()` and `cancel()`.
@@ -93,7 +99,9 @@ With a persistent store, `submit`, `enqueue`, `submit_batch`, `cancel`, `update`
 [worker label](../concepts/labels.md)), `tenant(name)` ([fair sharing](../concepts/fairness.md)),
 `replace_queued()` and `renew_position()` ([replacing a task by key](../concepts/replacing.md);
 single submissions only), `fingerprint(u128)` and `on_key_conflict(KeyConflict)`
-([detecting conflicting submissions](../concepts/key-conflicts.md)). Builder order does not matter. Strings must not contain NUL characters.
+([detecting conflicting submissions](../concepts/key-conflicts.md)), `ordering_key(key)` and
+`halt_on_failure()` ([ordering keys](../concepts/ordering-keys.md); not with a fixed start).
+Builder order does not matter. Strings must not contain NUL characters.
 
 `Submitted` (from `enqueue`) has `id`, `duplicate` and `outcome`: a `SubmitOutcome` of
 `Created`, `Existing`, `Replaced` or `Pending`. `TaskHandle::outcome()` gives the same for
@@ -103,7 +111,7 @@ runs after it as a new task with the same key, which `handle(key)` returns once 
 `Recurring<P>`: `Recurring::new(name, cron, template)`, then `tz`, `overlap(OverlapPolicy)`
 (`Skip`, `Allow`, `Queue`, `QueueOnSuccess`), `tolerance`, `on_miss`. The template's
 `deadline_in` applies per occurrence and its key is a prefix (`<key>@<start>`); it may not set an
-absolute deadline, a fixed start or dependencies.
+absolute deadline, a fixed start, dependencies or an ordering key.
 
 ### Executors
 
@@ -122,8 +130,9 @@ attempts keep running.
 | Type | Variants |
 |---|---|
 | `SubmitError` | `UnknownPool`, `UnknownResource`, `ResourceExceedsCapacity`, `ReservationConflict`, `Cycle`, `UnknownDependency`, `Full`, `Overloaded`, `DuplicateKeyInBatch`, `ReplaceMismatch(&'static str)`, `KeyConflict { id, status }`, `Invalid(&'static str)`. |
-| `Error` | `Submit(SubmitError)`, `Batch { index, error }` (a batch refused because of the task at `index`), `Update(UpdateError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
+| `Error` | `Submit(SubmitError)`, `Batch { index, error }` (a batch refused because of the task at `index`), `Update(UpdateError)`, `Ordering(OrderingError)`, `Shutdown`, `Config(String)`, `Store(StoreError)`, `Internal(String)`. |
 | `UpdateError` | `NotFound`, `FixedStart`, `Invalid(&'static str)`. |
+| `OrderingError` | `UnknownPool`, `TooManySettings` (the limit on ordering keys that keep a class floor is reached). |
 | `TaskFailure` | `Ended { status, message }`, `OutputUnavailable { id }`, `Shutdown`; `status()`. |
 | `StoreError` | `Fenced`, `Unavailable(String)`, `Other(String)`; `is_transient()`. |
 | `ScaleError` | `External`, `Other(String)`. |
@@ -152,7 +161,8 @@ See [Errors and status codes](errors.md).
 ### Re-exports and features
 
 Engine types are re-exported from `cronoq-core`: `AutoscaleConfig`, `Bounds`, `Dep`,
-`EdgeCond`, `MissPolicy`, `OverflowPolicy`, `OverlapPolicy`, `PoolConfig`, `PoolSnapshot`,
+`EdgeCond`, `MissPolicy`, `OrderFailure`, `OrderingError`, `OrderingInfo`, `OrderingSnapshot`,
+`OverflowPolicy`, `OverlapPolicy`, `PoolConfig`, `PoolSnapshot`,
 `Priority`, `PriorityConfig`, `ResourceConfig`, `ResourceKind`, `RetryPolicy`, `Snapshot`,
 `StatusEvent`, `SubmitError`, `Submitted`, `TaskId`, `TaskRef`, `TaskStatus`,
 `UnknownDependency`, `UrgencyConfig`, and more. The whole engine is `cronoq::core`.
@@ -177,6 +187,7 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `cancel`, `status`, `resolve`, `live_tasks`, `list_tasks`, `totals` | Lookups and cancellation. |
 | `update(now, target, TaskPatch)` | Change a live task's priority, deadline or tags; emits `Mutation::Updated` and, with `emit_transitions`, a `StatusEvent` of `EventKind::Updated`. |
 | `set_capacity(now, pool, n)`, `set_group_capacity(now, pool, labels, n)` | Capacity changes, for the whole pool or for the workers with exactly `labels`. |
+| `ordering(pool, key)`, `halted_orderings(pool, limit)`, `set_ordering_floor`, `resume_ordering(now, pool, key)` | [Ordering keys](../concepts/ordering-keys.md): read a key, list halted keys, set or remove a class floor, resume a halted key. Floor and halt changes emit `Mutation::Ordering`. |
 | `add_recurring`, `remove_recurring`, `recurring_names`, `list_recurring` | Cron schedules. |
 | `tick(now)`, `next_wakeup()` | Timers. |
 | `poll_action()`, `drain_actions()`, `has_actions()` | `Action::{Dispatch, Abort, ScaleTo, Status, Persist, SpaceAvailable}` for the driver. |
@@ -185,7 +196,8 @@ the current `Time`, so tests and simulations run thousands of virtual hours per 
 | `check_invariants()` | Panics on internal inconsistency (tests and fuzzing). |
 
 `CoreConfig` fields: `pools`, `resources`, `priority`, `urgency`, `global_bounds`, `retention`,
-`retention_max`, `persist`, `epoch_unix_nanos`, `id_epoch`, `id_shard` (default `None`; when
+`retention_max`, `max_ordering_settings` (default 100,000: most ordering keys that keep a
+class floor while they have no tasks), `persist`, `epoch_unix_nanos`, `id_epoch`, `id_shard` (default `None`; when
 set, task ids carry the shard number in their top 8 bits), `metrics_window` (default 60 s),
 `seed`.
 

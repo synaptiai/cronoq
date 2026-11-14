@@ -58,6 +58,17 @@ type Task struct {
 	// when the server's default is to report conflicts. Without any of the three options the
 	// server's default applies.
 	ReturnExisting bool
+	// OrderingKey makes tasks of one pool run one at a time, in the order they were
+	// submitted, however many workers are free: use it for work that must not overlap or
+	// overtake for one subject (an account, a document, a device). Tasks with different keys
+	// do not wait for each other. The order inside a key is submission order, not priority;
+	// the task at the front runs at the highest class among the key's waiting tasks. It is
+	// not a deduplication key (Key): two submissions with the same ordering key are two
+	// tasks. Not allowed together with StartIn.
+	OrderingKey string
+	// HaltOnFailure, with OrderingKey, halts the key if this task ends as failed: the tasks
+	// behind it stay queued, in place, until [Client.Resume] or until they are cancelled.
+	HaltOnFailure bool
 }
 
 // request builds the submission of the task, with its options.
@@ -87,7 +98,10 @@ func (t Task) Spec() *pb.TaskSpec {
 	s := &pb.TaskSpec{
 		Payload: t.Payload, ContentType: t.ContentType, Kind: t.Kind, Pool: t.Pool, Key: t.Key,
 		Tenant: t.Tenant, Priority: t.Priority.pb(), Resources: t.Resources, Tags: t.Tags,
-		Labels: t.Labels,
+		Labels: t.Labels, OrderingKey: t.OrderingKey,
+	}
+	if t.HaltOnFailure {
+		s.OnFailure = pb.OrderFailure_ORDER_FAILURE_HALT
 	}
 	if t.Timeout > 0 {
 		s.TimeoutS = seconds(t.Timeout)

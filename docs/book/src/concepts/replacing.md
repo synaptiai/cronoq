@@ -102,6 +102,10 @@ mismatch* (`FAILED_PRECONDITION` / 409) and nothing changes.
 | Worker labels | Priority and deadline (as for [an update](updating.md)) |
 | Tenant | Tags |
 | Dependencies, named the same way (a key stays a key, an id an id) | Timeout, retry policy, duration hint |
+| [Ordering key](ordering-keys.md) | |
+
+A replaced task keeps its place in its ordering key (or goes to the back with
+`renew_position`), and a successor takes the place of the task it follows.
 
 Neither the task nor the replacement may have a [fixed start](fixed-starts.md): a fixed start
 holds a capacity reservation made at admission. `replace_queued` needs a key, and is refused in

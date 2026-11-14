@@ -108,6 +108,9 @@ pub enum Error {
     /// The engine refused an update of a task.
     #[error(transparent)]
     Update(#[from] UpdateError),
+    /// The engine refused a setting of an ordering key.
+    #[error(transparent)]
+    Ordering(#[from] cronoq_core::OrderingError),
     /// The scheduler is shut down (or shutting down).
     #[error("scheduler is shut down")]
     Shutdown,

@@ -67,6 +67,18 @@ enum Command {
     /// Add or remove a recurring schedule (admin role).
     #[command(subcommand)]
     Schedule(ScheduleCommand),
+    /// Show or change an ordering key: tasks of a pool that share one run one at a time, in
+    /// submission order.
+    #[command(subcommand)]
+    Ordering(OrderingCommand),
+    /// Resume what a failure halted: an ordering key (admin role).
+    Resume {
+        /// The halted ordering key.
+        #[arg(long, value_name = "KEY")]
+        ordering_key: String,
+        #[arg(long, default_value = "default")]
+        pool: String,
+    },
     /// Show pools, quality signals and totals (metrics role).
     Snapshot,
     /// Stream status events until interrupted.
@@ -194,6 +206,13 @@ struct SubmitArgs {
     /// server's default is to report conflicts.
     #[arg(long, requires = "key", conflicts_with_all = ["replace", "reject_conflict"])]
     return_existing: bool,
+    /// Ordering key: tasks of one pool that share it run one at a time, in the order they
+    /// were submitted. Not a deduplication key (--key).
+    #[arg(long, value_name = "KEY", conflicts_with = "start_in")]
+    ordering_key: Option<String>,
+    /// With --ordering-key: if this task fails, halt the key until `cronoq resume`.
+    #[arg(long, requires = "ordering_key")]
+    halt_on_failure: bool,
     /// Start at a fixed time, in seconds from now.
     #[arg(long, value_name = "SECONDS")]
     start_in: Option<f64>,
@@ -244,6 +263,43 @@ struct TasksArgs {
     /// Follow pages until every matching task is listed.
     #[arg(long)]
     all: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum OrderingCommand {
+    /// Show an ordering key: its tasks, the one at the front, its floor, whether it is halted
+    /// (metrics role).
+    Get {
+        key: String,
+        #[arg(long, default_value = "default")]
+        pool: String,
+    },
+    /// List the halted ordering keys of a pool (metrics role).
+    Halted {
+        #[arg(long, default_value = "default")]
+        pool: String,
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
+    /// Set the class the front of an ordering key never runs below (admin role).
+    Floor {
+        key: String,
+        /// The class; leave out with --clear.
+        #[arg(
+            value_enum,
+            required_unless_present = "clear",
+            conflicts_with = "clear"
+        )]
+        class: Option<PriorityArg>,
+        /// Remove the floor.
+        #[arg(long)]
+        clear: bool,
+        /// Keep the floor when the key has no tasks left (otherwise it goes with them).
+        #[arg(long, conflicts_with = "clear")]
+        persist: bool,
+        #[arg(long, default_value = "default")]
+        pool: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -354,6 +410,35 @@ fn warn_missing(shards: &[String]) {
     }
 }
 
+fn print_ordering(out: Output, i: &pb::OrderingInfo) {
+    let class = |c: i32| fmt::priority(c).filter(|_| c != pb::Priority::Unspecified as i32);
+    match out {
+        Output::Json => print_json(&serde_json::json!({
+            "pool": i.pool, "key": i.key, "tasks": i.tasks,
+            "head": i.head.map(|id| id.to_string()),
+            "effective": class(i.effective), "floor": i.floor.and_then(class),
+            "persist": i.persist, "halted": i.halted,
+        })),
+        Output::Text => {
+            let or_none = |v: Option<String>| v.unwrap_or_else(|| "-".into());
+            println!("key        {}", fmt::clean(&i.key, false));
+            println!("pool       {}", fmt::clean(&i.pool, false));
+            println!("tasks      {}", i.tasks);
+            println!("head       {}", or_none(i.head.map(|id| id.to_string())));
+            println!(
+                "runs at    {}",
+                or_none(class(i.effective).map(|c| c.to_string()))
+            );
+            let kept = if i.persist { " (kept)" } else { "" };
+            println!(
+                "floor      {}",
+                or_none(i.floor.and_then(class).map(|c| format!("{c}{kept}")))
+            );
+            println!("halted     {}", if i.halted { "yes" } else { "no" });
+        }
+    }
+}
+
 fn print_json(v: &serde_json::Value) {
     println!(
         "{}",
@@ -423,6 +508,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     cond: pb::EdgeCond::OnSuccess as i32,
                 });
             }
+            spec.ordering_key = a.ordering_key.clone().unwrap_or_default();
+            if a.halt_on_failure {
+                spec.on_failure = pb::OrderFailure::Halt as i32;
+            }
             let r = rpc(tasks
                 .submit(pb::SubmitRequest {
                     task: Some(spec),
@@ -441,6 +530,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     renew_position: a.renew_position,
                 })
                 .await)?;
+            if a.ordering_key.is_some() && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
+                bail!(
+                    "the server does not support --ordering-key; the task was submitted without it"
+                );
+            }
             if a.replace && r.outcome == pb::SubmitOutcome::Unspecified as i32 {
                 // A server older than the option ignored it: with the key in use, this
                 // submission was dropped, not stored.
@@ -681,6 +775,49 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Output::Json => print_json(&serde_json::json!({ "removed": r.removed })),
                 Output::Text if r.removed => println!("removed"),
                 Output::Text => println!("no such schedule"),
+            }
+        }
+        Command::Ordering(OrderingCommand::Get { key, pool }) => {
+            let i = rpc(admin.get_ordering(pb::OrderingRequest { pool, key }).await)?;
+            print_ordering(out, &i);
+        }
+        Command::Ordering(OrderingCommand::Halted { pool, limit }) => {
+            let r = rpc(admin
+                .list_halted_orderings(pb::ListHaltedOrderingsRequest { pool, limit })
+                .await)?;
+            match out {
+                Output::Json => print_json(&serde_json::json!({ "keys": r.keys })),
+                Output::Text => {
+                    for k in &r.keys {
+                        println!("{}", fmt::clean(k, false));
+                    }
+                }
+            }
+        }
+        Command::Ordering(OrderingCommand::Floor {
+            key,
+            class,
+            clear: _,
+            persist,
+            pool,
+        }) => {
+            rpc(admin
+                .set_ordering_floor(pb::SetOrderingFloorRequest {
+                    pool: pool.clone(),
+                    key: key.clone(),
+                    floor: class.map(|c| c.to_pb() as i32),
+                    persist,
+                })
+                .await)?;
+            let i = rpc(admin.get_ordering(pb::OrderingRequest { pool, key }).await)?;
+            print_ordering(out, &i);
+        }
+        Command::Resume { ordering_key, pool } => {
+            let r = rpc(admin.resume(pb::ResumeRequest { pool, ordering_key }).await)?;
+            match out {
+                Output::Json => print_json(&serde_json::json!({ "resumed": r.resumed })),
+                Output::Text if r.resumed => println!("resumed"),
+                Output::Text => println!("was not halted"),
             }
         }
         Command::Snapshot => {

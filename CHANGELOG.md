@@ -9,6 +9,35 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Ordering keys. Tasks of one pool that share an `ordering_key` run one at a time, in the
+  order they were submitted, however many workers are free; tasks with different keys do not
+  wait for each other. Use it for work that must not overlap or overtake for one subject: an
+  account, a document, a device. Inside a key the order is submission order, not priority;
+  the task at the front runs at the highest class among the key's tasks, so a critical task
+  is not stuck behind unrelated work. A task submitted with halt on failure
+  (`Task::halt_on_failure`, `halt_on_failure=True`, `"on_failure": "halt"`) halts its key if it
+  fails: the tasks behind it, and tasks submitted for the key afterwards, stay queued until
+  the key is resumed. A key can be given a class
+  floor, optionally kept while it has no tasks (`limits.max_ordering_settings` bounds how many
+  keys keep one). Ordering keys are durable: order, halt and floor survive a restart and a
+  failover. Available in Rust (`Task::ordering_key`, `Scheduler::ordering`,
+  `set_ordering_floor`, `resume_ordering`, `halted_orderings`), Python (in process and
+  client), Go, TypeScript, gRPC (`Admin.GetOrdering`, `ListHaltedOrderings`,
+  `SetOrderingFloor`, `Resume`), HTTP (`/v1/pools/{pool}/ordering/...`) and the command-line
+  tool (`cronoq submit --ordering-key`, `cronoq ordering`, `cronoq resume`). An ordering key
+  cannot be combined with a fixed start or used in a schedule. See
+  [Ordering keys](docs/book/src/concepts/ordering-keys.md).
+- Credentials pinned to a tenant have their own ordering keys: key `k` of tenant `acme` is
+  stored, and seen by other credentials, as `acme:k`. They submit to, read and change those
+  keys only, so one tenant cannot block or halt a key that holds another's tasks.
+- With `on_key_conflict = reject`, a key held by an unfinished task of another ordering key is
+  a conflict. Clients, the command-line tool and shard forwarding fail with `UNIMPLEMENTED`
+  when a server from before ordering keys admitted a task without its key.
+- Snapshot and metrics: per pool, the number of ordering keys with tasks, of tasks waiting
+  behind another task of their key, and of halted keys (`cronoq_pool_ordering_keys`,
+  `cronoq_pool_ordering_waiting`, `cronoq_pool_ordering_halted`).
+- Benchmark `core/ordering/w64/keys1000/one_stuck`, with a floor in CI: work of other keys
+  must keep its throughput around a key that is stuck.
 - Conflict detection for duplicate keys. A submission with `on_key_conflict = reject` whose key
   belongs to a task that was submitted with other content is refused with that task's id and
   status, instead of being answered like a retry and silently dropped. A retry of the same
@@ -92,6 +121,21 @@ contain breaking changes; they are called out under **Changed**.
   after a started task, and a `fingerprint` column on tasks and on that table (Postgres schema
   version 8, SQLite version 3). The migrations run when the database is opened and only add
   the table and the columns. An older binary refuses a migrated database.
+- **Store schema.** For ordering keys, both stores gain the columns `ordering_key` and
+  `halt_on_failure` on tasks and on `cronoq_pending`, and a table `cronoq_ordering` for keys
+  with a floor or a halt (Postgres schema version 13, SQLite version 4). The migrations run
+  when the database is opened and only add the columns and the table. An older binary refuses
+  a migrated database.
+- **Breaking (Rust):** `TaskSpec` has new fields `ordering_key` and `on_failure`; `Recovered`
+  has a new field `ordering`; `Mutation` has a new variant `Ordering`; `PoolSnapshot` has a
+  new field `ordering`; `CoreConfig` has a new field `max_ordering_settings`; `Error` has a new
+  variant `Ordering`. A custom `Store` must keep a task's ordering key and failure policy,
+  apply `Mutation::Ordering` (the whole state of one key; all default means forget it) and
+  return the stored keys from `recover`. A replacement by key with `renew_position` can now
+  fail with `SubmitError::Cycle`, when the task would move behind a task of its ordering key
+  that waits for it.
+- The pool's ready and backlog figures, and the autoscaler's queue pressure, do not count
+  tasks that wait behind another task of their ordering key: a worker could not run them.
 - **Breaking (Rust):** a batch that the engine refuses now fails with `Error::Batch { index,
   error }` instead of `Error::Submit(error)`. `KeyConflict` has new variants `Configured` (the
   new default of `SubmitOptions`, meaning the scheduler's setting) and `Reject`; `SubmitError`

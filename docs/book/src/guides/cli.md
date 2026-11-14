@@ -20,8 +20,8 @@ than silently ignored, and a token sent over plain `http://` to a host other tha
 prints a warning.
 
 Each command needs a role ([Security hardening](security.md)): task commands need `client`,
-`workers`, `schedules` and `snapshot` need `metrics`, and `schedule add` / `schedule remove`
-need `admin`. An admin token works everywhere.
+`workers`, `schedules`, `snapshot`, `ordering get` and `ordering halted` need `metrics`, and
+`schedule add` / `schedule remove`, `ordering floor` and `resume` need `admin`. An admin token works everywhere.
 
 ## Commands
 
@@ -33,6 +33,8 @@ cronoq submit --file report.pdf --kind ocr --wait > text.txt
 cronoq submit '{"title": "Q3 plan"}' --json --key title:doc-42 --replace   # latest wins: prints "17 (replaced)" or "17 (pending)"
 cronoq submit --file edit.json --json --key edit:8842 --reject-conflict   # fail if the key holds other content
                                             # (--return-existing: never fail, whatever the server's default)
+cronoq submit '{"op": "debit"}' --json --ordering-key account:8842   # one task of the key at a time, in submission order
+cronoq submit --file step.json --json --ordering-key import:42 --halt-on-failure   # a failure halts the key
 cronoq get 17                               # details; --key to look up by key
 cronoq get --key doc-42
 cronoq wait 17 --timeout 60                 # prints the output
@@ -46,6 +48,12 @@ cronoq schedules
 cronoq schedule add nightly "0 0 3 * * *" '{"report": "daily"}' --json \
     --tz Europe/Berlin --overlap queue --pool reports --key nightly
 cronoq schedule remove nightly
+cronoq ordering get import:42               # tasks, the one at the front, floor, halted; --pool (default: default)
+cronoq ordering halted --pool llm --limit 50   # the halted keys of a pool
+cronoq ordering floor account:8842 high     # the front task never runs below high, until the key has no tasks left
+cronoq ordering floor account:8842 high --persist   # kept while the key has no tasks too
+cronoq ordering floor account:8842 --clear
+cronoq resume --ordering-key import:42      # prints "resumed" or "was not halted"
 cronoq snapshot
 cronoq watch --pool llm --all               # every transition, until Ctrl-C
 ```
@@ -53,6 +61,11 @@ cronoq watch --pool llm --all               # every transition, until Ctrl-C
 `submit` sends a string argument as UTF-8 text, `--json` as JSON (checked first), and
 `--file PATH` or `-` (stdin) as bytes; `--content-type` overrides the type the worker sees.
 `--after TASK` (repeatable, an id or a key) makes the task wait for another to succeed.
+
+`--ordering-key KEY` puts the task in an [ordering key](../concepts/ordering-keys.md);
+`--halt-on-failure` needs it. The `ordering` commands and `resume` act on the pool named by
+`--pool` (`default` if left out). `ordering floor` and `resume` are refused for a token
+pinned to a tenant.
 
 `wait` and `submit --wait` write the task's output to standard output unchanged when it is
 redirected to a file or a pipe. Keys, messages and other text come from other clients of the

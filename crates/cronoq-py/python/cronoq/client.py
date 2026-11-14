@@ -483,10 +483,37 @@ class PoolSnapshot:
     #: ``None`` when the server is older than these settings.
     priority: PrioritySettings | None = None
     urgency: UrgencySettings | None = None
+    #: Ordering keys that have tasks.
+    ordering_keys: int = 0
+    #: Tasks that are ready but wait for an older task of their ordering key, or for a halted
+    #: key to be resumed.
+    ordering_waiting: int = 0
+    #: Ordering keys halted by a failed task.
+    ordering_halted: int = 0
 
     @property
     def pending(self) -> int:
         return sum(self.pending_by_class)
+
+
+@dataclass(frozen=True)
+class OrderingInfo:
+    """An ordering key as the scheduler holds it (:meth:`Client.ordering`)."""
+
+    pool: str
+    key: str
+    #: Tasks of the key that have not finished.
+    tasks: int
+    #: Id of the oldest of them: the only one that may run.
+    head: int | None
+    #: The class the head runs at: the highest among the key's tasks and its floor.
+    effective: str | None
+    #: Class floor, if any.
+    floor: str | None
+    #: The floor stays when the key has no tasks left.
+    persist: bool
+    #: A failed task halted the key: nothing of it runs until it is resumed.
+    halted: bool
 
 
 @dataclass(frozen=True)
@@ -627,6 +654,8 @@ def task(
     labels: Mapping[str, str] | None = None,
     tenant: str | None = None,
     content_type: str | None = None,
+    ordering_key: str | None = None,
+    halt_on_failure: bool = False,
 ) -> pb.TaskSpec:
     """Build a wire task spec (for :meth:`Client.submit_batch` and :meth:`Client.add_recurring`).
 
@@ -635,7 +664,16 @@ def task(
     list of them (each must succeed first). ``deps`` entries are ``(ref, cond)`` tuples or
     ``{"ref": ..., "cond": ...}`` with ``cond`` in ``success``/``complete``/``failure`` (or the
     ``on_``-prefixed spellings). ``labels`` are worker labels the task requires.
+
+    ``ordering_key``: tasks of one pool that share it run one at a time, in the order they were
+    submitted, however many workers are free; tasks with different keys do not wait for each
+    other. The order inside a key is submission order, not priority. It is not a deduplication
+    key (``key``): two submissions with the same ordering key are two tasks. With
+    ``halt_on_failure=True`` a failure of this task halts its key until :meth:`Client.resume`.
+    Not allowed with a start time or in a schedule.
     """
+    if halt_on_failure and not ordering_key:
+        raise ValueError("halt_on_failure needs an ordering_key")
     if deadline_in is not None and deadline_at is not None:
         raise ValueError("use either deadline_in or deadline_at")
     if start_in is not None and start_at is not None:
@@ -650,7 +688,10 @@ def task(
         priority=cast(Any, _priority(priority)),
         key=key or "",
         tenant=tenant or "",
+        ordering_key=ordering_key or "",
     )
+    if halt_on_failure:
+        spec.on_failure = pb.ORDER_FAILURE_HALT
     if deadline_in is not None:
         spec.deadline_in_s = float(deadline_in)
     elif deadline_at is not None:
@@ -862,6 +903,11 @@ class Client:
             if call_timeout is None:
                 call_timeout = float(wait_timeout) + _WAIT_DEADLINE_MARGIN
         r = await self._call(self._tasks.Submit, req, call_timeout)
+        if req.task.ordering_key and r.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED:
+            # A server older than ordering keys ignored the key and admitted the task.
+            raise ClientError(
+                "unimplemented", "the server does not support ordering_key; the task was submitted without it"
+            )
         if on_key_conflict == "replace_queued" and r.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED:
             # A server older than the option ignored it: with the key in use, this submission
             # was dropped, not stored.
@@ -882,6 +928,11 @@ class Client:
             raise ValueError("on_key_conflict='replace_queued' is not supported in a batch")
         req = pb.SubmitBatchRequest(tasks=list(tasks), on_key_conflict=cast(Any, _key_conflict(on_key_conflict)))
         r = await self._call(self._tasks.SubmitBatch, req)
+        if any(t.ordering_key for t in req.tasks) and any(t.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED for t in r.tasks):
+            # A server older than ordering keys ignored them and admitted the batch.
+            raise ClientError(
+                "unimplemented", "the server does not support ordering_key; the batch was submitted without it"
+            )
         if on_key_conflict == "reject" and any(t.outcome == pb.SUBMIT_OUTCOME_UNSPECIFIED for t in r.tasks):
             # A server older than the option ignored it and admitted the batch.
             raise ClientError(
@@ -1073,6 +1124,9 @@ class Client:
                     wait_p99=p.wait_p99_s,
                     cost=p.cost,
                     workers_connected=p.workers_connected,
+                    ordering_keys=p.ordering_keys,
+                    ordering_waiting=p.ordering_waiting,
+                    ordering_halted=p.ordering_halted,
                     groups=tuple(
                         WorkerGroup(labels=dict(g.labels), capacity=g.capacity, busy=g.busy)
                         for g in p.groups
@@ -1118,6 +1172,58 @@ class Client:
             workers_connected=r.workers_connected,
             unavailable_shards=tuple(r.unavailable_shards),
         )
+
+    async def ordering(self, key: str, *, pool: str | None = None) -> OrderingInfo:
+        """An ordering key of ``pool`` (the default pool if left out): how many tasks it has,
+        which is at the front, the class that one runs at, and whether the key is halted
+        (requires a ``metrics`` or ``admin`` token). A key with no tasks and no kept floor has
+        ``tasks == 0``."""
+        r = await self._call(self._admin.GetOrdering, pb.OrderingRequest(pool=pool or "", key=key))
+        return OrderingInfo(
+            pool=r.pool,
+            key=r.key,
+            tasks=r.tasks,
+            head=r.head if r.HasField("head") else None,
+            effective=_priority_name(r.effective),
+            floor=_priority_name(r.floor) if r.HasField("floor") else None,
+            persist=r.persist,
+            halted=r.halted,
+        )
+
+    async def halted_orderings(self, *, pool: str | None = None, limit: int = 100) -> list[str]:
+        """The halted ordering keys of ``pool``, in name order (requires a ``metrics`` or
+        ``admin`` token)."""
+        req = pb.ListHaltedOrderingsRequest(pool=pool or "", limit=int(limit))
+        r = await self._call(self._admin.ListHaltedOrderings, req)
+        return list(r.keys)
+
+    async def set_ordering_floor(
+        self,
+        key: str,
+        floor: Any,
+        *,
+        pool: str | None = None,
+        persist: bool = False,
+    ) -> None:
+        """Set the class floor of an ordering key (``floor=None`` removes it): the task at its
+        front never runs below that class, whatever the classes of the key's tasks. No task's
+        own class changes. The floor goes when the key has no tasks left unless
+        ``persist=True``; the number of keys that keep one is limited on the server
+        (``resource_exhausted`` beyond it). Requires an admin token."""
+        if persist and floor is None:
+            raise ValueError("persist=True needs a floor")
+        req = pb.SetOrderingFloorRequest(pool=pool or "", key=key, persist=bool(persist))
+        if floor is not None:
+            req.floor = cast(Any, _priority(floor))
+        await self._call(self._admin.SetOrderingFloor, req)
+
+    async def resume(self, *, ordering_key: str, pool: str | None = None) -> bool:
+        """Resume an ordering key that a failed task halted (``halt_on_failure=True``): its
+        oldest task is offered again. Returns whether the key was halted; resuming one that is
+        not is not an error. Requires an admin token."""
+        req = pb.ResumeRequest(pool=pool or "", ordering_key=ordering_key)
+        r = await self._call(self._admin.Resume, req)
+        return bool(r.resumed)
 
     async def add_recurring(
         self,
