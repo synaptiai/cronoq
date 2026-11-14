@@ -757,6 +757,7 @@ dependencies = [
  "criterion",
  "cronoq-core",
  "futures-util",
+ "libc",
  "opentelemetry",
  "opentelemetry_sdk",
  "rustc-hash",

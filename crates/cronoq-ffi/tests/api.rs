@@ -842,6 +842,47 @@ fn with_all_events_every_change_of_status_is_sent() {
 }
 
 #[test]
+fn after_a_gap_backoff_timers_fire_at_once() {
+    // An hour of backoff: without moving the clock the retry is an hour away.
+    let s = new(
+        r#"{"pools": [{"name": "default", "retry": {"max_attempts": 2,
+            "initial_backoff_ms": 3600000, "max_backoff_ms": 3600000, "jitter": false}}]}"#,
+    );
+    let mut ids = Vec::new();
+    for p in ["a", "b", "c"] {
+        ids.push(submit(&s, p, ""));
+    }
+    for _ in 0..3 {
+        let t = next(&s);
+        assert_eq!(
+            unsafe { cronoq_fail(s.0, t.lease, null(), 1, -1) },
+            CRONOQ_OK
+        );
+    }
+    assert_eq!(next_in(&s, None, 50).unwrap_err(), CRONOQ_TIMEOUT);
+    // With nothing to make up, a resynchronisation changes nothing.
+    let mut moved = u64::MAX;
+    assert_eq!(unsafe { cronoq_resync_clock(s.0, &mut moved) }, CRONOQ_OK);
+    assert!(moved < 1000, "{moved}");
+    assert_eq!(unsafe { cronoq_resync_clock(s.0, null_mut()) }, CRONOQ_OK);
+    assert_eq!(next_in(&s, None, 50).unwrap_err(), CRONOQ_TIMEOUT);
+    // The gap: all three backoffs are over, and all three come back at once.
+    assert_eq!(unsafe { cronoq_advance_clock(s.0, 3_600_000) }, CRONOQ_OK);
+    let mut again = Vec::new();
+    for _ in 0..3 {
+        let t = next_in(&s, None, 2000).expect("the retry is due");
+        assert_eq!(t.attempt, 2);
+        complete(&s, &t);
+        again.push(t.task);
+    }
+    again.sort();
+    assert_eq!(again, ids);
+    // The time is ahead of the wall clock now; it does not move back.
+    assert_eq!(unsafe { cronoq_resync_clock(s.0, &mut moved) }, CRONOQ_OK);
+    assert_eq!(moved, 0);
+}
+
+#[test]
 fn a_pool_hands_out_at_most_max_leases_at_a_time() {
     let s = std::sync::Arc::new(new(r#"{"pools": [{"name": "default", "max_leases": 2}]}"#));
     for i in 0..60 {

@@ -23,6 +23,19 @@ contain breaking changes; they are called out under **Changed**.
   build tag `cronoq_static`) and Swift (`sdks/swift`). Releases carry the libraries for
   Linux, macOS and Windows (x86-64 and ARM64). See
   [Embedding from other languages](docs/book/src/guides/embedding.md).
+- Clock resynchronisation. Engine time follows the clock of the Rust standard library, which
+  on Apple platforms and on Linux does not count the time a machine sleeps, so after a sleep
+  every timer was late by the time slept. `Scheduler::resync_clock` (C
+  `cronoq_resync_clock`, Go `ResyncClock`, Swift `resyncClock`) moves engine time forward by
+  what was missed; timers that became due fire at once. The sleep is measured with a
+  monotonic clock that counts during sleep, so the wall clock has no effect (on Windows the
+  wall clock is used). Engine time never moves back. `Scheduler::advance_clock` (C
+  `cronoq_advance_clock`) moves it forward by a given time, for tests.
+- Apple builds of the embedded library: a nightly and release workflow builds it for iOS
+  (device and Apple-silicon simulator) and macOS, runs the engine's simulation tests and the
+  C API tests in the iOS simulator, and publishes a size report
+  (`cronoq-embed-apple-sizes.md`) and a binary framework for the Swift package
+  (`CCronoq.xcframework.zip`) with each release.
 - Cargo features `cron` and `tz` on `cronoq-core` and `cronoq`, and `rt-multi-thread` on
   `cronoq`, all on by default. Without `cron` a schedule is refused; without `tz` schedules
   run in UTC only and the time-zone database, most of the compiled size, is left out;
@@ -153,6 +166,8 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Changed
 
+- **Breaking (Rust):** `cronoq::Clock` is `Clone` and no longer `Copy`; its clones share one
+  clock. Write `sched.clock().clone()` where the code copied it.
 - **Breaking for `default-features = false`:** cron schedules, time-zone data and the
   multi-threaded runtime of `build_blocking` are now the features `cron`, `tz` and
   `rt-multi-thread` of the `cronoq` crate. They are on by default; a dependency on `cronoq`

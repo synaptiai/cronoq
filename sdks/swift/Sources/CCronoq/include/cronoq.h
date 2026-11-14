@@ -533,6 +533,44 @@ enum cronoq_status cronoq_events_next(const struct cronoq_events *events,
 // other thread uses it.
 void cronoq_events_close(struct cronoq_events *events);
 
+// Move the scheduler's time forward by the time it missed while the machine slept.
+//
+// The scheduler's clock does not count the time a machine sleeps (on Apple platforms and on
+// Linux). After a sleep every timer is late by the time slept: retries after a backoff,
+// timeouts, deadlines, lease expiry. Call this when the program becomes active again (on
+// iOS: when the app returns to the foreground). Timers that became due in the meantime fire
+// at once; they are not spread out.
+//
+// For a lease that was held across the sleep this means: it times out if its task's timeout
+// is shorter than the sleep, and it expires if its pool has a `lease_ttl_ms` shorter than
+// the sleep. Both count as a failed attempt. Release leases before the program is
+// suspended if you can.
+//
+// The sleep is measured with a monotonic clock of the operating system that counts during
+// sleep, so a change of the wall clock has no effect. On Windows, where the library knows
+// no such clock, the wall clock is used, and a wall clock that was set forward is followed.
+// The scheduler's time never moves back, and when nothing was missed this does nothing:
+// calling it more often than needed is harmless.
+//
+// `*out_moved_ms` (null allowed) is how far the time moved, in milliseconds.
+//
+// Thread safety: may be called from any number of threads at once.
+//
+// # Safety
+// `s` is a live scheduler. `out_moved_ms` is null or writable.
+enum cronoq_status cronoq_resync_clock(const struct cronoq_scheduler *s, uint64_t *out_moved_ms);
+
+// Move the scheduler's time forward by `by_ms` milliseconds, as if that much time had
+// passed: timers that are due within it fire at once. **For tests** of backoff and timeouts
+// without waiting. The time cannot be moved back, and it stays ahead of the wall clock:
+// the times in events are in the future. Do not use it with a store you keep.
+//
+// Thread safety: may be called from any number of threads at once.
+//
+// # Safety
+// `s` is a live scheduler.
+enum cronoq_status cronoq_advance_clock(const struct cronoq_scheduler *s, uint64_t by_ms);
+
 // Describe a live task (by `key` when not null, else by id `task`) as JSON:
 //
 // ```json

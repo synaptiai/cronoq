@@ -1355,6 +1355,71 @@ fn bytes_buf_empty() -> cronoq_buf {
     }
 }
 
+/// Move the scheduler's time forward by the time it missed while the machine slept.
+///
+/// The scheduler's clock does not count the time a machine sleeps (on Apple platforms and on
+/// Linux). After a sleep every timer is late by the time slept: retries after a backoff,
+/// timeouts, deadlines, lease expiry. Call this when the program becomes active again (on
+/// iOS: when the app returns to the foreground). Timers that became due in the meantime fire
+/// at once; they are not spread out.
+///
+/// For a lease that was held across the sleep this means: it times out if its task's timeout
+/// is shorter than the sleep, and it expires if its pool has a `lease_ttl_ms` shorter than
+/// the sleep. Both count as a failed attempt. Release leases before the program is
+/// suspended if you can.
+///
+/// The sleep is measured with a monotonic clock of the operating system that counts during
+/// sleep, so a change of the wall clock has no effect. On Windows, where the library knows
+/// no such clock, the wall clock is used, and a wall clock that was set forward is followed.
+/// The scheduler's time never moves back, and when nothing was missed this does nothing:
+/// calling it more often than needed is harmless.
+///
+/// `*out_moved_ms` (null allowed) is how far the time moved, in milliseconds.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler. `out_moved_ms` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_resync_clock(
+    s: *const cronoq_scheduler,
+    out_moved_ms: *mut u64,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller.
+        let s = unsafe { scheduler(s) }?;
+        let moved = s.with(|b| Ok(b.block_on(b.scheduler().resync_clock())?))?;
+        if !out_moved_ms.is_null() {
+            // SAFETY: caller.
+            unsafe { *out_moved_ms = moved.as_millis().min(u64::MAX as u128) as u64 };
+        }
+        Ok(CRONOQ_OK)
+    })
+}
+
+/// Move the scheduler's time forward by `by_ms` milliseconds, as if that much time had
+/// passed: timers that are due within it fire at once. **For tests** of backoff and timeouts
+/// without waiting. The time cannot be moved back, and it stays ahead of the wall clock:
+/// the times in events are in the future. Do not use it with a store you keep.
+///
+/// Thread safety: may be called from any number of threads at once.
+///
+/// # Safety
+/// `s` is a live scheduler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cronoq_advance_clock(
+    s: *const cronoq_scheduler,
+    by_ms: u64,
+) -> cronoq_status {
+    guard(|| {
+        // SAFETY: caller.
+        let s = unsafe { scheduler(s) }?;
+        let by = Duration::from_millis(by_ms);
+        s.with(|b| Ok(b.block_on(b.scheduler().advance_clock(by))?))?;
+        Ok(CRONOQ_OK)
+    })
+}
+
 /// `CamelCase` as `snake_case`, for the names of statuses.
 fn snake(name: &str) -> String {
     let mut out = String::new();

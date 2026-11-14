@@ -827,6 +827,32 @@ public final class Scheduler: @unchecked Sendable {
         }
     }
 
+    /// Move the scheduler's time forward by the time it missed while the device slept, and
+    /// return how far it moved, in seconds.
+    ///
+    /// The scheduler's clock does not count the time a device sleeps. After a sleep every
+    /// timer is late by the time slept: retries after a backoff, timeouts, deadlines, lease
+    /// expiry. Call this when the app becomes active again, for example on
+    /// `UIApplication.didBecomeActiveNotification`. Timers that became due in the meantime
+    /// fire at once; a lease held across the sleep can time out or expire. The sleep is
+    /// measured with a monotonic clock that counts during sleep, so the wall clock has no
+    /// effect. The time never moves back, and calling this more often than needed is
+    /// harmless.
+    @discardableResult
+    public func resyncClock() throws -> TimeInterval {
+        var moved: UInt64 = 0
+        try check(cronoq_resync_clock(handle, &moved))
+        return Double(moved) / 1000
+    }
+
+    /// Move the scheduler's time forward by `seconds`, as if that much time had passed:
+    /// timers that are due within it fire at once. For tests of backoff and timeouts
+    /// without waiting: the time stays ahead of the wall clock, so do not use it with a
+    /// store you keep.
+    public func advanceClock(by seconds: TimeInterval) throws {
+        try check(cronoq_advance_clock(handle, milliseconds(seconds)))
+    }
+
     /// Stop the scheduler: threads waiting in `next` throw `CronoqError.shutdown` at once
     /// and no new lease is handed out. For up to `grace` seconds, leases that are held can
     /// still be reported; the call returns as soon as all are. A lease that is still held

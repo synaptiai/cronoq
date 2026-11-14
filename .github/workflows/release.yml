@@ -240,6 +240,13 @@ jobs:
           name: embed-${{ matrix.target }}
           path: cronoq-embed-*.*
 
+  # Apple builds of the embedded library: size report, binary framework, simulator tests.
+  apple:
+    needs: verify
+    uses: ./.github/workflows/apple.yml
+    permissions:
+      contents: read
+
   publish-pypi:
     needs: [test-wheels, sdist]
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.dry_run == false)
@@ -475,7 +482,7 @@ jobs:
           path: charts/*.tgz
 
   github-release:
-    needs: [publish-pypi, publish-crates, publish-npm, server-binaries, embed-libraries, container, charts]
+    needs: [publish-pypi, publish-crates, publish-npm, server-binaries, embed-libraries, apple, container, charts]
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
@@ -498,6 +505,8 @@ jobs:
           files: |
             artifacts/cronoq-server-*
             artifacts/cronoq-embed-*
+            artifacts/CCronoq.xcframework.zip
+            artifacts/CCronoq.xcframework.zip.checksum
             artifacts/*.whl
             artifacts/cronoq-[0-9]*.tgz
             artifacts/cronoq-operator-[0-9]*.tgz

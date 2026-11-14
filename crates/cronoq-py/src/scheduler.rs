@@ -1356,7 +1356,7 @@ impl EventStream {
             notify: Notify::new(),
         });
         let mut rx = s.events();
-        let clock = *s.clock();
+        let clock = s.clock().clone();
         let st = state.clone();
         let relay = runtime().spawn(async move {
             // Task handles keep scheduler clones (and so the event sender) alive after

@@ -1,0 +1,168 @@
+name: Apple
+
+# The embedded library (crates/cronoq-ffi) on Apple platforms: builds for iOS, the iOS
+# simulator and macOS, a size report, the binary framework for the Swift package, and the
+# tests on the iOS simulator. macOS runners are slow and costly, so this runs nightly and
+# for a release, and on pull requests only when its own files change.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - .github/workflows/apple.yml
+      - .github/scripts/apple_sizes.sh
+      - .github/scripts/ios-sim-runner.sh
+
+permissions:
+  contents: read
+
+# Called from the release workflow, `github.workflow` is the caller's name: a release and a
+# nightly run on the same branch do not cancel each other.
+concurrency:
+  group: apple-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  TARGETS: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
+
+jobs:
+  # A green build per target, and the stripped size with and without cron and time zones.
+  sizes:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGETS }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: apple-sizes
+      - name: Build every target and measure
+        run: |
+          .github/scripts/apple_sizes.sh > cronoq-embed-apple-sizes.md
+          cat cronoq-embed-apple-sizes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apple-sizes
+          path: cronoq-embed-apple-sizes.md
+          if-no-files-found: error
+
+  # The binary framework that the Swift package can use in place of a library built locally:
+  # the static library for iOS, the iOS simulator and macOS (both architectures in one).
+  xcframework:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGETS }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: apple-xcframework
+      - name: Build the static libraries
+        run: |
+          for target in ${TARGETS//,/ }; do
+            cargo build --release --locked -p cronoq-ffi --target "$target"
+          done
+      - name: Assemble the framework
+        run: |
+          mkdir -p build/headers build/macos
+          cp crates/cronoq-ffi/include/cronoq.h build/headers/
+          printf 'module CCronoq {\n    header "cronoq.h"\n    export *\n}\n' > build/headers/module.modulemap
+          lipo -create \
+            target/aarch64-apple-darwin/release/libcronoq_ffi.a \
+            target/x86_64-apple-darwin/release/libcronoq_ffi.a \
+            -output build/macos/libcronoq_ffi.a
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libcronoq_ffi.a -headers build/headers \
+            -library target/aarch64-apple-ios-sim/release/libcronoq_ffi.a -headers build/headers \
+            -library build/macos/libcronoq_ffi.a -headers build/headers \
+            -output build/CCronoq.xcframework
+          (cd build && zip -qry ../CCronoq.xcframework.zip CCronoq.xcframework)
+          # The checksum SwiftPM wants for a binary target is the SHA-256 of the archive.
+          shasum -a 256 CCronoq.xcframework.zip | cut -d' ' -f1 > CCronoq.xcframework.zip.checksum
+          test "$(wc -c < CCronoq.xcframework.zip.checksum)" -ge 64
+          cat CCronoq.xcframework.zip.checksum
+      - name: The Swift package works with the framework
+        run: |
+          # The package as a user would set it up: the C target replaced by the framework.
+          cp -R sdks/swift build/package
+          rm -rf build/package/Sources/CCronoq
+          cp -R build/CCronoq.xcframework build/package/
+          python3 - <<'PY'
+          import re
+          p = "build/package/Package.swift"
+          s = open(p).read()
+          s, n = re.subn(
+              r'\.target\(\s*name: "CCronoq",\s*linkerSettings: \[\.linkedLibrary\("cronoq_ffi"\)\]\s*\)',
+              '.binaryTarget(name: "CCronoq", path: "CCronoq.xcframework")',
+              s,
+          )
+          assert n == 1, "Package.swift has changed: update this step"
+          open(p, "w").write(s)
+          PY
+          cd build/package
+          swift test
+          swift run cronoq-example
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apple-xcframework
+          path: |
+            CCronoq.xcframework.zip
+            CCronoq.xcframework.zip.checksum
+          if-no-files-found: error
+
+  # The engine's deterministic simulation and the tests of the C API, inside the simulator.
+  ios-simulator:
+    runs-on: macos-15
+    env:
+      CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER: ${{ github.workspace }}/.github/scripts/ios-sim-runner.sh
+      # simctl hands variables with this prefix to the program it starts.
+      SIMCTL_CHILD_CRONOQ_SIM_SEEDS: "200"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: apple-ios-simulator
+      - name: Boot a simulator
+        run: |
+          device=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          def version(runtime):
+              # com.apple.CoreSimulator.SimRuntime.iOS-18-2 -> (18, 2)
+              return tuple(int(n) for n in runtime.rsplit("iOS-", 1)[-1].split("-") if n.isdigit())
+          phones = [d for runtime, ds in sorted(devices.items(), key=lambda kv: version(kv[0]))
+                    if "iOS" in runtime for d in ds if "iPhone" in d["name"]]
+          if not phones:
+              sys.exit("no iPhone simulator is available on this runner")
+          print(phones[-1]["udid"])')
+          test -n "$device"
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device"
+      - name: Deterministic simulation of the engine
+        run: cargo test --release -p cronoq-core --target aarch64-apple-ios-sim --test sim
+      - name: Tests of the C API
+        run: cargo test --release -p cronoq-ffi --target aarch64-apple-ios-sim
+      - name: Clock tests of the driver
+        run: cargo test --release -p cronoq --no-default-features --target aarch64-apple-ios-sim --test clock

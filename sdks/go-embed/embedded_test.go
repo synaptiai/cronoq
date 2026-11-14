@@ -483,3 +483,33 @@ func TestEvents(t *testing.T) {
 		t.Fatal("the reader was not woken")
 	}
 }
+
+func TestClockAfterAGap(t *testing.T) {
+	no := false
+	s := open(t, Config{Pools: []Pool{{Name: "default", Retry: &Retry{
+		MaxAttempts: 2, InitialBackoffMs: 3600000, MaxBackoffMs: 3600000, Jitter: &no,
+	}}}})
+	id := submit(t, s, "x", nil)
+	if err := next(t, s).Fail("later", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Next("", 50*time.Millisecond); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("retry before its backoff: %v", err)
+	}
+	if moved, err := s.ResyncClock(); err != nil || moved > time.Second {
+		t.Fatalf("resync without a gap moved %v: %v", moved, err)
+	}
+	if err := s.AdvanceClock(time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	l, err := s.Next("", 2*time.Second)
+	if err != nil || l.Task != id || l.Attempt != 2 {
+		t.Fatalf("after the gap: %+v, %v", l, err)
+	}
+	if err := l.Complete(); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := s.ResyncClock(); err != nil || moved != 0 {
+		t.Fatalf("time moved back by a resync: %v, %v", moved, err)
+	}
+}

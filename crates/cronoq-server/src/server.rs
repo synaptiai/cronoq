@@ -538,7 +538,7 @@ fn spawn_info_feeder(
 ) -> JoinHandle<()> {
     let mut events = sched.events();
     let names: Arc<[Arc<str>]> = sched.pools().into();
-    let clock = *sched.clock();
+    let clock = sched.clock().clone();
     tokio::spawn(async move {
         loop {
             let e = tokio::select! {

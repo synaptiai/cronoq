@@ -815,7 +815,7 @@ pub async fn list_recurring(
     app: &AppState,
     principal: &Principal,
 ) -> Result<pb::ListRecurringResponse, Status> {
-    let clock = *app.sched.clock();
+    let clock = app.sched.clock().clone();
     let mut schedules: Vec<pb::RecurringInfo> = app
         .sched
         .list_recurring()
@@ -948,7 +948,7 @@ pub fn watch(
         (None, true) => None,
     };
     let names: Arc<[Arc<str>]> = app.sched.pools().into();
-    let clock = *app.sched.clock();
+    let clock = app.sched.clock().clone();
     let mut events = app.sched.events();
     let (tx, rx) = mpsc::channel(256);
     tokio::spawn(async move {
