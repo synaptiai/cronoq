@@ -267,7 +267,8 @@ jobs:
         run: |
           root=$(cd ../.. && (pwd -W 2>/dev/null || pwd))
           export CRONOQ_LIBRARY="$root/out/${{ matrix.dylib }}"
-          test -z "$(gofmt -l .)"
+          # The Windows checkout has CRLF line endings, which gofmt reports.
+          if [ "$RUNNER_OS" != "Windows" ]; then test -z "$(gofmt -l .)"; fi
           go vet ./...
           go test -count=1 ./...
           go run ./example
