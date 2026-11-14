@@ -177,6 +177,7 @@ fn full_spec() -> TaskSpec<Bytes> {
         .label("zone", "eu")
         .tenant("acme")
         .fingerprint(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10)
+        .max_releases(4)
 }
 
 /// Every mutation kind and spec field survives a commit and recovery; lookups by id and key
@@ -353,6 +354,7 @@ pub async fn round_trips_every_mutation_and_field<H: Harness>(h: &H) {
     assert_eq!(a.labels, b.labels);
     assert_eq!(a.tenant, b.tenant);
     assert_eq!(a.fingerprint, b.fingerprint);
+    assert_eq!((a.max_releases, t.releases), (Some(4), 0));
     let retrying = &rec.tasks[1];
     assert_eq!(
         (retrying.id, retrying.attempt, retrying.releases),

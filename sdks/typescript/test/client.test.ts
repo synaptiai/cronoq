@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { after, afterEach, before, describe, test } from "node:test";
 
-import { CancelTask, CronoqError, Permanent, Retryable, connect, runWorker, text, type Handler, type WorkerOptions } from "../src/node.js";
+import { CancelTask, CronoqError, Permanent, Release, Retryable, connect, runWorker, text, type Handler, type WorkerOptions } from "../src/node.js";
 import { ADMIN, CLIENT, Server, WORKER, serverBinary } from "./server.js";
 
 const bin = serverBinary();
@@ -320,6 +320,30 @@ describe("against a real server", { skip: bin === undefined && "cronoq-server no
     assert.equal(await admin.resume({ orderingKey: "pause-key" }), true);
     assert.equal((await c.wait(keyed.id, 10)).status, "succeeded");
     assert.equal(await admin.resume(), false);
+    await stop();
+  });
+
+  test("a handler releases a task without using a retry", async () => {
+    const c = connect(s.target, { token: CLIENT });
+    const attempts = new Map<string, number[]>();
+    const stop = worker(s.target, (l) => {
+      // Other tests may have left tasks queued: only this test's count.
+      if (!l.text().startsWith("rel-")) return "";
+      const seen = attempts.get(l.text()) ?? [];
+      attempts.set(l.text(), [...seen, l.attempt]);
+      // The first two attempts are given back.
+      if (seen.length < 2) throw new Release(0.1);
+      return l.text().toUpperCase();
+    });
+    const start = Date.now();
+    // One attempt is allowed: the two that are given back do not count.
+    const sub = await c.submitAndWait({ payload: "rel-x", maxAttempts: 1 }, 10);
+    assert.equal(text(sub.result?.output), "REL-X");
+    assert.deepEqual(attempts.get("rel-x"), [1, 2, 3]);
+    assert.ok(Date.now() - start >= 200);
+    // A task's own limit: with none allowed, a release is a failure.
+    const limited = await c.submitAndWait({ payload: "rel-y", maxAttempts: 1, maxReleases: 0 }, 10);
+    assert.equal(limited.result?.status, "dead_lettered");
     await stop();
   });
 

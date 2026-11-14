@@ -9,6 +9,18 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Releasing an attempt. An executor or a remote worker can give a task back without a
+  verdict when it cannot run it now and nothing is wrong with the task (`TaskError::release`,
+  `raise cronoq.Release(delay)`, `cronoq.Release(delay)` in Go, `throw new Release(delay)` in
+  TypeScript, `release { lease, delay_s }` in the worker protocol). The task keeps its place
+  in line and is offered again after the delay. The attempt number goes up, but the attempt
+  does not count against the retry policy. Releases of one task are limited by the pool's
+  `max_releases` (default 10) or the task's own; a release beyond the limit is a retryable
+  failure. Releases made while a pause holds the task do not count toward the limit.
+  Released attempts are durable and still do not count after a failover. A worker checks
+  `Registered.release_supported` and, with an older server, sends a retryable failure with
+  the delay instead. See
+  [Releasing an attempt](docs/book/src/concepts/reliability.md#releasing-an-attempt).
 - Pause and resume. A pool, one class of a pool or one ordering key can be paused with a
   reason: its tasks stay queued, keep their place and their age and count toward the bounds,
   submissions are still accepted, and nothing of it is started until it is resumed. Running
@@ -143,6 +155,13 @@ contain breaking changes; they are called out under **Changed**.
   with a floor or a halt (Postgres schema version 13, SQLite version 4). The migrations run
   when the database is opened and only add the columns and the table. An older binary refuses
   a migrated database.
+- **Store schema.** For releases, tasks gain the columns `releases` and `max_releases`, and
+  `cronoq_pending` gains `max_releases` (Postgres schema version 17, SQLite version 6).
+- **Breaking (Rust):** for releases, `TaskError` has a new variant `Release`, `TaskSpec` and
+  `PoolConfig` a new field `max_releases`, `RecoveredTask` a new field `releases`, `Mutation`
+  a new variant `Released`, `Totals` a new field `releases`. A custom `Store` must record
+  `Mutation::Released` (status `retrying`, the attempt count and the number of releases) and
+  return `RecoveredTask::releases`.
 - **Store schema.** For pauses, both stores gain a table `cronoq_paused` (Postgres schema
   version 14, SQLite version 5).
 - **Breaking (Rust):** for pauses, `Recovered` has a new field `paused`, `Mutation` a new

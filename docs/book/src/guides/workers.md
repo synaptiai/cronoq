@@ -118,6 +118,9 @@ Pass `labels={"gpu": "a100"}` to register the worker with labels: tasks submitte
 Raise `Reject` to give a lease back unrun: the server hands it to another worker of the pool
 with the same labels as the same attempt, or, if no such worker can take it, fails the attempt
 as retryable, which counts against the task's retry budget.
+Raise `cronoq.Release(delay)` when the handler cannot run the task now and nothing is wrong
+with the task: it is leased again after the delay, and the attempt does not use up a retry
+([Releasing an attempt](../concepts/reliability.md#releasing-an-attempt)).
 Raise `CancelTask` to end the task as `cancelled`. For mTLS, pass
 `credentials=grpc.ssl_channel_credentials(root, key, cert)`.
 
@@ -206,12 +209,15 @@ tooling.
      `deadline_unix_ns`);
    - send `heartbeat{lease}` well within `lease_ttl_s` while it runs;
    - finish with exactly one of `complete{lease, output}`,
-     `fail{lease, message, permanent, retry_after_s}`, `nack{lease, reason}` (give it back) or
-     `cancelled{lease}`.
+     `fail{lease, message, permanent, retry_after_s}`, `nack{lease, reason}` (hand the same
+     attempt to another worker), `release{lease, delay_s}` (end the attempt without a verdict;
+     only if `registered.release_supported` is set) or `cancelled{lease}`.
 5. On `abort{lease, reason}`, stop that attempt; its slot is already free.
 6. Send `set_slots{slots}` to change concurrency; `0` drains the worker. Do this before
-   shutting down, instead of answering new leases with `nack`: a refused lease that no other
-   worker can take fails the attempt.
+   shutting down, instead of answering new leases with `nack`: a `nack` hands the same attempt
+   to another worker, and if no other worker can take it the attempt fails as retryable and
+   uses one of the task's retries. To give a task back for later without that cost, send
+   `release`.
 7. On `shutdown{reason, not_leader}`, or when the stream ends, reconnect with backoff.
 
 In-flight leases of a dropped stream are failed as retryable and retried elsewhere. The full

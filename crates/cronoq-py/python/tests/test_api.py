@@ -721,3 +721,37 @@ async def test_pause_and_resume_a_pool_a_class_and_an_ordering_key():
             await s.pause("x", priority_class="low", ordering_key="k")
         with pytest.raises(cronoq.SubmitError):
             await s.pause("x", pool="missing")
+
+
+async def test_an_executor_releases_a_task_without_using_a_retry():
+    attempts = []
+
+    async def run(ctx, payload):
+        attempts.append(ctx.attempt)
+        if len(attempts) <= 2:
+            raise cronoq.Release(0.05)
+        if len(attempts) == 3:
+            raise cronoq.Retryable("flaky")
+        return payload
+
+    fast = RetryPolicy(max_attempts=2, initial_backoff=0.01, max_backoff=0.02)
+    async with Scheduler([pool(run, retry=fast)]) as s:
+        t0 = time.monotonic()
+        # Two attempts are allowed; the two that are given back do not count.
+        assert await (await s.submit("x")) == "x"
+        assert attempts == [1, 2, 3, 4]
+        assert time.monotonic() - t0 >= 0.1
+        assert (await s.snapshot()).totals["retries"] == 1
+
+    # The pool's limit, and a task's own: a release beyond it is a failure.
+    async def always(ctx, payload):
+        raise cronoq.Release()
+
+    async with Scheduler([pool(always, retry=RetryPolicy(max_attempts=1), max_releases=2)]) as s:
+        h = await s.submit("x")
+        with pytest.raises(cronoq.TaskFailed) as e:
+            await h
+        assert e.value.status == "dead_lettered" and "released more than 2 times" in str(e.value)
+        with pytest.raises(cronoq.TaskFailed) as e:
+            await (await s.submit("y", max_releases=0))
+        assert "released more than 0 times" in str(e.value)

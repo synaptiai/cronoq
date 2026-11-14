@@ -284,6 +284,15 @@ impl Sim {
         n
     }
 
+    /// The executor of `lease` gives its task back, to be offered again after `delay`.
+    pub fn release(&mut self, lease: LeaseId, delay: Duration) -> bool {
+        self.running.retain(|(_, l), _| *l != lease);
+        self.attempt_end.entry(lease).or_insert(self.now);
+        let r = self.core.release(self.now, lease, delay);
+        self.drain();
+        r
+    }
+
     pub fn running_leases(&self) -> Vec<LeaseId> {
         self.running.keys().map(|(_, l)| *l).collect()
     }

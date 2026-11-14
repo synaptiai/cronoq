@@ -251,7 +251,7 @@ async fn schema_version_is_recorded() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(v, 14);
+    assert_eq!(v, 17);
     sqlx::query("UPDATE cronoq_schema_version SET version = 99")
         .execute(store.pool())
         .await
@@ -279,6 +279,9 @@ async fn an_older_database_gets_ordering_keys() {
         "ALTER TABLE cronoq_pending DROP COLUMN halt_on_failure",
         "DROP TABLE cronoq_ordering",
         "DROP TABLE cronoq_paused",
+        "ALTER TABLE cronoq_tasks DROP COLUMN releases",
+        "ALTER TABLE cronoq_tasks DROP COLUMN max_releases",
+        "ALTER TABLE cronoq_pending DROP COLUMN max_releases",
         "UPDATE cronoq_schema_version SET version = 8",
     ] {
         sqlx::query(sql).execute(store.pool()).await.unwrap();
@@ -288,7 +291,7 @@ async fn an_older_database_gets_ordering_keys() {
         .fetch_one(store.pool())
         .await
         .unwrap();
-    assert_eq!(v, 14);
+    assert_eq!(v, 17);
     let batch = [
         submitted(
             2,

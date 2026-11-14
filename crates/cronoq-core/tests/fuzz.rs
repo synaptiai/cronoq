@@ -95,6 +95,14 @@ fn run(seed: u64) {
                     ids.push(x.id);
                 }
             }
+            5 if r.n(2) == 0 => {
+                // An executor gives a running task back.
+                let leases = sim.running_leases();
+                if !leases.is_empty() {
+                    let lease = leases[r.n(leases.len() as u64) as usize];
+                    sim.release(lease, secs(r.n(3) as f64 / 2.0));
+                }
+            }
             5 => {
                 if !ids.is_empty() {
                     let id = ids[r.n(ids.len() as u64) as usize];

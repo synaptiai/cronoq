@@ -377,6 +377,30 @@ the pool and one per class (`PoolPauses`), per strand an optional reason.
   from the store.
 - **Not included.** No pause per tenant, no timed resume, no abort of running attempts.
 
+### 5.7 Release
+`Core::release(now, lease, delay)` ends an attempt without a verdict. The lease is removed and
+its slot and resources are freed as in `complete`. Then:
+
+- `releases` (per task) is incremented, the task becomes `Retrying` with `retry_at = now +
+  delay` and the usual retry timer, so it comes back through `make_eligible` at its `seq`
+  (its place in its queue and in its strand; a released head keeps its strand). With a zero
+  delay it is back before anything else is dispatched in that call.
+- The attempt counter is not touched: the next dispatch is attempt `n + 1`. The retry budget
+  is `attempt - releases`, in `fail_attempt` and for an attempt lost in recovery.
+- A second counter, `release_count`, counts the releases that count toward the limit
+  (`TaskSpec::max_releases`, else `PoolConfig::max_releases`, default 10): those made while
+  neither the task's class or pool is paused nor its strand held. When it has reached the
+  limit, `release` is `fail_attempt(retryable, retry_after = delay)` instead. `release_count`
+  is not persisted: after recovery it starts at zero.
+- `Mutation::Released { id, attempt, releases, at }` (a store records status `retrying`, the
+  attempt count and `releases`); `RecoveredTask::releases`. A status event `Retrying` with the
+  message `released`. `Totals::releases`. A release is not counted in `failed` or `retries`.
+- An unknown lease returns `false` and counts as a stale completion.
+
+Worker protocol: `WorkerMessage.release { lease, delay_s }`, sent only when
+`Registered.release_supported` is set; the protocol version is unchanged, so older workers
+keep working, and newer workers fall back to `Fail { retry_after_s }` with an older server.
+
 ---
 
 ## 6. Fixed-start and recurring tasks
