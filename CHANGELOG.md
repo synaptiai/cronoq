@@ -31,6 +31,8 @@ contain breaking changes; they are called out under **Changed**.
   `cronoq_schedules` (Go `AddSchedule`, `RemoveSchedule`, `Schedules`; Swift `addSchedule`,
   `removeSchedule`, `schedules`). The library's `cron` feature is now on by default; the
   published libraries have no time-zone data (feature `tz`), so their schedules run in UTC.
+- `TaskContext::labels` and `Dispatch::labels`: the labels the task requires, next to
+  `group`, the labels of the worker group chosen for the attempt.
 - Clock resynchronisation. Engine time follows the clock of the Rust standard library, which
   on Apple platforms and on Linux does not count the time a machine sleeps, so after a sleep
   every timer was late by the time slept. `Scheduler::resync_clock` (C
@@ -182,6 +184,8 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Changed
 
+- **Breaking (Rust):** `Dispatch` has a new field, `labels`. Code that builds one by hand
+  must set it.
 - **Breaking (Rust):** `cronoq::Clock` is `Clone` and no longer `Copy`; its clones share one
   clock. Write `sched.clock().clone()` where the code copied it.
 - **Breaking for `default-features = false`:** cron schedules, time-zone data and the
@@ -264,6 +268,9 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Fixed
 
+- A fair pool with a tenant weight of zero, below zero or very small made the scheduler
+  stop (a panic in builds with overflow checks) or order tasks wrongly. The Rust builder now
+  refuses weights outside 0.000001 to 1000000 with a configuration error.
 - A cancel of an unknown or finished task that was the first call after a retry or a delayed
   start became due left that work waiting until the next call to the scheduler. It is now
   dispatched at once.

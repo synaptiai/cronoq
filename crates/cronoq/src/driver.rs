@@ -1425,6 +1425,7 @@ impl<P: Send + Sync + 'static, O: Send + Sync + 'static> Driver<P, O> {
                     timeout: d.timeout,
                     tags: d.tags.clone(),
                     group: d.group.clone(),
+                    labels: d.labels.clone(),
                     cancel: cancel.clone(),
                     heartbeat: self.heartbeat.clone(),
                     heartbeat_pending: Arc::new(AtomicBool::new(false)),

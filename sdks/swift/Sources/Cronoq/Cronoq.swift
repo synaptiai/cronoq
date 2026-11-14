@@ -749,7 +749,7 @@ public struct Lease: @unchecked Sendable {
     public let pool: String
     /// The task's tags.
     public let tags: [String: String]
-    /// The labels the attempt was taken with (see `Scheduler.next(pool:labels:timeout:)`).
+    /// The labels the task requires (see `Scheduler.next(pool:labels:timeout:)`).
     public let labels: [String: String]
     /// The task's deadline.
     public let deadline: Date?
@@ -861,8 +861,11 @@ public final class Scheduler: @unchecked Sendable {
     /// `labels` are the labels of the calling thread. A task submitted with labels goes
     /// only to a caller whose labels include all of them. A task without labels goes to any
     /// caller, and the scheduler prefers callers with fewer labels for it. Callers that
-    /// pass the same labels form a group; a pool keeps at most 64 different groups, and its
-    /// `maxLeases` holds for all of them together.
+    /// pass the same labels form a group; a pool keeps at most 64 different groups for the
+    /// life of the scheduler, so labels are for a few lasting properties, not for values
+    /// that keep changing. `maxLeases` holds for all groups of a pool together. An attempt
+    /// of a task with labels that no caller with those labels asks for within a second is
+    /// given back, as by `Lease.release`.
     public func next(pool: String? = nil, labels: [String: String]? = nil, timeout: TimeInterval) throws -> Lease {
         var raw = cronoq_lease()
         let labelsText = try labels.map { try json($0) }

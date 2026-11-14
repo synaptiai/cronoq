@@ -75,6 +75,9 @@ pub struct TaskContext {
     /// Labels of the worker group chosen for this attempt (empty for unlabeled workers). An
     /// executor that fronts several kinds of workers runs the attempt on one with these labels.
     pub group: cronoq_core::Labels,
+    /// Labels the task requires ([`Task::label`](crate::Task::label)); empty if none. They
+    /// are all among those of `group`.
+    pub labels: cronoq_core::Labels,
     pub(crate) cancel: CancellationToken,
     pub(crate) heartbeat: HeartbeatFn,
     /// Set while a heartbeat for this lease is queued, so heartbeats coalesce.
@@ -109,6 +112,7 @@ impl TaskContext {
             deadline: None,
             timeout: None,
             group: Arc::from(Vec::new()),
+            labels: Arc::from(Vec::new()),
             cancel: CancellationToken::new(),
             heartbeat: Arc::new(|_, _| {}),
             heartbeat_pending: Arc::new(AtomicBool::new(false)),

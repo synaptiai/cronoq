@@ -369,12 +369,23 @@ let lease = try scheduler.next(labels: ["network": "wifi"], timeout: 5)
 - A task without labels goes to any thread. The scheduler prefers threads with fewer labels
   for it, so labelled threads stay free for the work only they can do.
 - `cronoq_next_lease` is the same call without labels.
-- Threads that pass the same labels form a group. A pool keeps at most 64 different groups;
-  a call with one more set of labels is an error.
-- `max_leases` holds for all groups of a pool together. When it is reached, leases that are
-  out keep their slots, and free slots go to the threads without labels first.
-- The labels are a statement about the thread at the time it asks. To stop taking work that
-  needs a label (the device left Wi-Fi), ask without it.
+- The lease carries the labels its task requires.
+- **Use a few lasting labels.** Threads that pass the same labels form a group, and a pool
+  keeps at most 64 different groups for the life of the scheduler; a call with one more set
+  of labels is an error. A label is for a property such as "has Wi-Fi", not for a value that
+  keeps changing, such as a battery level.
+- **The labels are a statement about the thread at the time it asks.** To stop taking work
+  that needs a label (the device left Wi-Fi), ask without it.
+- **`max_leases` holds for all groups of a pool together.** Your program never holds more
+  attempts than that. When threads of several groups wait and the pool is at its limit, the
+  scheduler may start one attempt more per group than there are leases free. Such an attempt
+  is handed out as soon as a lease is free; its timeout runs from its start.
+- **An attempt nobody with its labels asks for is given back.** The scheduler can start a
+  task for a thread a moment after that thread stopped waiting. If the task has no labels,
+  the next thread of the pool takes it. If it has labels and no thread with them asks within
+  a second, the attempt is [released](../concepts/reliability.md#releasing-an-attempt): the
+  task goes back to the queue and waits for such a thread. This counts toward the task's
+  `max_releases`.
 
 ## Operations
 

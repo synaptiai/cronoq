@@ -595,7 +595,7 @@ func TestLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(l.Payload) != "wifi" || l.Labels["power"] != "mains" || len(l.Labels) != 2 {
+	if string(l.Payload) != "wifi" || l.Labels["network"] != "wifi" || len(l.Labels) != 1 {
 		t.Fatalf("lease: %q %v", l.Payload, l.Labels)
 	}
 	if err := l.Complete(); err != nil {

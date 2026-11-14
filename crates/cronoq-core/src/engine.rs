@@ -1798,7 +1798,8 @@ impl<P> Core<P> {
             ((1e6 / w).round() as u64).max(1)
         });
         let start = f.vtime[class].max(f.finish.get(&(class as u8, tenant)).copied().unwrap_or(0));
-        f.finish.insert((class as u8, tenant), start + cost);
+        f.finish
+            .insert((class as u8, tenant), start.saturating_add(cost));
         if f.finish.len() > 4096 {
             // Tags at or behind the virtual time carry no state: forget them.
             let vtime = f.vtime;
@@ -4833,6 +4834,7 @@ impl<P> Core<P> {
             group: self.pools[pool as usize].groups[group as usize]
                 .labels
                 .clone(),
+            labels: self.constraints[e.constraint as usize].clone(),
         };
         let (key, class) = (e.key.clone(), e.class);
         self.actions.push_back(Action::Dispatch(d));

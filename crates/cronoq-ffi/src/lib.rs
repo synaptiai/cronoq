@@ -107,8 +107,7 @@ pub struct cronoq_lease {
     pub key: *const c_char,
     /// The task's kind (an empty string if it has none).
     pub kind: *const c_char,
-    /// A JSON object with the rest: `pool`, `tags`, `labels` (of the group of threads the
-    /// attempt was started for), and, when set, `deadline_unix_ms` and `timeout_ms`.
+    /// A JSON object with the rest: `pool`, `tags`, `labels` (those the task requires), and, when set, `deadline_unix_ms` and `timeout_ms`.
     pub info_json: *const c_char,
     /// Private to the library.
     pub owner: *mut c_void,
@@ -698,8 +697,14 @@ pub unsafe extern "C" fn cronoq_next_lease(
 /// Null and `{}` mean no labels. Threads that pass the same labels form a group; a pool
 /// keeps at most 64 different groups, and `max_leases` holds for all of them together.
 ///
-/// The labels of the group the attempt was started for are in the lease's `info_json`, as
-/// `labels`.
+/// A group stays for the life of the scheduler: labels are for a few lasting properties of
+/// threads, not for values that keep changing. The labels a task requires are in the
+/// lease's `info_json`, as `labels`.
+///
+/// When several groups wait and the pool is at `max_leases`, an attempt may be started
+/// before a lease is free for it. It is handed out as soon as one is; its timeout runs
+/// from its start. An attempt of a task with labels that no thread with those labels asks
+/// for within a second is given back, as by `cronoq_release`.
 ///
 /// # Safety
 /// As for `cronoq_next_lease`. `labels_json` is null or a zero-terminated string.
@@ -769,7 +774,7 @@ unsafe fn next_lease(
             "pool": &*ctx.pool,
             "tags": ctx.tags.iter().map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect::<std::collections::BTreeMap<_, _>>(),
-            "labels": ctx.group.iter().map(|(k, v)| (k.to_string(), v.to_string()))
+            "labels": ctx.labels.iter().map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect::<std::collections::BTreeMap<_, _>>(),
         });
         if let Some(d) = ctx.deadline
@@ -1553,6 +1558,9 @@ pub unsafe extern "C" fn cronoq_schedule_add(
         // SAFETY: caller, for every pointer below.
         let s = unsafe { scheduler(s) }?;
         let name = unsafe { required("name", name) }?;
+        if name.is_empty() {
+            return Err(invalid("name is empty"));
+        }
         let cron = unsafe { required("cron", cron) }?;
         let payload = if payload_len == 0 {
             Bytes::new()

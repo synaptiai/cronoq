@@ -289,6 +289,7 @@ type Task struct {
 	// StartInMs starts the task that far from now, at a time the scheduler keeps a slot
 	// free for. StartAtUnixMs does the same for a time of day, in milliseconds since 1970
 	// UTC. Set at most one.
+	// Zero means "not set" for both.
 	StartInMs     uint64 `json:"start_in_ms,omitempty"`
 	StartAtUnixMs uint64 `json:"start_at_unix_ms,omitempty"`
 	// StartToleranceMs is how late the start may be and still be on time (default 1000).
@@ -512,7 +513,7 @@ type Lease struct {
 	Pool string
 	// Tags are the task's tags.
 	Tags map[string]string
-	// Labels are the labels the attempt was taken with (see NextLabeled).
+	// Labels are the labels the task requires (see NextLabeled).
 	Labels map[string]string
 	// Deadline is the task's deadline, or the zero time.
 	Deadline time.Time
@@ -535,7 +536,11 @@ func (s *Scheduler) Next(pool string, timeout time.Duration) (*Lease, error) {
 // any caller, and the scheduler prefers callers with fewer labels for it.
 //
 // Callers that pass the same labels form a group. A pool keeps at most 64 different
-// groups, and its MaxLeases holds for all of them together.
+// groups for the life of the scheduler, so labels are for a few lasting properties, not for
+// values that keep changing. MaxLeases holds for all groups of a pool together.
+//
+// An attempt of a task with labels that no caller with those labels asks for within a
+// second is given back, as by Release.
 func (s *Scheduler) NextLabeled(pool string, labels map[string]string, timeout time.Duration) (*Lease, error) {
 	var labelsJSON string
 	if len(labels) > 0 {

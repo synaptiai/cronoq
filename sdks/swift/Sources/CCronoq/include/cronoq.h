@@ -90,8 +90,7 @@ typedef struct cronoq_lease {
   const char *key;
   // The task's kind (an empty string if it has none).
   const char *kind;
-  // A JSON object with the rest: `pool`, `tags`, `labels` (of the group of threads the
-  // attempt was started for), and, when set, `deadline_unix_ms` and `timeout_ms`.
+  // A JSON object with the rest: `pool`, `tags`, `labels` (those the task requires), and, when set, `deadline_unix_ms` and `timeout_ms`.
   const char *info_json;
   // Private to the library.
   void *owner;
@@ -288,8 +287,14 @@ enum cronoq_status cronoq_next_lease(const struct cronoq_scheduler *s,
 // Null and `{}` mean no labels. Threads that pass the same labels form a group; a pool
 // keeps at most 64 different groups, and `max_leases` holds for all of them together.
 //
-// The labels of the group the attempt was started for are in the lease's `info_json`, as
-// `labels`.
+// A group stays for the life of the scheduler: labels are for a few lasting properties of
+// threads, not for values that keep changing. The labels a task requires are in the
+// lease's `info_json`, as `labels`.
+//
+// When several groups wait and the pool is at `max_leases`, an attempt may be started
+// before a lease is free for it. It is handed out as soon as one is; its timeout runs
+// from its start. An attempt of a task with labels that no thread with those labels asks
+// for within a second is given back, as by `cronoq_release`.
 //
 // # Safety
 // As for `cronoq_next_lease`. `labels_json` is null or a zero-terminated string.

@@ -33,8 +33,13 @@ pub(crate) struct Leased {
 /// without labels.
 pub(crate) type Group = Vec<(Arc<str>, Arc<str>)>;
 
-/// Most label groups a pool keeps. A group stays once a thread has asked with its labels.
+/// Most label groups a pool keeps. A group stays, in the hub and in the scheduler, once a
+/// thread has asked with its labels: labels are for a few lasting properties of threads.
 const MAX_GROUPS: usize = 64;
+
+/// How long an attempt of a task that requires labels may wait for a thread that carries
+/// them before it is given back. Threads that poll come back sooner than this.
+const ORPHAN_GRACE: Duration = Duration::from_secs(1);
 
 /// `labels` as the scheduler orders them.
 pub(crate) fn group_of(labels: &[(Arc<str>, Arc<str>)]) -> Group {
@@ -64,35 +69,51 @@ struct GroupQueue {
 struct PoolQueue {
     /// The threads without labels are the group with no labels; it always exists.
     groups: BTreeMap<Group, GroupQueue>,
-    /// Most attempts of this pool that may be out at a time (`max_leases`).
+    /// Most attempts of this pool the host may hold at a time (`max_leases`).
     max: u32,
 }
 
+/// Whether a thread with the labels `have` may run a task that requires `need`.
+fn covers(have: &Group, need: &[(Arc<str>, Arc<str>)]) -> bool {
+    need.iter().all(|l| have.contains(l))
+}
+
 impl PoolQueue {
-    /// The capacity of each group: one slot per lease the host holds and one per thread that
-    /// waits for a lease. An attempt in `ready` is normally on its way to a waiting thread,
-    /// which is counted already. One that was started for a thread that has stopped waiting
-    /// keeps its slot until the next thread takes it.
+    /// Leases of this pool the host holds.
+    fn held(&self) -> u32 {
+        self.groups.values().map(|q| q.held).sum()
+    }
+
+    /// The capacity of each group: one slot per attempt that is out (held by the host, or
+    /// started and not yet taken) and one per thread that waits for an attempt.
     ///
-    /// All groups together get at most `max` slots. Attempts that are out come first; what
-    /// is left goes to waiting threads, group by group, the threads without labels first.
+    /// Waiting threads get slots only while fewer than `max` attempts are out, and each
+    /// group is offered all the slots that are free: the hub cannot know which group the
+    /// next task is for. The scheduler may therefore start more attempts than are free,
+    /// one per group at most for each free slot. [`Hub::take`] hands out no more than `max`
+    /// at a time; the others wait in `ready`.
     fn capacities(&self) -> Vec<(Group, u32)> {
-        let mut left = self.max;
-        let mut out: Vec<(Group, u32)> = self
+        let out: u32 = self
             .groups
+            .values()
+            .map(|q| q.held + q.ready.len() as u32)
+            .sum();
+        let free = self.max.saturating_sub(out);
+        self.groups
             .iter()
             .map(|(g, q)| {
-                let n = (q.held + q.ready.len() as u32).min(left);
-                left -= n;
-                (g.clone(), n)
+                let ready = q.ready.len() as u32;
+                let asking = q.waiting.saturating_sub(ready).min(free);
+                (g.clone(), q.held + ready + asking)
             })
-            .collect();
-        for ((_, n), q) in out.iter_mut().zip(self.groups.values()) {
-            let more = q.waiting.saturating_sub(q.ready.len() as u32).min(left);
-            left -= more;
-            *n += more;
-        }
-        out
+            .collect()
+    }
+
+    /// Whether a thread that could run a task requiring `need` waits for a lease.
+    fn awaited(&self, need: &[(Arc<str>, Arc<str>)]) -> bool {
+        self.groups
+            .iter()
+            .any(|(g, q)| q.waiting > 0 && covers(g, need))
     }
 }
 
@@ -266,11 +287,27 @@ impl Hub {
         q.groups.get_mut(group).expect("group was added")
     }
 
-    /// Move the oldest ready attempt of the group to the held ones.
-    fn take(s: &mut State, pool: &str, group: &Group) -> Option<Leased> {
+    /// Move a ready attempt that a thread with the labels `caller` may run to the held
+    /// ones: the oldest of the thread's own group, else one that was started for another
+    /// group and that nobody took (its thread stopped waiting). Nothing while the host
+    /// holds `max_leases` attempts of the pool.
+    fn take(s: &mut State, pool: &str, caller: &Group) -> Option<Leased> {
         let name = s.pools.get_key_value(pool)?.0.clone();
-        let q = s.pools.get_mut(pool)?.groups.get_mut(group)?;
-        let o = q.ready.pop_front()?;
+        let p = s.pools.get_mut(pool)?;
+        if p.held() >= p.max {
+            return None;
+        }
+        let own = p.groups.get(caller).is_some_and(|q| !q.ready.is_empty());
+        let (group, at) = if own {
+            (caller.clone(), 0)
+        } else {
+            p.groups.iter().find_map(|(g, q)| {
+                let at = q.ready.iter().position(|o| covers(caller, &o.ctx.labels))?;
+                Some((g.clone(), at))
+            })?
+        };
+        let q = p.groups.get_mut(&group)?;
+        let o = q.ready.remove(at)?;
         q.held += 1;
         // The host gets the context and the payload; the hub keeps the way to answer.
         let offer = Leased {
@@ -281,12 +318,34 @@ impl Hub {
             o.ctx.lease.0,
             Held {
                 pool: name,
-                group: group.clone(),
+                group,
                 ctx: o.ctx,
                 done: o.done,
             },
         );
         Some(offer)
+    }
+
+    /// Take back an attempt that was started and that no thread took, if no thread that
+    /// could run it waits for a lease. True if it was taken back.
+    fn reclaim(&self, pool: &str, lease: u64) -> bool {
+        let mut s = self.lock();
+        let Some(p) = s.pools.get_mut(pool) else {
+            return false;
+        };
+        let found = p.groups.iter().find_map(|(g, q)| {
+            let at = q.ready.iter().position(|o| o.ctx.lease.0 == lease)?;
+            Some((g.clone(), at, q.ready[at].ctx.labels.clone()))
+        });
+        let Some((group, at, need)) = found else {
+            return false;
+        };
+        if p.awaited(&need) {
+            return false;
+        }
+        let q = p.groups.get_mut(&group).expect("found above");
+        q.ready.remove(at);
+        true
     }
 
     /// End a held lease with `result`. `sync` is called for the lease's pool before the
@@ -439,6 +498,7 @@ impl Executor<Bytes, Bytes> for PullExecutor {
         payload: Arc<Bytes>,
     ) -> BoxFuture<Result<Bytes, TaskError>> {
         let (done, result) = oneshot::channel();
+        let need;
         let guard = Forget {
             hub: self.hub.clone(),
             pool: self.pool.clone(),
@@ -459,15 +519,40 @@ impl Executor<Bytes, Bytes> for PullExecutor {
             // slot, and goes to the next thread that asks. The scheduler chose the group:
             // one whose labels cover what the task requires.
             let group = group_of(&ctx.group);
+            need = ctx.labels.clone();
             let g = q.groups.entry(group).or_default();
             g.ready.push_back(Offer { ctx, payload, done });
         }
         self.hub.changed.notify_all();
+        let (hub, pool, lease, needs_labels) = (
+            self.hub.clone(),
+            self.pool.clone(),
+            guard.lease,
+            !need.is_empty(),
+        );
         Box::pin(async move {
             let _guard = guard;
-            match result.await {
-                Ok(r) => r,
-                Err(_) => Err(TaskError::release(Duration::ZERO)),
+            let mut result = result;
+            loop {
+                tokio::select! {
+                    r = &mut result => {
+                        return match r {
+                            Ok(r) => r,
+                            Err(_) => Err(TaskError::release(Duration::ZERO)),
+                        };
+                    }
+                    // A task that requires labels can only go to some threads. If none of
+                    // them asks any more, the attempt is given back, so that it does not
+                    // keep one of the pool's leases for ever.
+                    _ = tokio::time::sleep(ORPHAN_GRACE), if needs_labels => {
+                        if hub.reclaim(&pool, lease) {
+                            if let Some(resync) = hub.resync.get() {
+                                resync(pool.clone()).await;
+                            }
+                            return Err(TaskError::release(Duration::ZERO));
+                        }
+                    }
+                }
             }
         })
     }

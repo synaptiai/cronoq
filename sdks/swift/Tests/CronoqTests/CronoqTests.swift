@@ -319,7 +319,7 @@ final class CronoqTests: XCTestCase {
         }
         let lease = try s.next(labels: ["network": "wifi", "power": "mains"], timeout: 5)
         XCTAssertEqual(String(decoding: lease.payload, as: UTF8.self), "wifi")
-        XCTAssertEqual(lease.labels, ["network": "wifi", "power": "mains"])
+        XCTAssertEqual(lease.labels, ["network": "wifi"])
         try lease.complete()
         // A task without labels goes to any thread.
         _ = try submit(s, "any")

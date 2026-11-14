@@ -1281,10 +1281,8 @@ fn a_task_with_labels_goes_only_to_a_thread_that_carries_them() {
     )
     .unwrap();
     assert_eq!(t.payload, "wifi");
-    assert_eq!(
-        t.info["labels"],
-        serde_json::json!({"network": "wifi", "power": "mains"})
-    );
+    // The lease names the labels the task requires.
+    assert_eq!(t.info["labels"], serde_json::json!({"network": "wifi"}));
     complete(&s, &t);
 
     // A task without labels runs on any thread; `{}` and null are "no labels".
@@ -1566,4 +1564,196 @@ fn other_work_runs_before_a_fixed_start_when_it_fits() {
     assert_eq!(t.payload, "later");
     complete(&s, &t);
     assert_eq!(drain(&s), ["long"]);
+}
+
+#[test]
+fn an_attempt_started_for_a_thread_that_left_goes_to_any_thread_that_may_run_it() {
+    // A thread with labels polls without waiting. The scheduler may start a task for it a
+    // moment after it has left; the task needs no labels, so the next thread takes it.
+    let s = new(r#"{"pools": [{"name": "default", "max_leases": 1}]}"#);
+    let mut id = submit(&s, "any", "");
+    let mut stranded = false;
+    for _ in 0..200 {
+        match next_labeled(&s, None, Some(r#"{"net": "wifi"}"#), 0) {
+            Ok(t) => {
+                complete(&s, &t);
+                id = submit(&s, "any", "");
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                if task(&s, id).unwrap()["status"] == "running" {
+                    stranded = true;
+                    break;
+                }
+            }
+        }
+    }
+    if stranded {
+        // A thread with other labels may run it too.
+        let t = next_labeled(&s, None, Some(r#"{"net": "cell"}"#), 2000).unwrap();
+        assert_eq!((t.task, t.payload.as_str()), (id, "any"));
+        complete(&s, &t);
+    }
+    submit(&s, "other", "");
+    let rest = drain(&s);
+    assert!(rest.contains(&"other".to_string()), "{rest:?}");
+    assert_eq!(snapshot(&s)["totals"]["releases"], 0);
+}
+
+#[test]
+fn an_attempt_that_needs_labels_nobody_carries_any_more_is_given_back() {
+    let s = new(r#"{"pools": [{"name": "default", "max_leases": 1}]}"#);
+    let mut id = submit(&s, "wifi", r#"{"labels": {"net": "wifi"}}"#);
+    let mut stranded = false;
+    for _ in 0..200 {
+        match next_labeled(&s, None, Some(r#"{"net": "wifi"}"#), 0) {
+            Ok(t) => {
+                complete(&s, &t);
+                id = submit(&s, "wifi", r#"{"labels": {"net": "wifi"}}"#);
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                if task(&s, id).unwrap()["status"] == "running" {
+                    stranded = true;
+                    break;
+                }
+            }
+        }
+    }
+    // Whether or not the attempt was started for the thread that left: the pool's one
+    // lease is free for other work within the grace, and the task waits for its labels.
+    submit(&s, "other", "");
+    let t = next_in(&s, None, 3000).unwrap();
+    assert_eq!(t.payload, "other");
+    complete(&s, &t);
+    if stranded {
+        eventually(&s, "given back", |snap| snap["totals"]["releases"] == 1);
+    }
+    assert_eq!(next_in(&s, None, 100).unwrap_err(), CRONOQ_TIMEOUT);
+    let t = next_labeled(&s, None, Some(r#"{"net": "wifi"}"#), 5000).unwrap();
+    assert_eq!((t.task, t.payload.as_str()), (id, "wifi"));
+    complete(&s, &t);
+}
+
+#[test]
+fn a_waiting_thread_without_work_does_not_keep_work_from_another_group() {
+    let s = std::sync::Arc::new(new(r#"{"pools": [{"name": "default", "max_leases": 1}]}"#));
+    let idle = {
+        let s = s.clone();
+        std::thread::spawn(move || next_in(&s, None, 1500).map(|t| t.payload))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let gpu = {
+        let s = s.clone();
+        std::thread::spawn(move || {
+            let r = next_labeled(&s, None, Some(r#"{"gpu": "1"}"#), 5000);
+            if let Ok(t) = &r {
+                complete(&s, t);
+            }
+            r.map(|t| t.payload)
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    submit(&s, "needs-gpu", r#"{"labels": {"gpu": "1"}}"#);
+    assert_eq!(gpu.join().unwrap().as_deref(), Ok("needs-gpu"));
+    assert!(started.elapsed() < std::time::Duration::from_millis(1000));
+    assert_eq!(idle.join().unwrap().unwrap_err(), CRONOQ_TIMEOUT);
+}
+
+#[test]
+fn threads_of_several_groups_never_hold_more_than_max_leases() {
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    let s = std::sync::Arc::new(new(r#"{"pools": [{"name": "default", "max_leases": 1}]}"#));
+    let out = std::sync::Arc::new(AtomicI32::new(0));
+    let peak = std::sync::Arc::new(AtomicI32::new(0));
+    let done = std::sync::Arc::new(AtomicI32::new(0));
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let groups = [
+        None,
+        Some(r#"{"a": "1"}"#),
+        Some(r#"{"b": "1"}"#),
+        Some(r#"{"a": "1", "b": "1"}"#),
+        None,
+        Some(r#"{"a": "1"}"#),
+    ];
+    let threads: Vec<_> = groups
+        .into_iter()
+        .enumerate()
+        .map(|(n, labels)| {
+            let (s, out, peak, done, stop) = (
+                s.clone(),
+                out.clone(),
+                peak.clone(),
+                done.clone(),
+                stop.clone(),
+            );
+            std::thread::spawn(move || {
+                let mut i = 0u64;
+                while !stop.load(Ordering::SeqCst) {
+                    i += 1;
+                    if let Ok(t) = next_labeled(&s, None, labels, (i * 7 + n as u64) % 4) {
+                        let now = out.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_micros(300));
+                        out.fetch_sub(1, Ordering::SeqCst);
+                        complete(&s, &t);
+                        done.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let (mut k, mut submitted) = (0, 0);
+    while started.elapsed() < std::time::Duration::from_secs(3) {
+        k += 1;
+        let options = match k % 4 {
+            1 => r#"{"labels": {"a": "1"}}"#,
+            2 => r#"{"labels": {"b": "1"}}"#,
+            _ => "",
+        };
+        if submit_full(&s, "x", options).0 == CRONOQ_OK {
+            submitted += 1;
+        }
+        if k % 8 == 0 {
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        // Do not let the queue run away from the threads.
+        while submitted - done.load(Ordering::SeqCst) > 200 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    // Everything that was submitted is done in the end.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while done.load(Ordering::SeqCst) < submitted && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    stop.store(true, Ordering::SeqCst);
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(peak.load(Ordering::SeqCst), 1);
+    assert_eq!(done.load(Ordering::SeqCst), submitted);
+    assert!(submitted > 100, "{submitted}");
+}
+
+#[test]
+fn a_tenant_weight_the_scheduler_cannot_work_with_is_refused() {
+    for fairness in [
+        r#"{"weights": {"a": 0}}"#,
+        r#"{"weights": {"a": -1}}"#,
+        r#"{"weights": {"a": 1e-300}}"#,
+        r#"{"default_weight": 0}"#,
+        r#"{"default_weight": 1e9}"#,
+    ] {
+        let config = format!(r#"{{"pools": [{{"name": "default", "fairness": {fairness}}}]}}"#);
+        let mut s = null_mut();
+        assert_eq!(
+            unsafe { cronoq_new(c(&config).as_ptr(), &mut s) },
+            CRONOQ_INVALID_ARGUMENT,
+            "{fairness}"
+        );
+        assert!(last_error().contains("weights"), "{}", last_error());
+    }
 }
