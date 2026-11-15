@@ -109,6 +109,10 @@ pub struct Scheduler {
     priority: Option<cronoq::PriorityConfig>,
     urgency: Option<cronoq::UrgencyConfig>,
     default_conflict: cronoq::KeyConflict,
+    /// How long the key of a finished task keeps deduplicating, and how many finished tasks
+    /// are kept for it.
+    key_retention: Duration,
+    key_retention_max: usize,
     shutdown_grace: f64,
     event_capacity: usize,
     default_pool: Arc<str>,
@@ -197,8 +201,13 @@ impl Scheduler {
     /// With `store=SqliteStore(path)`, queued work, schedules and results survive restarts.
     /// Payloads and results are then encoded with `codec` (an object with `encode(obj) ->
     /// bytes` and `decode(bytes) -> obj`), JSON by default.
+    ///
+    /// `key_retention` is how many seconds the key of a finished task keeps deduplicating
+    /// submissions (a resubmission returns the finished task), and `key_retention_max` how
+    /// many finished tasks are kept for that at most; the oldest go first. With a store, give
+    /// `SqliteStore(retention=...)` the same value, so a restart loads the same window.
     #[new]
-    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None, priority=None, urgency=None, on_key_conflict=None))]
+    #[pyo3(signature = (pools, resources=None, emit_transitions=false, *, shutdown_grace=5.0, event_capacity=1024, store=None, codec=None, priority=None, urgency=None, on_key_conflict=None, key_retention=3600.0, key_retention_max=1_000_000))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -212,7 +221,11 @@ impl Scheduler {
         priority: Option<PriorityConfig>,
         urgency: Option<UrgencyConfig>,
         on_key_conflict: Option<&str>,
+        key_retention: f64,
+        key_retention_max: usize,
     ) -> PyResult<Self> {
+        // Engine time cannot go past the year 2554: a longer window means "for ever".
+        let key_retention = secs(key_retention, "key_retention")?.min(FOREVER);
         let default_conflict = match parse_key_conflict(on_key_conflict)? {
             cronoq::KeyConflict::ReplaceQueued => {
                 return Err(PyValueError::new_err(
@@ -285,6 +298,8 @@ impl Scheduler {
             priority: priority.map(|p| p.to_core()),
             urgency: urgency.map(|u| u.to_core()),
             default_conflict,
+            key_retention,
+            key_retention_max,
             shutdown_grace,
             event_capacity,
             default_pool,
@@ -327,9 +342,14 @@ impl Scheduler {
                 shared.stop_unexpectedly("its asyncio event loop was closed");
             }
         });
+        let (retention, retention_max) = (self.key_retention, self.key_retention_max);
         let mut b = Sched::builder()
             .emit_transitions(self.emit_transitions)
-            .on_key_conflict(self.default_conflict);
+            .on_key_conflict(self.default_conflict)
+            .configure(move |c| {
+                c.retention = retention;
+                c.retention_max = retention_max;
+            });
         if let Some(p) = &self.priority {
             b = b.priority(p.clone());
         }

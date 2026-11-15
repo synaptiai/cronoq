@@ -19,7 +19,9 @@ Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
           emit_transitions: bool = False, *, shutdown_grace: float = 5.0,
           event_capacity: int = 1024, store: SqliteStore | None = None,
           codec: Codec | None = None, priority: PriorityConfig | None = None,
-          urgency: UrgencyConfig | None = None)
+          urgency: UrgencyConfig | None = None,
+          on_key_conflict: Literal["return_existing", "reject"] | None = None,
+          key_retention: float = 3600.0, key_retention_max: int = 1_000_000)
 ```
 
 | Argument | Description |
@@ -32,6 +34,8 @@ Scheduler(pools: Sequence[Pool], resources: Sequence[Resource] | None = None,
 | `store` | Keep state in a SQLite file so it survives restarts; see [`SqliteStore`](#cronoqsqlitestore). |
 | `codec` | How payloads and results are turned into bytes for the store: any object matching the `cronoq.Codec` protocol (`encode(obj) -> bytes` and `decode(bytes) -> obj`). Default: `JsonCodec`. Needs `store`. |
 | `priority`, `urgency` | A `PriorityConfig` and an `UrgencyConfig` for every pool that does not set its own ([Priorities and aging](../concepts/priorities.md#configuration), [Deadlines](../concepts/deadlines.md#configuration)). Default: the built-in values. |
+| `key_retention` | Seconds the [key](../concepts/dependencies.md#keys) of a finished task keeps deduplicating submissions: a resubmission returns the finished task. Default 1 hour. With a `store`, give `SqliteStore(retention=...)` the same value, so a restart loads the same window. |
+| `key_retention_max` | Most finished tasks kept for key deduplication (bounds memory); beyond it the oldest go first. Default 1,000,000. |
 
 A scheduler is bound to the event loop that starts it. If that loop closes without a shutdown,
 the scheduler stops and further calls raise `SchedulerError`; calls before `start()` raise
@@ -146,7 +150,7 @@ schedules resume, and results of finished tasks stay available through `handle()
 |---|---|
 | `path` | Database file; keep it on a local filesystem. |
 | `lease_ttl`, `lease_renew`, `lock_poll` | Several processes may share the file: one leads and the others wait in `start()`. The leader renews its lease every `lease_renew` seconds; a standby takes over `lease_ttl` seconds after the leader stopped renewing (at once after a clean shutdown) and checks every `lock_poll` seconds. |
-| `retention` | How long finished tasks are kept in memory after a restart, for key deduplication. |
+| `retention` | How long back a restart loads finished tasks, for key deduplication and dependencies. Give the scheduler's `key_retention` the same value. |
 | `full_sync` | Sync to disk on every commit. Off is faster but a power loss can drop the latest commits. |
 
 With a store, payloads and results are encoded by the scheduler's codec:

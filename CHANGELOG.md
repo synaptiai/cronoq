@@ -9,6 +9,9 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- Python: `Scheduler(key_retention=..., key_retention_max=...)` sets how long the key of a
+  finished task keeps deduplicating submissions, and how many finished tasks are kept for it
+  (until now fixed at 1 hour and 1,000,000 in Python; #68).
 - Embedding from other languages (experimental until 1.0). A C library, `cronoq_ffi`
   (crate `cronoq-ffi`), with a generated header, `cronoq.h`, runs the scheduler inside a Go,
   Swift or C program without a server. The program submits tasks as bytes and runs them

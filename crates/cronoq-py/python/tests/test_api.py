@@ -755,3 +755,33 @@ async def test_an_executor_releases_a_task_without_using_a_retry():
         with pytest.raises(cronoq.TaskFailed) as e:
             await (await s.submit("y", max_releases=0))
         assert "released more than 0 times" in str(e.value)
+
+
+async def test_key_retention_sets_how_long_a_finished_key_deduplicates():
+    async def run(ctx, payload):
+        return payload
+
+    pool = lambda: [Pool("default", run, max=1, autoscale=False)]
+    # Default: a finished task's key keeps deduplicating.
+    async with Scheduler(pool()) as s:
+        first = await s.submit("a", key="k")
+        await first
+        again = await s.submit("b", key="k")
+        assert (again.id, again.outcome) == (first.id, "existing")
+    # No retention: once the task has ended, the key is free again.
+    async with Scheduler(pool(), key_retention=0) as s:
+        first = await s.submit("a", key="k")
+        await first
+        again = await s.submit("b", key="k")
+        assert again.outcome == "created" and again.id != first.id
+    # A bound of zero finished tasks has the same effect.
+    async with Scheduler(pool(), key_retention_max=0) as s:
+        first = await s.submit("a", key="k")
+        await first
+        assert (await s.submit("b", key="k")).outcome == "created"
+    with pytest.raises(ValueError):
+        Scheduler(pool(), key_retention=-1)
+    with pytest.raises(ValueError):
+        Scheduler(pool(), key_retention=float("nan"))
+    with pytest.raises(OverflowError):
+        Scheduler(pool(), key_retention_max=-1)

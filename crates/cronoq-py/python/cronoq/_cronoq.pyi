@@ -355,6 +355,8 @@ class Scheduler:
         priority: PriorityConfig | None = None,
         urgency: UrgencyConfig | None = None,
         on_key_conflict: Literal["return_existing", "reject"] | None = None,
+        key_retention: float = 3600.0,
+        key_retention_max: int = 1_000_000,
     ) -> Self: ...
     def start(self) -> Awaitable[None]: ...
     def submit(
