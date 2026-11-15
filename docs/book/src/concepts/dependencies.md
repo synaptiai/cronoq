@@ -25,8 +25,8 @@ A key is not an [ordering key](ordering-keys.md), which makes tasks of one subje
 a time and never deduplicates. A task may have both.
 
 Keys stay reserved while the task is live and for the retention window after it ends
-(`limits.key_retention_s` on the server, `CoreConfig::retention` in the library; 1 hour by
-default). Separately, the server deletes finished rows from a Postgres or SQLite store after
+(`limits.key_retention_s` on the server, `CoreConfig::retention` in the library,
+`Scheduler(key_retention=...)` in Python; 1 hour by default). Separately, the server deletes finished rows from a Postgres or SQLite store after
 `store.keep_finished_s` (7 days by default).
 
 ## Edges
