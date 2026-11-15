@@ -120,8 +120,8 @@ What a submission does when it does not choose is a setting: `return_existing` o
 | Rust | `Builder::on_key_conflict` |
 | Python | `Scheduler(on_key_conflict=...)` |
 
-The default of that setting is `return_existing` in this release, so nothing changes until you
-ask. **It will become `reject` in the next minor release**, announced in the changelog: a key
+The default of that setting is `return_existing` in 0.3.0, so nothing changes until you
+ask. **It will become `reject` in the next minor release, 0.4.0**, announced in the changelog: a key
 reused with other content is almost always a bug worth hearing about. Set it explicitly now to
 keep either behaviour across the upgrade. A submission can always choose for itself.
 

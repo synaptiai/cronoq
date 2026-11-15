@@ -7,6 +7,8 @@ contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
 ### Added
 
 - Python: `Scheduler(key_retention=..., key_retention_max=...)` sets how long the key of a
@@ -25,7 +27,7 @@ contain breaking changes; they are called out under **Changed**.
   (`sdks/go-embed`: loads the dynamic library without cgo, or links the static one with the
   build tag `cronoq_static`) and Swift (`sdks/swift`). Releases carry the libraries for
   Linux, macOS and Windows (x86-64 and ARM64). See
-  [Embedding from other languages](docs/book/src/guides/embedding.md).
+  [Embedding from other languages](https://synaptiai.github.io/cronoq/guides/embedding.html).
 - More of the engine in the embedded library. Tasks submitted through the C API can have a
   fixed start (`start_in_ms`, `start_at_unix_ms`, `start_tolerance_ms`, `on_miss`),
   dependencies (`after`), a tenant for pools with `fairness`, and labels. A thread that
@@ -54,7 +56,8 @@ contain breaking changes; they are called out under **Changed**.
   (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`).
 - Cargo features `cron` and `tz` on `cronoq-core` and `cronoq`, and `rt-multi-thread` on
   `cronoq`, all on by default. Without `cron` a schedule is refused; without `tz` schedules
-  run in UTC only and the time-zone database, most of the compiled size, is left out;
+  run in UTC only (a schedule that names another time zone is refused) and the time-zone
+  database, most of the compiled size, is left out;
   without `rt-multi-thread`, `build_blocking` runs a single-threaded runtime on a thread of
   its own. `BlockingScheduler::start` and `BlockingScheduler::block_on`.
 - Releasing an attempt. An executor or a remote worker can give a task back without a
@@ -71,7 +74,7 @@ contain breaking changes; they are called out under **Changed**.
   `Registered.release_supported` and, with an older server, sends a retryable failure with
   the delay instead. The OpenTelemetry attempt metrics (`cronoq.attempts`,
   `cronoq.attempt.duration`) record a released attempt with `outcome = released`. See
-  [Releasing an attempt](docs/book/src/concepts/reliability.md#releasing-an-attempt).
+  [Releasing an attempt](https://synaptiai.github.io/cronoq/concepts/reliability.html#releasing-an-attempt).
 - Pause and resume. A pool, one class of a pool or one ordering key can be paused with a
   reason: its tasks stay queued, keep their place and their age and count toward the bounds,
   submissions are still accepted, and nothing of it is started until it is resumed. Running
@@ -83,7 +86,7 @@ contain breaking changes; they are called out under **Changed**.
   HTTP (`POST /v1/pools/{pool}/pause`, `/resume`, `/ordering/{key}/pause`) and the
   command-line tool (`cronoq pause`, `cronoq resume`, `cronoq ordering paused`). Pausing needs
   the admin role; credentials pinned to a tenant pause their own ordering keys only. See
-  [Pausing and resuming](docs/book/src/concepts/pausing.md).
+  [Pausing and resuming](https://synaptiai.github.io/cronoq/concepts/pausing.html).
 - Snapshot and metrics show what is paused and why: per pool the pool's reason, the paused
   classes, the number of held tasks and of paused ordering keys (`cronoq_pool_paused`,
   `cronoq_pool_paused_classes`, `cronoq_pool_paused_tasks`, `cronoq_pool_ordering_paused`).
@@ -106,7 +109,7 @@ contain breaking changes; they are called out under **Changed**.
   `SetOrderingFloor`, `Resume`), HTTP (`/v1/pools/{pool}/ordering/...`) and the command-line
   tool (`cronoq submit --ordering-key`, `cronoq ordering`, `cronoq resume`). An ordering key
   cannot be combined with a fixed start or used in a schedule. See
-  [Ordering keys](docs/book/src/concepts/ordering-keys.md).
+  [Ordering keys](https://synaptiai.github.io/cronoq/concepts/ordering-keys.html).
 - Credentials pinned to a tenant have their own ordering keys: key `k` of tenant `acme` is
   stored, and seen by other credentials, as `acme:k`. They submit to, read and change those
   keys only, so one tenant cannot block or halt a key that holds another's tasks.
@@ -131,7 +134,14 @@ contain breaking changes; they are called out under **Changed**.
   `Builder::on_key_conflict`, `Scheduler(on_key_conflict=...)`), `return_existing` in this
   release.
 - **Upcoming change:** the default `on_key_conflict` becomes `reject` in the next minor
-  release. Set it explicitly to keep either behaviour across the upgrade.
+  release, 0.4.0. Set it explicitly to keep either behaviour across the upgrade. A submission
+  that names no `on_key_conflict`, including one from a 0.2.2 client, follows the setting.
+- Against a 0.2.2 server, which ignores options it does not know, a gRPC submission (single or
+  batch) with `on_key_conflict = reject` or `replace_queued` fails with `unimplemented` in the
+  Python, Go and TypeScript clients and the command-line tool. A server that forwards such a
+  submission to a 0.2.2 shard fails it with `UNIMPLEMENTED` when the task has a key. The error
+  does not undo what the old server did: if the key was free, the task has been created. Over
+  HTTP a 0.2.2 server refuses the option with 400 and admits nothing.
 - Helm chart: `onKeyConflict` sets the server's `server.on_key_conflict`.
 - gRPC-Web: browsers can read the `cronoq-*` response metadata (conflicting task, batch index,
   shard hints), which the server now lists in `access-control-expose-headers`.
@@ -184,7 +194,7 @@ contain breaking changes; they are called out under **Changed**.
 - Documentation: six use-case pages (ordered work per entity, latest-wins updates, idempotent
   producers, reprioritising live work, holding work without losing it, offline-first clients
   and embedded queues) and upgrade notes for this release, in
-  [Upgrading](docs/book/src/guides/upgrading.md).
+  [Upgrading](https://synaptiai.github.io/cronoq/guides/upgrading.html).
 
 ### Changed
 
@@ -210,8 +220,9 @@ contain breaking changes; they are called out under **Changed**.
   clock. Write `sched.clock().clone()` where the code copied it.
 - **Breaking for `default-features = false`:** cron schedules, time-zone data and the
   multi-threaded runtime of `build_blocking` are now the features `cron`, `tz` and
-  `rt-multi-thread` of the `cronoq` crate. They are on by default; a dependency on `cronoq`
-  with `default-features = false` has to name the ones it needs.
+  `rt-multi-thread` of the `cronoq` crate, and cron schedules and time-zone data the features
+  `cron` and `tz` of `cronoq-core`. They are on by default; a dependency on either crate with
+  `default-features = false` has to name the ones it needs.
 - Priority and urgency settings are now checked. `Builder::build` returns `Error::Config`, the
   server refuses to start, and `CoreConfig::validate` fails when a value is negative or not
   finite, when the base scores are not strictly ordered (critical above high above normal above
@@ -267,9 +278,6 @@ contain breaking changes; they are called out under **Changed**.
   has a new variant `KeyConflict`; `TaskSpec` and `RecoveredTerminal` have a new field
   `fingerprint`; `CoreConfig` has a new field `on_key_conflict`. A custom `Store` must keep
   `TaskSpec::fingerprint` and return it from `recover`, for live and finished tasks.
-- Clients no longer send "return the existing task" when a submission names no
-  `on_key_conflict`: they leave it unset, and the server's `server.on_key_conflict` decides.
-  With the default setting nothing changes.
 - **Breaking (Rust):** `Submitted` has a new field, `outcome`; `Recovered` has a new field,
   `pending`; `Mutation` has new variants `Replaced` and `PendingReplacement`; `SubmitError` has
   a new variant `ReplaceMismatch`; `EventKind` has new variants `Replaced` and `Successor`;
@@ -281,7 +289,7 @@ contain breaking changes; they are called out under **Changed**.
 - **Breaking (Rust):** `StatusEvent` has new fields `priority` and `kind`, `Mutation` has a new
   variant `Updated`, and `Error` has a new variant `Update`. A custom `Store` must apply
   `Mutation::Updated` (set the task's priority, deadline and tags), or updates are lost on
-  restart; exhaustive matches on `Mutation` or `Error` need the new arm.
+  restart; exhaustive matches on `Mutation` need the new arm (`Error` is `#[non_exhaustive]`).
 - The Postgres and SQLite stores list the mutation kinds they skip in each pass instead of
   using a catch-all, so a new kind of `Mutation` fails to compile until every store handles it.
   The store conformance test fails to compile likewise until it covers the new kind.
@@ -304,13 +312,16 @@ contain breaking changes; they are called out under **Changed**.
   worker could take one, the attempt failed and counted against the task's retry budget, so a
   task could be dead-lettered during a drain without running. The Go, TypeScript and Python
   clients already did this.
-- A single submission with `on_key_conflict = reject`, sent over gRPC to a 0.2.2 server, was
-  answered like a plain submission: the old server ignores the option, so a key in use
-  returned the existing task without any comparison. The Python, Go and TypeScript clients
-  and the command-line tool now detect such a server from the missing `outcome`, as they
-  already did for batches, and fail with `unimplemented`. A server that forwards the
-  submission to a 0.2.2 shard does the same. The error does not undo what the old server
-  did: if the key was free, the task has been created.
+
+### Security
+
+- **Known and not yet fixed:** the SQLite store, and the embedded library's SQLite variant,
+  use a bundled SQLite affected by
+  [RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459): SQLite before 3.54.0
+  can return uninitialised memory when it opens a database file together with a crafted `-wal`
+  file. The attacker must be able to write those files next to the database; the store opens
+  a path chosen by the operator or the program. No release of `sqlx` accepts the fixed SQLite
+  yet; cronoq will update as soon as one does (#80).
 
 ## [0.2.2] - 2026-11-03
 
@@ -604,7 +615,8 @@ First public release. No 0.1.0 was published.
   sanitized; the server warns about non-local database URLs without `sslmode=verify-full` or
   `verify-ca`.
 
-[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/synaptiai/cronoq/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/synaptiai/cronoq/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/synaptiai/cronoq/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/synaptiai/cronoq/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/synaptiai/cronoq/releases/tag/v0.2.0

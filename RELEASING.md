@@ -16,10 +16,15 @@ publishes:
   GitHub release, with notes taken from `CHANGELOG.md`;
 - multi-architecture container images to `ghcr.io/synaptiai/cronoq` (the server and CLI) and
   `ghcr.io/synaptiai/cronoq-operator`;
-- the Helm charts `cronoq` and `cronoq-operator` to `oci://ghcr.io/synaptiai/charts`.
+- the Helm charts `cronoq` and `cronoq-operator` to `oci://ghcr.io/synaptiai/charts`;
+- the embedded C library to the GitHub release: an archive per platform in two variants
+  (`cronoq-embed-<tag>-<target>` and `cronoq-embed-sqlite-<tag>-<target>`), the binary
+  frameworks for Swift (`CCronoq.xcframework.zip`, `CCronoq-sqlite.xcframework.zip`) with their
+  checksums, and the Apple size report (`cronoq-embed-apple-sizes.md`).
 
-The Go SDK is published by its own tag, `sdks/go/vX.Y.Z` (Go finds a module in a subdirectory
-by a tag with that prefix).
+The Go client and the Go wrapper of the embedded library are published by their own tags,
+`sdks/go/vX.Y.Z` and `sdks/go-embed/vX.Y.Z` (Go finds a module in a subdirectory by a tag
+with that prefix).
 
 ## One-time setup
 
@@ -61,9 +66,10 @@ by a tag with that prefix).
 1. Make sure `main` is green (CI and benchmarks).
 2. Update the versions:
    - the root `Cargo.toml` (`[workspace.package] version`) and the `version = "..."` of every
-     internal path dependency (`cronoq-core` in `[workspace.dependencies]`, and the `cronoq`,
-     `cronoq-proto`, `cronoq-store-postgres` and `cronoq-store-sqlite` dependencies in the
-     crates that use them). The Python package version follows automatically;
+     internal path dependency (`cronoq-core` in `[workspace.dependencies]`, and every
+     `{ path = "../cronoq…", version = "..." }` in `crates/*/Cargo.toml`; `grep -rn
+     'path = "../cronoq' crates/*/Cargo.toml` lists them), then `cargo update -w`. The Python
+     package version follows automatically;
    - `version` in `sdks/typescript/package.json` (run `npm install --package-lock-only` there
      to update its lock file);
    - `version` and `appVersion` in `deploy/helm/cronoq/Chart.yaml` and
@@ -92,13 +98,14 @@ by a tag with that prefix).
    those tests. The release workflow does not run the Go and TypeScript test suites; those run
    in CI, so `main` must be green first. It also refuses to publish a TypeScript package version
    that is already published.
-7. Only after every job of the release workflow has succeeded, tag and push the Go SDK. The Go
-   module proxy records a version the first time anyone fetches it, so the tag cannot be moved
-   afterwards:
+7. Only after every job of the release workflow has succeeded, tag and push the two Go
+   modules. The Go module proxy records a version the first time anyone fetches it, so the
+   tags cannot be moved afterwards:
 
    ```sh
    git tag -s sdks/go/vX.Y.Z -m "cronoq Go SDK vX.Y.Z" vX.Y.Z^{commit}
-   git push origin sdks/go/vX.Y.Z
+   git tag -s sdks/go-embed/vX.Y.Z -m "cronoq embedded Go wrapper vX.Y.Z" vX.Y.Z^{commit}
+   git push origin sdks/go/vX.Y.Z sdks/go-embed/vX.Y.Z
    ```
 
 ## Dry run

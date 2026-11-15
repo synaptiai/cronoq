@@ -67,7 +67,7 @@ A submission without a fingerprint never conflicts.
 To check every submission that does not choose for itself, set the default: `on_key_conflict`
 under `[server]` in the server configuration, `Builder::on_key_conflict` in Rust, or
 `Scheduler(on_key_conflict=...)` in Python. The default of that setting is `return_existing`
-in this release. The changelog announces that it becomes `reject` in the next minor release.
+in 0.3.0. The changelog announces that it becomes `reject` in the next minor release, 0.4.0.
 Set it explicitly to keep either behaviour across that upgrade
 ([Upgrading](../guides/upgrading.md#the-default-for-key-conflicts)).
 

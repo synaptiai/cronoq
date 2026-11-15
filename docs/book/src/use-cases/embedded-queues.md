@@ -156,7 +156,7 @@ a SQLite file (`Store: &embedded.Store{SQLite: path}` in the Go `Config`). After
 queue is as it was, and an attempt that was running is tried again. One program at a time may
 have the file open.
 
-Each release after 0.2.2 has the library and the binary framework in a second variant with
+Each release from 0.3.0 on has the library and the binary framework in a second variant with
 the store (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`). To build it yourself:
 `cargo build --release -p cronoq-ffi --features sqlite`.
 
@@ -179,10 +179,9 @@ the store (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`). To buil
 
 - **Experimental.** The C API has a version number (`cronoq_abi_version()`), and it will
   change before 1.0. The wrappers check the version for you.
-- **How you get it today.** Release 0.2.2 does not contain the library. Releases after 0.2.2
-  carry an archive per platform with the dynamic library, the static library and the header,
-  and a binary framework for Swift. Until then, build it yourself
-  (`cargo build --release -p cronoq-ffi`). Each comes in two variants, without a store and
+- **How you get it.** Releases from 0.3.0 on carry an archive per platform with the dynamic
+  library, the static library and the header, and a binary framework for Swift; or build it
+  yourself (`cargo build --release -p cronoq-ffi`). Each comes in two variants, without a store and
   with the SQLite store. The Go package loads the dynamic library at run time, or links the static
   one with the build tag `cronoq_static`. The Swift package links the static library
   ([details](../guides/embedding.md#getting-the-library)).
@@ -206,5 +205,5 @@ the store (`cronoq-embed-sqlite-…`, `CCronoq-sqlite.xcframework.zip`). To buil
   inside `Next` holds an operating system thread while it waits.
 - **A paused class or ordering key is not reported.** Only a pause of the whole pool is
   reported by "next". For the others the call finds nothing; see the snapshot.
-- **Platforms.** Linux, macOS and Windows libraries are in each release after 0.2.2. iOS is
+- **Platforms.** Linux, macOS and Windows libraries are in each release from 0.3.0 on. iOS is
   built and tested in the simulator. Android is not built or tested.

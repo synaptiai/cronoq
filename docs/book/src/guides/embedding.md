@@ -43,9 +43,9 @@ gives up.
 
 ## Getting the library
 
-Release 0.2.2 does not contain the library; until the next release, build it yourself as
-shown below. Each release after 0.2.2 has an archive per platform,
-`cronoq-embed-<version>-<target>`, with the dynamic library, the static library and the
+Each release from 0.3.0 on has an archive per platform,
+`cronoq-embed-v<version>-<target>.tar.gz` (`.zip` on Windows; for example
+`cronoq-embed-v0.3.0-x86_64-unknown-linux-gnu.tar.gz`), with the dynamic library, the static library and the
 header:
 
 | Platform | Target | Dynamic library |
@@ -64,8 +64,8 @@ Each archive, and the binary framework for Swift, comes in two variants:
 
 | Variant | Release files | Tasks are kept |
 |---|---|---|
-| Without a store | `cronoq-embed-<version>-<target>`, `CCronoq.xcframework.zip` | In memory. The smallest library. |
-| With the SQLite store | `cronoq-embed-sqlite-<version>-<target>`, `CCronoq-sqlite.xcframework.zip` | In memory, or in a SQLite file if the configuration names one ([below](#keeping-tasks-across-restarts)). |
+| Without a store | `cronoq-embed-v<version>-<target>`, `CCronoq.xcframework.zip` | In memory. The smallest library. |
+| With the SQLite store | `cronoq-embed-sqlite-v<version>-<target>`, `CCronoq-sqlite.xcframework.zip` | In memory, or in a SQLite file if the configuration names one ([below](#keeping-tasks-across-restarts)). |
 
 To build it yourself you need a Rust toolchain:
 
@@ -211,7 +211,7 @@ cargo build --release -p cronoq-ffi
 swift build -Xlinker -L<dir with libcronoq_ffi.a>
 ```
 
-For iOS, and to do without a Rust toolchain, each release after 0.2.2 has a binary framework,
+For iOS, and to do without a Rust toolchain, each release from 0.3.0 on has a binary framework,
 `CCronoq.xcframework.zip`, with the static library for iOS devices (ARM64), the Apple-silicon
 iOS simulator and macOS (ARM64 and x86-64), and its checksum. `CCronoq-sqlite.xcframework.zip`
 is the same with the SQLite store. Copy `sdks/swift` into your
@@ -560,8 +560,8 @@ With a library built with the `sqlite` feature, `"store": {"sqlite": "<path>"}` 
 recurring schedules, pauses and ordering-key settings in that file. After a restart the queue is as it was; an
 attempt that was running is tried again. One program at a time may have the file open.
 
-Each release after 0.2.2 has the library with the store as a second variant:
-`cronoq-embed-sqlite-<version>-<target>` and `CCronoq-sqlite.xcframework.zip`. To build it
+Each release from 0.3.0 on has the library with the store as a second variant:
+`cronoq-embed-sqlite-v<version>-<target>` and `CCronoq-sqlite.xcframework.zip`. To build it
 yourself: `cargo build --release -p cronoq-ffi --features sqlite`.
 
 ## Rules of the boundary

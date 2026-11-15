@@ -14,7 +14,7 @@ The package wraps the cronoq C library in two build modes with the same API:
 - **`-tags cronoq_static`, cgo:** links the static library; set
   `CGO_LDFLAGS="-L<dir with libcronoq_ffi.a>"`.
 
-The libraries are attached to each cronoq release (`cronoq-embed-<version>-<target>`), or
+The libraries are attached to each cronoq release (`cronoq-embed-v<version>-<target>`), or
 build them with `cargo build --release -p cronoq-ffi`.
 
 Documentation:

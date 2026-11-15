@@ -26,9 +26,9 @@ tz = ["cron", "cronoq/tz"]
 sqlite = ["dep:cronoq-store-sqlite"]
 
 [dependencies]
-cronoq = { path = "../cronoq", version = "0.2.2", default-features = false }
+cronoq = { path = "../cronoq", version = "0.3.0", default-features = false }
 cronoq-core.workspace = true
-cronoq-store-sqlite = { path = "../cronoq-store-sqlite", version = "0.2.2", optional = true }
+cronoq-store-sqlite = { path = "../cronoq-store-sqlite", version = "0.3.0", optional = true }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,7 +1,7 @@
 # Upgrading
 
-This page describes what to do when you move from cronoq 0.2.2 to the next release. That
-release adds ordering keys, replace by key, conflict detection, updates of queued tasks, pause
+This page describes what to do when you move from cronoq 0.2.2 to 0.3.0. That release
+adds ordering keys, replace by key, conflict detection, updates of queued tasks, pause
 and resume, releases, and the embedded library. The [changelog](../changelog.md) lists every
 change; this page lists what needs an action.
 
@@ -22,7 +22,7 @@ change; this page lists what needs an action.
 Both durable stores record a schema version in the table `cronoq_schema_version`. The new
 release moves it forward:
 
-| Store | Version in 0.2.2 | Version in the new release |
+| Store | Version in 0.2.2 | Version in 0.3.0 |
 |---|---|---|
 | Postgres | 5 | 17 |
 | SQLite | 1 | 6 |
@@ -44,7 +44,7 @@ connects first applies them, under a lock.
 
 **Upgrades roll forward only.** A build refuses to open a database whose schema version is
 higher than the one it supports. The error is "database schema version N is newer than this
-build supports". There is no migration back to an older version. Once the new release has
+build supports". There is no migration back to an older version. Once 0.3.0 has
 opened a database, 0.2.2 cannot use it again.
 
 So:
@@ -85,8 +85,8 @@ holds it. Do not rely on ordering keys, on `reject` or on replace by key before 
 is upgraded.
 
 Over HTTP a 0.2.2 server refuses a request body that contains a field it does not know
-(`ordering_key`, `on_failure`, `on_key_conflict`, `renew_position`) with status 400. Nothing
-is admitted.
+(`ordering_key`, `on_failure`, `on_key_conflict`, `renew_position`, `max_releases`) with
+status 400. Nothing is admitted.
 
 The same holds between shards. A new server that forwards a submission to a 0.2.2 shard
 checks the answer in the same way for an ordering key, for `reject` and for `replace_queued`
@@ -124,9 +124,9 @@ A submission whose key is already in use, and that does not choose a behaviour i
 a setting: `on_key_conflict`, with the values `return_existing` and `reject`
 ([Detecting conflicting submissions](../concepts/key-conflicts.md#the-default)).
 
-- In this release the default of the setting is `return_existing`. Nothing changes until you
+- In 0.3.0 the default of the setting is `return_existing`. Nothing changes until you
   ask.
-- The changelog announces that the default becomes `reject` in the next minor release.
+- The changelog announces that the default becomes `reject` in the next minor release, 0.4.0.
 
 Set the value explicitly now. Then the behaviour stays the same across that upgrade,
 whichever value you choose.
@@ -138,10 +138,9 @@ whichever value you choose.
 | Rust | `Builder::on_key_conflict` |
 | Python | `Scheduler(on_key_conflict=...)` |
 
-A submission can always choose for itself. One related change is already in effect: the
-clients no longer send "return the existing task" when a submission names no
-`on_key_conflict`. They leave the field unset, and the server's setting decides. With the
-default setting nothing changes.
+A submission can always choose for itself. A submission that names no `on_key_conflict`
+leaves the field unset, and the server's setting decides. This includes submissions from 0.2.2
+clients, which do not know the field.
 
 ## Rust breaking changes
 
@@ -162,7 +161,7 @@ ones it needs:
 | Without the feature | Effect |
 |---|---|
 | `cron` | A recurring schedule is refused. |
-| `tz` | Schedules run in UTC only. |
+| `tz` | Schedules run in UTC only; adding or recovering a schedule that names another time zone fails. |
 | `rt-multi-thread` | `build_blocking` runs a single-threaded runtime on a thread of its own. |
 
 **Priority and urgency settings are checked.** `Builder::build` returns `Error::Config`, and
@@ -171,8 +170,9 @@ not strictly ordered, or when an `age_cap` lets a lower class pass freshly submi
 critical work. Set `allow_overtaking_high` to accept the last case. The defaults pass
 unchanged.
 
-**Tenant weights are checked.** `Builder::build` returns `Error::Config` for a fair-sharing
-weight, or default weight, outside 0.000001 to 1000000. Such weights made the scheduler stop or
+**Tenant weights are checked.** `Builder::build` returns `Error::Config`, and the server
+refuses to start (`--check` fails), for a fair-sharing weight, or default weight, outside
+0.000001 to 1000000. Such weights made the scheduler stop or
 order tasks wrongly.
 
 **New fields.** Code that builds these types with a struct literal needs the new fields, or
@@ -229,7 +229,9 @@ cover each kind, so a missing kind is a compile error there.
 The store must also keep, and return from `recover`:
 
 - `TaskSpec::fingerprint`, for live and for finished tasks;
-- a task's ordering key and its failure policy.
+- a task's ordering key and its failure policy;
+- `TaskSpec::max_releases`, the task's own release limit, for live tasks and for stored
+  replacements.
 
 ## Other changes in behaviour
 
@@ -238,10 +240,11 @@ The store must also keep, and return from `recover`:
 | Credentials pinned to a tenant can cancel that tenant's tasks only. A `Cancel` of another tenant's task, or of a task without a tenant, answers `NOT_FOUND` (404). Reading is unchanged. | Clients that use tenant-pinned tokens to cancel other tasks. |
 | The pool's ready and backlog figures, and the autoscaler's queue pressure, do not count tasks that wait behind another task of their ordering key. | Dashboards and autoscaling, once ordering keys are in use. |
 | The engine records the tenant of every task, not only in pools with fair sharing. `TaskSummary::tenant` is set for all of them. | Readers of task listings. |
+| The server refuses to start when a pool's `tenant_weights` has a weight outside 0.000001 to 1000000; 0.2.2 accepted any finite weight above 0. Run `--check` on the configuration before upgrading. | Servers with fair-sharing pools. |
 
 ## The embedded library
 
-The embedded library (`cronoq_ffi`, with the Go and Swift wrappers) is new in this release,
+The embedded library (`cronoq_ffi`, with the Go and Swift wrappers) is new in 0.3.0,
 so there is nothing to upgrade from. It is experimental until cronoq 1.0. Its C API has a
 version number, `cronoq_abi_version()`, which must equal the `CRONOQ_ABI_VERSION` of the
 header you built with. The wrappers check it for you. See
