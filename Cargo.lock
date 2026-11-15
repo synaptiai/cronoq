@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-ffi"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "cronoq",
@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-operator"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-proto"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-py"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-server"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -893,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-store-postgres"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-store-sqlite"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "cronoq-store-tests"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bytes",

@@ -6,7 +6,7 @@ cronoq is pre-1.0. Security fixes are released for the latest minor version only
 
 | Version | Supported |
 |---|---|
-| 0.2.x | ✅ |
+| 0.3.x | ✅ |
 | older | ❌ |
 
 ## Reporting a vulnerability

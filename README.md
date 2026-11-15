@@ -83,18 +83,18 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 |---|---|
 | Rust library | `cargo add cronoq` (Rust 1.95+) |
 | Python | `pip install cronoq` for the in-process scheduler; `pip install "cronoq[client]"` adds the gRPC client and worker (CPython 3.14+) |
-| Server (container) | `docker pull ghcr.io/synaptiai/cronoq:0.2.2` (includes the `cronoq` CLI) |
+| Server (container) | `docker pull ghcr.io/synaptiai/cronoq:0.3.0` (includes the `cronoq` CLI) |
 | Server (binaries) | Linux, macOS and Windows archives on the [release page](https://github.com/synaptiai/cronoq/releases/latest), each with `cronoq-server` and `cronoq` |
-| Kubernetes | `helm install cronoq oci://ghcr.io/synaptiai/charts/cronoq --version 0.2.2`; the operator chart is `oci://ghcr.io/synaptiai/charts/cronoq-operator` |
+| Kubernetes | `helm install cronoq oci://ghcr.io/synaptiai/charts/cronoq --version 0.3.0`; the operator chart is `oci://ghcr.io/synaptiai/charts/cronoq-operator` |
 | Command-line tool | `cargo install cronoq-cli` |
-| Go | `go get github.com/synaptiai/cronoq/sdks/go@v0.2.2` (Go 1.26+) |
+| Go | `go get github.com/synaptiai/cronoq/sdks/go@v0.3.0` (Go 1.26+) |
 | TypeScript | `@synaptiai/cronoq` on GitHub Packages, or the tarball on the release page (Node 22+; [how to install](https://synaptiai.github.io/cronoq/reference/typescript.html)) |
-| Embedded C library (experimental) | Not in 0.2.2. Build it from this repository: `cargo build --release -p cronoq-ffi` gives `libcronoq_ffi` (static and dynamic) and the header `crates/cronoq-ffi/include/cronoq.h`. The release workflow attaches an archive per platform, `cronoq-embed-<version>-<target>`, to later releases. |
-| Go, embedded (experimental) | The package `github.com/synaptiai/cronoq/sdks/go-embed`, in [`sdks/go-embed`](sdks/go-embed). It needs the C library: by default it loads the dynamic library at run time without cgo; with the build tag `cronoq_static` it links the static library. It has no version tag of its own yet. |
-| Swift, embedded (experimental) | The package `Cronoq`, in [`sdks/swift`](sdks/swift) (macOS 12+, iOS 15+). It is not in a package registry. It links the static C library: build the library and pass `-Xlinker -L<dir with libcronoq_ffi.a>`, or use the binary framework `CCronoq.xcframework.zip` that the release workflow builds ([how](https://synaptiai.github.io/cronoq/guides/embedding.html)). |
+| Embedded C library (experimental) | An archive per platform on the [release page](https://github.com/synaptiai/cronoq/releases/latest), `cronoq-embed-v<version>-<target>` (and `cronoq-embed-sqlite-…` with the SQLite store), with the static and dynamic `libcronoq_ffi` and the header `cronoq.h`. Or build it from this repository: `cargo build --release -p cronoq-ffi`. |
+| Go, embedded (experimental) | The package `github.com/synaptiai/cronoq/sdks/go-embed`, in [`sdks/go-embed`](sdks/go-embed). It needs the C library: by default it loads the dynamic library at run time without cgo; with the build tag `cronoq_static` it links the static library. `go get github.com/synaptiai/cronoq/sdks/go-embed@v0.3.0`. |
+| Swift, embedded (experimental) | The package `Cronoq`, in [`sdks/swift`](sdks/swift) (macOS 12+, iOS 15+). It is not in a package registry. It links the static C library: build the library and pass `-Xlinker -L<dir with libcronoq_ffi.a>`, or use the binary framework `CCronoq.xcframework.zip` from the release page ([how](https://synaptiai.github.io/cronoq/guides/embedding.html)). |
 
 Wheels, binaries, images and the TypeScript package carry build provenance attestations:
-`gh attestation verify <file> --repo synaptiai/cronoq`, or `oci://ghcr.io/synaptiai/cronoq:0.2.2`
+`gh attestation verify <file> --repo synaptiai/cronoq`, or `oci://ghcr.io/synaptiai/cronoq:0.3.0`
 in place of the file for an image.
 
 ## Quickstart
@@ -103,7 +103,7 @@ in place of the file for an image.
 
 ```toml
 [dependencies]
-cronoq = "0.2"
+cronoq = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -161,7 +161,7 @@ asyncio.run(main())
 for role in CLIENT WORKER METRICS ADMIN; do export CRONOQ_${role}_TOKEN=$(openssl rand -hex 24); done
 docker run --name cronoq -p 7070:7070 -p 7071:7071 \
   -e CRONOQ_CLIENT_TOKEN -e CRONOQ_WORKER_TOKEN -e CRONOQ_METRICS_TOKEN -e CRONOQ_ADMIN_TOKEN \
-  ghcr.io/synaptiai/cronoq:0.2.2
+  ghcr.io/synaptiai/cronoq:0.3.0
 ```
 
 The server listens on port 7070 (gRPC) and 7071 (HTTP), with an in-memory store and the pools
