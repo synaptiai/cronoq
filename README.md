@@ -267,7 +267,7 @@ The same from Swift and C, the options, and what to do when a phone sleeps:
 | Durability | A Postgres store, or SQLite with standbys on the same host; leader election, epoch fencing, recovery, at-least-once execution, attempt numbers for fencing side effects |
 | Scale-out | Pools split between shards, each with its own leader and store; client calls to any server reach the right shard, and workers are redirected to it |
 | Interfaces | Rust (async + blocking), Python (asyncio), Go, TypeScript (Node and browsers), gRPC, gRPC-Web, HTTP/JSON, the `cronoq` CLI with a live `top` view |
-| Embedding | Experimental: a C library with Go and Swift wrappers runs the engine inside a program without a server; optional SQLite file; clock resynchronisation after sleep |
+| Embedding | Experimental: a C library with Go and Swift wrappers runs the engine inside a program without a server; fixed starts, dependencies, tenants, labels and recurring schedules (UTC); optional SQLite file; clock resynchronisation after sleep |
 | Operations | Helm charts, a Kubernetes operator that scales worker Deployments, a webhook scaler and a desired-capacity metric for KEDA, token roles limited to pools and pinned to tenants, TLS and mTLS |
 | Observability | Prometheus metrics, windowed quality metrics, and in the Rust library OpenTelemetry metrics and trace propagation |
 

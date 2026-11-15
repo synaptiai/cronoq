@@ -98,3 +98,11 @@ With a durable store, schedules and their next occurrence time are persisted. Af
 Re-adding a schedule with the same name replaces it without duplicating or overlapping an
 occurrence that was already created. Removing a schedule does not cancel an occurrence that was
 already created.
+
+## From the embedded library
+
+Programs that embed the scheduler through the C library add schedules with
+`cronoq_schedule_add` (Go `AddSchedule`, Swift `addSchedule`). The published libraries have no
+time-zone data, so their schedules run in UTC; a library built with the `tz` feature takes any
+IANA zone. Without a store, schedules are kept in memory and are added again at each start. See
+[Recurring schedules](../guides/embedding.md#recurring-schedules).

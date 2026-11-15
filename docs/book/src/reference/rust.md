@@ -125,7 +125,7 @@ absolute deadline, a fixed start, dependencies or an ordering key.
 |---|---|
 | `Executor<P, O>` | Trait: `execute(ctx, Arc<P>) -> BoxFuture<Result<O, TaskError>>`, optional `abort(lease)`. |
 | `FnExecutor` | Wraps an `async fn(TaskContext, Arc<P>)`; what `Pool::executor_fn` uses. |
-| `TaskContext` | `id`, `lease`, `attempt`, `pool`, `kind`, `key`, `tags`, `deadline`, `timeout`, `group` (labels of the worker group the attempt was assigned to); `is_cancelled()`, `cancelled().await`, `cancellation_token()`, `heartbeat()`, `tag(key)`, `traceparent()`; `TaskContext::for_test(id)` for unit tests. |
+| `TaskContext` | `id`, `lease`, `attempt`, `pool`, `kind`, `key`, `tags`, `deadline`, `timeout`, `group` (labels of the worker group the attempt was assigned to), `labels` (the labels the task requires); `is_cancelled()`, `cancelled().await`, `cancellation_token()`, `heartbeat()`, `tag(key)`, `traceparent()`; `TaskContext::for_test(id)` for unit tests. |
 | `TaskError` | `Retryable { message, retry_after }`, `Permanent { message }`, `Cancelled`, `Release { after }`; constructors `retryable`, `retry_after`, `permanent`, `release`, `from_err`. |
 
 `TaskError::release(after)` gives the task back without a verdict

@@ -305,7 +305,8 @@ time and its tenant's previous finish tag, and its finish tag adds `1e6 / weight
 in tag order gives each backlogged tenant dispatches in proportion to its weight. A tenant
 with no waiting work does not bank credit, because its tags never fall behind the virtual
 time. Higher classes still run first, and tasks with deadlines keep their EDF order. Tasks
-without a tenant, and tenants not listed, use `default_weight` (1.0).
+without a tenant, and tenants not listed, use `default_weight` (1.0). Every weight must lie in
+[1e-6, 1e6]; the driver's builder refuses a configuration with another value.
 
 ### 5.4 Worker labels
 A pool's capacity is split into worker groups by label set (`set_group_capacity`; group 0 has
@@ -547,7 +548,8 @@ pub trait Executor<P, O>: Send + Sync + 'static {
     /// Called synchronously when the engine abandons an attempt, before any new dispatch.
     fn abort(&self, _lease: LeaseId) {}
 }
-// TaskContext: id, lease, attempt, pool, kind, key, tags, deadline, timeout, group (labels);
+// TaskContext: id, lease, attempt, pool, kind, key, tags, deadline, timeout, group (labels),
+//              labels (the task's required labels, a subset of group's);
 //              is_cancelled(), cancellation_token(), heartbeat(), tag(k), traceparent()
 pub enum TaskError {
     Retryable { message: Arc<str>, retry_after: Option<Duration> },
