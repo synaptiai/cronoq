@@ -217,7 +217,7 @@ impl Store<u64, u64> for Shared {
             self.gate.notified().await;
         }
         let dec = |c: &AtomicU32| {
-            #[allow(deprecated)] // `try_update` (the new name) needs Rust 1.98; MSRV is 1.94
+            #[allow(deprecated)] // `try_update` (the new name) needs Rust 1.98; MSRV is 1.95
             c.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
         };
