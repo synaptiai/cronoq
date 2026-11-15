@@ -87,3 +87,11 @@ workers (server mode with no connected workers), or a dependency finished late.
 | `reservable_fraction` | 0.5 | per pool |
 | `max_hold` | 5 min | per pool (`PoolConfig`) |
 | `default_duration` | 1 s | per pool; used when no estimate exists |
+
+## From the embedded library
+
+Programs that embed the scheduler through the C library give a fixed start with the task
+options `start_in_ms` or `start_at_unix_ms`, `start_tolerance_ms` and `on_miss`
+(Go `Task.StartInMs`, Swift `TaskOptions.startInMs` and so on). A task with a fixed start
+needs a thread that asks for a lease at that time; see
+[Embedding from other languages](../guides/embedding.md#task-options).

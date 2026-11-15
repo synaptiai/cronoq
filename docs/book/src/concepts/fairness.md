@@ -60,3 +60,15 @@ A task submitted with such a token gets its tenant filled in; a task that names 
 is refused with `PERMISSION_DENIED`. Such a token can [update](updating.md) and cancel its own
 tenant's tasks only, so one tenant cannot demote or cancel another's work; other tasks are
 reported as not found. It can still read other tenants' tasks in its pools.
+
+## Limits on weights
+
+A weight must be between 0.000001 and 1000000, for listed tenants and for the default weight.
+`Builder::build` refuses other values with `Error::Config`, and the server refuses to start.
+
+## From the embedded library
+
+Programs that embed the scheduler through the C library set the pool option `fairness`
+(`weights` and `default_weight`) and the task option `tenant` (Go `Pool.Fairness` and
+`Task.Tenant`, Swift `Pool.fairness` and `TaskOptions.tenant`). See
+[Embedding from other languages](../guides/embedding.md#configuration).

@@ -225,7 +225,7 @@ retry = { max_attempts = 5, initial_backoff_s = 2, max_backoff_s = 120 }
 | `cost_per_worker_second` | float ≥ 0 | `0` | Cost per slot-second, for `cronoq_pool_cost_total`. |
 | `max_slots_per_worker` | int ≥ 1 | `limits.max_slots_per_worker` | Slots one worker may register in this pool (never above `max`). Workers asking for more are granted the cap. |
 | `fair_share` | bool | `false` | Share the pool fairly between tenants with equal weights (implied by `tenant_weights`). |
-| `tenant_weights` | table of tenant = weight | `{}` | Share the pool fairly between tenants with these weights (each finite and > 0; others weigh 1). See [Fair sharing](../concepts/fairness.md). |
+| `tenant_weights` | table of tenant = weight | `{}` | Share the pool fairly between tenants with these weights (each between 0.000001 and 1000000; others weigh 1). See [Fair sharing](../concepts/fairness.md). |
 
 Each pool also accepts `priority` and `urgency`, described under
 [Priority and urgency](#priority-and-urgency).

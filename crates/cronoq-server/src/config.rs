@@ -320,8 +320,8 @@ impl Config {
             }
             for (t, w) in &p.tenant_weights {
                 ensure!(
-                    w.is_finite() && *w > 0.0,
-                    "{} must be finite and > 0",
+                    (1e-6..=1e6).contains(w),
+                    "{} must be between 0.000001 and 1000000",
                     at(&format!("tenant_weights.{t}"))
                 );
             }
@@ -1457,6 +1457,23 @@ impl ResourceSection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_weights_the_scheduler_cannot_work_with_are_refused() {
+        let cfg = |w: &str| -> Config {
+            toml::from_str(&format!(
+                "[[pools]]\nname = \"default\"\n[pools.tenant_weights]\nacme = {w}\n"
+            ))
+            .unwrap()
+        };
+        for w in ["0.0", "-1.0", "1e-9", "1e9"] {
+            let e = cfg(w).validate().unwrap_err().to_string();
+            assert!(e.contains("tenant_weights.acme"), "{w}: {e}");
+        }
+        cfg("0.000001").validate().unwrap();
+        cfg("3.0").validate().unwrap();
+        cfg("1000000.0").validate().unwrap();
+    }
 
     #[test]
     fn peer_certificates_need_local_authentication() {

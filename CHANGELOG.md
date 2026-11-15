@@ -271,7 +271,8 @@ contain breaking changes; they are called out under **Changed**.
 
 - A fair pool with a tenant weight of zero, below zero or very small made the scheduler
   stop (a panic in builds with overflow checks) or order tasks wrongly. The Rust builder now
-  refuses weights outside 0.000001 to 1000000 with a configuration error.
+  refuses weights outside 0.000001 to 1000000 with a configuration error, and so does the
+  server's configuration check (`--check`), which used to accept them.
 - A cancel of an unknown or finished task that was the first call after a retry or a delayed
   start became due left that work waiting until the next call to the scheduler. It is now
   dispatched at once.

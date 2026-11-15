@@ -84,3 +84,10 @@ admitted and the error names the offending index.
 
 Dependencies are tracked with in-degree counters and reverse edges, so a parent finishing costs
 O(number of its children). Completed parents are never scanned.
+
+## From the embedded library
+
+Programs that embed the scheduler through the C library list a task's parents in the task
+option `after`: task ids, keys, or `{"task": id, "when": "complete"}` objects (Go
+`Task.After`, Swift `TaskOptions.after`). The pool option `unknown_dependency` makes a pool
+wait for a key no task has yet. See [Embedding from other languages](../guides/embedding.md#task-options).

@@ -41,7 +41,8 @@ group. A task that requires labels no worker has waits until one connects (or un
 cancelled; deadlines raise urgency but never cancel).
 
 Each attempt is assigned to a group: remote leases go only to a worker of that group, and
-embedded executors see it as `ctx.group`.
+embedded executors see it as `ctx.group`. The labels the task itself requires are
+`ctx.labels`; they are all among the group's.
 
 ## Limits
 

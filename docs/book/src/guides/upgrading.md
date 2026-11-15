@@ -168,6 +168,10 @@ not strictly ordered, or when an `age_cap` lets a lower class pass freshly submi
 critical work. Set `allow_overtaking_high` to accept the last case. The defaults pass
 unchanged.
 
+**Tenant weights are checked.** `Builder::build` returns `Error::Config` for a fair-sharing
+weight, or default weight, outside 0.000001 to 1000000. Such weights made the scheduler stop or
+order tasks wrongly.
+
 **New fields.** Code that builds these types with a struct literal needs the new fields, or
 `..Default::default()` where the type has a default.
 
@@ -184,6 +188,8 @@ unchanged.
 | `Recovered` | `pending`, `ordering`, `paused` |
 | `RecoveredTask` | `releases` |
 | `RecoveredTerminal` | `fingerprint` |
+| `Dispatch` | `labels` |
+| `TaskContext` | `labels` (built only by the driver and `TaskContext::for_test`) |
 
 **New variants.** An exhaustive `match` on these enums needs new arms.
 
