@@ -11,7 +11,7 @@
   <a href="https://crates.io/crates/cronoq"><img alt="crates.io" src="https://img.shields.io/crates/v/cronoq"></a>
   <a href="https://docs.rs/cronoq"><img alt="docs.rs" src="https://img.shields.io/docsrs/cronoq"></a>
   <a href="https://pypi.org/project/cronoq/"><img alt="PyPI" src="https://img.shields.io/pypi/v/cronoq"></a>
-  <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.94-blue">
+  <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.95-blue">
   <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
 </p>
 
@@ -81,7 +81,7 @@ maps common symptoms to features, shows where to start, and lists the trade-offs
 
 | What | How |
 |---|---|
-| Rust library | `cargo add cronoq` (Rust 1.94+) |
+| Rust library | `cargo add cronoq` (Rust 1.95+) |
 | Python | `pip install cronoq` for the in-process scheduler; `pip install "cronoq[client]"` adds the gRPC client and worker (CPython 3.14+) |
 | Server (container) | `docker pull ghcr.io/synaptiai/cronoq:0.2.2` (includes the `cronoq` CLI) |
 | Server (binaries) | Linux, macOS and Windows archives on the [release page](https://github.com/synaptiai/cronoq/releases/latest), each with `cronoq-server` and `cronoq` |

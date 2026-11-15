@@ -987,7 +987,7 @@ worker slots; HTTP/2 keepalive detects dead connections.
   throughput falls below its absolute floor (§1); there is no comparison against earlier runs.
 - **Postgres** integration and failover tests start throwaway servers from the PostgreSQL 16
   binaries preinstalled on the CI image. Python tests run with `pytest` (asyncio).
-- CI: fmt, clippy and rustdoc with `-D warnings`, `cargo deny`, tests, MSRV 1.94, Go and
+- CI: fmt, clippy and rustdoc with `-D warnings`, `cargo deny`, tests, MSRV 1.95, Go and
   TypeScript SDK checks, a Helm end-to-end test on kind, and a wheel built with maturin and
   tested from a clean environment on Linux, macOS (Intel and Apple silicon) and Windows.
 

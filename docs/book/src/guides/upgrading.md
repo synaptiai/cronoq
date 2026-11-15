@@ -148,6 +148,9 @@ default setting nothing changes.
 Before 1.0, a minor version may contain breaking changes. These affect Rust code that uses the
 `cronoq` and `cronoq-core` crates.
 
+**Rust 1.95.** The minimum supported Rust version is now 1.95 (was 1.94) for every crate.
+The operator's Kubernetes client (kube 5) needs it, and the workspace shares one minimum.
+
 **`Clock`.** `cronoq::Clock` is `Clone` and no longer `Copy`. Its clones share one clock.
 Write `sched.clock().clone()` where the code copied it.
 

@@ -188,6 +188,22 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Changed
 
+- **Breaking (Rust):** the minimum supported Rust version is now 1.95 (was 1.94) for every
+  crate. The operator's Kubernetes client, kube 5.1, needs it, and the workspace shares one
+  minimum.
+- Dependencies: the operator is built with kube 5.1 and k8s-openapi 0.29 (the generated
+  custom resource definition is unchanged), the container images with Rust 1.99, and the Go
+  client with grpc-go 1.85. Behaviour that comes with them:
+  - The server (tonic 0.14.9), with `[server.grpc_web]` set, closes HTTP/1.1 connections to
+    the gRPC port that do not send their request headers within 30 s, and stops accepting
+    connections at once on shutdown.
+  - The server rejects gRPC messages whose map fields (tags, labels, resources) use a wrong
+    wire type, instead of decoding them (prost 0.14.5).
+  - The TypeScript client (connect-node 2.3) gives up on a connection that cannot be
+    established after 20 s, with `UNAVAILABLE`, instead of waiting for the operating
+    system's TCP timeout.
+  - The operator's Kubernetes client no longer panics on a very large `Retry-After` header,
+    and its watches recover after a broken connection (kube 5).
 - **Breaking (Rust):** `Dispatch` has a new field, `labels`. Code that builds one by hand
   must set it.
 - **Breaking (Rust):** `cronoq::Clock` is `Clone` and no longer `Copy`; its clones share one
@@ -272,6 +288,10 @@ contain breaking changes; they are called out under **Changed**.
 
 ### Fixed
 
+- Recurring schedules: a time just before a spring-forward gap (for example 01:30 in New
+  York on the day clocks skip 02:00 to 03:00) ran twice that day, the second time at 03:00. It
+  now runs once. A schedule written with `7L` or `7#L` (the last Sunday, with 7 for Sunday) was
+  accepted but never ran; it now runs (croner 4.0.3).
 - A fair pool with a tenant weight of zero, below zero or very small made the scheduler
   stop (a panic in builds with overflow checks) or order tasks wrongly. The Rust builder now
   refuses weights outside 0.000001 to 1000000 with a configuration error, and so does the

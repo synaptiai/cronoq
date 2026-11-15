@@ -463,6 +463,23 @@ fn dst_spring_forward_daily_job_runs_after_the_gap() {
 }
 
 #[test]
+fn dst_spring_forward_job_before_the_gap_runs_once() {
+    // 01:30 exists on 2026-03-08 in New York, just before the gap: it runs once that day and
+    // not again at the first instant after the gap (03:00 local, 07:00 UTC).
+    let v = recurring_starts(
+        "0 30 1 * * *",
+        "America/New_York",
+        "2026-03-06T12:00:00Z",
+        24.0 * 5.0,
+    );
+    assert_eq!(v.len(), 5, "{v:?}");
+    assert!(
+        !v.contains(&"2026-03-08T07:00:00+00:00".to_string()),
+        "{v:?}"
+    );
+}
+
+#[test]
 fn dst_fall_back_daily_job_runs_once() {
     // 01:30 occurs twice on 2026-11-01 in New York; the job runs once that day.
     let v = recurring_starts(

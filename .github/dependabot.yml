@@ -24,7 +24,8 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: gomod
-    directory: /sdks/go
+    # The Helm end-to-end test builds against the Go client, so both move together.
+    directories: ["/sdks/go", "/deploy/helm/test/e2e"]
     schedule:
       interval: weekly
     groups:
