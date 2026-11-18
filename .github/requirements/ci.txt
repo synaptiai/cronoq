@@ -2,7 +2,7 @@
 # Update deliberately.
 maturin==1.16.0
 pytest==9.2.0
-pytest-asyncio==1.4.1
+pytest-asyncio==1.5.0
 grpcio==1.85.1
 protobuf==7.36.2
 mypy==2.4.1
